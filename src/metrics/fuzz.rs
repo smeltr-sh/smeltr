@@ -685,6 +685,6 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
 
 fn millis(at: SystemTime) -> i64 {
     at.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .map(crate::core::time::millis)
         .unwrap_or_default()
 }

@@ -12,7 +12,8 @@ use crate::core::batch::{Batch, SLOT_LIVE};
 use crate::core::column::{Column, DataType, Scalar};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
-use crate::core::id::{DestId, SourceId};
+use crate::core::id::{DestId, Id, SourceId};
+use crate::core::variant::EncodedBuf;
 use crate::expr::ast::Span;
 use crate::expr::eval::eval;
 use crate::expr::ir::{Ir, IrKind, flatten};
@@ -905,12 +906,14 @@ impl SourceMeta {
 
     /// The slot `__source` field `field` occupies.
     pub fn source_slot(&self, field: usize) -> crate::core::id::SlotId {
-        crate::core::batch::PREFIX_SLOTS + self.record_len() + field
+        crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + self.record_len() + field)
     }
 
     /// The `__source` field at `slot`, if one is there.
     pub fn source_field_at(&self, slot: crate::core::id::SlotId) -> Option<usize> {
-        slot.checked_sub(self.source_slot(0)).filter(|i| *i < self.source.len())
+        slot.index()
+            .checked_sub(self.source_slot(0).index())
+            .filter(|i| *i < self.source.len())
     }
 
     /// Field `field` as a column over `records`, in record order, for records `source` read: its name in the
@@ -985,7 +988,9 @@ impl SourceMeta {
                 let key = &self.source[field].0["__source.".len()..];
                 if let Some(shared) = shared_filed(records) {
                     return match filed_at(shared, key) {
-                        Some(value) => Column::constant(Scalar::Variant(value.to_vec()), records.len()),
+                        Some(value) => {
+                            Column::constant(Scalar::Variant(EncodedBuf::check(value.to_vec())), records.len())
+                        }
                         None => Column::empty(DataType::Variant, records.len()),
                     };
                 }
@@ -1027,8 +1032,9 @@ impl SourceMeta {
         } else if !self.reads_bytes() {
             let fields = &self.record;
             let (chunk, rows) = chunk_rows(records);
+            let slot_of = |field: usize| crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field);
             for (i, (_, ty)) in fields.iter().enumerate() {
-                let slot = crate::core::batch::PREFIX_SLOTS + i;
+                let slot = slot_of(i);
                 let column = match &chunk {
                     Some(chunk) => chunk.column(i).gather(pool, &rows),
                     None => Column::empty(ty.clone(), 0),
@@ -1040,7 +1046,7 @@ impl SourceMeta {
                     // A payload that did not read has no field of its own to blame, so its record's first holds it.
                     if let Some(why) = chunk.unread(row) {
                         let kind = ExceptionKind::Unparsable;
-                        noted.push((at as u32, crate::core::batch::PREFIX_SLOTS, kind, Some(why.to_string())));
+                        noted.push((at as u32, slot_of(0), kind, Some(why.to_string())));
                         continue;
                     }
                     let from = chunk.failed().partition_point(|(r, _, _)| *r < row);
@@ -1048,7 +1054,7 @@ impl SourceMeta {
                         let kind = ExceptionKind::UnparsableField {
                             to: fields[*field].1.clone(),
                         };
-                        let slot = crate::core::batch::PREFIX_SLOTS + field;
+                        let slot = slot_of(*field);
                         noted.push((at as u32, slot, kind, Some(value.clone())));
                     }
                 }
@@ -3024,7 +3030,7 @@ pub struct CompiledDeliverRule {
     pub to: Vec<DestId>,
     /// Regex literals in `when`, compiled once. Evaluation points `Ctx::patterns` at this, exactly as `route_masks`
     /// does for `cond`.
-    pub compiled_patterns: Vec<crate::core::ctx::CompiledPattern>,
+    pub compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
 }
 
 /// One delivery rule: an optional condition over the pipeline's *output*, and the destinations a matching row goes to.
@@ -3324,7 +3330,7 @@ pub struct CompiledRoute {
     /// `Plan::compiled_patterns`. A route condition resolves against its own disjoint `ResourceBuilder` (see this
     /// struct's doc), so it cannot share a target pipeline's `compiled_patterns`; `route_masks` points `Ctx::patterns`
     /// at this before evaluating `cond`, the same way `plan::exec::run` points it at `Plan::compiled_patterns`.
-    pub compiled_patterns: Vec<crate::core::ctx::CompiledPattern>,
+    pub compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
     /// `RouteConfig::on_exception`.
     pub on_exception: OnException,
 }
@@ -3754,7 +3760,7 @@ fn compile_deliver_rule(
         return Ok(CompiledDeliverRule {
             when: None,
             to: rule.to.clone(),
-            compiled_patterns: Vec::new(),
+            compiled_patterns: Default::default(),
         });
     };
     let (ir, compiled_patterns) = output_condition(src, "condition", plan, tag_field, meta)?;
@@ -3777,7 +3783,10 @@ pub(crate) fn output_symbols(plan: &Plan, tag_field: &str, meta: &SourceMeta) ->
 }
 
 /// A condition over a finished batch, and the patterns `Ctx::patterns` is pointed at to evaluate it.
-pub type OutputCondition = (Ir, Vec<crate::core::ctx::CompiledPattern>);
+pub type OutputCondition = (
+    Ir,
+    crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
+);
 
 /// Compile `src`, called `what` in an error, as a condition over `plan`'s finished batch: what a `deliver` rule reads,
 /// and what a filter at a destination reads. Evaluated with `Ctx::patterns` pointed at the patterns it returns.
@@ -4551,7 +4560,10 @@ mod tests {
         );
         let shared = column("__source.resource");
         assert_eq!(shared.len(), 2);
-        assert_eq!(shared.constant_value(), Some(&Scalar::Variant(resource)));
+        assert_eq!(
+            shared.constant_value(),
+            Some(&Scalar::Variant(EncodedBuf::check(resource)))
+        );
         let name = column("__source.scope.name");
         assert_eq!(name.constant_value(), Some(&Scalar::Str("lib".into())));
         let version = column("__source.scope.version");
@@ -4844,7 +4856,7 @@ mod tests {
             id: 7,
             name: "p".into(),
             body: Vec::new(),
-            step_ids: Vec::new(),
+            step_ids: Default::default(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces: Vec::new(),
@@ -4901,9 +4913,9 @@ mod tests {
             deliver: vec![CompiledDeliverRule {
                 when: None,
                 to,
-                compiled_patterns: Vec::new(),
+                compiled_patterns: Default::default(),
             }],
-            compiled_patterns: Vec::new(),
+            compiled_patterns: Default::default(),
             on_exception: Default::default(),
         };
 
@@ -4990,7 +5002,7 @@ mod tests {
             .iter()
             .position(|f| f.0 == "__source.offset")
             .unwrap();
-        let slot_offset = RAW_SLOTS + offset_field;
+        let slot_offset = crate::core::id::SlotId::at(RAW_SLOTS + offset_field);
 
         let rows = docs.len();
         let mut layout = raw_layout();

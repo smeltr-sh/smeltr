@@ -13,7 +13,8 @@ use crate::core::buffer::{self, BufferPool};
 use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
-use crate::core::id::{DestId, FunctionId, SlotId};
+use crate::core::id::{DestId, FunctionId, Id, SlotId};
+use crate::core::time::DateTime;
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
@@ -456,8 +457,8 @@ pub fn single_origin_declared_at(config: &str, at: &config_file::BundleAt) -> co
 
 /// What `now()` reads in a run over `table`: the instant its rows were taken, so a preview and a test of them read one
 /// instant. Rows that say none, saved before samples carried it, read the clock.
-fn taken_at(table: &crate::heartbeat::CaptureBatch) -> i64 {
-    table.instant().unwrap_or_else(crate::core::ctx::wall_clock_micros)
+fn taken_at(table: &crate::heartbeat::CaptureBatch) -> DateTime {
+    table.instant().unwrap_or_else(DateTime::now)
 }
 
 pub fn run_route_preview(
@@ -862,7 +863,7 @@ pub fn run_preview(
     let mut errors = ErrorSink::new();
     // Outside the budget guard, like the errors: a refusal still leaves whatever the parse got to say.
     let mut tally = crate::core::tally::FieldTally::new();
-    let at_micros = taken_at(table);
+    let at = taken_at(table);
 
     // Budgeted: the leader is also what serves the GUI, the config API and every worker's heartbeat, and a pipeline
     // that unrolls an array asks for far more than the sample weighs.
@@ -876,7 +877,7 @@ pub fn run_preview(
         // Each record's `__source` fields are its own columns, so no source names the batch.
         meta.ingest(&mut batch, &sourced, &text, None, |_| true, &mut pool);
 
-        let mut ctx = Ctx::at(&mut pool, &mut errors, at_micros).tallying(&mut tally);
+        let mut ctx = Ctx::at(&mut pool, &mut errors, at).tallying(&mut tally);
         let rows = run_to_json_marked(
             &plan,
             on_exception,
@@ -888,7 +889,7 @@ pub fn run_preview(
         // An unroll makes rows of its own, which no longer line up with the sample's.
         let touched = (req.attribution && batch.rows() == table.rows.len()).then(|| touched(&plan, &batch));
         let sample = req.as_sample.as_ref().map(|cut| {
-            let made = crate::leader::capture::output_fields(at_micros, &pipeline_id, req.sample.as_deref());
+            let made = crate::leader::capture::output_fields(at, &pipeline_id, req.sample.as_deref());
             as_sample(&plan, &on_exception.tag_field, &batch, &rows, cut, &made)
         });
         batch.reclaim(&mut pool);
@@ -1023,7 +1024,7 @@ fn parsed_fields(plan: &Plan) -> BTreeMap<String, Vec<config_file::FieldDto>> {
             ..
         } = &i.op
             && matches!(kind, plan::config::ParserKind::Grok(_))
-            && let Some(step) = plan.step_ids.get(i.function as usize)
+            && let Some(step) = plan.step_ids.get(i.function)
         {
             let field = |o: &plan::compile::Output| config_file::FieldDto {
                 name: o.name.clone(),
@@ -1182,7 +1183,7 @@ fn touched<'p>(plan: &'p Plan, batch: &Batch) -> Touched<'p> {
                 Origin::Function(f) => Some(f),
                 _ => None,
             };
-            (2 * o.slot + 1, o.name.as_str(), o.slot, step)
+            (2 * o.slot.index() + 1, o.name.as_str(), o.slot, step)
         })
         .chain(
             plan.aliases
@@ -1292,7 +1293,7 @@ fn differs(was: &Column, now: &Column) -> Option<Vec<bool>> {
 /// step named by the step of the pipeline it is in: a called pipeline's steps by the call (`calls_of`).
 fn attribute(calls: &HashMap<String, String>, plan: &Plan, touched: Touched<'_>, rows: &mut [(RowOut, bool)]) {
     let step = |f: FunctionId| {
-        let id = plan.step_ids.get(f as usize)?;
+        let id = plan.step_ids.get(f)?;
         Some(calls.get(id).unwrap_or(id).clone())
     };
     let claimed: HashSet<String> = plan.tree.leaves().into_iter().map(|(name, _)| name).collect();

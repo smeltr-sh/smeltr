@@ -75,7 +75,7 @@ fn lay<'d>(row: usize, pairs: &mut Vec<kv_scan::Pair<'d>>, spread: &mut Spread<'
         match spread.enter(Cow::Borrowed(pair.key), false) {
             Step::Whole => spread.text(&pair.value, pair.quoted, pool),
             Step::Copy => spread.copy_text(&pair.value, pair.quoted),
-            Step::Refused => spread.refused(|out| tag::encode(&Tag::Str(pair.value.as_ref().into()), out)),
+            Step::Refused => spread.refused(tag::encoded(&Tag::Str(pair.value.as_ref().into())).get()),
             Step::Into | Step::Skip => {}
         }
         spread.leave();
@@ -90,6 +90,7 @@ mod tests {
     use crate::core::column::{DataType, StrBuilder, VarType};
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
+    use crate::core::id::FunctionId;
     use crate::plan::compile::{Call, Op, Output, ParseObject, Plan, compile};
     use crate::plan::config::{DeclaredField, FunctionConfig, FunctionKind, ParserKind, PipelineConfig, Step};
 
@@ -98,7 +99,7 @@ mod tests {
             id: 0,
             name: "test".into(),
             body: vec![Step::Function(FunctionConfig::new(
-                0,
+                FunctionId::new(0),
                 FunctionKind::Parser {
                     input: "_raw".into(),
                     into: crate::plan::tree::ROOT.to_string(),
@@ -113,7 +114,7 @@ mod tests {
                         .collect(),
                 },
             ))],
-            step_ids: vec!["p".into()],
+            step_ids: vec!["p".into()].into(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces: Vec::new(),

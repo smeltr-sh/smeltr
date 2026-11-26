@@ -4,20 +4,21 @@
 //! phase-2 milestone. This is the first code in the project that computes.
 
 use smeltr::core::batch::{Batch, RAW_SLOTS, raw_layout};
+use smeltr::core::bits;
 use smeltr::core::buffer::BufferPool;
 use smeltr::core::column::{Column, DataType, Scalar, StrBuilder, Validity, VarType};
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::{ErrorSink, ExceptionKind};
-use smeltr::core::{bits, id::SlotId};
+use smeltr::core::id::{Id, SlotId};
 use smeltr::expr::ast::{Span, Value};
 use smeltr::expr::eval::{eval, eval_for_slot};
 use smeltr::expr::ir::{Ir, IrKind, flatten};
 use smeltr::ops::stdfuncs::StdFunc;
 use smeltr::ops::{BinOp, UnOp};
 
-const A: SlotId = RAW_SLOTS; // 4
-const B: SlotId = RAW_SLOTS + 1; // 5
-const C: SlotId = RAW_SLOTS + 2; // 6
+const A: SlotId = SlotId::new(2);
+const B: SlotId = SlotId::new(3);
+const C: SlotId = SlotId::new(4);
 
 fn layout(extra: &[DataType]) -> Vec<DataType> {
     let mut l = raw_layout();
@@ -1093,7 +1094,7 @@ fn array_index_reads_the_matching_element() {
     put_i64(&mut env, &mut b, A, &[1, 1, 1]);
     put_i64(&mut env, &mut b, B, &[2, 2, 2]);
     put_i64(&mut env, &mut b, C, &[3, 3, 3]);
-    let idx_slot = RAW_SLOTS + 3;
+    let idx_slot = SlotId::at(RAW_SLOTS + 3);
     put_i64(&mut env, &mut b, idx_slot, &[0, 1, 2]);
 
     let arr = array_lit(

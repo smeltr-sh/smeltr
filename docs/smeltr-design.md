@@ -25,7 +25,7 @@ history, and a worker runs exactly one at a time.
                      store: credentials    ─ secrets ►│
                      registry: the fleet   ◄─ heartbeat ┘
 
-  source ──► ingest ──► transform ──► egress ──► destination
+  source ──► reader ──► transform ──► egress ──► destination
                 └────── commit ◄──── acknowledgments ──┘
 ```
 
@@ -38,7 +38,7 @@ reaches it, one crosses both tiers.
 | [Language](architecture/language.md) | what a pipeline means: names, types, null, declarations and the expression language |
 | [Columnar data model](architecture/columnar-data-model.md) | what a record is in memory: batches, columns, and the rules a step obeys |
 | [Compiler](architecture/compiler.md) | turning declared configuration into executable instructions |
-| [Runtime stages](architecture/runtime-stages.md) | ingest, transform, egress, commit, and how much concurrency each gets |
+| [Runtime stages](architecture/runtime-stages.md) | source, reader, transform, egress, destination: what each touches and how it scales |
 | [Exception taxonomy](architecture/exception-taxonomy.md) | what a stage does when a row or a batch goes wrong |
 | **How work arrives** | |
 | [Control plane](architecture/control-plane.md) | what a worker is running and when it changes |

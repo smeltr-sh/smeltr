@@ -479,7 +479,7 @@ fn variant_tag(rng: &mut Rng, depth: usize) -> Tag<'static> {
 }
 
 /// The variant `b` as `parquet_variant`'s reader writes what it reads of it: the type the spec holds each value in.
-fn spec_text(b: &[u8]) -> String {
+fn spec_text(b: variant::Encoded) -> String {
     match variant::read(b) {
         Value::Null => "null".into(),
         Value::Bool(v) => v.to_string(),
@@ -964,15 +964,15 @@ fn check_table(
                             want = match held {
                                 Some(Type::Primitive(Primitive::Other(t))) if t == "variant" => {
                                     reached.push("variant written as variant".into());
-                                    match variant::read(b) {
+                                    match variant::read(variant::Encoded::check(b)) {
                                         Value::Null => Val::Null,
-                                        _ => Val::Str(spec_text(b)),
+                                        _ => Val::Str(spec_text(variant::Encoded::check(b))),
                                     }
                                 }
                                 _ => {
                                     reached.push("variant written as text".into());
                                     let mut doc = Vec::new();
-                                    match json::write_variant(b, &mut doc) {
+                                    match json::write_variant(variant::Encoded::check(b), &mut doc) {
                                         true => Val::Str(String::from_utf8(doc).unwrap()),
                                         false => Val::Null,
                                     }

@@ -57,7 +57,7 @@ impl<'d> Sink<'d> for RowSink<'_, 'd> {
     }
 
     fn refused(&mut self, tag: &Tag<'_>) {
-        self.spread.refused(|out| tag::encode(tag, out));
+        self.spread.refused(tag::encoded(tag).get());
     }
 
     fn leave(&mut self) {

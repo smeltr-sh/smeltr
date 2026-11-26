@@ -36,7 +36,7 @@ fn pipeline(id: usize, body: Vec<Step>) -> PipelineConfig {
         id,
         name: format!("pipeline-{id}"),
         body,
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),

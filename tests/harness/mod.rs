@@ -55,12 +55,13 @@ pub fn wait_until(what: &str, within: Duration, mut holds: impl FnMut() -> bool)
     }
 }
 
-pub fn func(id: FunctionId, kind: FunctionKind) -> Step {
+pub fn func(id: u32, kind: FunctionKind) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, kind))
 }
 
 /// A code step: `body` in the code language.
-pub fn code(id: FunctionId, body: &str) -> Step {
+pub fn code(id: u32, body: &str) -> Step {
     func(id, FunctionKind::Code { body: body.to_string() })
 }
 
@@ -69,7 +70,7 @@ pub fn pipeline(body: Vec<Step>) -> PipelineConfig {
         id: 0,
         name: "test".into(),
         body,
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),

@@ -13,7 +13,7 @@ use crate::harness;
 use harness::*;
 
 /// A csv parser step over `headers`, declaring each of `declared`.
-fn csv_step(id: FunctionId, headers: &[&str], declared: &[(&str, DataType)]) -> Step {
+fn csv_step(id: u32, headers: &[&str], declared: &[(&str, DataType)]) -> Step {
     let declared = declared
         .iter()
         .map(|(n, t)| DeclaredField {
@@ -172,13 +172,13 @@ fn two_guarded_parsers_on_the_same_field_compose() {
         // Its table names only `kind`: a column the table names is a field, so naming `amt` would bind it as `str`.
         csv_step(0, &["kind"], &[("kind", DataType::Str)]),
         Step::If {
-            id: 3,
+            id: FunctionId::new(3),
             cond: "kind == \"a\"".into(),
             then: vec![csv_step(1, &["kind", "amt"], &[("amt", DataType::I64)])],
             else_: vec![],
         },
         Step::If {
-            id: 4,
+            id: FunctionId::new(4),
             cond: "kind == \"b\"".into(),
             then: vec![csv_step(2, &["kind", "amt"], &[("amt", DataType::I64)])],
             else_: vec![],

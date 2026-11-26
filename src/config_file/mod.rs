@@ -293,7 +293,7 @@ impl LoadedSystem {
             .iter()
             .find(|p| p.id == pipeline_id)?
             .step_ids
-            .get(function_id as usize)
+            .get(function_id)
             .cloned()
     }
 
@@ -771,7 +771,7 @@ mod tests {
         let errors = validation_of(&two_pipeline_json("1 +"));
         assert!(
             errors.iter().any(|e| e.pipeline.as_deref() == Some("second")
-                && e.function == Some(1)
+                && e.function == Some(FunctionId::new(1))
                 && e.step.as_deref() == Some("e2")),
             "{errors:?}"
         );
@@ -820,7 +820,7 @@ mod tests {
         let errors = validation_of(call_expansion_json());
         assert!(
             errors.iter().any(|e| e.pipeline.as_deref() == Some("main")
-                && e.function == Some(2)
+                && e.function == Some(FunctionId::new(2))
                 && e.step.as_deref() == Some("c-bad")),
             "{errors:?}"
         );
@@ -986,11 +986,14 @@ mod tests {
     fn a_filtered_calls_guard_takes_the_calls_place_among_the_step_ids() {
         let filtered = load_str(&call_json("call1", r#""filter": "true","#)).unwrap();
         assert_eq!(
-            filtered.pipelines[0].step_ids,
+            filtered.pipelines[0].step_ids.as_slice(),
             ["before", "call1", "c-good", "c-bad", "after"]
         );
         let plain = load_str(&call_json("call1", "")).unwrap();
-        assert_eq!(plain.pipelines[0].step_ids, ["before", "c-good", "c-bad", "after"]);
+        assert_eq!(
+            plain.pipelines[0].step_ids.as_slice(),
+            ["before", "c-good", "c-bad", "after"]
+        );
     }
 
     /// An `if`'s id is a step id like any other: it takes its place in document order, before its branches, and
@@ -999,7 +1002,7 @@ mod tests {
     fn an_if_id_is_a_step_id() {
         let good = broken_if_json("check").replace("1 +", "a > 0");
         let system = load_str(&good).unwrap();
-        assert_eq!(system.pipelines[0].step_ids, ["first", "check", "inner"]);
+        assert_eq!(system.pipelines[0].step_ids.as_slice(), ["first", "check", "inner"]);
 
         let repeated = broken_if_json("first").replace("1 +", "a > 0");
         let err = load_str(&repeated).unwrap_err().to_string();
@@ -1009,10 +1012,10 @@ mod tests {
     #[test]
     fn step_id_for_resolves_none_rather_than_panicking_out_of_range() {
         let system = load_str(example_json()).unwrap();
-        assert_eq!(system.step_id_for(None, Some(0)), None);
+        assert_eq!(system.step_id_for(None, Some(FunctionId::new(0))), None);
         assert_eq!(system.step_id_for(Some(0), None), None);
-        assert_eq!(system.step_id_for(Some(0), Some(u32::MAX)), None);
-        assert_eq!(system.step_id_for(Some(usize::MAX), Some(0)), None);
+        assert_eq!(system.step_id_for(Some(0), Some(FunctionId::new(u32::MAX))), None);
+        assert_eq!(system.step_id_for(Some(usize::MAX), Some(FunctionId::new(0))), None);
     }
 
     /// A blank assignment is a structural error -- caught before compilation, unlike the call-inlining case above --

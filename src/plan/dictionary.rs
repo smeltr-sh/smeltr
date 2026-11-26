@@ -3,7 +3,7 @@
 //! in. Each system that wants a schema renders this type its own way (`io::elastic_mapping`).
 
 use crate::core::column::DataType;
-use crate::core::id::FunctionId;
+use crate::core::id::{FunctionId, Slots};
 use crate::plan::compile::Plan;
 use crate::plan::tree::{self, Node, Object};
 
@@ -21,7 +21,7 @@ pub fn record_type(plan: &Plan, tag_field: &str) -> DataType {
     meet(object_type(&root, &layout), &tag)
 }
 
-fn object_type(o: &Object, layout: &[DataType]) -> DataType {
+fn object_type(o: &Object, layout: &Slots<DataType>) -> DataType {
     let fields = o.fields.iter().map(|(key, node)| {
         let ty = match node {
             Node::Leaf(slot) => layout[*slot].clone(),
@@ -229,22 +229,22 @@ mod tests {
             id: 0,
             name: "p".into(),
             body: vec![
-                code(0, "Object.assign($, json(_raw));"),
-                code(1, "x = 1;"),
-                code(2, "y = x; $[\"@t\"] = _raw;"),
+                code(FunctionId::new(0), "Object.assign($, json(_raw));"),
+                code(FunctionId::new(1), "x = 1;"),
+                code(FunctionId::new(2), "y = x; $[\"@t\"] = _raw;"),
             ],
-            step_ids: Vec::new(),
+            step_ids: Default::default(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces: Vec::new(),
         };
         let plan = crate::plan::compile::compile(&p, &crate::plan::topology::SourceMeta::NONE).unwrap();
         let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
-        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
-        assert_eq!(writer(&plan, &keys(&["x"])), Some(1));
+        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(FunctionId::new(0)));
+        assert_eq!(writer(&plan, &keys(&["x"])), Some(FunctionId::new(1)));
         // A copy shares its value's slot, and is the copying step's.
-        assert_eq!(writer(&plan, &keys(&["y"])), Some(2));
-        assert_eq!(writer(&plan, &keys(&["@t"])), Some(2));
+        assert_eq!(writer(&plan, &keys(&["y"])), Some(FunctionId::new(2)));
+        assert_eq!(writer(&plan, &keys(&["@t"])), Some(FunctionId::new(2)));
         assert_eq!(writer(&plan, &keys(&["_raw"])), None);
     }
 }

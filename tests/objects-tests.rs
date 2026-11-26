@@ -64,6 +64,17 @@ struct Fixture {
     destination: Box<dyn Destination>,
 }
 
+/// How long a test waits for what it expects.
+const WITHIN: Duration = Duration::from_secs(10);
+
+/// The batches `f`'s destination has finished, once there is at least one. `what` names the wait for a failure.
+fn completed_within(f: &mut Fixture, what: &str) -> Vec<smeltr::io::BatchCompletion> {
+    harness::wait_for(what, WITHIN, || {
+        Some(f.destination.poll_completions().unwrap()).filter(|done| !done.is_empty())
+    })
+    .unwrap_or_else(|late| panic!("{late}"))
+}
+
 /// A destination writing `records`, route by route, which only Parquet reads.
 fn open(config: &ObjectsDestinationConfig, records: Option<&Records>) -> Fixture {
     let store = Arc::new(InMemory::new());
@@ -502,18 +513,8 @@ fn a_finishing_destination_does_not_wait_for_its_interval() {
     assert!(f.hand_over(1, vec![row(r#"{"n":1}"#, None)]).is_empty());
     f.destination.finish();
     let completed = |f: &mut Fixture| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let done = f.destination.poll_completions().unwrap();
-            if !done.is_empty() {
-                break done.iter().map(|c| c.batch).collect::<Vec<_>>();
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "not finished within 10 s, though its interval is 60 s"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let done = completed_within(f, "a batch to finish, well inside its interval of 60 s");
+        done.iter().map(|c| c.batch).collect::<Vec<_>>()
     };
     assert_eq!(completed(&mut f), [1]);
     assert!(f.hand_over(2, vec![row(r#"{"n":2}"#, None)]).is_empty());
@@ -530,16 +531,11 @@ fn a_finishing_destination_commits_its_queue_together() {
     for batch in 1..=BATCHES {
         assert!(f.hand_over(batch, vec![row(r#"{"n":1}"#, None)]).is_empty());
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut done = 0;
-    while done < BATCHES {
+    harness::wait_until(&format!("all {BATCHES} batches to finish"), WITHIN, || {
         done += f.destination.poll_completions().unwrap().len() as u64;
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{done} of {BATCHES} batches finished within 10 s"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        done == BATCHES
+    });
     let objects = f.objects().len() as u64;
     assert!(
         objects < BATCHES / 2,
@@ -554,15 +550,7 @@ fn a_line_object_is_finished_at_its_interval() {
     c.file_interval = Duration::from_millis(200);
     let mut f = fixture(&c);
     assert!(f.hand_over(4, vec![row(r#"{"n":1}"#, None)]).is_empty());
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let done = loop {
-        let done = f.destination.poll_completions().unwrap();
-        if !done.is_empty() {
-            break done;
-        }
-        assert!(std::time::Instant::now() < deadline, "no completion at the interval");
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let done = completed_within(&mut f, "a batch to finish at its interval");
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), [4]);
     let objects = f.objects();
     assert_eq!(objects.len(), 1);
@@ -902,15 +890,7 @@ fn a_parquet_object_is_finished_at_its_interval() {
     c.file_interval = Duration::from_millis(200);
     let mut f = writing(&c, &harness::record(&plan));
     assert!(f.hand_over(4, vec![cut_row(&chunk, 0, None)]).is_empty());
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let done = loop {
-        let done = f.destination.poll_completions().unwrap();
-        if !done.is_empty() {
-            break done;
-        }
-        assert!(std::time::Instant::now() < deadline, "no completion at the interval");
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let done = completed_within(&mut f, "a batch to finish at its interval");
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), [4]);
     assert_eq!(f.objects().len(), 1);
 }

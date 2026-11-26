@@ -301,7 +301,7 @@ impl From<&config_file::ValidationError> for Refusal {
 #[serde(rename_all = "camelCase")]
 pub struct ApiError {
     pub pipeline: Option<String>,
-    pub function: Option<u32>,
+    pub function: Option<crate::core::id::FunctionId>,
     pub step: Option<String>,
     pub assignment_index: Option<u32>,
     /// The source, destination or identity this is about. Boxed, as an error rides in a `Result` on every read.

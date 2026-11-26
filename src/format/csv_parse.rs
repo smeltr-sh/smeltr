@@ -73,6 +73,7 @@ mod tests {
     use crate::core::column::{DataType, StrBuilder, VarType};
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
+    use crate::core::id::FunctionId;
     use crate::plan::compile::{Plan, compile};
     use crate::plan::config::{DeclaredField, FunctionConfig, FunctionKind, ParserKind, PipelineConfig, Step};
 
@@ -81,7 +82,7 @@ mod tests {
             id: 0,
             name: "test".into(),
             body: vec![Step::Function(FunctionConfig::new(
-                0,
+                FunctionId::new(0),
                 FunctionKind::Parser {
                     input: "_raw".into(),
                     into: tree::ROOT.to_string(),
@@ -96,7 +97,7 @@ mod tests {
                         .collect(),
                 },
             ))],
-            step_ids: vec!["p".into()],
+            step_ids: vec!["p".into()].into(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces: Vec::new(),
@@ -147,7 +148,8 @@ mod tests {
         assert!(errors.is_empty(), "a wide row still parses");
         let written = [SLOT_RAW, fields[0].slot, fields[1].slot];
         assert!(
-            (0..plan.slot_layout.len())
+            plan.slot_layout
+                .ids()
                 .filter(|s| !written.contains(s))
                 .all(|s| batch.peek(s).is_unbound()),
             "nothing else is written"

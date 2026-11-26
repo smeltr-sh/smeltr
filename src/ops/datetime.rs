@@ -89,7 +89,7 @@ pub fn dt_day_of_week(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `now()`: the instant of the records being run, broadcast to every row. There is no input column, so the row count comes from `Ctx`.
 pub fn now(ctx: &mut Ctx, _ins: &[&Column]) -> Column {
     let mut out = Column::alloc(ctx.pool, &DataType::DateTime, ctx.rows);
-    out.datetime_mut().unwrap().values.fill(ctx.now_micros);
+    out.datetime_mut().unwrap().values.fill(ctx.now.as_micros());
     out
 }
 

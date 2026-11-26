@@ -4,6 +4,7 @@
 //! application's last transaction, the domains, and the last checkpoint's files. File actions are held only for
 //! the commits since the last checkpoint, which the next checkpoint writes after the last checkpoint's.
 
+use crate::core::time::millis;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1013,9 +1014,7 @@ fn read_checkpoint(log: &Log, version: i64, files: Vec<Entry>, state: &mut State
 
 /// Milliseconds since the epoch.
 pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, millis)
 }
 
 /// A random UUID, version 4, as text.
