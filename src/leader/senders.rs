@@ -392,7 +392,7 @@ pub fn history(
 }
 
 /// Each bucket of the day starting at `day_ms` that its `kept` rows say held a row, with how many.
-fn each_held(day_ms: i64, kept: &[u8]) -> impl Iterator<Item = (i64, u64)> + '_ {
+pub(super) fn each_held(day_ms: i64, kept: &[u8]) -> impl Iterator<Item = (i64, u64)> + '_ {
     (day_ms..)
         .step_by(TIER.bucket_ms() as usize)
         .zip(each_count(kept))
@@ -561,7 +561,7 @@ impl Now<'_> {
                     .find(|s| s.ended_millis.is_none())
                     .map(|s| s.started_millis);
                 let holds = holds.filter(|_| below);
-                let answer = marks.answer(group, source, Some(&key.2), holds);
+                let answer = marks.answer(throughput::Subject::new(group, source, Some(&key.2)), holds);
                 let marked_by = answer.map(|a| a.by.clone());
                 let said_normal = answer.is_some_and(|a| a.was == marks::Was::Normal);
                 senders.push(SenderNow {

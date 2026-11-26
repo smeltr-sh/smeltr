@@ -24,7 +24,8 @@
 //! a float rounded, and a row whose value the column cannot hold is refused alone where it is delivered
 //! (`Schema::unfit`).
 
-use std::sync::{Arc, Mutex};
+use crate::sync::Mutex;
+use std::sync::Arc;
 
 use arrow_array::builder::StringBuilder;
 use arrow_array::{
@@ -824,10 +825,7 @@ struct Sink(Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Sink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .expect("no writer panics holding the sink")
-            .extend_from_slice(buf);
+        self.0.lock().extend_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -838,7 +836,7 @@ impl std::io::Write for Sink {
 
 impl Sink {
     fn drain(&self) -> Vec<u8> {
-        std::mem::take(&mut *self.0.lock().expect("no writer panics holding the sink"))
+        std::mem::take(&mut *self.0.lock())
     }
 }
 
@@ -2111,7 +2109,7 @@ mod tests {
         use crate::format::tag::{self, Tag};
         use crate::io::iceberg::schema::{parquet_annotations, table_schema, with_field_ids};
         use crate::io::parquet_variant::tests::read;
-        use crate::plan::tree::UNCLAIMED;
+        use crate::plan::tree::Place;
         use arrow_array::cast::AsArray;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         use std::borrow::Cow;
@@ -2183,7 +2181,14 @@ mod tests {
             &DataType::Array(Box::new(DataType::Variant)),
             &mut pool,
         );
-        let view = RecordView::from_named([("v", &v), ("o.k", &k), (UNCLAIMED, &unclaimed), ("s.w", &w), ("l", &l)]);
+        let leaf = |name: &str| Place::Leaf(name.to_string());
+        let view = RecordView::from_places([
+            (leaf("v"), &v),
+            (leaf("o.k"), &k),
+            (Place::Unclaimed(String::new()), &unclaimed),
+            (leaf("s.w"), &w),
+            (leaf("l"), &l),
+        ]);
         let chunk = Arc::new(Chunk::cut(&schema, &[(&view, &[0, 1])], 0, &mut pool));
         drop(view);
         for column in [v, k, unclaimed, w, l] {

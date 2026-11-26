@@ -198,7 +198,7 @@ fn serve_temporary(dir: &Path, sans: &[String], validity: Duration, failed: Stri
 
 /// The certificate [`serve_temporary`] holds, if it holds one.
 fn temporary(dir: &Path) -> Option<Temporary> {
-    let held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let held = GENERATIONS.lock();
     held.as_ref()
         .and_then(|all| all.get(dir))
         .and_then(|held| held.temporary.clone())
@@ -207,7 +207,7 @@ fn temporary(dir: &Path) -> Option<Temporary> {
 /// What an admin is told while the list entry this leader serves is not what its socket presents, since the start
 /// that found it could not serve it: why, and what to do. Cleared by the next replacement of what is served.
 pub fn unserved(dir: &Path) -> Option<String> {
-    let held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let held = GENERATIONS.lock();
     held.as_ref()
         .and_then(|all| all.get(dir))
         .and_then(|held| held.unserved.clone())
@@ -218,20 +218,18 @@ pub fn unserved(dir: &Path) -> Option<String> {
 pub fn read_list(dir: &Path, list: std::sync::Arc<Store>) {
     LISTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(Default::default)
         .insert(dir.to_path_buf(), list);
 }
 
 /// Per directory, the certificate list its entries come from. A process holding several leaders, as a test binary
 /// does, holds one each.
-static LISTS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, std::sync::Arc<Store>>>> =
-    std::sync::Mutex::new(None);
+static LISTS: crate::sync::Mutex<Option<std::collections::HashMap<PathBuf, std::sync::Arc<Store>>>> =
+    crate::sync::Mutex::new(None);
 
 fn list_of(dir: &Path) -> Result<std::sync::Arc<Store>, String> {
     LISTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .and_then(|all| all.get(dir).cloned())
         .ok_or_else(|| format!("no certificate list is open for {}", dir.display()))
@@ -500,7 +498,7 @@ pub fn dir_of(data_dir: &Path) -> std::path::PathBuf {
 /// An upload and a withdrawal move whole directories. A reader between those moves can pair one set's authority
 /// with another's certificate and conclude that neither vouches for the other. A leader holds its data directory
 /// alone (`leader::lock`), so one lock in this process covers every reader and writer of it.
-static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static CHANGING: crate::sync::Mutex<()> = crate::sync::Mutex::new(());
 
 /// Which state of a TLS directory's files is on disk, and which one the socket serving them loaded.
 ///
@@ -518,7 +516,7 @@ static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 ///
 /// A directory nothing has replaced has no entry and agrees: a leader serving plain HTTP replaces nothing and
 /// builds no socket, and needs nothing to notice that it has no socket at all.
-static GENERATIONS: std::sync::Mutex<Option<Generations>> = std::sync::Mutex::new(None);
+static GENERATIONS: crate::sync::Mutex<Option<Generations>> = crate::sync::Mutex::new(None);
 
 type Generations = std::collections::HashMap<PathBuf, Held>;
 
@@ -543,14 +541,14 @@ struct Temporary {
 
 /// The state of `dir` on disk, and the state of it the socket loaded.
 fn generations(dir: &Path) -> (u64, u64) {
-    let held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let held = GENERATIONS.lock();
     held.as_ref()
         .and_then(|all| all.get(dir))
         .map_or((0, 0), |held| (held.disk, held.socket))
 }
 
 fn with_generations<T>(dir: &Path, change: impl FnOnce(&mut Held) -> T) -> T {
-    let mut held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut held = GENERATIONS.lock();
     change(
         held.get_or_insert_with(Default::default)
             .entry(dir.to_path_buf())
@@ -660,8 +658,8 @@ fn replaced_what_is_served(dir: &Path) {
     reload(dir);
 }
 
-fn changing() -> std::sync::MutexGuard<'static, ()> {
-    CHANGING.lock().unwrap_or_else(|e| e.into_inner())
+fn changing() -> crate::sync::MutexGuard<'static, ()> {
+    CHANGING.lock()
 }
 
 /// Whether a certificate of this leader's own is on disk, or a list entry is named to serve.
@@ -3322,7 +3320,7 @@ pub(crate) mod tests {
         let issuer = rcgen::Issuer::new(issuing, key);
         let served = leaf.signed_by(&leaf_key, &issuer).unwrap();
 
-        // Outgoing first, which is the order that used to decide it.
+        // Outgoing first: the order they are listed in does not decide it.
         let bundle = format!("{}{}", outgoing.pem(), incoming.pem());
         let named = signing_root(bundle.as_bytes(), served.pem().as_bytes()).expect("a root");
         let expected = describe(incoming.pem().as_bytes(), "the renewed root").unwrap();

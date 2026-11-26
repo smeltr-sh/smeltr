@@ -26,10 +26,11 @@
 //! every runtime it starts ([`Sockets`]): across a deploy, a connection waits in the kernel's queue rather than being
 //! refused.
 
+use crate::sync::{Condvar, Mutex};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::net::{SocketAddr, TcpListener};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use aws_lc_rs::constant_time::verify_slices_are_equal;
@@ -58,6 +59,7 @@ use crate::format::json_scan::{Next, Reader};
 use crate::plan::topology::{
     ApiRecords, ConnectionLimits, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport,
 };
+use crate::worker::LEAST_BATCH_BYTES;
 
 /// Where a receiver answers whether it takes requests: 200 while it does, 503 while it is busy, blocked or stopping.
 /// What a balancer's health check or a Kubernetes readiness probe asks.
@@ -66,6 +68,10 @@ pub const HEALTH_PATH: &str = "/health";
 /// What a receiver holds that its reader has not taken. One request may be as large as this
 /// (`MaxRequestBytes::MAX`), so a receiver with room takes any request it may be sent.
 pub const INBOX_BYTES: usize = 64 * 1024 * 1024;
+
+/// How long a reader waits, after a request arrives, for a batch's worth (`LEAST_BATCH_BYTES`) to arrive too: the
+/// longest a record waits on it while traffic is light.
+const SMALL_BATCH_WAIT: Duration = Duration::from_millis(2);
 
 /// How long a sender has to send a request's whole body. One that sends slower holds read budget other senders need.
 const BODY_READ_SECS: u64 = 30;
@@ -384,16 +390,13 @@ fn bound(listen: Listen) -> Result<socket2::Socket, IoError> {
 }
 
 /// The TLS an HTTP receiver serves, offering HTTP/2, which gRPC needs, and HTTP/1.1.
-fn http_tls(
-    config: &ReceiverConfig,
-    secrets: &HeldSecrets,
-) -> Result<Option<axum_server::tls_rustls::RustlsConfig>, IoError> {
+fn http_tls(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Option<Arc<rustls::ServerConfig>>, IoError> {
     let Some(tls) = &config.tls else {
         return Ok(None);
     };
     let mut tls = server_tls(tls, secrets)?;
     tls.alpn_protocols = http_alpn();
-    Ok(Some(axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls))))
+    Ok(Some(Arc::new(tls)))
 }
 
 /// What a server of HTTP offers in its TLS handshake: HTTP/2, which gRPC needs, and HTTP/1.1.
@@ -409,7 +412,7 @@ pub(crate) fn http_alpn() -> Vec<Vec<u8>> {
 /// `tap`, where given, is offered every read of every connection, after TLS, and every connection closed unread.
 pub(crate) fn serve_router(
     listener: TcpListener,
-    tls: Option<axum_server::tls_rustls::RustlsConfig>,
+    tls: Option<Arc<rustls::ServerConfig>>,
     router: axum::Router,
     address: SocketAddr,
     serving: &str,
@@ -435,7 +438,7 @@ pub(crate) fn serve_router(
         Some(tls) => axum_server::from_tcp(listener).map(|server| {
             let acceptor = Tapping {
                 inner: Admitting {
-                    inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
+                    inner: Handshaking(tokio_rustls::TlsAcceptor::from(tls)),
                     open,
                     said,
                 },
@@ -483,7 +486,7 @@ fn bound_header_read(builder: &mut hyper_util::server::conn::auto::Builder<hyper
 /// Closes the connections of `open` that have idled for its idle timeout, if it has one, until the server holding
 /// `open` and every connection it admitted are gone.
 fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>) {
-    let Some(every) = open.lock().unwrap_or_else(|e| e.into_inner()).idle_check() else {
+    let Some(every) = open.lock().idle_check() else {
         return;
     };
     let (open, said) = (Arc::downgrade(open), said.clone());
@@ -494,7 +497,7 @@ fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>) {
             let Some(open) = open.upgrade() else {
                 return;
             };
-            said.lock().unwrap_or_else(|e| e.into_inner()).close_idle(&open);
+            said.lock().close_idle(&open);
         }
     });
 }
@@ -559,11 +562,7 @@ where
             Ok(peer) => peer.ip().to_canonical(),
             Err(e) => return futures_util::future::Either::Left(std::future::ready(Err(e))),
         };
-        let admitted = self
-            .said
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .admit(&self.open, peer);
+        let admitted = self.said.lock().admit(&self.open, peer);
         let place = match admitted {
             Ok(place) => place,
             Err(refusal) => {
@@ -651,11 +650,11 @@ struct OtlpReceivers(Mutex<HashMap<Signal, Arc<Server>>>);
 
 impl OtlpReceivers {
     fn of(&self, signal: Signal) -> Option<Arc<Server>> {
-        self.0.lock().unwrap().get(&signal).cloned()
+        self.0.lock().get(&signal).cloned()
     }
 
     fn servers(&self) -> Vec<Arc<Server>> {
-        self.0.lock().unwrap().values().cloned().collect()
+        self.0.lock().values().cloned().collect()
     }
 }
 
@@ -689,7 +688,7 @@ impl OtlpPort {
         server: Arc<Server>,
         secrets: &HeldSecrets,
     ) -> Result<Joined, IoError> {
-        let mut ports = otlp_ports().lock().unwrap();
+        let mut ports = otlp_ports().lock();
         let port = match ports.get(&config.listen).and_then(Weak::upgrade) {
             Some(port) => port,
             None => {
@@ -698,7 +697,7 @@ impl OtlpPort {
                 port
             }
         };
-        let mut receivers = port.receivers.0.lock().unwrap();
+        let mut receivers = port.receivers.0.lock();
         if receivers.contains_key(&signal) {
             return Err(IoError::transient(format!(
                 "another receiver takes {} on {} still",
@@ -758,7 +757,7 @@ struct Joined {
 
 impl Drop for Joined {
     fn drop(&mut self) {
-        let mut receivers = self.port.receivers.0.lock().unwrap();
+        let mut receivers = self.port.receivers.0.lock();
         if receivers
             .get(&self.signal)
             .is_some_and(|s| Arc::ptr_eq(s, &self.server))
@@ -838,7 +837,7 @@ impl Source for ReceiverSource {
     }
 
     fn take_refused(&mut self) -> Vec<(&'static str, u64)> {
-        std::mem::take(&mut self.shared.refused.lock().unwrap().unread)
+        std::mem::take(&mut self.shared.refused.lock().unread)
             .into_iter()
             .collect()
     }
@@ -854,12 +853,12 @@ impl Source for ReceiverSource {
     }
 
     fn block(&mut self) -> Result<(), IoError> {
-        self.shared.state.lock().unwrap().blocked = true;
+        self.shared.state.lock().blocked = true;
         Ok(())
     }
 
     fn release(&mut self) -> Result<(), IoError> {
-        self.shared.state.lock().unwrap().blocked = false;
+        self.shared.state.lock().blocked = false;
         self.shared.arrived.notify_all();
         self.shared.room.notify_waiters();
         Ok(())
@@ -880,7 +879,9 @@ fn rows_chunk(taken: Vec<Queued>, meta: &SourceMeta) -> Vec<SourceRecord> {
             Payload::Chunk(..) => unreachable!("a poll's records are all of one protocol"),
         })
         .collect();
-    let mismatch = |name: &str, ty: &DataType| -> ! { unreachable!("{name} is a {ty}, and a row gave it otherwise") };
+    let mismatch = |name: &crate::plan::topology::Entry, ty: &DataType| -> ! {
+        unreachable!("{name} is a {ty}, and a row gave it otherwise")
+    };
     let columns = (meta.record().iter().enumerate())
         .map(|(at, (name, ty))| {
             let cells = rows.iter().map(|r| r.0[at].as_ref());
@@ -1028,6 +1029,8 @@ struct Inbox {
     queued: VecDeque<Request>,
     /// What `queued` holds in memory, taken from the receiver's holdings.
     queued_bytes: Counted,
+    /// When the oldest of `queued` arrived, while it holds any.
+    since: Option<Instant>,
     /// The offset the next record takes. One sequence per receiver, so the watermark is one number.
     next_offset: i64,
     /// Each request whose records are all taken, by the offset of its last record.
@@ -1045,9 +1048,17 @@ impl Inbox {
         !self.closed && !self.blocked && !self.stopping
     }
 
-    fn queue(&mut self, request: Request) {
+    /// Queues a request. Whether a reader waiting on `arrived` needs waking: the inbox was empty, or now holds a batch
+    /// worth handing over.
+    fn queue(&mut self, request: Request) -> bool {
+        let empty = self.queued.is_empty();
+        if empty {
+            self.since = Some(Instant::now());
+        }
+        let before = self.queued_bytes.total();
         self.queued_bytes.add(request.bytes);
         self.queued.push_back(request);
+        empty || (before < LEAST_BATCH_BYTES && self.queued_bytes.total() >= LEAST_BATCH_BYTES)
     }
 }
 
@@ -1245,7 +1256,7 @@ impl Shared {
         let Some(reason) = refusal(&answer) else {
             return answer;
         };
-        let mut refused = self.refused.lock().unwrap();
+        let mut refused = self.refused.lock();
         *refused.unread.entry(reason).or_default() += 1;
         if matches!(reason, "busy" | "late") {
             return answer;
@@ -1280,7 +1291,7 @@ impl Shared {
         mut charge: Charge<'_>,
     ) -> Admitted {
         let records = Rest::of(records);
-        let mut inbox = self.state.lock().unwrap();
+        let mut inbox = self.state.lock();
         let Some((records, cut)) = records else {
             // Nothing to deliver: an `ackId` asked after is already true.
             let Some(channel) = channel else {
@@ -1309,14 +1320,16 @@ impl Shared {
                 None => return Admitted::Busy,
             },
         };
-        inbox.queue(Request {
+        let wake = inbox.queue(Request {
             records,
             bytes: charge.keep(),
             remote,
             answer,
         });
         drop(inbox);
-        self.arrived.notify_all();
+        if wake {
+            self.arrived.notify_all();
+        }
         admitted
     }
 
@@ -1345,16 +1358,18 @@ impl Shared {
             let mut room = std::pin::pin!(self.room.notified());
             room.as_mut().enable();
             {
-                let mut inbox = self.state.lock().unwrap();
+                let mut inbox = self.state.lock();
                 if inbox.closed {
                     drop(inbox);
                     self.holdings.give(bytes);
                     return Err(Closed);
                 }
                 if inbox.open() {
-                    inbox.queue(request);
+                    let wake = inbox.queue(request);
                     drop(inbox);
-                    self.arrived.notify_all();
+                    if wake {
+                        self.arrived.notify_all();
+                    }
                     return Ok(delivered);
                 }
             }
@@ -1363,16 +1378,29 @@ impl Shared {
     }
 
     /// Up to `max_rows` records and `max_bytes` of them, the first whatever its size, waiting up to `timeout` for
-    /// the first to arrive. Nothing while blocked: a blocked source stops supplying.
+    /// the first to arrive, and then up to [`SMALL_BATCH_WAIT`] after it for a batch's worth. Nothing while blocked: a
+    /// blocked source stops supplying.
     fn take(&self, max_rows: usize, max_bytes: usize, timeout: Duration) -> Vec<Queued> {
         let deadline = Instant::now() + timeout;
-        let mut inbox = self.state.lock().unwrap();
+        let mut inbox = self.state.lock();
         while inbox.queued.is_empty() || inbox.blocked {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() || inbox.closed {
                 return Vec::new();
             }
-            inbox = self.arrived.wait_timeout(inbox, left).unwrap().0;
+            inbox = self.arrived.wait_timeout(inbox, left).0;
+        }
+        // Small requests would otherwise make batches of a few rows, whose own work outweighs them.
+        let handed_by = inbox.since.expect("a request is queued") + SMALL_BATCH_WAIT;
+        while inbox.queued_bytes.total() < LEAST_BATCH_BYTES {
+            let left = handed_by.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            inbox = self.arrived.wait_timeout(inbox, left).0;
+        }
+        if inbox.queued.is_empty() {
+            return Vec::new();
         }
         let inbox = &mut *inbox;
         let mut taken = Vec::new();
@@ -1411,7 +1439,7 @@ impl Shared {
     }
 
     fn answer_through(&self, watermark: i64) {
-        let mut inbox = self.state.lock().unwrap();
+        let mut inbox = self.state.lock();
         let later = inbox.answers.split_off(&(watermark.saturating_add(1)));
         let done = std::mem::replace(&mut inbox.answers, later);
         let mut held = Vec::new();
@@ -1430,7 +1458,7 @@ impl Shared {
 
     /// Every new request is answered busy from now on. Whether it still holds requests its reader has not taken.
     fn stop_taking(&self) -> bool {
-        let mut inbox = self.state.lock().unwrap();
+        let mut inbox = self.state.lock();
         inbox.stopping = true;
         !inbox.queued.is_empty()
     }
@@ -1438,7 +1466,7 @@ impl Shared {
     /// Every held request is answered busy, and every new one too: its records were never delivered, and the sender
     /// sends them again. An `ackId` given and not delivered is never delivered.
     fn close(&self) {
-        let mut inbox = self.state.lock().unwrap();
+        let mut inbox = self.state.lock();
         inbox.closed = true;
         inbox.queued.clear();
         self.holdings.give(std::mem::take(&mut inbox.queued_bytes));
@@ -1450,7 +1478,7 @@ impl Shared {
     }
 
     fn ready(&self) -> bool {
-        let inbox = self.state.lock().unwrap();
+        let inbox = self.state.lock();
         inbox.open() && (inbox.queued.is_empty() || self.holdings.has_room())
     }
 }
@@ -1537,7 +1565,7 @@ impl Holdings {
     /// Takes `bytes` more for a taker that holds `counted` and, when `turn`, the turn: shared where they fit, else of
     /// the reserve, taking the turn when it is free. Whether it took them.
     fn take(&self, bytes: usize, counted: &mut Counted, turn: &mut bool) -> bool {
-        let mut account = self.account.lock().unwrap();
+        let mut account = self.account.lock();
         let shared = account.counted.shared + bytes <= self.ceiling
             && self
                 .pool
@@ -1564,7 +1592,7 @@ impl Holdings {
         if counted.total() == 0 {
             return;
         }
-        let mut account = self.account.lock().unwrap();
+        let mut account = self.account.lock();
         account.counted.shared -= counted.shared;
         account.counted.reserved -= counted.reserved;
         if let Some(pool) = &self.pool {
@@ -1576,7 +1604,7 @@ impl Holdings {
 
     /// Lets the turn go, so the next taker short of room may take it.
     fn release(&self) {
-        self.account.lock().unwrap().turn = false;
+        self.account.lock().turn = false;
         self.freed.notify_waiters();
     }
 
@@ -1587,12 +1615,12 @@ impl Holdings {
 
     /// What its takers hold now, shared and of its reserve.
     fn held(&self) -> usize {
-        self.account.lock().unwrap().counted.total()
+        self.account.lock().counted.total()
     }
 
     /// Whether a taker without the turn, or one that would take it, takes another byte.
     fn has_room(&self) -> bool {
-        let account = self.account.lock().unwrap();
+        let account = self.account.lock();
         (account.counted.shared < self.ceiling
             && self
                 .pool
@@ -2326,7 +2354,7 @@ fn not_taken(signal: Signal, wire: Wire) -> Response {
 
 /// Whether every receiver on an OTLP port takes exports, as [`health`] answers for one.
 async fn otlp_health(State(receivers): State<Arc<OtlpReceivers>>) -> Response {
-    let servers: Vec<Arc<Server>> = receivers.0.lock().unwrap().values().cloned().collect();
+    let servers: Vec<Arc<Server>> = receivers.0.lock().values().cloned().collect();
     match servers.iter().find(|s| !s.shared.ready()) {
         Some(busy) => busy.answer(Outcome::Busy),
         None if servers.is_empty() => otlp_refused(
@@ -2583,13 +2611,7 @@ async fn answer_ack(
     let Some(asked) = asked(&body) else {
         return hec_answer(StatusCode::BAD_REQUEST, Some(6), "Invalid data format");
     };
-    let answered = server
-        .shared
-        .state
-        .lock()
-        .unwrap()
-        .acks
-        .ask(&channel, &asked, Instant::now());
+    let answered = server.shared.state.lock().acks.ask(&channel, &asked, Instant::now());
     // Each id once, in the order of its text, as HEC's answer has them.
     let mut answered: Vec<(String, bool)> = (answered.into_iter())
         .map(|(id, done)| (id.to_string(), done))
@@ -3132,7 +3154,7 @@ impl Held {
             room.as_mut().enable();
             let mut freed = std::pin::pin!(holdings.freed.notified());
             freed.as_mut().enable();
-            if self.shared.state.lock().unwrap().closed {
+            if self.shared.state.lock().closed {
                 return Err(Closed);
             }
             if holdings.take(more, &mut self.counted, &mut self.turn) {
@@ -3280,19 +3302,13 @@ async fn serve_streams<H, F>(
     H: Fn(Connection) -> F + Send + Sync + 'static,
     F: Future<Output = ()> + Send + 'static,
 {
-    use axum_server::accept::Accept;
-
-    let tls = tls.map(|config| {
-        axum_server::tls_rustls::RustlsAcceptor::new(axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(
-            config,
-        )))
-    });
+    let tls = tls.map(|config| tokio_rustls::TlsAcceptor::from(Arc::new(config)));
     let handle = Arc::new(handle);
     let mut tasks = tokio::task::JoinSet::new();
     let mut accepting = crate::logs::Relog::default();
     let open = Connections::new(limits);
     let mut said = Said::of(&open);
-    let idle_check = open.lock().unwrap_or_else(|e| e.into_inner()).idle_check();
+    let idle_check = open.lock().idle_check();
     let mut idle = idle_check.map(tokio::time::interval);
     loop {
         let accepted = tokio::select! {
@@ -3344,8 +3360,8 @@ async fn serve_streams<H, F>(
         let abort = tasks.spawn(async move {
             let (inner, tls): (Box<dyn Stream>, bool) = match tls {
                 None => (Box::new(tcp), false),
-                Some(tls) => match tls.accept(tcp, ()).await {
-                    Ok((stream, ())) => (Box::new(stream), true),
+                Some(tls) => match handshake(&tls, tcp).await {
+                    Ok(stream) => (Box::new(stream), true),
                     Err(e) => {
                         tracing::trace!(
                             name: "receiver_handshake_failed", target: "sources",
@@ -3370,8 +3386,59 @@ async fn serve_streams<H, F>(
             })
             .await;
         });
-        open.lock().unwrap_or_else(|e| e.into_inner()).started(place.id, abort);
+        open.lock().started(place.id, abort);
     }
+}
+
+/// How long a sender has to complete its TLS handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A sender's TLS handshake on `io`, within [`HANDSHAKE_TIMEOUT`]. When `acceptor` refuses it, the connection is
+/// closed so the sender reads why ([`close_after_alert`]). `Err` says why it failed.
+async fn handshake<I: AsyncRead + AsyncWrite + Unpin>(
+    acceptor: &tokio_rustls::TlsAcceptor,
+    io: I,
+) -> Result<tokio_rustls::server::TlsStream<I>, String> {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(io).into_fallible()).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err((e, io))) => {
+            close_after_alert(io).await;
+            Err(e.to_string())
+        }
+        Err(_) => Err(format!("none within {}s", HANDSHAKE_TIMEOUT.as_secs())),
+    }
+}
+
+/// An HTTP server's TLS acceptor that shakes hands as a receiver that streams does ([`handshake`]).
+#[derive(Clone)]
+struct Handshaking(tokio_rustls::TlsAcceptor);
+
+impl<I, S> axum_server::accept::Accept<I, S> for Handshaking
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    S: Send + 'static,
+{
+    type Stream = tokio_rustls::server::TlsStream<I>;
+    type Service = S;
+    type Future = std::pin::Pin<Box<dyn Future<Output = std::io::Result<(Self::Stream, S)>> + Send>>;
+
+    fn accept(&self, io: I, service: S) -> Self::Future {
+        let acceptor = self.0.clone();
+        Box::pin(async move {
+            let stream = handshake(&acceptor, io).await.map_err(std::io::Error::other)?;
+            Ok((stream, service))
+        })
+    }
+}
+
+/// Closes `tcp`, whose TLS handshake failed, so that the sender reads the alert the handshake sent it. A close with the
+/// sender's bytes unread resets the connection, and a reset may discard the alert before the sender reads it: Windows
+/// does. So it closes its own side, then reads what the sender sent until the sender closes too, for a second at most.
+async fn close_after_alert(mut tcp: impl AsyncRead + AsyncWrite + Unpin) {
+    use tokio::io::AsyncWriteExt;
+    let _ = tcp.shutdown().await;
+    let mut sink = tokio::io::sink();
+    let _ = tokio::time::timeout(Duration::from_secs(1), tokio::io::copy(&mut tcp, &mut sink)).await;
 }
 
 /// What a receiver says of the connections its limits close or refuse: each kind once, then again every
@@ -3386,7 +3453,7 @@ struct Said {
 
 impl Said {
     fn of(open: &Arc<Mutex<Connections>>) -> Said {
-        let open = open.lock().unwrap_or_else(|e| e.into_inner());
+        let open = open.lock();
         Said {
             limits: open.limits(),
             budget: open.budget(),
@@ -3407,7 +3474,7 @@ impl Said {
 
     /// Closes the connections of `open` that have idled for its idle timeout, and logs it.
     fn close_idle(&mut self, open: &Arc<Mutex<Connections>>) {
-        let closed = open.lock().unwrap_or_else(|e| e.into_inner()).close_idle();
+        let closed = open.lock().close_idle();
         for peer in closed {
             self.closed(peer, connections::Closed::Idle);
         }
@@ -3515,7 +3582,7 @@ pub fn adopt_inherited() {
         use std::os::fd::FromRawFd;
 
         let Ok(named) = std::env::var(SOCKETS_ENV) else { return };
-        let mut held = inherited().lock().unwrap();
+        let mut held = inherited().lock();
         for pair in named.split(',').filter(|p| !p.is_empty()) {
             let Some((name, fd)) = pair.rsplit_once('=') else {
                 continue;
@@ -3556,7 +3623,7 @@ fn serves(bound: SocketAddr, address: SocketAddr) -> bool {
 
 /// A socket on `listen`, non-blocking: a copy of the one the supervisor handed over, or one of its own.
 fn socket(listen: Listen) -> std::io::Result<socket2::Socket> {
-    let socket = match inherited().lock().unwrap().get(&listen) {
+    let socket = match inherited().lock().get(&listen) {
         Some(handed) => handed.try_clone()?,
         None => bind(listen)?,
     };
@@ -3760,7 +3827,7 @@ mod tests {
     /// What a receiver's reader thread can take, and what its handlers spend admitting: requests of a thousand
     /// 275-byte lines, polled as a worker's reader polls them, with the commit map it keeps.
     #[test]
-    #[ignore = "a measurement: `cargo test --release --lib receiver::tests::reader_speed -- --ignored --nocapture`"]
+    #[ignore = "a measurement: `cargo test --profile optimized --lib receiver::tests::reader_speed -- --ignored --nocapture`"]
     fn reader_speed() {
         let shared = Arc::new(Shared::default());
         let mut source = ReceiverSource {
@@ -3831,6 +3898,20 @@ mod tests {
         assert!(answered(&mut second));
     }
 
+    /// A lone small request waits for more before it is handed over, so small requests make batches of many rows.
+    #[test]
+    fn a_lone_small_request_waits_for_a_batchs_worth() {
+        let shared = Shared::default();
+        // Twice: the first admit pays for first use, about as long as the wait itself.
+        for _ in 0..2 {
+            let sent = Instant::now();
+            admit(&shared, records(1));
+            assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).len(), 1);
+            let waited = sent.elapsed();
+            assert!(waited >= SMALL_BATCH_WAIT, "handed over after {waited:?}");
+        }
+    }
+
     /// A stopping receiver takes nothing new, hands over what it holds, and answers its senders once that lands.
     #[test]
     fn a_stopping_receiver_refuses_new_requests_and_hands_over_the_rest() {
@@ -3856,7 +3937,7 @@ mod tests {
         };
         assert_eq!(shared.take(2, 1 << 20, Duration::ZERO).len(), 2);
         assert_eq!(
-            shared.state.lock().unwrap().queued_bytes.total(),
+            shared.state.lock().queued_bytes.total(),
             9,
             "its body is held until its last record is taken"
         );
@@ -3864,7 +3945,7 @@ mod tests {
         assert!(!answered(&mut held));
         let last = shared.take(10, 1 << 20, Duration::ZERO);
         assert_eq!(last.iter().map(|q| q.offset).collect::<Vec<_>>(), [2]);
-        assert_eq!(shared.state.lock().unwrap().queued_bytes.total(), 0);
+        assert_eq!(shared.state.lock().queued_bytes.total(), 0);
         shared.answer_through(2);
         assert!(answered(&mut held));
     }
@@ -3899,7 +3980,7 @@ mod tests {
             shared.admit(Cutter::Filed(lines, Arc::new(filed)), 6, remote(), None, charge),
             Admitted::Later(_)
         ));
-        assert!(shared.state.lock().unwrap().queued_bytes.total() < 1100);
+        assert!(shared.state.lock().queued_bytes.total() < 1100);
     }
 
     /// A poll's rows are one chunk, which carries what they are filed under for them all.
@@ -4091,7 +4172,7 @@ mod tests {
         for _ in 0..held + 10 {
             shared.admit_datagram(Cutter::Records(Records::whole(b"x".to_vec())), 1, peer);
         }
-        assert_eq!(shared.state.lock().unwrap().queued.len(), held);
+        assert_eq!(shared.state.lock().queued.len(), held);
         assert_eq!(shared.dropped.load(std::sync::atomic::Ordering::Relaxed), 10);
     }
 
@@ -4099,10 +4180,10 @@ mod tests {
     fn a_blocked_receiver_supplies_nothing_and_takes_nothing() {
         let shared = Shared::default();
         assert!(matches!(admit(&shared, records(1)), Admitted::Later(_)));
-        shared.state.lock().unwrap().blocked = true;
+        shared.state.lock().blocked = true;
         assert!(shared.take(10, 1 << 20, Duration::ZERO).is_empty());
         assert!(matches!(admit(&shared, records(1)), Admitted::Busy));
-        shared.state.lock().unwrap().blocked = false;
+        shared.state.lock().blocked = false;
         assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).len(), 1);
     }
 
@@ -4128,7 +4209,7 @@ mod tests {
             "two records of two bytes each"
         );
         assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).len(), 1);
-        assert_eq!(shared.state.lock().unwrap().queued_bytes.total(), 0);
+        assert_eq!(shared.state.lock().queued_bytes.total(), 0);
     }
 
     #[test]
@@ -4536,7 +4617,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_streamed_request_waiting_is_refused_once_the_receiver_closes() {
         let shared = Arc::new(Shared::default());
-        shared.state.lock().unwrap().blocked = true;
+        shared.state.lock().blocked = true;
         let waiting = tokio::spawn({
             let shared = shared.clone();
             async move {

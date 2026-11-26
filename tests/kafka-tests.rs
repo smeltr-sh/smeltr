@@ -10,6 +10,7 @@
 //! a payload diff rather than a word about partitions, so
 //! `tests/live/compose.live.yaml` pins it.
 
+use smeltr::core::id::{DestId, SourceId};
 use std::time::{Duration, Instant};
 
 use std::sync::Arc;
@@ -64,7 +65,7 @@ fn dest_for(brokers: &str, topic: &str) -> KafkaDestination {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -177,7 +178,7 @@ fn operator_properties_reach_the_producer() {
             props,
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -216,7 +217,7 @@ fn a_credential_this_worker_cannot_obtain_is_a_clear_error() {
             props,
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -259,7 +260,7 @@ fn a_stored_credential_the_leader_has_not_sent_yet_is_a_clear_error() {
                 props: props.clone(),
                 avro: None,
             },
-            0,
+            DestId::new(0),
             kafka_metrics(),
             &held,
         );
@@ -289,7 +290,7 @@ fn kafka_destination_construction_does_not_require_a_reachable_broker() {
         props: Default::default(),
         avro: None,
     };
-    KafkaDestination::new(&config, 0, kafka_metrics(), &Default::default())
+    KafkaDestination::new(&config, DestId::new(0), kafka_metrics(), &Default::default())
         .expect("construction goes ahead without the broker");
 }
 
@@ -453,6 +454,54 @@ fn live_a_partial_batch_returns_without_waiting_out_the_timeout() {
         "a batch of {} took {took:?}: it waited for records that were not coming",
         batch.len()
     );
+}
+
+/// A reader with nothing to read is woken once the client has routed what librdkafka already holds, not by the first
+/// record: woken by the first, it would hand out a batch of a fetch's first few records, and every stage after it pays
+/// per batch.
+#[test]
+fn live_a_reader_waiting_for_records_takes_a_whole_fetch_as_one_batch() {
+    let Some(brokers) = live_brokers("live_a_reader_waiting_for_records_takes_a_whole_fetch_as_one_batch") else {
+        return;
+    };
+    const RECORDS: usize = 2_000;
+    let topic = unique("whole-fetch");
+    let mut dest = dest_for(&brokers, &topic);
+    let values: Vec<String> = (0..RECORDS).map(|i| format!("record {i}")).collect();
+    let rows: Vec<OutgoingRecord<'_>> = values.iter().map(|v| OutgoingRecord::new(v.as_bytes())).collect();
+    hand(&mut dest, &rows);
+    dest.flush().unwrap();
+
+    let mut source = KafkaSource::new(
+        &KafkaSourceConfig {
+            service: smeltr::plan::topology::KafkaService::Kafka,
+            encoding: Encoding::Auto,
+            fetch_bytes: 64 * 1024 * 1024,
+            brokers,
+            topics: vec![topic],
+            group_id: unique("group"),
+            tls: None,
+            start: StartPosition::Earliest,
+            stop: None,
+            deployed_at: 0,
+            member: None,
+            rack: None,
+            props: Default::default(),
+            avro: None,
+        },
+        &Default::default(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let batch = loop {
+        let batch = source
+            .poll_batch(4_000, 64 * 1024 * 1024, Duration::from_secs(20))
+            .unwrap();
+        if !batch.is_empty() || Instant::now() > deadline {
+            break batch;
+        }
+    };
+    assert_eq!(batch.len(), RECORDS, "the first batch took only part of the fetch");
 }
 
 /// The actual point of the `offset + 1` translation in `KafkaSource::commit`
@@ -675,7 +724,7 @@ fn live_lag_reports_the_read_positions_distance_from_the_watermark() {
     )
     .unwrap();
 
-    let records = drain_at_least(&mut source, 1, Duration::from_secs(15));
+    let records = drain_at_least(&mut source, 2, Duration::from_secs(15));
     let first = records
         .iter()
         .find(|r| r.offset == 0)
@@ -1036,7 +1085,7 @@ fn the_producer_buffer_bound_reaches_librdkafka() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -1057,7 +1106,7 @@ fn the_producer_buffer_bound_reaches_librdkafka() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -1162,7 +1211,13 @@ fn live_a_reader_at_its_in_flight_limit_still_lets_its_group_rebalance() {
         let source = KafkaSource::new(&config, &Default::default()).unwrap();
         // Nothing acknowledges what this reader hands over, as when its destination is down.
         let limit = if at_limit { 1 } else { usize::MAX };
-        let mut reader = Reader::new(0, Box::new(source), vec![0], limit, kafka_metrics());
+        let mut reader = Reader::new(
+            SourceId::new(0),
+            Box::new(source),
+            vec![DestId::new(0)],
+            limit,
+            kafka_metrics(),
+        );
         let handoff = Handoff::new();
         let (_reports, acks) = reports();
         let step = |reader: &mut Reader| {
@@ -1893,7 +1948,7 @@ fn live_an_event_hubs_source_reads_and_commits_through_the_kafka_endpoint() {
             props,
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -2168,7 +2223,7 @@ fn live_an_event_hubs_start_moved_to_a_time_skips_what_came_before() {
             props,
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )

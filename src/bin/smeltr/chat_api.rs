@@ -8,9 +8,10 @@
 //! A conversation is its person's alone: anyone else's reads as not there. An agent reaches only the conversation
 //! it works in, and only to read it.
 
+use smeltr::sync::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use axum::Json;
@@ -68,8 +69,8 @@ pub struct Chats {
 type Slot = Arc<Mutex<Option<Run>>>;
 
 /// `slot`'s run, held.
-fn hold(slot: &Slot) -> std::sync::MutexGuard<'_, Option<Run>> {
-    slot.lock().unwrap_or_else(|e| e.into_inner())
+fn hold(slot: &Slot) -> smeltr::sync::MutexGuard<'_, Option<Run>> {
+    slot.lock()
 }
 
 impl Chats {
@@ -79,8 +80,8 @@ impl Chats {
         let _ = self.router.set(router);
     }
 
-    fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<String, Slot>> {
-        self.slots.lock().unwrap_or_else(|e| e.into_inner())
+    fn slots(&self) -> smeltr::sync::MutexGuard<'_, HashMap<String, Slot>> {
+        self.slots.lock()
     }
 
     /// Conversation `id`'s slot, made the first time it is asked for.
@@ -936,7 +937,7 @@ pub async fn sweep(auth: Auth) {
         let _pass = tracing::trace_span!(target: "api", "a background pass", task = "delete old agent conversations");
         // A slot only read, with no run and nobody holding it, is made again when next asked for. Never waited on:
         // the map is held here.
-        let idle = |slot: &Slot| Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|run| run.is_none());
+        let idle = |slot: &Slot| Arc::strong_count(slot) == 1 && slot.try_lock().is_some_and(|run| run.is_none());
         auth.chats.slots().retain(|_, slot| !idle(slot));
         let store = auth.store.clone();
         let swept = blocking(move || {

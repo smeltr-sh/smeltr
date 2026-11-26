@@ -280,9 +280,10 @@ fn read_assertion(path: &std::path::Path) -> Result<String, IoError> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::sync::Mutex;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use serde_json::json;
 
@@ -351,7 +352,7 @@ pub(crate) mod tests {
                     headers,
                     body: String::from_utf8(form).unwrap(),
                 };
-                log.lock().unwrap().push(keep(asked));
+                log.lock().push(keep(asked));
                 let mut conn = reader.into_inner();
                 write!(
                     conn,
@@ -393,7 +394,7 @@ pub(crate) mod tests {
         assert_eq!(credentials.bearer().unwrap(), "Bearer one");
         credentials.forget();
         assert_eq!(credentials.bearer().unwrap(), "Bearer two");
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen.len(), 2);
         assert_eq!(
             seen[0],
@@ -407,7 +408,7 @@ pub(crate) mod tests {
         let mut credentials = credentials(&url, None);
         assert_eq!(credentials.bearer().unwrap(), "Bearer one");
         assert_eq!(credentials.bearer().unwrap(), "Bearer two");
-        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert_eq!(seen.lock().len(), 2);
     }
 
     #[test]
@@ -427,7 +428,7 @@ pub(crate) mod tests {
         let mut credentials = credentials(&url, Some("all-apis")).sending_secret(TokenAuth::Basic);
         assert_eq!(credentials.bearer().unwrap(), "Bearer one");
         assert_eq!(
-            seen.lock().unwrap()[0],
+            seen.lock()[0],
             format!(
                 "{}|grant_type=client_credentials&scope=all-apis",
                 basic("app", "s3cr&t")
@@ -442,7 +443,7 @@ pub(crate) mod tests {
         assert_eq!(credentials.bearer().unwrap(), "Bearer one");
         credentials.sign_in_at("http://127.0.0.1:1/token".into());
         assert_eq!(credentials.bearer().unwrap(), "Bearer one");
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(seen.lock().len(), 1);
     }
 
     #[test]
@@ -461,7 +462,7 @@ pub(crate) mod tests {
         credentials.forget();
         let err = credentials.bearer().unwrap_err().to_string();
         assert!(err.contains(&file.display().to_string()), "{err}");
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         let form = |jwt: &str| {
             format!(
                 "grant_type=client_credentials&client_id=app\

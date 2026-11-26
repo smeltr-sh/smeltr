@@ -41,6 +41,7 @@ import {
   type Pki,
 } from './certificates';
 import { historyRow } from './change';
+import { recordsOf } from '../samples';
 
 /** What one branch or deploy holds of what the moves add: the ids of sources, destinations, lookup tables, grok
  * patterns, schemas and worker groups, the names of pipelines and samples, each eval step as its pipeline and the field
@@ -82,7 +83,7 @@ export type World = {
   password: string | null;
   /** The branch the GUI edits on, once a save has named one; `null` on main. */
   branch: string | null;
-  /** The branch exists on the leader: a save went onto it. */
+  /** The branch exists on the leader, and holds a save main lacks. */
   branchSaved: boolean;
   /** What the branch holds, or main when there is none. */
   editing: Config;
@@ -300,6 +301,8 @@ async function nameBranch(j: Journey) {
   const name = `edit-${world.made++}`;
   await prompt.getByLabel('branch to edit on').fill(name);
   await prompt.getByRole('button', { name: 'Edit on this branch' }).click();
+  // Until it closes, a dialog the save came from is not the page's only one.
+  await expect(prompt).toBeHidden();
   world.branch = name;
 }
 
@@ -878,6 +881,8 @@ async function thereAndBack(
   const move = async (from: string, to: string) => {
     await openRowMenu(page, `More actions for ${name}`);
     await page.getByRole('button', { name: 'Move to…' }).click();
+    // On main, the preview the dialog opens with asks for the branch the move will be written on.
+    await nameBranch(j);
     const dialog = page.getByRole('dialog', { name: `move ${part} ${name}` });
     await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
     // The leader lists the rows in one answer, and the asked object's own tick is among them.
@@ -894,11 +899,14 @@ async function thereAndBack(
     expect(await holds(from), `${from} keeps none of it`).toEqual(none);
     await editingIsSaved(j);
   };
+  const saved = j.world.branchSaved;
   await goto(page, leader, at);
   await move('shared', 'default');
   await switchScope(page, 'shared', 'default');
   await move('default', 'shared');
   await switchScope(page, 'default', 'shared');
+  // There and back, the branch holds what it held before: nothing to deploy if that was nothing.
+  j.world.branchSaved = saved;
 }
 
 /** Moves a source `shared` declares to `default` and back. Into `default`, the routes starting at it are ticked
@@ -2207,14 +2215,13 @@ const produceSchema: Move = {
 
 /** Opens New schema from the schema picker named `named` (a pipeline's Produces or a destination's accepts), makes a
  * schema with the id `id` from the built-in ECS release, and saves it, naming a branch if the GUI asks for one. */
-async function newSchemaFrom(j: Journey, named: string, id: string) {
+async function newSchemaFrom(j: Journey, named: string, id: string, listed: string[]) {
   const { page } = j;
-  const picker = page.getByRole('combobox', { name: named });
-  // A picker with no schema left to offer is the New schema button alone, under the picker's name.
-  const button = page.getByRole('button', { name: named });
-  await expect(picker.or(button)).toBeVisible();
-  if (await picker.count()) await picker.selectOption({ label: '+ New schema…' });
-  else await button.click();
+  // A picker with no schema left to offer is the New schema button alone, under the picker's name. Until the
+  // schemas load it is the button whatever is left, so which it settles on comes from the branch.
+  if (j.world.editing.schemas.some((s) => !listed.includes(s))) {
+    await page.getByRole('combobox', { name: named }).selectOption({ label: '+ New schema…' });
+  } else await page.getByRole('button', { name: named }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: 'ECS', exact: true }).click();
   await dialog.getByLabel('id', { exact: true }).fill(id);
@@ -2242,7 +2249,13 @@ const makeSchemaInPlace: Move = {
       const pipeline = rng.pick(pipelines);
       await goto(page, leader, '#/build/pipelines');
       await page.getByRole('link', { name: pipeline, exact: true }).click();
-      await newSchemaFrom(j, 'Add a schema it produces', id);
+      const produced = world.editing.produces.filter((ps) => ps.startsWith(`${pipeline}:`));
+      await newSchemaFrom(
+        j,
+        'Add a schema it produces',
+        id,
+        produced.map((ps) => ps.slice(pipeline.length + 1)),
+      );
       await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
       world.editing.produces.push(`${pipeline}:${id}`);
       await editingIsSaved(j);
@@ -2250,7 +2263,12 @@ const makeSchemaInPlace: Move = {
     }
     const destination = rng.pick(destinations);
     await goto(page, leader, `#/build/destinations/${encodeURIComponent(destination)}`);
-    await newSchemaFrom(j, 'Add a schema it accepts', id);
+    const on = encodeURIComponent(world.branch ?? 'main');
+    const before = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
+    const accepts = before.config.destinations.find(
+      (d: { id: string }) => d.id === destination,
+    ).accepts;
+    await newSchemaFrom(j, 'Add a schema it accepts', id, accepts ?? []);
     await save(j, unsaved(page));
     await editingIsSaved(j);
     const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
@@ -2416,8 +2434,9 @@ const editSample: Move = {
     const read = async () => {
       // Read where the GUI edits now: saving the edit on main names a branch.
       const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
-      return (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
-        .records as Record<string, unknown>[];
+      return recordsOf(
+        (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample,
+      );
     };
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
@@ -2425,10 +2444,8 @@ const editSample: Move = {
     const raw = draft.some((r) => '_raw' in r.record);
     await goto(page, leader, '#/build');
     if (scope !== 'shared') await switchScope(page, 'shared', scope);
-    await page
-      .getByRole('row', { name: new RegExp(`^${name}\\b`) })
-      .getByRole('button', { name: 'Edit' })
-      .click();
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
     const editor = page.locator('form').filter({ has: page.getByLabel('Search records') });
     await expect(editor.getByLabel(`Select record ${draft[0].n}`)).toBeVisible();
     const done: string[] = [];
@@ -2578,8 +2595,8 @@ const saveOutputSample: Move = {
       const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
       const { samples } = await api.get(`/api/areas/shared/samples?${on}`);
       const id = samples.find((s: { name: string }) => s.name === n).id;
-      return (await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`))
-        .sample as { source?: string; records: Record<string, unknown>[] };
+      const { sample } = await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`);
+      return { source: sample.source as string | undefined, records: recordsOf(sample) };
     };
     const records = (await sampleNamed(input)).records;
 
@@ -2591,7 +2608,8 @@ const saveOutputSample: Move = {
       .getByRole('listbox', { name: 'Samples' })
       .getByRole('option', { name: new RegExp(`^${input}\\b`) })
       .click();
-    const saveOutput = page.getByRole('button', { name: 'Save output as sample' });
+    await page.getByRole('button', { name: 'Save or download', exact: true }).click();
+    const saveOutput = page.getByRole('button', { name: /^Save output as sample/ });
     await expect(saveOutput).toBeEnabled();
     await saveOutput.click();
     const dialog = page.getByRole('dialog', { name: 'save output as sample' });
@@ -2746,7 +2764,7 @@ const saveInputSample: Move = {
     // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
     const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
 
-    await page.getByRole('button', { name: 'Save as sample', exact: true }).click();
+    await page.getByRole('button', { name: 'Save or download', exact: true }).click();
     await page.getByRole('button', { name: /^Save input as sample/ }).click();
     // Found by what it holds: a branch prompt can open beside it.
     const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Name') });

@@ -229,9 +229,9 @@ mod tests {
             id: 0,
             name: "p".into(),
             body: vec![
-                code(0, "Object.assign($, json(_raw));"),
-                code(1, "x = 1;"),
-                code(2, "y = x; $[\"@t\"] = _raw;"),
+                code(FunctionId::new(0), "Object.assign($, json(_raw));"),
+                code(FunctionId::new(1), "x = 1;"),
+                code(FunctionId::new(2), "y = x; $[\"@t\"] = _raw;"),
             ],
             step_ids: Vec::new(),
             lookup_tables: Default::default(),
@@ -240,11 +240,11 @@ mod tests {
         };
         let plan = crate::plan::compile::compile(&p, &crate::plan::topology::SourceMeta::NONE).unwrap();
         let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
-        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
-        assert_eq!(writer(&plan, &keys(&["x"])), Some(1));
+        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(FunctionId::new(0)));
+        assert_eq!(writer(&plan, &keys(&["x"])), Some(FunctionId::new(1)));
         // A copy shares its value's slot, and is the copying step's.
-        assert_eq!(writer(&plan, &keys(&["y"])), Some(2));
-        assert_eq!(writer(&plan, &keys(&["@t"])), Some(2));
+        assert_eq!(writer(&plan, &keys(&["y"])), Some(FunctionId::new(2)));
+        assert_eq!(writer(&plan, &keys(&["@t"])), Some(FunctionId::new(2)));
         assert_eq!(writer(&plan, &keys(&["_raw"])), None);
     }
 }

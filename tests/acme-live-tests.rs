@@ -7,9 +7,10 @@
 //! DNS-01 is ordered from a second Pebble that asks challtestsrv for every name. The order is placed through the
 //! library rather than a leader process, against a stand-in for Cloudflare's API that publishes into challtestsrv.
 
+use smeltr::sync::Mutex;
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::live;
 
@@ -76,7 +77,7 @@ fn serve(dir: &std::path::Path) -> Leader {
     let pipe = child.stderr.take().unwrap();
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-            let mut held = sink.lock().unwrap();
+            let mut held = sink.lock();
             held.push_str(&line);
             held.push('\n');
         }
@@ -102,7 +103,7 @@ fn serve(dir: &std::path::Path) -> Leader {
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        let said = leader.console.lock().unwrap().clone();
+        let said = leader.console.lock().clone();
         if said.contains("one-time password:") && std::net::TcpStream::connect(("127.0.0.1", TLS_PORT)).is_ok() {
             leader.password = said
                 .lines()
@@ -254,7 +255,7 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["challenge"], "tls-alpn-01");
     assert_eq!(saved["httpPort"], HTTP_PORT);
-    assert!(saved["issued"].is_null());
+    assert!(saved["notAfterMillis"].is_null(), "nothing ordered yet");
 
     // The first order is under another root than the leader's own, so it begins a rotation rather than serving at
     // once. Nobody is enrolled to wait for, and the next read of the certificates finishes it.
@@ -275,14 +276,16 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     let issuing = certificates["authority"]["fingerprint"].as_str().unwrap().to_string();
     let first = certificates["served"]["fingerprint"].as_str().unwrap().to_string();
     let (_, acme) = leader.call("GET", "/api/settings/tls/acme", None);
-    assert_eq!(acme["issued"], first);
     assert!(acme["lastError"].is_null(), "{acme}");
     assert!(acme["renewAfterMillis"].as_i64().unwrap() < acme["notAfterMillis"].as_i64().unwrap());
 
     // A renewal over the other challenge: the same root, so it is served at once.
     let (status, saved) = leader.call("PUT", "/api/settings/tls/acme", Some(settings("http-01")));
     assert_eq!(status, 200, "{saved}");
-    assert_eq!(saved["issued"], first, "changing the challenge forgets nothing");
+    assert_eq!(
+        saved["notAfterMillis"], acme["notAfterMillis"],
+        "changing the challenge forgets nothing"
+    );
     leader.order();
     let (_, renewed) = leader.call("GET", "/api/settings/tls", None);
     assert_eq!(renewed["source"], "acme", "{renewed}");
@@ -299,10 +302,6 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     assert_eq!(status, 200);
     let acme = leader.order();
     assert!(acme["lastError"].as_str().is_some_and(|e| !e.is_empty()), "{acme}");
-    assert_eq!(
-        acme["issued"], renewed["served"]["fingerprint"],
-        "what is served is still the renewal"
-    );
     assert!(
         acme["renewAfterMillis"].is_i64(),
         "saving other names leaves the renewal where it was: the page orders them itself"
@@ -364,9 +363,8 @@ async fn cloudflare_into(management: String) -> (String, Arc<Mutex<Vec<(String, 
                 .await;
                 every
                     .lock()
-                    .unwrap()
                     .push((name.clone(), asked["content"].as_str().unwrap().to_string()));
-                let mut held = adding.lock().unwrap();
+                let mut held = adding.lock();
                 let id = format!("r{}", held.len() + 1);
                 held.insert(id.clone(), name);
                 ok(serde_json::json!({ "id": id }))
@@ -375,11 +373,7 @@ async fn cloudflare_into(management: String) -> (String, Arc<Mutex<Vec<(String, 
         .route(
             "/zones/z1/dns_records/:id",
             delete(move |Path(id): Path<String>| async move {
-                let name = removing
-                    .lock()
-                    .unwrap()
-                    .remove(&id)
-                    .expect("a record this stand-in added");
+                let name = removing.lock().remove(&id).expect("a record this stand-in added");
                 challtestsrv(
                     &remove_at,
                     "clear-txt",
@@ -456,7 +450,7 @@ fn pebble_issues_over_dns_01_and_every_record_is_removed() {
             assert!(carried.contains(name), "{name} is not among {carried:?}");
         }
         // One record for each name, at the name the authority asks, and none left once the order is over.
-        let added = added.lock().unwrap().clone();
+        let added = added.lock().clone();
         let mut asked: Vec<String> = added.iter().map(|(name, _)| name.clone()).collect();
         asked.sort();
         assert_eq!(

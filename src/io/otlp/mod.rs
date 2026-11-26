@@ -685,7 +685,7 @@ mod testing {
         }
     }
 
-    /// A row as JSON by its signal's field names, leaving out its nulls: a time an integer of microseconds, and a
+    /// A row as JSON, each field under its name's keys, leaving out its nulls: a time an integer of microseconds, and a
     /// variant as [`shown`].
     pub fn row_json(signal: Signal, row: &Row) -> Value {
         let meta = crate::plan::topology::SourceMeta::otlp(signal);
@@ -695,8 +695,10 @@ mod testing {
             "a {} row has its record's fields",
             signal.name()
         );
-        let fields = (meta.record().iter().zip(&row.0)).filter_map(|((name, _), cell)| {
-            let value = match cell.as_ref()? {
+        let mut fields = Map::new();
+        for ((name, _), cell) in meta.fields().zip(&row.0) {
+            let Some(cell) = cell else { continue };
+            let value = match cell {
                 Cell::Int(i) => (*i).into(),
                 Cell::Float(f) => match serde_json::Number::from_f64(*f) {
                     Some(n) => Value::Number(n),
@@ -706,9 +708,9 @@ mod testing {
                 Cell::Text(t) => t.clone().into(),
                 Cell::Variant(v) => shown(v),
             };
-            Some((name.to_string(), value))
-        });
-        Value::Object(fields.collect())
+            crate::config_file::put_path(&mut fields, name, value);
+        }
+        Value::Object(fields)
     }
 
     pub fn filed_as(filed: &Filed, key: &str) -> Option<Value> {

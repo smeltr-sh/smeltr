@@ -45,7 +45,8 @@ fn err(body: Vec<Step>) -> Vec<smeltr::plan::config::CompileError> {
 }
 
 /// Count instructions attributed to a given function.
-fn instrs_for(p: &Plan, f: FunctionId) -> usize {
+fn instrs_for(p: &Plan, f: u32) -> usize {
+    let f = FunctionId::new(f);
     p.instrs.iter().filter(|i| i.function == f).count()
 }
 
@@ -171,13 +172,13 @@ fn guarded_assignment_desugars_to_ternary_retain() {
     let p = ok(vec![
         json("flag: bool; x: i64;"),
         Step::If {
-            id: 2,
+            id: FunctionId::new(2),
             cond: "flag".into(),
             then: vec![code(1, "x = 999;")],
             else_: vec![],
         },
     ]);
-    let assign = p.instrs.iter().find(|i| i.function == 1).unwrap();
+    let assign = p.instrs.iter().find(|i| i.function == FunctionId::new(1)).unwrap();
     match &assign.op {
         // `x = flag ? 999 : x` — the blend the ternary already required.
         Op::Eval { ir } => assert!(
@@ -212,16 +213,15 @@ fn a_second_parser_declaring_a_bound_field_blends_it_by_presence() {
     ]);
     let a = p.tree.leaf("a");
     let blend = p.instrs.iter().find(|i| Some(i.out) == a).expect("`a` is written");
-    assert_eq!(blend.function, 1);
+    assert_eq!(blend.function, FunctionId::new(1));
     assert!(matches!(&blend.op, Op::Eval { .. }), "{:?}", blend.op);
 }
 
-/// A bare `null` assigned inside a guarded region used to silently retype the field: `resolve_typed` has to
-/// concretize an untyped null literal to *some* `DataType` before it reaches here, and it defaults to `I64`,
-/// regardless of what the field is everywhere else the guard does not run. A field
-/// reassigned to `null` from inside an `if` -- exactly the "clear this out" pattern a guarded region is for -- kept
-/// its real type only by accident of whichever slot a later read happened to resolve against. `guarded_value` now
-/// recognizes the literal null token and adopts the field's prior type instead of unifying the placeholder.
+/// A bare `null` assigned inside a guarded region keeps the field's type. `resolve_typed` has to concretize an
+/// untyped null literal to *some* `DataType` before it reaches here, and it defaults to `I64`, regardless of what
+/// the field is everywhere else the guard does not run. So `guarded_value` recognizes the literal null token and
+/// adopts the field's prior type instead of unifying the placeholder: a field reassigned to `null` from inside an
+/// `if` is exactly the "clear this out" pattern a guarded region is for.
 #[test]
 fn a_bare_null_inside_a_guard_keeps_the_fields_prior_type() {
     let p = ok(vec![json("flag: bool; s: str;"), code(1, "if (flag) { s = null; }")]);
@@ -229,7 +229,7 @@ fn a_bare_null_inside_a_guard_keeps_the_fields_prior_type() {
     assert_eq!(s.ty, DataType::Str);
 }
 
-/// The other side of the same fix: a guarded reassignment to a genuinely incompatible type is a compile error
+/// The other side of the same rule: a guarded reassignment to a genuinely incompatible type is a compile error
 /// naming the field, not a silent retype discovered later at some unrelated read.
 #[test]
 fn a_type_mismatch_inside_a_guard_is_a_compile_error() {
@@ -278,8 +278,8 @@ fn unroll_inside_a_conditional_is_a_compile_error() {
     ] {
         let e = err(vec![parser(), guarded]);
         assert!(
-            e.iter()
-                .any(|e| e.function == Some(1) && e.message.contains("Unroll cannot appear inside a conditional")),
+            e.iter().any(|e| e.function == Some(FunctionId::new(1))
+                && e.message.contains("Unroll cannot appear inside a conditional")),
             "{e:?}"
         );
     }
@@ -298,7 +298,7 @@ fn an_unknown_field_is_a_compile_error_unless_the_root_is_open() {
     let e = err(vec![code(1, "x = whatever.key;")]);
     assert!(
         e.iter()
-            .any(|e| e.function == Some(1) && e.message.contains("`whatever.key` is not a field")),
+            .any(|e| e.function == Some(FunctionId::new(1)) && e.message.contains("`whatever.key` is not a field")),
         "{e:?}"
     );
 
@@ -315,7 +315,7 @@ fn an_unknown_field_is_a_compile_error_unless_the_root_is_open() {
 #[test]
 fn type_error_reports_the_function() {
     let e = err(vec![json("s: str; n: i64;"), code(1, "x = s + n;")]);
-    assert_eq!(e[0].function, Some(1));
+    assert_eq!(e[0].function, Some(FunctionId::new(1)));
 }
 
 /// A rename is `b = a`, then `a` is gone: it replaces what `b` held.
@@ -340,7 +340,7 @@ fn a_write_under_a_scalar_is_a_compile_error() {
     let e = err(vec![code(0, r#"source = "x"; source.ip = "192.168.1.1";"#)]);
     assert!(
         e.iter()
-            .any(|e| e.function == Some(0) && e.message.contains("`source` is str and has no fields")),
+            .any(|e| e.function == Some(FunctionId::new(0)) && e.message.contains("`source` is str and has no fields")),
         "{e:?}"
     );
 }
@@ -371,7 +371,7 @@ fn a_rename_under_a_scalar_is_a_compile_error() {
     let e = err(vec![code(0, r#"source = "x"; y = 1;"#), code(1, "move(y, source.ip);")]);
     assert!(
         e.iter()
-            .any(|e| e.function == Some(1) && e.message.contains("`source` is str and has no fields")),
+            .any(|e| e.function == Some(FunctionId::new(1)) && e.message.contains("`source` is str and has no fields")),
         "{e:?}"
     );
 }
@@ -382,7 +382,7 @@ fn parse_error_is_attributed() {
     let e = err(vec![json("a: i64;"), code(1, "x = a +;")]);
     assert!(
         e.iter()
-            .any(|x| x.message.contains("parse error") && x.function == Some(1)),
+            .any(|x| x.message.contains("parse error") && x.function == Some(FunctionId::new(1))),
         "{e:?}"
     );
 }
@@ -448,7 +448,7 @@ fn a_key_the_object_does_not_have_is_a_compile_error_unless_the_object_is_open()
         let e = err(vec![code(0, r#"geo = {city: "x", country: "y"};"#), read.clone()]);
         assert!(
             e.iter()
-                .any(|e| e.function == Some(1) && e.message.contains("`geo.nosuch` is not a field")),
+                .any(|e| e.function == Some(FunctionId::new(1)) && e.message.contains("`geo.nosuch` is not a field")),
             "{expr}: {e:?}"
         );
 
@@ -488,7 +488,7 @@ fn assigning_a_scalar_over_a_declared_object_is_a_compile_error() {
     let e = err(vec![json("source.ip: str;"), code(1, r#"source = "x";"#)]);
     assert!(
         e.iter()
-            .any(|e| e.function == Some(1) && e.message.contains("is str, not {ip: str, ...}")),
+            .any(|e| e.function == Some(FunctionId::new(1)) && e.message.contains("is str, not {ip: str, ...}")),
         "{e:?}"
     );
 }
@@ -504,7 +504,7 @@ fn a_path_under_a_declared_scalar_is_a_compile_error() {
     ]);
     assert!(
         e.iter()
-            .any(|e| e.function == Some(2) && e.message.contains("`host` is str and has no fields")),
+            .any(|e| e.function == Some(FunctionId::new(2)) && e.message.contains("`host` is str and has no fields")),
         "{e:?}"
     );
 }
@@ -590,7 +590,12 @@ fn a_realistic_pipeline_compiles() {
     // splits it into an object that keeps the key's other keys (rule 3): that split is the rename's one instruction.
     // The name it leaves costs nothing (rule 6).
     let source = p.tree.object("source").and_then(|o| o.unclaimed);
-    let split: Vec<_> = p.instrs.iter().filter(|i| i.function == 1).map(|i| i.out).collect();
+    let split: Vec<_> = p
+        .instrs
+        .iter()
+        .filter(|i| i.function == FunctionId::new(1))
+        .map(|i| i.out)
+        .collect();
     assert_eq!(
         split,
         source.into_iter().collect::<Vec<_>>(),
@@ -613,7 +618,7 @@ fn an_undeclared_field_is_refused_where_it_is_read() {
         (2, "if (flag) { y = 1; }", "condition is a variant"),
     ] {
         let e = err(vec![json(""), code(step, read)]);
-        assert_eq!(e[0].function, Some(step), "{e:?}");
+        assert_eq!(e[0].function, Some(FunctionId::new(step)), "{e:?}");
         assert!(e[0].message.contains(want), "{e:?}");
         assert!(e[0].message.contains("give it a type first"), "{e:?}");
     }
@@ -637,7 +642,7 @@ fn a_variant_is_refused_where_it_is_read() {
             ),
             code(step, read),
         ]);
-        assert_eq!(e[0].function, Some(step), "{e:?}");
+        assert_eq!(e[0].function, Some(FunctionId::new(step)), "{e:?}");
         assert!(e[0].message.contains(name), "{e:?}");
         assert!(e[0].message.contains("give it a type first"), "{e:?}");
     }
@@ -691,7 +696,7 @@ fn unroll_on_a_non_array_field_is_a_compile_error() {
 // ---------------------------------------------------------------------------
 
 /// A csv parser step, for the tests of the step itself.
-fn csv(id: FunctionId, headers: &[&str], declared: &[(&str, DataType)]) -> Step {
+fn csv(id: u32, headers: &[&str], declared: &[(&str, DataType)]) -> Step {
     func(
         id,
         FunctionKind::Parser {

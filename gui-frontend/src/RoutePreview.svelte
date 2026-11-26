@@ -16,13 +16,17 @@
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import RouteDiagram from './RouteDiagram.svelte';
+  import LockTestDialog from './LockTestDialog.svelte';
   import { routeCounts } from './routeCounts';
   import SampleMenu from './SampleMenu.svelte';
   import { editable } from './access';
+  import { Standings } from './standings.svelte';
   import { recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
     heldSession,
-    chooseLock,
+    putTest,
+    type MutationResult,
+    type ShownCut,
     routePreview,
     listTests,
     errorText,
@@ -77,11 +81,25 @@
    * test. */
   let opened = $state(untrack(() => test));
   let relocking = $derived(!!opened && selected === opened.sample);
+  /** The test `result` was judged by, whose marks it carries. */
+  let judged = $state<string>();
+  // A test opened over its sample's run runs the sample again, so that the test judges the run.
+  $effect(() => {
+    if (opened && untrack(() => opened!.sample === ran && opened!.test !== judged)) untrack(run);
+  });
   // The end-to-end tests, for the sample menu. A failure to load them only leaves them out of the menu.
   let tests: TestSummary[] = $state([]);
-  listTests()
-    .then((res) => (tests = res.tests.filter((t) => !t.pipeline)))
-    .catch(() => {});
+  const loadTests = () =>
+    listTests()
+      .then((res) => {
+        tests = res.tests.filter((t) => !t.pipeline);
+        void standings.run(tests.map((t) => t.id));
+      })
+      .catch(() => {});
+  void loadTests();
+
+  // Where each of those tests stands, for the sample menu.
+  const standings = new Standings();
 
   /** Why Lock this as a test is off, or `''` when it is on. A test runs the routes as saved over a saved sample, so it
    * locks a run of exactly those. */
@@ -99,15 +117,32 @@
               : '',
   );
 
-  /** Locks the fields and records on screen: a record's rows share its number. */
+  /** The fields and records on screen when Lock this as a test was pressed, while its dialog is open: a record's rows
+   * share its number. */
+  let locking = $state<ShownCut | null>(null);
   function goLockTest() {
     const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
-    chooseLock(
-      { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
-      relocking
-        ? `#/build/tests/relock/${encodeURIComponent(opened!.test)}`
-        : `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
-    );
+    const numbers = rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0);
+    locking = { fields, rows: [...new Set(numbers)] };
+  }
+  async function lockShown(name: string): Promise<MutationResult> {
+    const cut = locking;
+    if (!cut) return { ok: false, errors: [] };
+    const id = relocking ? opened!.test : name;
+    const res = await putTest(id, {
+      name,
+      sample: ran,
+      fields: cut.fields,
+      rows: cut.rows,
+    });
+    if (!res.ok) return res;
+    await loadTests();
+    judged = undefined;
+    opened = { test: id, sample: ran };
+    addressTest(opened);
+    // Closed last, so whoever waits on the dialog finds the test opened.
+    locking = null;
+    return res;
   }
 
   async function run() {
@@ -116,7 +151,8 @@
     error = '';
     try {
       const [sample, sent] = [selected, JSON.stringify(config)];
-      const res = await routePreview(sent, sample, { source: named ?? standsFor });
+      const judging = opened?.sample === sample ? opened.test : undefined;
+      const res = await routePreview(sent, sample, { source: named ?? standsFor, test: judging });
       if (!res.ok) {
         error = errorText(res.errors);
         result = null;
@@ -124,6 +160,7 @@
         result = res;
         ran = sample;
         ranOn = sent;
+        judged = judging;
       }
     } catch (e) {
       error = unreported(e);
@@ -194,6 +231,8 @@
     const leads = new Map<number, Lead>();
     const records = new Map<number, number>();
     const rows: GridRow[] = [];
+    const documents = new Map<number, (number | undefined)[]>();
+    const firsts = new Map<number, number>();
     const add = (record: number, after: unknown, lead: Lead, exceptions: GridRow['exceptions']) => {
       const key = rows.length;
       leads.set(key, lead);
@@ -211,6 +250,11 @@
       ids.map((d) => result?.destination_names[d] ?? String(d)).join(', ');
     for (const row of result.rows) {
       const sample = sampleRecords[row.row] ?? {};
+      // Its documents as a test lists them: each document each route made, by the row here that shows it, or none
+      // where it went to no destination; where no route made one, the record's first row.
+      const made: (number | undefined)[] = [];
+      documents.set(row.row, made);
+      firsts.set(row.row, rows.length);
       if (row.matched.length === 0) {
         const answer = nameOf(result.unmatched);
         const to = typeof result.unmatched === 'object' ? result.unmatched.deliver.join(', ') : '';
@@ -256,7 +300,9 @@
             exceptions,
           );
         }
-        for (const doc of sent) {
+        for (const doc of t.documents) {
+          made.push(doc.destinations.length > 0 ? rows.length : undefined);
+          if (doc.destinations.length === 0) continue;
           add(
             row.row,
             parsed(doc.document),
@@ -289,7 +335,8 @@
         );
       }
     }
-    return { rows, leads, records };
+    for (const [record, made] of documents) if (made.length === 0) made.push(firsts.get(record));
+    return { rows, leads, records, documents };
   });
   let records = $derived(table?.records ?? new Map<number, number>());
 
@@ -331,6 +378,7 @@
       records={result && ran === selected ? result.rows.length : null}
       held={choices.menuHeld}
       tests={tests.map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
+      standings={standings.of}
       test={relocking ? opened!.test : ''}
       ontest={(id) => {
         const t = tests.find((t) => t.id === id);
@@ -388,7 +436,6 @@
   <InlineError message={error} />
 
   {#if result}
-    {#each result.warnings ?? [] as w (w)}<p class="warn">{w}</p>{/each}
     {#if counts && result.rows.length > 0}
       <RouteDiagram {result} {counts} sampleName={choices.name(ran)} />
     {/if}
@@ -433,15 +480,24 @@
         test: opened.test,
         ready: !!table && ran === opened.sample && sampleRecords.length > 0,
         rowOf: (row) => records.get(row.key) ?? -1,
+        documents: table?.documents,
+        differences: judged === opened.test ? result?.verdict?.differences : undefined,
       }}
     />
   {/if}
 </div>
 
+<LockTestDialog
+  open={locking !== null}
+  {relocking}
+  name={relocking ? (tests.find((t) => t.id === opened?.test)?.name ?? '') : ''}
+  fields={locking?.fields.length ?? 0}
+  rows={locking?.rows.length ?? 0}
+  onlock={lockShown}
+  oncancel={() => (locking = null)}
+/>
+
 <style>
-  .warn {
-    color: var(--warn);
-  }
   .preview {
     border: 1px solid var(--border);
     border-radius: var(--radius-card);

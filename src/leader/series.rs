@@ -25,9 +25,9 @@
 //! expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to delete, so
 //! an outage reads as absent rather than as a zero.
 
-use std::collections::{BTreeMap, HashSet};
+use crate::sync::Mutex;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
@@ -523,6 +523,38 @@ pub(crate) const STEPS: &[&str] = &[
     // with its start and its end. A warning no reason was kept for has none.
     "ALTER TABLE fact_clock ADD COLUMN reason TEXT;
      ALTER TABLE fact_history ADD COLUMN reason TEXT;",
+    // 17 -- what each Parser read and each of its fields held, a day row each, counted per five-minute bucket the way
+    // senders' rows are (`senders::Rows`), so the counts can be read over a range. The totals in `stream_parsers` and
+    // `stream_fields` cannot be split by time, so a range reads nothing until new counts arrive.
+    "CREATE TABLE stream_parser_days (
+         group_id TEXT NOT NULL,
+         source   TEXT NOT NULL,
+         route    TEXT NOT NULL,
+         pipeline TEXT NOT NULL,
+         step     TEXT NOT NULL,
+         day_ms   INTEGER NOT NULL,
+         rows     BLOB NOT NULL,
+         PRIMARY KEY (group_id, source, route, pipeline, step, day_ms)
+     ) WITHOUT ROWID;
+     CREATE TABLE stream_field_days (
+         group_id TEXT NOT NULL,
+         source   TEXT NOT NULL,
+         route    TEXT NOT NULL,
+         pipeline TEXT NOT NULL,
+         step     TEXT NOT NULL,
+         field    TEXT NOT NULL,
+         day_ms   INTEGER NOT NULL,
+         present  BLOB NOT NULL,
+         bools    BLOB NOT NULL,
+         ints     BLOB NOT NULL,
+         floats   BLOB NOT NULL,
+         strings  BLOB NOT NULL,
+         arrays   BLOB NOT NULL,
+         objects  BLOB NOT NULL,
+         failed   BLOB NOT NULL,
+         times    BLOB NOT NULL,
+         PRIMARY KEY (group_id, source, route, pipeline, step, field, day_ms)
+     ) WITHOUT ROWID;",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -708,16 +740,7 @@ pub struct LatestState {
 /// The registry's durable half: `latest_state`, `fact_clock`, and `series_points`, behind one connection guarded
 /// by one `Mutex` -- the same shape `store::Store` uses for `leader.db`, in a file of its own.
 pub struct RegistryStore {
-    /// Taken with `unwrap_or_else(|e| e.into_inner())`, so poisoning is recovered from rather than propagated --
-    /// the one place this store differs from `store::Store`, which holds the configuration and is
-    /// right to fail loudly.
-    ///
-    /// Every method here answers a `Result`, and this lock is the only way any of them could panic instead; a
-    /// caller already has the error path. A panic under the lock is reported where it happened, and poisoning is
-    /// only its aftermath: refusing to work afterward would turn one bug into a leader that has permanently
-    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/areas/:area/stats`, none of which it
-    /// touched.
-    /// Recovery is sound because a `Transaction` rolls back as it drops, so what comes back is consistent.
+    /// A panic that held this lock leaves the data consistent: a `Transaction` rolls back as it drops.
     conn: Mutex<Connection>,
     /// When [`RegistryStore::maybe_maintain`] should next actually run `maintain` -- epoch milliseconds. Rollup and
     /// expiry cost a table scan per promoting tier; throttling them to once per fine bucket, the same cadence data
@@ -729,16 +752,18 @@ pub struct RegistryStore {
     /// The senders of the bucket not yet written, and the values whose rows are kept (`senders`). Lock order: taken
     /// after `conn` when both are held.
     senders: Mutex<super::senders::Held>,
-    /// [`RegistryStore::sums_this_bucket`]'s last read of each metric.
-    sums_read: Mutex<std::collections::HashMap<String, SumsRead>>,
+    /// [`RegistryStore::points_this_bucket`]'s reads in the current ten-second bucket.
+    points_read: Mutex<PointsRead>,
 }
 
-/// One metric's sums as read during one ten-second bucket, for one window.
-struct SumsRead {
-    point_ms: i64,
-    since_ms: i64,
+/// A read's metric, whether it counts, point width, offset and start.
+type PointsKey = (String, bool, i64, i64, i64);
+
+/// The reads of one ten-second bucket, each by its [`PointsKey`].
+#[derive(Default)]
+struct PointsRead {
     bucket_ms: i64,
-    sums: std::sync::Arc<Vec<(String, SubjectPoints)>>,
+    reads: std::collections::HashMap<PointsKey, std::sync::Arc<Vec<(String, SubjectPoints)>>>,
 }
 
 /// One stored log, as the leader holds it. Every string here already passed through the heartbeat's
@@ -875,7 +900,7 @@ impl RegistryStore {
             next_maintenance_due_ms: AtomicI64::new(0),
             logs_kept: LOGS_KEPT,
             senders: Mutex::default(),
-            sums_read: Mutex::default(),
+            points_read: Mutex::default(),
         })
     }
 
@@ -883,7 +908,7 @@ impl RegistryStore {
 
     /// Every thread's last report, unordered.
     pub fn load_latest_state(&self) -> Result<Vec<LatestState>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT worker_id, thread_id, report_json, stop_after_unreachable_secs, commit_sha, smeltr_version,
                     supervising_json, authority_expires_ms, stopped_at_ms, last_seen_ms, release
@@ -911,7 +936,7 @@ impl RegistryStore {
 
     /// Drops every row a worker has. What the registry mirrors when the leader forgets one.
     pub fn forget_worker(&self, worker_id: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         conn.execute(FORGET_WORKER_ROWS, params![worker_id])?;
         // Its last window, which only that worker's next beat would be checked against.
         conn.execute("DELETE FROM windows WHERE worker_id = ?1", params![worker_id])?;
@@ -933,7 +958,7 @@ impl RegistryStore {
         if removed.is_empty() && inserted.is_empty() {
             return Ok(());
         }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         for (entry, subject) in removed {
             conn.execute(
                 "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms, reason) \
@@ -957,7 +982,7 @@ impl RegistryStore {
     /// Keeps why each of `reasons`' facts began: (entry, subject, reason). A fact keeps the first reason given while it
     /// holds, as of the reading that began it or the first after; one not active yet is given its reason on a later call.
     pub fn keep_reasons(&self, reasons: &[(String, String, String)]) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut keep = conn
             .prepare_cached("UPDATE fact_clock SET reason = ?3 WHERE entry = ?1 AND subject = ?2 AND reason IS NULL")?;
         for (entry, subject, reason) in reasons {
@@ -968,7 +993,7 @@ impl RegistryStore {
 
     /// Every currently-active fact's true start: (entry, subject, started).
     pub fn load_fact_clock(&self) -> Result<Vec<(String, String, i64)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT entry, subject, started_ms FROM fact_clock")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
@@ -978,7 +1003,7 @@ impl RegistryStore {
 
     /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first.
     pub fn fact_spans(&self, entries: &[&str], subject: &str, since_ms: i64) -> Result<Vec<FactSpan>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let span = |r: &rusqlite::Row| {
             Ok(FactSpan {
                 entry: r.get(0)?,
@@ -1006,7 +1031,7 @@ impl RegistryStore {
 
     /// The subject of each fact of `entry` that began at `started_ms` and has ended.
     pub fn facts_started(&self, entry: &str, started_ms: i64) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         // A fact ends after it began, so the index on its end reads only the facts that ended since.
         let mut stmt = conn.prepare_cached(
             "SELECT subject FROM fact_history WHERE ended_ms >= ?2 AND entry = ?1 AND started_ms = ?2",
@@ -1052,7 +1077,7 @@ impl RegistryStore {
         counter: bool,
         value: f64,
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         write_point(
             &conn,
             &SeriesPoint {
@@ -1079,7 +1104,7 @@ impl RegistryStore {
     /// Streams that will not write are the exception, left out and said: they fail on what they hold, so the same
     /// window sent again would fail again, and the worker could never be heard.
     pub fn record_heartbeat(&self, beat: &HeartbeatRows<'_>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let mut tx = conn.transaction()?;
         let unseen;
         {
@@ -1171,7 +1196,7 @@ impl RegistryStore {
     /// Every point of one series at one tier, oldest first. A bucket nothing landed in has no row and so no entry
     /// here -- absence, not a zero.
     pub fn points(&self, metric: &str, subject_key: &str, tier: Tier) -> Result<Vec<(i64, f64)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT p.bucket_ms, p.value FROM series s JOIN series_points p ON p.series_id = s.id \
              WHERE p.tier = ?1 AND s.metric = ?2 AND s.labels_json = ?3 ORDER BY p.bucket_ms",
@@ -1185,7 +1210,7 @@ impl RegistryStore {
     }
 
     /// Every subject of `metric` at `tier` with a point at or after `since_ms`, oldest first within each subject --
-    /// what E2 (`leader::flow_snapshot`) and E6's lag-climbing check both want: every source or destination's
+    /// what E6's lag-climbing check wants: every source or destination's
     /// series at once, not one subject looked up at a time. A subject with nothing in range is missing from the
     /// result outright, the same absence [`RegistryStore::points`] already gives one bucket.
     pub fn series_since(
@@ -1194,7 +1219,7 @@ impl RegistryStore {
         tier: Tier,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         series_since_on(&conn, metric, tier, since_ms)
     }
 
@@ -1206,7 +1231,7 @@ impl RegistryStore {
         tiers: &[Tier],
         since_ms: i64,
     ) -> Result<Vec<Vec<(String, SubjectPoints)>>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         tiers
             .iter()
             .map(|tier| series_since_on(&conn, metric, *tier, since_ms))
@@ -1263,44 +1288,37 @@ impl RegistryStore {
             .collect())
     }
 
-    /// [`RegistryStore::series_at`] for a counter: one value per point, their sum.
-    pub fn sums_since(
+    /// [`RegistryStore::points_from`] up to now, asked of the store at most once per ten-second bucket of `now_ms`
+    /// for each metric and window: every open Status page polls faster than data lands, and a window over every
+    /// subject is the costliest read a page makes. What lands later in the same bucket waits for the next one.
+    pub fn points_this_bucket(
         &self,
         metric: &str,
+        counter: bool,
         point_ms: i64,
-        since_ms: i64,
-    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, point_ms, 0, since_ms, i64::MAX, |sum, value| sum + value)
-    }
-
-    /// [`RegistryStore::sums_since`], asked of the store at most once per ten-second bucket of `now_ms` for each
-    /// metric and window: every open Status page polls faster than data lands, and a window's sums over every
-    /// subject are the costliest read the page makes. What lands later in the same bucket waits for the next one.
-    pub fn sums_this_bucket(
-        &self,
-        metric: &str,
-        point_ms: i64,
+        offset_ms: i64,
         since_ms: i64,
         now_ms: i64,
     ) -> Result<std::sync::Arc<Vec<(String, SubjectPoints)>>, StoreError> {
         let bucket_ms = Tier::TenSeconds.align(now_ms);
-        let fresh = |r: &SumsRead| (r.point_ms, r.since_ms, r.bucket_ms) == (point_ms, since_ms, bucket_ms);
-        if let Some(read) = self.sums_read.lock().unwrap_or_else(|e| e.into_inner()).get(metric)
-            && fresh(read)
+        let key = (metric.to_string(), counter, point_ms, offset_ms, since_ms);
         {
-            return Ok(read.sums.clone());
+            let mut read = self.points_read.lock();
+            if read.bucket_ms != bucket_ms {
+                *read = PointsRead {
+                    bucket_ms,
+                    ..PointsRead::default()
+                };
+            } else if let Some(points) = read.reads.get(&key) {
+                return Ok(points.clone());
+            }
         }
-        let sums = std::sync::Arc::new(self.sums_since(metric, point_ms, since_ms)?);
-        self.sums_read.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            metric.to_string(),
-            SumsRead {
-                point_ms,
-                since_ms,
-                bucket_ms,
-                sums: sums.clone(),
-            },
-        );
-        Ok(sums)
+        let points = std::sync::Arc::new(self.points_from(metric, counter, point_ms, offset_ms, since_ms, i64::MAX)?);
+        let mut read = self.points_read.lock();
+        if read.bucket_ms == bucket_ms {
+            read.reads.insert(key, points.clone());
+        }
+        Ok(points)
     }
 
     /// [`RegistryStore::series_at`] for a gauge: one value per point, its highest.
@@ -1329,9 +1347,20 @@ impl RegistryStore {
         self.merged_at(metric, point_ms, offset_ms, since_ms, until_ms, merge)
     }
 
+    /// Whether `metric` is a counter, or `None` when the store holds no series of it.
+    pub fn is_counter(&self, metric: &str) -> Result<Option<bool>, StoreError> {
+        let conn = self.conn.lock();
+        let kind: Option<String> = conn
+            .query_row("SELECT kind FROM series WHERE metric = ?1 LIMIT 1", [metric], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(kind.map(|k| k == COUNTER))
+    }
+
     /// Every metric the store holds a series of, each with every subject it has one for and whether it counts.
     pub fn metric_subjects(&self) -> Result<Vec<(String, String, bool)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT metric, labels_json, kind FROM series ORDER BY metric, labels_json")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)? == COUNTER)))?
@@ -1367,7 +1396,7 @@ impl RegistryStore {
 
     /// Write `swings`, each over any already held for its source, width and bucket.
     pub fn record_swings(&self, swings: &[Swing]) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let mut write = tx.prepare_cached(
@@ -1390,7 +1419,7 @@ impl RegistryStore {
         width_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<Swing>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT bucket_ms, low, high FROM swings \
              WHERE group_id = ?1 AND source = ?2 AND width_ms = ?3 AND bucket_ms >= ?4 ORDER BY bucket_ms",
@@ -1412,7 +1441,7 @@ impl RegistryStore {
 
     /// The start of the newest bucket any swing is held for.
     pub fn last_swing_ms(&self) -> Result<Option<i64>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         Ok(conn.query_row("SELECT MAX(bucket_ms) FROM swings", [], |r| r.get(0))?)
     }
 
@@ -1423,7 +1452,7 @@ impl RegistryStore {
         watches: &[((String, String), Watch)],
         silences: &[Silence],
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let mut watch = tx.prepare_cached(
@@ -1446,7 +1475,7 @@ impl RegistryStore {
 
     /// How far each source's rows have been read for its quiet spells.
     pub fn watches(&self) -> Result<BTreeMap<(String, String), Watch>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt =
             conn.prepare_cached("SELECT group_id, source, watched_ms, read_ms, row_ms, quiet_ms FROM silence_watch")?;
         let rows = stmt
@@ -1467,7 +1496,7 @@ impl RegistryStore {
 
     /// `group`'s `source`'s quiet spells that began from `since_ms` on, oldest first, as (ended, length).
     pub fn source_silences(&self, group: &str, source: &str, since_ms: i64) -> Result<Vec<(i64, i64)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT ended_ms, length_ms FROM silences WHERE group_id = ?1 AND source = ?2 AND ended_ms - length_ms >= ?3 \
              ORDER BY ended_ms",
@@ -1491,7 +1520,7 @@ impl RegistryStore {
         if events.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             // `OR IGNORE` against the unique key: a heartbeat whose answer was lost is sent again with the same
@@ -1611,7 +1640,7 @@ impl RegistryStore {
         });
         args.push(Box::new(limit as i64));
 
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(&sql)?;
         let mut rows: Vec<StoredLog> = stmt
             .query_map(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -1679,7 +1708,7 @@ impl RegistryStore {
         args.push(Box::new(since_ms));
         args.push(Box::new(until_ms));
 
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -1709,7 +1738,7 @@ impl RegistryStore {
         let _pass =
             tracing::trace_span!(target: "status", "a background pass", task = "trim the registry's logs and series")
                 .entered();
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 
         for tier in [Tier::TenSeconds, Tier::OneMinute, Tier::FiveMinutes] {
@@ -1781,6 +1810,13 @@ impl RegistryStore {
         // reported on every tallied batch and so never age.
         for table in ["stream_fields", "stream_parsers", "stream_keys", "stream_unmatched"] {
             tx.execute(&format!("DELETE FROM {table} WHERE last_seen_ms < ?1"), params![cutoff])?;
+        }
+        // A day row older than the longest tier is older than any range a count is read over.
+        for table in ["stream_field_days", "stream_parser_days"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE day_ms < ?1"),
+                params![super::senders::day_of(cutoff)],
+            )?;
         }
         // A series whose last point just expired: a subject no longer reported, which would otherwise keep its
         // row for good as workers and subjects come and go.
@@ -1947,7 +1983,7 @@ impl RegistryStore {
         config: Option<&str>,
         now_ms: i64,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         write_streams(
             &tx,
@@ -1969,7 +2005,7 @@ impl RegistryStore {
     /// Adds a beat's `senders`, of the group named with them, to the bucket `now_ms` falls in, once the bucket held
     /// before is written. A bucket that cannot be written is logged and dropped: its senders read as not counted in it.
     fn count_senders(&self, conn: &mut Connection, senders: Option<(&str, &[SenderCounts])>, now_ms: i64) {
-        let mut held = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.senders.lock();
         let bucket = super::senders::TIER.align(now_ms);
         if held.pending.bucket_ms != bucket {
             let ended = std::mem::replace(
@@ -1993,12 +2029,12 @@ impl RegistryStore {
 
     /// From the next bucket written on, keeps the rows of the `watched` values only (`senders::keep`).
     pub fn watch_senders(&self, watched: HashSet<SenderKey>) {
-        self.senders.lock().unwrap_or_else(|e| e.into_inner()).watched = Some(watched);
+        self.senders.lock().watched = Some(watched);
     }
 
     /// Every sender field's days from `since_day_ms`, by group, source and name.
     pub fn sender_fields_since(&self, since_day_ms: i64) -> Result<BTreeMap<FieldKey, FieldDays>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT group_id, source, field, day_ms, counted, over FROM sender_fields WHERE day_ms >= ?1")?;
         let mut rows = stmt.query(params![since_day_ms])?;
@@ -2021,7 +2057,7 @@ impl RegistryStore {
         since_day_ms: i64,
         mut each: impl FnMut(&FieldKey, &str, Days),
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         // In the order of `sender_values_by_value`: no sort.
         let mut stmt = conn.prepare(
             "SELECT group_id, source, field, value, day_ms, sent FROM sender_values WHERE day_ms >= ?1 \
@@ -2056,7 +2092,7 @@ impl RegistryStore {
         field: &str,
         since_day_ms: i64,
     ) -> Result<Days, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT day_ms, counted FROM sender_fields \
              WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND day_ms >= ?4 ORDER BY day_ms",
@@ -2077,7 +2113,7 @@ impl RegistryStore {
         source: &str,
         since_day_ms: i64,
     ) -> Result<Vec<(String, i64, Buckets)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT field, day_ms, sent FROM sender_values WHERE group_id = ?1 AND source = ?2 AND day_ms >= ?3",
         )?;
@@ -2097,7 +2133,7 @@ impl RegistryStore {
         field: &str,
         value: &str,
     ) -> Result<Vec<(i64, Rows)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT day_ms, rows FROM sender_values \
              WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4 AND rows IS NOT NULL ORDER BY day_ms",
@@ -2116,7 +2152,7 @@ impl RegistryStore {
         values_before_ms: i64,
         kept_before_ms: i64,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let kept: Vec<SenderKey> = tx
@@ -2264,16 +2300,20 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
             if held && !deployed {
                 continue;
             }
-            tx.execute(
-                "DELETE FROM stream_fields WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
-                     AND pipeline = ?4 AND step = ?5",
-                at,
-            )?;
-            tx.execute(
-                "DELETE FROM stream_parsers WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
-                     AND pipeline = ?4 AND step = ?5",
-                at,
-            )?;
+            for table in [
+                "stream_fields",
+                "stream_parsers",
+                "stream_field_days",
+                "stream_parser_days",
+            ] {
+                tx.execute(
+                    &format!(
+                        "DELETE FROM {table} WHERE group_id = ?1 AND source = ?2 AND route = ?3 \
+                             AND pipeline = ?4 AND step = ?5"
+                    ),
+                    at,
+                )?;
+            }
         }
         let held: i64 = tx.query_row(
             "SELECT COUNT(*) FROM stream_fields \
@@ -2350,6 +2390,30 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
                     DRIFT_WINDOW.as_millis() as i64,
                 ],
             )?;
+            add_to_day(
+                tx,
+                "stream_field_days",
+                &[
+                    &group_id,
+                    &shape.source,
+                    &shape.route,
+                    &shape.pipeline,
+                    &shape.step,
+                    &field.name,
+                ],
+                &[
+                    ("present", field.present),
+                    ("bools", field.bools),
+                    ("ints", field.ints),
+                    ("floats", field.floats),
+                    ("strings", field.strings),
+                    ("arrays", field.arrays),
+                    ("objects", field.objects),
+                    ("failed", field.failed),
+                    ("times", field.times),
+                ],
+                now_ms,
+            )?;
         }
         tx.execute(
             "INSERT INTO stream_parsers (group_id, source, route, pipeline, step, rows, fields_dropped, \
@@ -2371,6 +2435,13 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
                 dropped,
                 now_ms
             ],
+        )?;
+        add_to_day(
+            tx,
+            "stream_parser_days",
+            &[&group_id, &shape.source, &shape.route, &shape.pipeline, &shape.step],
+            &[("rows", shape.rows)],
+            now_ms,
         )?;
     }
     // A stream is unrouted by what is deployed, so rows another configuration left are not counted against it.
@@ -2429,11 +2500,72 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
     Ok(())
 }
 
+/// The key columns of a Parser's day rows; `stream_field_days` adds the field to them.
+const PARSER_KEY: [&str; 5] = ["group_id", "source", "route", "pipeline", "step"];
+
+/// Adds each count to its column in the bucket of `now_ms`, in the day row of `table` that `key` names: for a Parser,
+/// [`PARSER_KEY`], and for `stream_field_days` that key plus the field.
+fn add_to_day(
+    tx: &Connection,
+    table: &str,
+    key: &[&dyn rusqlite::ToSql],
+    counts: &[(&str, u64)],
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    let bucket = super::senders::TIER.align(now_ms);
+    let day = super::senders::day_of(bucket);
+    let key_columns: Vec<&str> = PARSER_KEY
+        .iter()
+        .copied()
+        .chain((key.len() > PARSER_KEY.len()).then_some("field"))
+        .collect();
+    let columns: Vec<&str> = counts.iter().map(|(c, _)| *c).collect();
+    let at = key_columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{c} = ?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let mut params: Vec<&dyn rusqlite::ToSql> = key.to_vec();
+    params.push(&day);
+    let mut kept: Vec<Rows> = tx
+        .prepare_cached(&format!(
+            "SELECT {} FROM {table} WHERE {at} AND day_ms = ?{}",
+            columns.join(", "),
+            key.len() + 1
+        ))?
+        .query_row(params.as_slice(), |row| {
+            (0..columns.len()).map(|i| row.get(i)).collect()
+        })
+        .optional()?
+        .unwrap_or_else(|| vec![Vec::new(); columns.len()]);
+    for (rows, (_, n)) in kept.iter_mut().zip(counts) {
+        if *n > 0 {
+            super::senders::add_rows(rows, bucket, *n);
+        }
+    }
+    params.extend(kept.iter().map(|k| k as &dyn rusqlite::ToSql));
+    let all: Vec<&str> = key_columns
+        .iter()
+        .copied()
+        .chain(["day_ms"])
+        .chain(columns.iter().copied())
+        .collect();
+    let marks = (1..=all.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ");
+    tx.prepare_cached(&format!(
+        "INSERT OR REPLACE INTO {table} ({}) VALUES ({marks})",
+        all.join(", ")
+    ))?
+    .execute(params.as_slice())?;
+    Ok(())
+}
+
 impl RegistryStore {
     /// Everything accumulated of every group's streams, each shape with its fields and each source with its keys,
-    /// in key order.
-    pub fn streams(&self) -> Result<StoredStreams, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    /// in key order. A Parser's counts are those of the buckets from `since_ms` on: a Parser that read nothing since
+    /// is left out, and so is a field it neither declares nor has held since.
+    pub fn streams(&self, since_ms: i64) -> Result<StoredStreams, StoreError> {
+        let conn = self.conn.lock();
         let mut parsers: Vec<StoredParserShape> = conn
             .prepare(
                 "SELECT group_id, source, route, pipeline, step, rows, fields_dropped, first_seen_ms, last_seen_ms \
@@ -2486,6 +2618,57 @@ impl RegistryStore {
                 )?
                 .collect::<Result<_, _>>()?;
         }
+        let since_bucket = super::senders::TIER.align(since_ms);
+        let since_day = super::senders::day_of(since_bucket);
+        let since = |day_ms: i64, kept: &[u8]| -> i64 {
+            super::senders::each_held(day_ms, kept)
+                .filter(|&(bucket, _)| bucket >= since_bucket)
+                .map(|(_, rows)| rows as i64)
+                .sum()
+        };
+        let mut parser_days = conn.prepare(
+            "SELECT day_ms, rows FROM stream_parser_days \
+             WHERE group_id = ?1 AND source = ?2 AND route = ?3 AND pipeline = ?4 AND step = ?5 AND day_ms >= ?6",
+        )?;
+        let mut field_days = conn.prepare(
+            "SELECT field, day_ms, present, bools, ints, floats, strings, arrays, objects, failed, times \
+             FROM stream_field_days \
+             WHERE group_id = ?1 AND source = ?2 AND route = ?3 AND pipeline = ?4 AND step = ?5 AND day_ms >= ?6",
+        )?;
+        for shape in &mut parsers {
+            let at = params![
+                shape.group_id,
+                shape.source,
+                shape.route,
+                shape.pipeline,
+                shape.step,
+                since_day
+            ];
+            shape.rows = parser_days
+                .query_map(at, |row| Ok(since(row.get(0)?, &row.get::<_, Rows>(1)?)))?
+                .sum::<Result<i64, _>>()?;
+            let mut held: HashMap<String, [i64; 9]> = HashMap::new();
+            for row in field_days.query_map(at, |row| {
+                let day_ms: i64 = row.get(1)?;
+                let mut counts = [0; 9];
+                for (i, count) in counts.iter_mut().enumerate() {
+                    *count = since(day_ms, &row.get::<_, Rows>(i + 2)?);
+                }
+                Ok((row.get::<_, String>(0)?, counts))
+            })? {
+                let (field, counts) = row?;
+                let sum = held.entry(field).or_default();
+                sum.iter_mut().zip(counts).for_each(|(s, c)| *s += c);
+            }
+            shape.fields.retain_mut(|f| {
+                let counts = held.get(&f.name).copied().unwrap_or_default();
+                let [present, bools, ints, floats, strings, arrays, objects, failed, times] = counts;
+                (f.present, f.bools, f.ints, f.floats, f.strings) = (present, bools, ints, floats, strings);
+                (f.arrays, f.objects, f.failed, f.times) = (arrays, objects, failed, times);
+                f.declared || counts.iter().any(|&n| n > 0)
+            });
+        }
+        parsers.retain(|p| p.rows > 0);
         let mut unmatched: Vec<StoredUnmatched> = conn
             .prepare(
                 "SELECT group_id, source, rows, keys_dropped, first_seen_ms, last_seen_ms \
@@ -2526,7 +2709,7 @@ impl RegistryStore {
 
     /// Forgets what every source outside `kept`, by `(group, source)`, showed of its streams.
     pub fn forget_streams_except(&self, kept: &std::collections::HashSet<(String, String)>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let held: Vec<(String, String)> = tx
             .prepare(
@@ -2536,7 +2719,14 @@ impl RegistryStore {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<_, _>>()?;
         for (group, source) in held.iter().filter(|g| !kept.contains(*g)) {
-            for table in ["stream_parsers", "stream_fields", "stream_unmatched", "stream_keys"] {
+            for table in [
+                "stream_parsers",
+                "stream_fields",
+                "stream_parser_days",
+                "stream_field_days",
+                "stream_unmatched",
+                "stream_keys",
+            ] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE group_id = ?1 AND source = ?2"),
                     params![group, source],
@@ -2555,7 +2745,7 @@ impl RegistryStore {
         since_ms: i64,
         deployed: impl Fn(&str) -> Option<String>,
     ) -> Result<Vec<UnroutedSource>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut sources: Vec<UnroutedSource> = conn
             .prepare(
                 "SELECT group_id, source, unrouted_since_ms, config FROM stream_unmatched WHERE last_seen_ms >= ?1 \
@@ -2594,7 +2784,7 @@ impl RegistryStore {
     /// Every declared field of every Parser shape, with when its step last read rows, it was last present and it
     /// last failed: what a drift warning reads.
     pub fn declared_fields(&self) -> Result<Vec<DeclaredField>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let fields = conn
             .prepare(
                 "SELECT f.group_id, f.pipeline, f.step, f.field, f.suggested, p.read_last_ms, f.present_last_ms, \
@@ -2770,7 +2960,7 @@ mod tests {
     #[test]
     fn a_step_counts_afresh_once_its_declarations_change() {
         let store = memory_store();
-        let rows = |store: &RegistryStore| store.streams().unwrap().parsers[0].rows;
+        let rows = |store: &RegistryStore| store.streams(0).unwrap().parsers[0].rows;
         store
             .record_streams("prod", &declared_window(10, 0), true, None, 1_000)
             .unwrap();
@@ -2782,7 +2972,7 @@ mod tests {
         retyped.parsers[0].fields[0].suggested = "str".into();
         store.record_streams("prod", &retyped, true, None, 3_000).unwrap();
         assert_eq!(rows(&store), 10);
-        assert_eq!(store.streams().unwrap().parsers[0].first_seen_ms, 3_000);
+        assert_eq!(store.streams(0).unwrap().parsers[0].first_seen_ms, 3_000);
     }
 
     /// During a rollout a step's report from a commit other than the deployed one, with other declarations, is
@@ -2790,7 +2980,7 @@ mod tests {
     #[test]
     fn a_rollout_neither_restarts_nor_mixes_a_steps_counts() {
         let store = memory_store();
-        let rows = |store: &RegistryStore| store.streams().unwrap().parsers[0].rows;
+        let rows = |store: &RegistryStore| store.streams(0).unwrap().parsers[0].rows;
         let mut older = declared_window(10, 0);
         older.parsers[0].fields[0].suggested = "str".into();
         store.record_streams("prod", &older, false, None, 1_000).unwrap();
@@ -2817,7 +3007,7 @@ mod tests {
         newer.unmatched.clear();
         store.record_streams("prod", &newer, true, None, later).unwrap();
         store.maintain(later).unwrap();
-        let streams = store.streams().unwrap();
+        let streams = store.streams(0).unwrap();
         let fields: Vec<_> = streams.parsers[0].fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(fields, ["new"]);
         assert!(streams.unmatched.is_empty(), "{:?}", streams.unmatched);
@@ -2832,14 +3022,14 @@ mod tests {
             .unwrap();
         let kept = [("prod".to_string(), "orders".to_string())].into();
         store.forget_streams_except(&kept).unwrap();
-        let streams = store.streams().unwrap();
+        let streams = store.streams(0).unwrap();
         assert_eq!(
             (streams.parsers.len(), streams.unmatched.len()),
             (1, 0),
             "hec is not read"
         );
         store.forget_streams_except(&Default::default()).unwrap();
-        assert!(store.streams().unwrap().parsers.is_empty());
+        assert!(store.streams(0).unwrap().parsers.is_empty());
     }
 
     /// Two heartbeats of one shape are one shape with both windows' counts, first seen at the first and last at the
@@ -2857,7 +3047,7 @@ mod tests {
             .record_streams("staging", &stream_report(&["a"], &[]), true, None, 3_000)
             .unwrap();
 
-        let streams = store.streams().unwrap();
+        let streams = store.streams(0).unwrap();
         assert_eq!(streams.parsers.len(), 2, "one shape per group");
         let prod = &streams.parsers[0];
         assert_eq!((prod.group_id.as_str(), prod.rows), ("prod", 20));
@@ -2881,6 +3071,45 @@ mod tests {
         assert_eq!(hec.keys[0].rows, 2);
     }
 
+    /// A Parser's counts are those of the buckets a range reaches, across days: a field held only before it is left
+    /// out, and a Parser that read nothing in it too.
+    #[test]
+    fn a_parsers_counts_are_read_over_a_range() {
+        let store = memory_store();
+        let day = 24 * 60 * 60_000;
+        let at = |ms: i64| 10 * day + ms;
+        for (fields, now) in [
+            (&["old"][..], at(-day)),
+            (&["a"][..], at(-60_000)),
+            (&["a", "b"][..], at(10 * 60_000)),
+        ] {
+            store
+                .record_streams("prod", &stream_report(fields, &[]), true, None, now)
+                .unwrap();
+        }
+        let counts = |since: i64| {
+            let streams = store.streams(since).unwrap();
+            streams.parsers.first().map(|p| {
+                let fields: Vec<(String, i64)> = p.fields.iter().map(|f| (f.name.clone(), f.present)).collect();
+                (p.rows, fields)
+            })
+        };
+        assert_eq!(
+            counts(at(-2 * day)),
+            Some((30, vec![("old".into(), 10), ("a".into(), 20), ("b".into(), 10)]))
+        );
+        assert_eq!(
+            counts(at(-5 * 60_000)),
+            Some((20, vec![("a".into(), 20), ("b".into(), 10)])),
+            "yesterday's field is out of range; the bucket before midnight is in"
+        );
+        assert_eq!(
+            counts(at(5 * 60_000)),
+            Some((10, vec![("a".into(), 10), ("b".into(), 10)]))
+        );
+        assert_eq!(counts(at(15 * 60_000)), None, "nothing read since");
+    }
+
     /// A beat taken at an earlier time can commit after a later one; the times and types stay those of the newest.
     #[test]
     fn an_older_beat_committed_late_moves_nothing_back() {
@@ -2892,7 +3121,7 @@ mod tests {
             .record_streams("prod", &stream_report(&["a"], &["k1"]), true, None, 1_000)
             .unwrap();
 
-        let streams = store.streams().unwrap();
+        let streams = store.streams(0).unwrap();
         let prod = &streams.parsers[0];
         assert_eq!((prod.first_seen_ms, prod.last_seen_ms), (1_000, 2_000));
         let a = &prod.fields[0];
@@ -2954,7 +3183,7 @@ mod tests {
         beat(7, 1, r#"{"a":2}"#, 1_000);
         assert_eq!(polled(), vec![(0, 5.0)], "the repeat's points were not counted");
         assert_eq!(
-            store.streams().unwrap().parsers[0].rows,
+            store.streams(0).unwrap().parsers[0].rows,
             10,
             "the repeat's streams were not counted"
         );
@@ -2966,7 +3195,7 @@ mod tests {
         beat(7, 2, r#"{"a":3}"#, 2_000);
         beat(8, 1, r#"{"a":4}"#, 3_000);
         assert_eq!(polled(), vec![(0, 15.0)]);
-        assert_eq!(store.streams().unwrap().parsers[0].rows, 30);
+        assert_eq!(store.streams(0).unwrap().parsers[0].rows, 30);
     }
 
     /// Streams that will not write are left out, wholly, and the rest of the beat is recorded: they fail on what
@@ -2977,7 +3206,6 @@ mod tests {
         store
             .conn
             .lock()
-            .unwrap()
             .execute_batch(
                 "CREATE TRIGGER refused BEFORE INSERT ON stream_fields BEGIN SELECT RAISE(ABORT, 'refused'); END",
             )
@@ -3019,7 +3247,7 @@ mod tests {
             .expect("a beat whose streams will not write is still recorded");
 
         assert!(
-            store.streams().unwrap().parsers.is_empty(),
+            store.streams(0).unwrap().parsers.is_empty(),
             "half of the streams were written"
         );
         assert_eq!(
@@ -3046,7 +3274,7 @@ mod tests {
             .record_streams("prod", &stream_report(&["one-more", "f0"], &[]), true, None, 2)
             .unwrap();
 
-        let streams = store.streams().unwrap();
+        let streams = store.streams(0).unwrap();
         let shape = &streams.parsers[0];
         assert_eq!(shape.fields.len(), crate::heartbeat::STREAM_FIELDS_PER_PARSER);
         assert_eq!(shape.fields_dropped, 10, "the rows of the field that did not fit");
@@ -3059,12 +3287,12 @@ mod tests {
 
     /// A second read in the same ten-second bucket is the first one's answer; the next bucket reads the store again.
     #[test]
-    fn sums_are_read_once_per_bucket() {
+    fn points_are_read_once_per_bucket() {
         let store = memory_store();
         let (point, now) = (Tier::TenSeconds.bucket_ms(), 1_000_000_000_000);
         store.record_delta("m", "s", now, 1.0).unwrap();
         let sum = |now_ms| -> f64 {
-            let read = store.sums_this_bucket("m", point, 0, now_ms).unwrap();
+            let read = store.points_this_bucket("m", true, point, 0, 0, now_ms).unwrap();
             read.iter().flat_map(|(_, points)| points.iter().map(|(_, v)| v)).sum()
         };
         assert_eq!(sum(now), 1.0);
@@ -3110,7 +3338,6 @@ mod tests {
         store
             .conn
             .lock()
-            .unwrap()
             .query_row("SELECT COUNT(*) FROM logs", [], |r| r.get(0))
             .unwrap()
     }
@@ -3132,7 +3359,6 @@ mod tests {
         let groups: Vec<Option<String>> = store
             .conn
             .lock()
-            .unwrap()
             .prepare("SELECT group_id FROM logs ORDER BY worker_id")
             .unwrap()
             .query_map([], |r| r.get(0))
@@ -3495,7 +3721,6 @@ mod tests {
         let newest: String = store
             .conn
             .lock()
-            .unwrap()
             .query_row("SELECT type FROM logs ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(newest, "line_9", "and the end it keeps is the recent one");
@@ -3551,7 +3776,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let store = RegistryStore::open(&path).unwrap();
-            let conn = store.conn.lock().unwrap();
+            let conn = store.conn.lock();
             let journal: String = conn.pragma_query_value(None, "journal_mode", |r| r.get(0)).unwrap();
             let level: i64 = conn.pragma_query_value(None, "synchronous", |r| r.get(0)).unwrap();
             let vacuum: i64 = conn.pragma_query_value(None, "auto_vacuum", |r| r.get(0)).unwrap();
@@ -3580,12 +3805,11 @@ mod tests {
 
         std::thread::scope(|s| {
             let panicked = s.spawn(|| {
-                let _held = store.conn.lock().unwrap();
+                let _held = store.conn.lock();
                 panic!("a bug under the lock");
             });
             assert!(panicked.join().is_err());
         });
-        assert!(store.conn.is_poisoned());
 
         assert_eq!(
             store.points("smeltr_rows_polled_total", "k", Tier::TenSeconds).unwrap(),
@@ -4051,7 +4275,6 @@ mod tests {
         let series: i64 = store
             .conn
             .lock()
-            .unwrap()
             .query_row("SELECT COUNT(*) FROM series", [], |r| r.get(0))
             .unwrap();
         assert_eq!(series, 0, "a series with no point left is gone too");
@@ -4382,7 +4605,7 @@ mod tests {
         }
         assert!(!super::super::steps::is_additive(STEPS[9]), "a rename is breaking");
         let store = RegistryStore::open(&path).unwrap();
-        let conn = store.conn.lock().unwrap();
+        let conn = store.conn.lock();
         assert!(!claim_window(&conn, "w1", 7, 1).unwrap());
         assert!(claim_window(&conn, "w1", 7, 2).unwrap());
         drop(conn);

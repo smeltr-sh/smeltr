@@ -18,11 +18,12 @@
 
 pub mod pacing;
 
+use crate::sync::{Condvar, Mutex};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -192,14 +193,14 @@ impl QueuePool {
 
     /// A name for one queue that borrows here.
     pub(crate) fn lender(&self) -> u64 {
-        let mut f = self.fair.lock().unwrap();
+        let mut f = self.fair.lock();
         f.next += 1;
         f.next
     }
 
     /// The pool bytes `who` may hold right now: the whole pool while nobody else wants room, its share otherwise.
     pub(crate) fn share(&self, who: u64) -> usize {
-        let mut f = self.fair.lock().unwrap();
+        let mut f = self.fair.lock();
         f.prune(Instant::now());
         if f.others_wanting(who) {
             f.share(who, self.limit)
@@ -220,7 +221,7 @@ impl QueuePool {
 
     /// Whether `who`, holding `held` pool bytes, could take `bytes` more now.
     pub(crate) fn fits(&self, who: u64, held: usize, bytes: usize) -> bool {
-        let mut f = self.fair.lock().unwrap();
+        let mut f = self.fair.lock();
         f.prune(Instant::now());
         self.allowed(&f, who, held, bytes)
     }
@@ -233,7 +234,7 @@ impl QueuePool {
     /// wanting, which holds every queue to its share for a while.
     pub(crate) fn take(&self, who: u64, held: usize, bytes: usize, forced: bool) -> bool {
         let now = Instant::now();
-        let mut f = self.fair.lock().unwrap();
+        let mut f = self.fair.lock();
         f.prune(now);
         if !forced && !self.allowed(&f, who, held, bytes) {
             f.wanting.insert(who, now);
@@ -250,7 +251,7 @@ impl QueuePool {
     pub(crate) fn give(&self, who: u64, held: usize, bytes: usize) {
         self.lent.fetch_sub(bytes, Ordering::Relaxed);
         if held == 0 {
-            self.fair.lock().unwrap().holding.remove(&who);
+            self.fair.lock().holding.remove(&who);
         }
     }
 }
@@ -300,7 +301,7 @@ impl Queue {
     /// alone, borrowing what it must, and the cap stops a second joining it. A closed queue answers yes so the offer
     /// reaches the refusal that says so.
     fn has_room(&self, bytes: usize) -> bool {
-        let st = self.state.lock().unwrap();
+        let st = self.state.lock();
         let room = st.closed
             || st.bytes == 0
             || (st.bytes + bytes <= self.budget()
@@ -330,7 +331,7 @@ impl Queue {
     fn share(&self) -> usize {
         match self.lend.get() {
             Some(l) => {
-                let senders = self.state.lock().unwrap().senders;
+                let senders = self.state.lock().senders;
                 l.reserve
                     .saturating_add(l.pool.share(l.id).saturating_sub(senders) / l.charge)
             }
@@ -344,7 +345,7 @@ impl Queue {
         let (Some(lend), Some(&bytes)) = (self.lend.get(), self.sender_bytes.get()) else {
             return true;
         };
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if !lend.pool.take(lend.id, st.borrowed + st.senders, bytes, false) {
             return false;
         }
@@ -365,13 +366,13 @@ impl Queue {
     /// What this destination is holding against [`Queue::budget`]: queued, plus sent and not yet acknowledged. The
     /// number `has_room` decides against, which is what makes it the one worth reporting.
     fn held(&self) -> usize {
-        self.state.lock().unwrap().bytes
+        self.state.lock().bytes
     }
 
     /// Queue `unit` if it fits, now. Never waits: the caller holds a transform thread, and a queue that is full is
     /// full for as long as the destination is slow, which is not this thread's to wait out.
     fn offer(&self, unit: Unit) -> Result<(), Refused> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if st.closed {
             return Err(Refused::Closed);
         }
@@ -399,14 +400,14 @@ impl Queue {
 
     /// Next unit, waiting at most `timeout` for one.
     fn pop(&self, timeout: Duration) -> Popped {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         if let Some(u) = st.units.pop_front() {
             return Popped::Work(u, self.pressing());
         }
         if st.closed {
             return Popped::Closed;
         }
-        let (mut st, _) = self.work.wait_timeout(st, timeout).unwrap();
+        let (mut st, _) = self.work.wait_timeout(st, timeout);
         if let Some(u) = st.units.pop_front() {
             return Popped::Work(u, self.pressing());
         }
@@ -418,17 +419,17 @@ impl Queue {
 
     /// A retry backoff, cut short by shutdown.
     fn sleep_unless_closed(&self, d: Duration) {
-        let st = self.state.lock().unwrap();
+        let st = self.state.lock();
         if st.closed {
             return;
         }
-        let _ = self.work.wait_timeout(st, d).unwrap();
+        let _ = self.work.wait_timeout(st, d);
     }
 
     /// Give budget back: on acknowledgment, never merely on send. Every waiting pool thread is woken, since more than
     /// one lane may be parked on this queue and each has to look for itself.
     fn release(&self, bytes: usize) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         st.bytes = st.bytes.saturating_sub(bytes);
         if let Some(lend) = self.lend.get() {
             let borrowed = lend.borrowed(st.bytes);
@@ -436,17 +437,17 @@ impl Queue {
             st.borrowed = borrowed;
         }
         drop(st);
-        if let Some(pool) = self.pool.lock().unwrap().as_ref() {
+        if let Some(pool) = self.pool.lock().as_ref() {
             pool.signal_all();
         }
     }
 
     fn is_closed(&self) -> bool {
-        self.state.lock().unwrap().closed
+        self.state.lock().closed
     }
 
     fn close(&self) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         st.closed = true;
         // The destination and its senders end with the queue.
         if let Some(lend) = self.lend.get() {
@@ -455,7 +456,7 @@ impl Queue {
         }
         drop(st);
         self.work.notify_all();
-        if let Some(pool) = self.pool.lock().unwrap().as_ref() {
+        if let Some(pool) = self.pool.lock().as_ref() {
             pool.signal_all();
         }
     }
@@ -512,10 +513,10 @@ impl Egress {
             let queue = queue.clone();
             let returns = returns.clone();
             let name = name.to_string();
-            std::thread::Builder::new()
-                .name(format!("egress-{id}"))
-                .spawn(move || run(destination, &queue, &returns, &metrics, id, &name))
-                .expect("spawning an egress thread")
+            crate::sync::spawn(format!("egress-{id}"), move || {
+                run(destination, &queue, &returns, &metrics, id, &name)
+            })
+            .expect("spawning an egress thread")
         };
         Egress {
             id,
@@ -538,7 +539,7 @@ impl Egress {
 
     /// Wake `pool` whenever this queue frees room, so a lane parked on it is run again without polling.
     pub fn with_pool(self, pool: Arc<Ready>) -> Egress {
-        *self.queue.pool.lock().unwrap() = Some(pool);
+        *self.queue.pool.lock() = Some(pool);
         self
     }
 
@@ -586,7 +587,7 @@ impl Egress {
         let reader = self.next_reader;
         self.next_reader += 1;
         let (tx, rx) = channel();
-        self.returns.lock().unwrap().insert(reader, tx);
+        self.returns.lock().insert(reader, tx);
         EgressHandle {
             reader,
             queue: self.queue.clone(),
@@ -1088,7 +1089,7 @@ fn abandon(returns: &Returns, owner: &HashMap<BatchId, Owed>, again: &[(Instant,
         .collect();
     readers.sort_unstable();
     readers.dedup();
-    let map = returns.lock().unwrap();
+    let map = returns.lock();
     for reader in readers {
         if let Some(tx) = map.get(&reader) {
             let _ = tx.send(Report::Failed(
@@ -1283,7 +1284,7 @@ fn clear_stall(metrics: &MetricsHandle, id: DestId, name: &str, stalled: &mut Op
 }
 
 fn report(returns: &Returns, reader: ReaderId, r: Report) {
-    if let Some(tx) = returns.lock().unwrap().get(&reader) {
+    if let Some(tx) = returns.lock().get(&reader) {
         // A reader that has gone away is not an error.
         let _ = tx.send(r);
     }
@@ -1354,10 +1355,7 @@ impl Destination for EgressHandle {
                 Dispatched::InFlight
             }
             // The rows go with the unit: the batch is re-run whole when room returns.
-            Err(Refused::NoRoom(unit)) => Dispatched::NoRoom {
-                bytes: unit.bytes,
-                stall_after: self.stall_after,
-            },
+            Err(Refused::NoRoom(unit)) => Dispatched::NoRoom { bytes: unit.bytes },
             Err(Refused::Closed) => return Err(IoError::transient("destination is shutting down")),
         };
         Ok((dispatched, Vec::new()))
@@ -1365,6 +1363,10 @@ impl Destination for EgressHandle {
 
     fn has_room(&self, bytes: usize) -> bool {
         self.queue.has_room(bytes)
+    }
+
+    fn stall_after(&self) -> Duration {
+        self.stall_after
     }
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {

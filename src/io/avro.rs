@@ -141,12 +141,19 @@ fn fetch_reference(
 pub struct AvroReader {
     /// `None` for a reader every schema is told to (`AvroReader::tell`), as a container file's is.
     registry: Option<Registry>,
-    /// Each declared field, by its path's keys.
-    fields: Vec<(Vec<String>, DataType)>,
-    /// Whether the record keeps the root's fields no declared field claims, as its last column (`tree::UNCLAIMED`).
-    open: bool,
+    /// Each field of the record a payload is read into, in the record's order.
+    fields: Vec<Field>,
     /// By id: the schema, or why the registry will never give one.
     schemas: HashMap<u32, Result<Arc<Parsed>, String>>,
+}
+
+/// One field of the record a payload is read into.
+struct Field {
+    /// The keys of its path, or of the object whose unclaimed fields it is.
+    keys: Vec<String>,
+    /// Whether it is an object's unclaimed fields: the members no declared field claims.
+    unclaimed: bool,
+    ty: DataType,
 }
 
 impl AvroReader {
@@ -155,11 +162,13 @@ impl AvroReader {
             registry: (config.registry.as_ref())
                 .map(|r| Registry::new(r, tls, secrets))
                 .transpose()?,
-            fields: (config.meta.record_fields().into_iter())
-                .filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED)
-                .map(|(n, t)| (crate::plan::tree::segments(n).map(|k| k.into_owned()).collect(), t))
+            fields: (config.meta.record().iter())
+                .map(|(entry, ty)| Field {
+                    keys: entry.keys(),
+                    unclaimed: entry.field().is_none(),
+                    ty: ty.clone(),
+                })
                 .collect(),
-            open: config.meta.is_open(),
             schemas: HashMap::new(),
         })
     }
@@ -197,8 +206,8 @@ impl AvroReader {
     /// `records`, a poll of payloads, as a chunk of the declared fields. A payload that does not read is a row of
     /// nulls with the reason (`RecordChunk::unread`); a value that is not its field's type is null and failed.
     pub fn read(&self, records: Vec<SourceRecord>) -> Vec<SourceRecord> {
-        let width = self.fields.len() + usize::from(self.open);
-        let mut columns: Vec<Vec<Value>> = vec![Vec::with_capacity(records.len()); width];
+        let mut columns: Vec<Vec<Value>> = vec![Vec::with_capacity(records.len()); self.fields.len()];
+        let mut failed = Vec::new();
         let mut unread = Vec::new();
         let mut time = Vec::with_capacity(records.len());
         // The schema each read row was written with, newest last: what a capture of the source declares from.
@@ -217,8 +226,11 @@ impl AvroReader {
                         writers.retain(|w| *w != id);
                         writers.push(id);
                     }
-                    for (column, value) in columns.iter_mut().zip(fields) {
-                        column.push(value);
+                    for (f, (column, value)) in columns.iter_mut().zip(fields).enumerate() {
+                        column.push(value.unwrap_or_else(|unfit| {
+                            failed.push((row as u32, f, unfit));
+                            Value::Null
+                        }));
                     }
                 }
                 Err(why) => {
@@ -228,12 +240,10 @@ impl AvroReader {
             }
         }
         let mut pool = crate::core::buffer::BufferPool::new();
-        let mut failed = Vec::new();
-        let mut built = Vec::with_capacity(width);
-        let types = (self.fields.iter().map(|(_, ty)| ty)).chain(self.open.then_some(&DataType::Variant));
-        for (f, (ty, values)) in types.zip(&columns).enumerate() {
-            let (column, refused) =
-                values::column(&mut pool, ty, values).expect("no declaration names a type no column is built as");
+        let mut built = Vec::with_capacity(columns.len());
+        for (f, (field, values)) in self.fields.iter().zip(&columns).enumerate() {
+            let (column, refused) = values::column(&mut pool, &field.ty, values)
+                .expect("no declaration names a type no column is built as");
             failed.extend(
                 refused
                     .into_iter()
@@ -261,13 +271,13 @@ impl AvroReader {
             .collect()
     }
 
-    /// The declared fields of one payload, in their order, then the root's fields none claims where the record is
-    /// open.
+    /// The record's fields of one payload, in their order. Err is a field that sits under a value that is no object,
+    /// with that value as JSON text.
     fn read_one<'s>(
         &'s self,
         payload: &[u8],
         readers: &mut HashMap<u32, Result<(GenericDatumReader<'s>, NamesRef<'s>), String>>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> Result<Vec<Result<Value, String>>, String> {
         let (id, mut body) = unframe(payload)?;
         let reader = readers.entry(id).or_insert_with(|| {
             let parsed = match self.schemas.get(&id) {
@@ -294,28 +304,41 @@ impl AvroReader {
         if !matches!(resolve(&parsed.schema, names), Schema::Record(_)) {
             return Err(format!("schema {id} is no record, so it has no fields to read"));
         }
-        let mut out: Vec<Value> = (self.fields.iter())
-            .map(|(path, _)| match member(&value, &parsed.schema, names, path) {
-                Some((value, schema)) => to_value(value, schema, names),
-                None => Value::Null,
-            })
-            .collect();
-        if self.open {
-            out.push(self.unclaimed(&value, &parsed.schema, names));
-        }
-        Ok(out)
+        let fields = self.fields.iter().map(|field| {
+            let held = member(&value, &parsed.schema, names, &field.keys);
+            match field.unclaimed {
+                true => self.unclaimed(&field.keys, held, names),
+                false => match held {
+                    Ok(Some((value, schema))) => Ok(to_value(value, schema, names)),
+                    Ok(None) => Ok(Value::Null),
+                    Err((below, value, schema)) => {
+                        values::at(&to_value(value, schema, names), below).map_err(values::spell)
+                    }
+                },
+            }
+        });
+        Ok(fields.collect())
     }
 
-    /// The members of `value`, a record, that no declared field claims by its first key, as one object. Null where
-    /// there are none.
-    fn unclaimed(&self, value: &Avro, schema: &Schema, names: &NamesRef<'_>) -> Value {
-        let (Avro::Record(members), Schema::Record(record)) = unwrapped(value, schema, names) else {
-            return Value::Null;
-        };
+    /// The members of the object at `keys` that no field of the record claims by its key there, as one object; `held`
+    /// is what `member` found at `keys`. Null where there are none.
+    fn unclaimed(&self, keys: &[String], held: Held<'_, '_, '_>, names: &NamesRef<'_>) -> Result<Value, String> {
         let claimed = |name: &str| {
-            self.fields
-                .iter()
-                .any(|(path, _)| path.first().is_some_and(|k| k == name))
+            let under = |f: &&Field| f.keys.len() > keys.len() && f.keys.starts_with(keys);
+            self.fields.iter().filter(under).any(|f| f.keys[keys.len()] == name)
+        };
+        let (value, schema) = match held {
+            Ok(Some((value, schema))) => unwrapped(value, schema, names),
+            Ok(None) => return Ok(Value::Null),
+            Err((below, value, schema)) => {
+                let object = to_value(value, schema, names);
+                let object = values::at(&object, below).map_err(values::spell)?;
+                return values::rest(&object, claimed).map_err(values::spell);
+            }
+        };
+        // A map, or any other value that reads as an object, is an object from here on.
+        let (Avro::Record(members), Schema::Record(record)) = (value, schema) else {
+            return values::rest(&to_value(value, schema, names), claimed).map_err(values::spell);
         };
         let mut out = Vec::new();
         let open = variant::begin_object(&mut out);
@@ -329,30 +352,41 @@ impl AvroReader {
             count += 1;
         }
         variant::end(&mut out, open, count);
-        match count {
+        Ok(match count {
             0 => Value::Null,
             _ => values::from_variant(&out),
-        }
+        })
     }
 }
 
-/// The member of `value` at `path`, a record field's name at each step, with its schema. `None` where a step's value
-/// is null or no record, or holds no field of that name.
-fn member<'v, 's>(
+/// Where a path leads from a value: the member there with its schema, or `None` where a value on the way is null or
+/// holds no such member. Err is the value on the way that is neither a record nor a map, with its schema and the keys
+/// still to take from it.
+type Held<'v, 's, 'p> = Result<Option<(&'v Avro, &'s Schema)>, (&'p [String], &'v Avro, &'s Schema)>;
+
+/// The member of `value` at `path`: at each step a record's field or a map's entry of that name.
+fn member<'v, 's, 'p>(
     mut value: &'v Avro,
     mut schema: &'s Schema,
     names: &NamesRef<'s>,
-    path: &[String],
-) -> Option<(&'v Avro, &'s Schema)> {
-    for key in path {
+    path: &'p [String],
+) -> Held<'v, 's, 'p> {
+    for (taken, key) in path.iter().enumerate() {
         (value, schema) = unwrapped(value, schema, names);
-        let (Avro::Record(members), Schema::Record(record)) = (value, schema) else {
-            return None;
+        let below = match (value, schema) {
+            (Avro::Record(members), Schema::Record(record)) => {
+                (record.lookup.get(key)).and_then(|&at| Some((&members.get(at)?.1, &record.fields[at].schema)))
+            }
+            (Avro::Map(entries), Schema::Map(map)) => entries.get(key).map(|v| (v, &*map.types)),
+            (Avro::Null, _) => None,
+            _ => return Err((&path[taken..], value, schema)),
         };
-        let at = *record.lookup.get(key)?;
-        (value, schema) = (&members.get(at)?.1, &record.fields[at].schema);
+        let Some(below) = below else {
+            return Ok(None);
+        };
+        (value, schema) = below;
     }
-    Some((value, schema))
+    Ok(Some((value, schema)))
 }
 
 /// `value` and its schema, through any union and named reference: what the value is.

@@ -137,9 +137,58 @@ pub struct SourceMeta {
     encoding: Encoding,
 }
 
-/// The fields of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
+/// The entries of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
 /// `const`; a source whose record is configured declares it when it is built.
-pub type RecordFields = std::borrow::Cow<'static, [(std::borrow::Cow<'static, str>, DataType)]>;
+pub type RecordFields = std::borrow::Cow<'static, [(Entry, DataType)]>;
+
+/// One entry of a record: a field, by its name, or the unclaimed fields of an open object, by the object's name. The
+/// root's name is `""`.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Entry {
+    Field(std::borrow::Cow<'static, str>),
+    Unclaimed(std::borrow::Cow<'static, str>),
+}
+
+/// The entry as a place in the name tree: a field's name, or `object.*` for an object's unclaimed fields.
+impl std::fmt::Display for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.place().fmt(f)
+    }
+}
+
+impl Entry {
+    /// The field's name, or `None` for an object's unclaimed fields.
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            Entry::Field(name) => Some(name),
+            Entry::Unclaimed(_) => None,
+        }
+    }
+
+    /// The keys of the field, or of the object whose unclaimed fields it is.
+    pub fn keys(&self) -> Vec<String> {
+        let (Entry::Field(name) | Entry::Unclaimed(name)) = self;
+        crate::plan::tree::object_keys(name)
+            .map(std::borrow::Cow::into_owned)
+            .collect()
+    }
+
+    /// Its place in the compiler's name tree.
+    pub fn place(&self) -> crate::plan::tree::Place {
+        match self {
+            Entry::Field(name) => crate::plan::tree::Place::Leaf(name.to_string()),
+            Entry::Unclaimed(object) => crate::plan::tree::Place::Unclaimed(object.to_string()),
+        }
+    }
+
+    /// The name a capture gives its column (`tree::unclaimed_entry` for an object's unclaimed fields).
+    pub fn column(&self) -> String {
+        match self {
+            Entry::Field(name) => name.to_string(),
+            Entry::Unclaimed(object) => crate::plan::tree::unclaimed_entry(object),
+        }
+    }
+}
 
 /// The `__source` field holding each record's payload as the source read it, before any decoding.
 pub const SOURCE_BYTES: &str = "__source.bytes";
@@ -151,7 +200,8 @@ pub const DOC_ID: &str = "__destination.id";
 const TOPIC_FIELDS: [&str; 4] = ["__source.topic", "__source.url", "__source.remote", "__source.database"];
 
 /// The record of a source whose client hands over payloads: the payload, decoded with the source's encoding.
-const PAYLOAD_RECORD: RecordFields = std::borrow::Cow::Borrowed(&[(std::borrow::Cow::Borrowed("_raw"), DataType::Str)]);
+const PAYLOAD_RECORD: RecordFields =
+    std::borrow::Cow::Borrowed(&[(Entry::Field(std::borrow::Cow::Borrowed("_raw")), DataType::Str)]);
 
 /// Every source names itself and its kind. `MetricsSource` also stamps a fixed `__source.topic` (`metrics::METRICS_TOPIC`) so a route can select metrics rows like any
 /// other source's. Its partition and offset are a constant and a counter, carried for the commit tracker and
@@ -231,40 +281,67 @@ const ELASTIC_RECEIVER_FIELDS: &[(&str, DataType)] = &[
 /// a double, bytes, a list or a map. Its times are microseconds, the finest a datetime holds. Each field is null where
 /// the log record leaves it unset.
 const OTLP_LOG: RecordFields = std::borrow::Cow::Borrowed(&[
-    (std::borrow::Cow::Borrowed("time"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("observedTime"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("severityNumber"), DataType::I64),
-    (std::borrow::Cow::Borrowed("severityText"), DataType::Str),
-    (std::borrow::Cow::Borrowed("body"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("attributes"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("traceId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("spanId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("flags"), DataType::I64),
-    (std::borrow::Cow::Borrowed("eventName"), DataType::Str),
-    (std::borrow::Cow::Borrowed("droppedAttributesCount"), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("time")), DataType::DateTime),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("observedTime")),
+        DataType::DateTime,
+    ),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("severityNumber")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("severityText")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("body")), DataType::Variant),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("attributes")),
+        DataType::Variant,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("traceId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("spanId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("flags")), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("eventName")), DataType::Str),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedAttributesCount")),
+        DataType::I64,
+    ),
 ]);
 
 /// An OTLP span, each field typed as OTLP types it: `kind` and `statusCode` its enums' numbers, `attributes` and the
 /// `events` and `links` lists variants that keep each value's own type. Each field is null where the span leaves it
 /// unset.
 const OTLP_SPAN: RecordFields = std::borrow::Cow::Borrowed(&[
-    (std::borrow::Cow::Borrowed("traceId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("spanId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("parentSpanId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("traceState"), DataType::Str),
-    (std::borrow::Cow::Borrowed("flags"), DataType::I64),
-    (std::borrow::Cow::Borrowed("name"), DataType::Str),
-    (std::borrow::Cow::Borrowed("kind"), DataType::I64),
-    (std::borrow::Cow::Borrowed("startTime"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("endTime"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("attributes"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("droppedAttributesCount"), DataType::I64),
-    (std::borrow::Cow::Borrowed("events"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("droppedEventsCount"), DataType::I64),
-    (std::borrow::Cow::Borrowed("links"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("droppedLinksCount"), DataType::I64),
-    (std::borrow::Cow::Borrowed("statusCode"), DataType::I64),
-    (std::borrow::Cow::Borrowed("statusMessage"), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("traceId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("spanId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("parentSpanId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("traceState")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("flags")), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("name")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("kind")), DataType::I64),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("startTime")),
+        DataType::DateTime,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("endTime")), DataType::DateTime),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("attributes")),
+        DataType::Variant,
+    ),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedAttributesCount")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("events")), DataType::Variant),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedEventsCount")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("links")), DataType::Variant),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedLinksCount")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("statusCode")), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("statusMessage")), DataType::Str),
 ]);
 
 fn array(ty: DataType) -> DataType {
@@ -278,9 +355,26 @@ fn closed(fields: &[(&str, DataType)]) -> DataType {
     )
 }
 
-/// An exponential histogram's buckets on one side of zero: the index of the first, and each one's count.
-fn exponential_buckets() -> DataType {
-    closed(&[("offset", DataType::I64), ("bucketCounts", array(DataType::F64))])
+/// The fields `name: ty` declares, onto `fields`: itself, or for an object each leaf under it, then the entry of its
+/// unclaimed fields where it is open. Err for an object that declares nothing.
+pub(crate) fn leaves(name: &str, ty: &DataType, fields: &mut Vec<(Entry, DataType)>) -> Result<(), String> {
+    let DataType::Struct(members, open) = ty else {
+        fields.push((Entry::Field(name.to_string().into()), ty.clone()));
+        return Ok(());
+    };
+    if members.is_empty() && !open {
+        return Err(format!(
+            "`{name}` is declared as `{{}}`, which holds no field. Name its fields, or declare it `{{...}}` to keep \
+             whatever keys it has."
+        ));
+    }
+    for (key, member) in members {
+        leaves(&crate::plan::tree::child(name, key), member, fields)?;
+    }
+    if *open {
+        fields.push((Entry::Unclaimed(name.to_string().into()), DataType::Variant));
+    }
+    Ok(())
 }
 
 /// One data point of an OTLP metric, with its metric's name, description, unit and `type`: `gauge`, `sum`,
@@ -291,36 +385,37 @@ fn exponential_buckets() -> DataType {
 /// to 2^53 exactly.
 fn otlp_metric_point() -> RecordFields {
     use std::borrow::Cow::Borrowed;
-    let buckets = exponential_buckets();
     std::borrow::Cow::Owned(vec![
-        (Borrowed("name"), DataType::Str),
-        (Borrowed("description"), DataType::Str),
-        (Borrowed("unit"), DataType::Str),
-        (Borrowed("type"), DataType::Str),
-        (Borrowed("metadata"), DataType::Variant),
-        (Borrowed("aggregationTemporality"), DataType::I64),
-        (Borrowed("isMonotonic"), DataType::Bool),
-        (Borrowed("startTime"), DataType::DateTime),
-        (Borrowed("time"), DataType::DateTime),
-        (Borrowed("attributes"), DataType::Variant),
-        (Borrowed("flags"), DataType::I64),
-        (Borrowed("value"), DataType::Variant),
-        (Borrowed("count"), DataType::F64),
-        (Borrowed("sum"), DataType::F64),
-        (Borrowed("min"), DataType::F64),
-        (Borrowed("max"), DataType::F64),
-        (Borrowed("bucketCounts"), array(DataType::F64)),
-        (Borrowed("explicitBounds"), array(DataType::F64)),
-        (Borrowed("scale"), DataType::I64),
-        (Borrowed("zeroCount"), DataType::F64),
-        (Borrowed("zeroThreshold"), DataType::F64),
-        (Borrowed("positive"), buckets.clone()),
-        (Borrowed("negative"), buckets),
+        (Entry::Field(Borrowed("name")), DataType::Str),
+        (Entry::Field(Borrowed("description")), DataType::Str),
+        (Entry::Field(Borrowed("unit")), DataType::Str),
+        (Entry::Field(Borrowed("type")), DataType::Str),
+        (Entry::Field(Borrowed("metadata")), DataType::Variant),
+        (Entry::Field(Borrowed("aggregationTemporality")), DataType::I64),
+        (Entry::Field(Borrowed("isMonotonic")), DataType::Bool),
+        (Entry::Field(Borrowed("startTime")), DataType::DateTime),
+        (Entry::Field(Borrowed("time")), DataType::DateTime),
+        (Entry::Field(Borrowed("attributes")), DataType::Variant),
+        (Entry::Field(Borrowed("flags")), DataType::I64),
+        (Entry::Field(Borrowed("value")), DataType::Variant),
+        (Entry::Field(Borrowed("count")), DataType::F64),
+        (Entry::Field(Borrowed("sum")), DataType::F64),
+        (Entry::Field(Borrowed("min")), DataType::F64),
+        (Entry::Field(Borrowed("max")), DataType::F64),
+        (Entry::Field(Borrowed("bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("explicitBounds")), array(DataType::F64)),
+        (Entry::Field(Borrowed("scale")), DataType::I64),
+        (Entry::Field(Borrowed("zeroCount")), DataType::F64),
+        (Entry::Field(Borrowed("zeroThreshold")), DataType::F64),
+        (Entry::Field(Borrowed("positive.offset")), DataType::I64),
+        (Entry::Field(Borrowed("positive.bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("negative.offset")), DataType::I64),
+        (Entry::Field(Borrowed("negative.bucketCounts")), array(DataType::F64)),
         (
-            Borrowed("quantileValues"),
+            Entry::Field(Borrowed("quantileValues")),
             array(closed(&[("quantile", DataType::F64), ("value", DataType::F64)])),
         ),
-        (Borrowed("exemplars"), DataType::Variant),
+        (Entry::Field(Borrowed("exemplars")), DataType::Variant),
     ])
 }
 
@@ -355,29 +450,30 @@ const OTLP_RECEIVER_FIELDS: &[(&str, DataType)] = &[
 /// OTLP has none of, keep their own names; an unknown type is null.
 fn prometheus_record() -> RecordFields {
     use std::borrow::Cow::Borrowed;
-    let buckets = exponential_buckets();
     std::borrow::Cow::Owned(vec![
-        (Borrowed("time"), DataType::DateTime),
-        (Borrowed("name"), DataType::Str),
-        (Borrowed("value"), DataType::Variant),
-        (Borrowed("attributes"), DataType::Variant),
-        (Borrowed("type"), DataType::Str),
-        (Borrowed("aggregationTemporality"), DataType::I64),
-        (Borrowed("count"), DataType::F64),
-        (Borrowed("sum"), DataType::F64),
-        (Borrowed("bucketCounts"), array(DataType::F64)),
-        (Borrowed("explicitBounds"), array(DataType::F64)),
-        (Borrowed("scale"), DataType::I64),
-        (Borrowed("zeroCount"), DataType::F64),
-        (Borrowed("zeroThreshold"), DataType::F64),
-        (Borrowed("positive"), buckets.clone()),
-        (Borrowed("negative"), buckets),
-        (Borrowed("resetHint"), DataType::Str),
-        (Borrowed("exemplars"), DataType::Variant),
-        (Borrowed("description"), DataType::Str),
-        (Borrowed("unit"), DataType::Str),
-        (Borrowed("isMonotonic"), DataType::Bool),
-        (Borrowed("startTime"), DataType::DateTime),
+        (Entry::Field(Borrowed("time")), DataType::DateTime),
+        (Entry::Field(Borrowed("name")), DataType::Str),
+        (Entry::Field(Borrowed("value")), DataType::Variant),
+        (Entry::Field(Borrowed("attributes")), DataType::Variant),
+        (Entry::Field(Borrowed("type")), DataType::Str),
+        (Entry::Field(Borrowed("aggregationTemporality")), DataType::I64),
+        (Entry::Field(Borrowed("count")), DataType::F64),
+        (Entry::Field(Borrowed("sum")), DataType::F64),
+        (Entry::Field(Borrowed("bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("explicitBounds")), array(DataType::F64)),
+        (Entry::Field(Borrowed("scale")), DataType::I64),
+        (Entry::Field(Borrowed("zeroCount")), DataType::F64),
+        (Entry::Field(Borrowed("zeroThreshold")), DataType::F64),
+        (Entry::Field(Borrowed("positive.offset")), DataType::I64),
+        (Entry::Field(Borrowed("positive.bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("negative.offset")), DataType::I64),
+        (Entry::Field(Borrowed("negative.bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("resetHint")), DataType::Str),
+        (Entry::Field(Borrowed("exemplars")), DataType::Variant),
+        (Entry::Field(Borrowed("description")), DataType::Str),
+        (Entry::Field(Borrowed("unit")), DataType::Str),
+        (Entry::Field(Borrowed("isMonotonic")), DataType::Bool),
+        (Entry::Field(Borrowed("startTime")), DataType::DateTime),
     ])
 }
 
@@ -665,41 +761,46 @@ impl SourceMeta {
     }
 
     /// This meta with its record open: every top-level field of a payload no declared field claims is kept, as the
-    /// root's unclaimed fields (`tree::UNCLAIMED`).
+    /// root's unclaimed fields.
     pub fn opened(mut self) -> SourceMeta {
         let mut record = self.record.into_owned();
-        record.push((crate::plan::tree::UNCLAIMED.into(), DataType::Variant));
+        record.push((Entry::Unclaimed("".into()), DataType::Variant));
         self.record = record.into();
         self
     }
 
     /// Whether this meta's record keeps the fields it does not declare (`opened`).
     pub fn is_open(&self) -> bool {
-        self.record.iter().any(|(n, _)| n == crate::plan::tree::UNCLAIMED)
+        self.record.contains(&(Entry::Unclaimed("".into()), DataType::Variant))
     }
 
-    /// `declaring`, taking a field under an internal key `internal` allows.
+    /// `declaring`, allowing a field under an internal key where `internal` says so. A field declared as an object is
+    /// its leaves, each a field of the record, and the object's unclaimed fields where it is open (Language).
     fn declare(self, record: Vec<(String, DataType)>, internal: fn(&str) -> bool) -> Result<SourceMeta, String> {
-        let paths: Vec<Vec<String>> = record
-            .iter()
-            .map(|(name, _)| {
-                crate::plan::tree::segments(name)
-                    .map(std::borrow::Cow::into_owned)
-                    .collect()
-            })
-            .collect();
-        for (i, (name, _)) in record.iter().enumerate() {
-            if paths[i]
-                .first()
-                .is_none_or(|key| key.is_empty() || crate::plan::tree::is_internal(key) && !internal(key))
-            {
+        use crate::plan::tree;
+        let mut fields: Vec<(Entry, DataType)> = Vec::with_capacity(record.len());
+        // Each field's place, by its keys, and the name it was declared under.
+        let mut places: Vec<(Vec<String>, bool, &str)> = Vec::with_capacity(record.len());
+        for (name, ty) in &record {
+            let unfit = |key: &std::borrow::Cow<str>| key.is_empty() || tree::is_internal(key) && !internal(key);
+            if tree::unclaimed_object(name).is_some() || tree::segments(name).next().is_none_or(|key| unfit(&key)) {
                 return Err(format!("`{name}` is not a name a record field can take"));
             }
-            if let Some(j) = (0..i).find(|&j| paths[j].starts_with(&paths[i]) || paths[i].starts_with(&paths[j])) {
-                return Err(format!(
-                    "`{}` and `{name}` are one field, or one holds the other",
-                    record[j].0
-                ));
+            let from = fields.len();
+            leaves(name, ty, &mut fields)?;
+            for (leaf, _) in &fields[from..] {
+                let (keys, object) = (leaf.keys(), leaf.field().is_none());
+                // A leaf holds no other field, and an object's unclaimed fields sit under no leaf.
+                let clash = |(other, others, _): &&(Vec<String>, bool, &str)| match (object, *others) {
+                    (false, false) => other.starts_with(&keys) || keys.starts_with(other),
+                    (true, false) => keys.starts_with(other),
+                    (false, true) => other.starts_with(&keys),
+                    (true, true) => *other == keys,
+                };
+                if let Some((_, _, other)) = places.iter().find(clash) {
+                    return Err(format!("`{other}` and `{name}` are one field, or one holds the other"));
+                }
+                places.push((keys, object, name));
             }
         }
         // Its chunks are the record's columns, so there is no payload for `__source.bytes` to read.
@@ -708,42 +809,50 @@ impl SourceMeta {
             _ => self.source,
         };
         Ok(SourceMeta {
-            record: record.into_iter().map(|(n, t)| (n.into(), t)).collect(),
+            record: fields.into(),
             source,
             ..self
         })
     }
 
     /// The meta of a sample captured under `columns`: each column a field of its record, read from the record object by
-    /// its path and typed as spelled, `__source` and `__destination` columns as much as any other. A sample of no
-    /// columns, a paste, is `_raw` text.
+    /// its path and typed as spelled, `__source` and `__destination` columns as much as any other. A sample that names
+    /// no field, a paste, is `_raw` text; the instant it was taken at is the preview's, not a field of its records.
     pub fn of_columns(columns: &[crate::heartbeat::CaptureColumn]) -> Result<SourceMeta, String> {
-        if columns.is_empty() {
+        let taken_at = |c: &crate::heartbeat::CaptureColumn| c.name == crate::heartbeat::CaptureBatch::TAKEN_AT;
+        if columns
+            .iter()
+            .all(|c| c.name == crate::plan::tree::UNCLAIMED || taken_at(c))
+        {
             return Ok(SourceMeta::NONE);
         }
-        let open = columns.iter().any(|c| c.name == crate::plan::tree::UNCLAIMED);
-        let record = columns
-            .iter()
-            .filter(|c| c.name != crate::plan::tree::UNCLAIMED)
-            .map(|c| {
-                crate::expr::parse::parse_type(&c.ty)
-                    .map(|ty| (c.name.clone(), ty))
-                    .map_err(|e| format!("column `{}` has type {:?}, which does not read: {e}", c.name, c.ty))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let mut open = false;
+        let mut record = Vec::with_capacity(columns.len());
+        for c in columns {
+            match crate::plan::tree::unclaimed_object(&c.name) {
+                Some("") => open = true,
+                // A column of an object's unclaimed fields declares that object open.
+                Some(object) => record.push((object.to_string(), DataType::Struct(Vec::new(), true))),
+                None => {
+                    let ty = crate::expr::parse::parse_type(&c.ty)
+                        .map_err(|e| format!("column `{}` has type {:?}, which does not read: {e}", c.name, c.ty))?;
+                    record.push((c.name.clone(), ty));
+                }
+            }
+        }
         // `__live` is the one name a pipeline cannot take a value of from its input: the engine primes it.
         let meta = SourceMeta::NONE.declare(record, |key| key != "__live")?;
         Ok(if open { meta.opened() } else { meta })
     }
 
-    /// The record's fields, in slot order.
+    /// The record's entries, in slot order.
     pub fn record(&self) -> &RecordFields {
         &self.record
     }
 
-    /// Each of the record's fields, with its type, in slot order.
-    pub fn record_fields(&self) -> Vec<(&str, DataType)> {
-        self.record.iter().map(|(n, t)| (n.as_ref(), t.clone())).collect()
+    /// Each of the record's fields, with its type, in the record's order.
+    pub fn fields(&self) -> impl Iterator<Item = (&str, &DataType)> {
+        self.record.iter().filter_map(|(entry, ty)| Some((entry.field()?, ty)))
     }
 
     pub fn record_len(&self) -> usize {
@@ -783,9 +892,7 @@ impl SourceMeta {
 
     /// The type of `field`, a field of the record or a `__source` field, or `None` where this source declares none.
     pub fn field_type(&self, field: &str) -> Option<DataType> {
-        self.record
-            .iter()
-            .map(|(n, t)| (n.as_ref(), t))
+        self.fields()
             .chain(self.source.iter().map(|(n, t)| (*n, t)))
             .find(|(n, _)| *n == field)
             .map(|(_, t)| t.clone())
@@ -1001,7 +1108,7 @@ impl SourceMeta {
         let at = self
             .record
             .iter()
-            .position(|(n, t)| n == field && *t == DataType::Bytes)?;
+            .position(|(entry, t)| entry.field() == Some(field) && *t == DataType::Bytes)?;
         let column = record.chunk.column(at);
         let row = record.row as usize;
         (column.is_valid(row)).then(|| column.varlen().expect("a bytes column").get(row).to_vec())
@@ -1037,38 +1144,13 @@ impl SourceMeta {
     /// A view of `chunk`'s columns under the names this meta declares for them.
     fn row_view<'a>(&'a self, chunk: &'a crate::io::RecordChunk) -> crate::format::record::RecordView<'a> {
         assert!(!self.reads_bytes(), "a row's columns are its record's fields");
-        crate::format::record::RecordView::from_named(
+        crate::format::record::RecordView::from_places(
             self.record
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _))| (name.as_ref(), chunk.column(i))),
+                .map(|(i, (entry, _))| (entry.place(), chunk.column(i))),
         )
     }
-}
-
-/// The name of the first value in `object`, an object at `path` in a record, that is no declared field of `paths`
-/// and in none: a declared field's value is its own, whatever it holds.
-fn undeclared(
-    object: &crate::io::RecordObject,
-    path: &mut Vec<String>,
-    name: &str,
-    paths: &[Vec<String>],
-) -> Option<String> {
-    object.iter().find_map(|(key, value)| {
-        path.push(key.clone());
-        let found = if paths.iter().any(|p| p == path) {
-            None
-        } else {
-            match value.as_object() {
-                Some(inner) if paths.iter().any(|p| p.starts_with(path)) => {
-                    undeclared(inner, path, &crate::plan::tree::child(name, key), paths)
-                }
-                _ => Some(crate::plan::tree::child(name, key)),
-            }
-        };
-        path.pop();
-        found
-    })
 }
 
 /// The chunk every one of `records` points into, and each record's row of it. A source hands one poll's rows in one
@@ -3763,6 +3845,7 @@ mod tests {
     use crate::core::buffer::BufferPool;
     use crate::core::column::{StrBuilder, VarType};
     use crate::core::error::ErrorSink;
+    use crate::heartbeat::pasted_from;
 
     #[test]
     fn an_objects_stream_is_its_directories_up_to_the_first_dated_one() {
@@ -3821,8 +3904,11 @@ mod tests {
     /// Which of `records` the condition `meta` gives `key` takes, run as a route on `meta`'s source.
     fn taken_by_stream(meta: SourceMeta, key: &str, records: &[crate::io::SourceRecord]) -> Vec<bool> {
         let cond = meta.stream_condition(key).expect("a condition");
-        let routes = compile_routes(&[route(0, Some(&cond), 0)], &SourceMetas::from([(0, meta.clone())]))
-            .unwrap_or_else(|e| panic!("`{cond}` compiles: {e:?}"));
+        let routes = compile_routes(
+            &[route(SourceId::new(0), Some(&cond), 0)],
+            &SourceMetas::from([(SourceId::new(0), meta.clone())]),
+        )
+        .unwrap_or_else(|e| panic!("`{cond}` compiles: {e:?}"));
         let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
@@ -3836,7 +3922,7 @@ mod tests {
         bits::fill_valid(live.bool_mut().unwrap().values, records.len());
         batch.put(SLOT_LIVE, live, &mut pool);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId::new(0), &mut batch, &mut ctx);
         let mask = masks[0].1.bool().unwrap().values;
         let taken = (0..records.len()).map(|r| bits::get_row(mask, r)).collect();
         batch.reclaim(&mut pool);
@@ -4023,6 +4109,27 @@ mod tests {
         assert_eq!(meta.field_bytes(&records[0], SOURCE_BYTES), Some(read));
     }
 
+    /// The GUI reads a table as records by the same rule (`gui-frontend/src/capture.ts`): both read these cases.
+    #[test]
+    fn a_table_reads_as_the_records_the_gui_shows() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            #[serde(flatten)]
+            table: crate::heartbeat::CaptureBatch,
+            records: Vec<crate::io::RecordObject>,
+        }
+        let cases: Vec<Case> = serde_json::from_str(include_str!("../../tests/fixtures/table-records.json")).unwrap();
+        for case in cases {
+            let meta = SourceMeta::of_columns(&case.table.columns).unwrap();
+            let read = crate::leader::preview::read_sample(&meta, &case.table).unwrap();
+            let records: Vec<_> = (read.records.iter().zip(&read.texts))
+                .map(|(record, text)| meta.record_object(record, text))
+                .collect();
+            assert_eq!(records, case.records, "{}", case.name);
+        }
+    }
+
     /// A stored `__source` object keeps the payload as base64 `bytes`, so a record reads back byte for byte, whether
     /// its source decodes it or not.
     #[test]
@@ -4040,12 +4147,15 @@ mod tests {
             let fields = meta.objects(&records, None);
             assert_eq!(fields[0]["bytes"], serde_json::json!("Y2Fm6Q=="));
             let record = meta.record_object(&records[0], "caf\u{fffd}");
-            let back = meta.read_stored(&[(&record, &fields[0])]).unwrap();
+            let back = meta.read_table(&pasted_from(&[(&record, &fields[0])])).unwrap();
             assert_eq!(meta.read_bytes(&back[0]), Some(&read[..]));
         }
         let none = SourceMeta::KAFKA.with_encoding(Encoding::None);
         let err = none
-            .read_stored(&[(&crate::io::RecordObject::new(), &crate::io::SourceFields::new())])
+            .read_table(&pasted_from(&[(
+                &crate::io::RecordObject::new(),
+                &crate::io::SourceFields::new(),
+            )]))
             .unwrap_err();
         assert!(err.contains("`__source.bytes`"), "{err}");
     }
@@ -4058,10 +4168,12 @@ mod tests {
         let fields = crate::io::SourceFields::new();
 
         let raw = object(serde_json::json!({"_raw": "line"}));
-        let records = SourceMeta::KAFKA.read_stored(&[(&raw, &fields)]).unwrap();
+        let records = SourceMeta::KAFKA.read_table(&pasted_from(&[(&raw, &fields)])).unwrap();
         assert_eq!(records[0].bytes(), Some(&b"line"[..]));
         let typed = object(serde_json::json!({"id": 1}));
-        let err = SourceMeta::KAFKA.read_stored(&[(&typed, &fields)]).unwrap_err();
+        let err = SourceMeta::KAFKA
+            .read_table(&pasted_from(&[(&typed, &fields)]))
+            .unwrap_err();
         assert!(err.contains("record 1"), "{err}");
 
         let meta = SourceMeta::KAFKA
@@ -4069,33 +4181,42 @@ mod tests {
             .unwrap();
         let good = object(serde_json::json!({"id": 1, "at": "2026-10-10T00:00:00Z"}));
         let bad = object(serde_json::json!({"id": true}));
-        let records = meta.read_stored(&[(&good, &fields), (&bad, &fields)]).unwrap();
+        let records = meta
+            .read_table(&pasted_from(&[(&good, &fields), (&bad, &fields)]))
+            .unwrap();
         let chunk = &records[1].chunk;
         assert_eq!(chunk.failed(), &[(1, 0, "true".to_string())]);
         assert_eq!(
             meta.record_object(&records[0], ""),
             object(serde_json::json!({"id": 1, "at": "2026-10-10T00:00:00.000000Z"}))
         );
-        let err = meta.read_stored(&[(&raw, &fields)]).unwrap_err();
-        assert!(err.contains("`_raw`"), "{err}");
+        let records = meta.read_table(&pasted_from(&[(&raw, &fields)])).unwrap();
+        assert!(
+            meta.record_object(&records[0], "").is_empty(),
+            "a key its record does not declare is left out"
+        );
 
-        // A value its record lists as failed fails again, as it was spelled, though its type would take it; a bytes
+        // A cell its row lists as failed fails again, as it was spelled, though its type would take it; a bytes
         // field's spelling is not read as base64.
         let listed = SourceMeta::KAFKA
             .declaring(vec![("name".into(), DataType::Str), ("blob".into(), DataType::Bytes)])
             .unwrap();
-        let marked = object(serde_json::json!({"name": "{\"a\":1}", "blob": "true",
-            "__capture": {"mistyped": ["name", "blob"]}}));
-        let records = listed.read_stored(&[(&marked, &fields)]).unwrap();
+        let column = |name: &str, ty: &str| crate::heartbeat::CaptureColumn {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        };
+        let marked = crate::heartbeat::CaptureBatch {
+            columns: vec![column("name", "str"), column("blob", "bytes")],
+            rows: vec![crate::heartbeat::CapturedRow {
+                values: vec![r#"{"a":1}"#.into(), "true".into()],
+                failed: vec![0, 1],
+                ..Default::default()
+            }],
+        };
+        let records = listed.read_table(&marked).unwrap();
         assert_eq!(
             records[0].chunk.failed(),
             &[(0, 0, r#"{"a":1}"#.to_string()), (0, 1, "true".to_string())]
-        );
-        let tagged = object(serde_json::json!({"name": "a", "__capture": {"mistyped": "a message"}}));
-        let err = listed.read_stored(&[(&tagged, &fields)]).unwrap_err();
-        assert!(
-            err.contains("`__capture`"),
-            "a string there is not a list of failed fields: {err}"
         );
 
         let nested = SourceMeta::KAFKA
@@ -4105,20 +4226,31 @@ mod tests {
             ])
             .unwrap();
         let stored = object(serde_json::json!({"user": {"name": "ann"}, "labels": {"a.b": 2}}));
-        let records = nested.read_stored(&[(&stored, &fields)]).unwrap();
+        let records = nested.read_table(&pasted_from(&[(&stored, &fields)])).unwrap();
         assert_eq!(
             nested.record_object(&records[0], ""),
             stored,
             "a path's value is where its path names"
         );
         let extra = object(serde_json::json!({"user": {"name": "ann", "age": 3}}));
-        let err = nested.read_stored(&[(&extra, &fields)]).unwrap_err();
-        assert!(err.contains("`user.age`"), "{err}");
+        let records = nested.read_table(&pasted_from(&[(&extra, &fields)])).unwrap();
+        assert_eq!(
+            nested.record_object(&records[0], ""),
+            object(serde_json::json!({"user": {"name": "ann"}})),
+            "a key its record does not declare is left out"
+        );
+        let flat = object(serde_json::json!({"user": "ann", "labels": {"a.b": 2}}));
+        let records = nested.read_table(&pasted_from(&[(&flat, &fields)])).unwrap();
+        assert_eq!(
+            records[0].chunk.failed(),
+            &[(0, 0, r#""ann""#.to_string())],
+            "a field under a value that is no object fails with that value"
+        );
     }
 
     /// A stored array or object reads as declared all the way down: an array of its elements' type, an object a
-    /// field per member. A value that cannot be its type is failed with its JSON, and an undeclared field's type is
-    /// refused.
+    /// field per member. A value that cannot be its type is failed with its JSON under its own field, and an
+    /// undeclared field's type is refused.
     #[test]
     fn a_stored_array_or_object_reads_as_declared() {
         let object = |v: serde_json::Value| v.as_object().unwrap().clone();
@@ -4143,7 +4275,9 @@ mod tests {
             serde_json::json!({"tags": [1, 2], "who": {"name": "ann", "at": "2026-10-10T00:00:00Z", "took": 1500}}),
         );
         let bad = object(serde_json::json!({"tags": [1, "x"], "who": {"name": "bo", "at": "never"}}));
-        let records = meta.read_stored(&[(&good, &fields), (&bad, &fields)]).unwrap();
+        let records = meta
+            .read_table(&pasted_from(&[(&good, &fields), (&bad, &fields)]))
+            .unwrap();
         assert_eq!(
             meta.record_object(&records[0], ""),
             object(
@@ -4152,10 +4286,7 @@ mod tests {
         );
         assert_eq!(
             records[1].chunk.failed(),
-            &[
-                (1, 0, r#"[1,"x"]"#.to_string()),
-                (1, 1, r#"{"at":"never","name":"bo"}"#.to_string())
-            ]
+            &[(1, 0, r#"[1,"x"]"#.to_string()), (1, 2, r#""never""#.to_string())]
         );
         assert_eq!(
             meta.record_object(&records[1], ""),
@@ -4167,12 +4298,89 @@ mod tests {
             .declaring(vec![("blobs".into(), DataType::Array(Box::new(DataType::Bytes)))])
             .unwrap();
         let blobs = object(serde_json::json!({"blobs": ["3q0="]}));
-        let read = bytes.read_stored(&[(&blobs, &fields)]).unwrap();
+        let read = bytes.read_table(&pasted_from(&[(&blobs, &fields)])).unwrap();
         assert_eq!(
             bytes.record_object(&read[0], ""),
             blobs,
             "stored bytes are base64, and read back as bytes"
         );
+    }
+
+    /// Declaring an object declares its leaves: each field under it by its own name, and where the object is open, its
+    /// other keys. An object that declares no field and holds no other key is refused.
+    #[test]
+    fn a_declared_object_is_its_leaves() {
+        let object = |fields: &[(&str, DataType)], open| {
+            DataType::Struct(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect(), open)
+        };
+        let geo = object(&[("city", DataType::Str)], true);
+        let destination = object(&[("ip", DataType::Str), ("port", DataType::I64), ("geo", geo)], false);
+        let meta = SourceMeta::KAFKA
+            .declaring(vec![
+                ("destination".into(), destination),
+                ("labels".into(), object(&[], true)),
+                ("tags".into(), DataType::Array(Box::new(object(&[], false)))),
+            ])
+            .unwrap();
+        let declared: Vec<_> = (meta.record().iter())
+            .map(|(name, ty)| format!("{name}: {}", ty.spell()))
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                "destination.ip: str",
+                "destination.port: i64",
+                "destination.geo.city: str",
+                "destination.geo.*: variant",
+                "labels.*: variant",
+                "tags: array<{}>",
+            ]
+        );
+
+        let object_of = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let fields = crate::io::SourceFields::new();
+        let stored = object_of(serde_json::json!({
+            "destination": {"ip": "8.8.8.8", "port": 443, "geo": {"city": "Ashburn", "zip": 20147}},
+            "labels": {"env": "prod"},
+        }));
+        let read = meta.read_table(&pasted_from(&[(&stored, &fields)])).unwrap();
+        assert_eq!(read[0].chunk.failed(), []);
+        assert_eq!(
+            meta.record_object(&read[0], ""),
+            stored,
+            "each leaf and each other key reads back"
+        );
+        let null = object_of(serde_json::json!({"destination": null, "labels": null}));
+        let read = meta.read_table(&pasted_from(&[(&null, &fields)])).unwrap();
+        assert!(
+            meta.record_object(&read[0], "").is_empty(),
+            "a null object holds no field"
+        );
+        let extra = object_of(serde_json::json!({"destination": {"ip": "8.8.8.8", "mac": "aa"}}));
+        let read = meta.read_table(&pasted_from(&[(&extra, &fields)])).unwrap();
+        assert_eq!(
+            meta.record_object(&read[0], ""),
+            object_of(serde_json::json!({"destination": {"ip": "8.8.8.8"}})),
+            "a closed object holds only its fields"
+        );
+
+        for (ty, names) in [
+            (object(&[], false), "`meta`"),
+            (object(&[("inner", object(&[], false))], true), "`meta.inner`"),
+        ] {
+            let err = SourceMeta::KAFKA.declaring(vec![("meta".into(), ty)]).unwrap_err();
+            assert!(err.contains(names) && err.contains("{}"), "{err}");
+        }
+        for clash in [
+            vec![
+                ("user".to_string(), object(&[("name", DataType::Str)], true)),
+                ("user.name".to_string(), DataType::Str),
+            ],
+            vec![("...".to_string(), DataType::Variant)],
+            vec![("user....".to_string(), DataType::Variant)],
+        ] {
+            assert!(SourceMeta::KAFKA.declaring(clash.clone()).is_err(), "{clash:?}");
+        }
     }
 
     /// A declared record cannot take the engine's own names, and no field of it is another or holds another.
@@ -4287,18 +4495,21 @@ mod tests {
 
         let objects = meta.objects(&records[1..], None);
         let back = meta
-            .read_stored(&[(&crate::io::RecordObject::new(), &objects[0])])
+            .read_table(&pasted_from(&[(&crate::io::RecordObject::new(), &objects[0])]))
             .unwrap();
         assert_eq!(back[0].chunk.time(0), Some(1_700_000_000_250_000));
         let unstamped = meta.objects(&records[..1], None);
         let back = meta
-            .read_stored(&[(&crate::io::RecordObject::new(), &unstamped[0])])
+            .read_table(&pasted_from(&[(&crate::io::RecordObject::new(), &unstamped[0])]))
             .unwrap();
         assert_eq!(back[0].chunk.time(0), None);
 
-        let pasted = serde_json::json!({"time": "2023-11-14T22:13:20.25Z", "bytes": "b25l"});
+        let typed = serde_json::json!({"time": "2023-11-14T22:13:20.25Z", "bytes": "b25l"});
         let back = meta
-            .read_stored(&[(&crate::io::RecordObject::new(), pasted.as_object().unwrap())])
+            .read_table(&pasted_from(&[(
+                &crate::io::RecordObject::new(),
+                typed.as_object().unwrap(),
+            )]))
             .unwrap();
         assert_eq!(back[0].chunk.time(0), Some(1_700_000_000_250_000));
         assert_eq!(back[0].headers, Some(Vec::new()), "a pasted time is no header");
@@ -4382,9 +4593,16 @@ mod tests {
     /// refused a cycle.
     #[test]
     fn a_dlq_chain_follows_every_dlq_once() {
-        let named = std::collections::HashMap::from([(0, vec![1, 2]), (1, vec![3, 2]), (3, vec![0])]);
-        assert_eq!(dlq_chain(&named, 0), vec![1, 2, 3]);
-        assert_eq!(dlq_chain(&named, 2), Vec::<DestId>::new());
+        let named = std::collections::HashMap::from([
+            (DestId::new(0), vec![DestId::new(1), DestId::new(2)]),
+            (DestId::new(1), vec![DestId::new(3), DestId::new(2)]),
+            (DestId::new(3), vec![DestId::new(0)]),
+        ]);
+        assert_eq!(
+            dlq_chain(&named, DestId::new(0)),
+            vec![DestId::new(1), DestId::new(2), DestId::new(3)]
+        );
+        assert_eq!(dlq_chain(&named, DestId::new(2)), Vec::<DestId>::new());
     }
 
     /// A bundle naming `reference` for `what`.
@@ -4631,9 +4849,12 @@ mod tests {
             grok_patterns: Default::default(),
             produces: Vec::new(),
         }];
-        let metas = SourceMetas::from([(0, SourceMeta::KAFKA), (1, SourceMeta::KAFKA)]);
+        let metas = SourceMetas::from([
+            (SourceId::new(0), SourceMeta::KAFKA),
+            (SourceId::new(1), SourceMeta::KAFKA),
+        ]);
         let compiled = compile_topology_with(
-            &[route(0, None, 7), route(1, None, 7)],
+            &[route(SourceId::new(0), None, 7), route(SourceId::new(1), None, 7)],
             &pipelines,
             OnException::default(),
             &metas,
@@ -4642,13 +4863,16 @@ mod tests {
 
         assert_eq!(compiled.pipelines.len(), 1, "one plan, not one per source");
         // Both sources still reach it.
-        assert!(compiled.plan_for(0, 7).is_some());
-        assert!(compiled.plan_for(1, 7).is_some());
+        assert!(compiled.plan_for(SourceId::new(0), 7).is_some());
+        assert!(compiled.plan_for(SourceId::new(1), 7).is_some());
 
         // Declaring different fields is what forces a second plan.
-        let mixed = SourceMetas::from([(0, SourceMeta::KAFKA), (1, SourceMeta::METRICS)]);
+        let mixed = SourceMetas::from([
+            (SourceId::new(0), SourceMeta::KAFKA),
+            (SourceId::new(1), SourceMeta::METRICS),
+        ]);
         let compiled = compile_topology_with(
-            &[route(0, None, 7), route(1, None, 7)],
+            &[route(SourceId::new(0), None, 7), route(SourceId::new(1), None, 7)],
             &pipelines,
             OnException::default(),
             &mixed,
@@ -4684,19 +4908,28 @@ mod tests {
         };
 
         let compiled = CompiledTopology {
-            routes: vec![mk(0, vec![2]), mk(1, vec![7])],
+            routes: vec![
+                mk(SourceId::new(0), vec![DestId::new(2)]),
+                mk(SourceId::new(1), vec![DestId::new(7)]),
+            ],
             pipelines: std::collections::HashMap::new(),
             metas: SourceMetas::new(),
             on_exception: {
                 let mut group = OnException::default();
-                for (kind, to) in [(ExceptionKind::Unmatched, 4), (ExceptionKind::Unprocessable, 8)] {
+                for (kind, to) in [
+                    (ExceptionKind::Unmatched, DestId::new(4)),
+                    (ExceptionKind::Unprocessable, DestId::new(8)),
+                ] {
                     group.answers[kind.index()] = Answer::Deliver(vec![to]);
                 }
                 group
             },
             // Destination 2 salvages its refusals to 5, and 8 to 3. `dlq_of` holds whole chains, so reachability reads
             // one entry per destination.
-            dlq_of: std::collections::HashMap::from([(2, vec![5]), (8, vec![3])]),
+            dlq_of: std::collections::HashMap::from([
+                (DestId::new(2), vec![DestId::new(5)]),
+                (DestId::new(8), vec![DestId::new(3)]),
+            ]),
             records: HashMap::new(),
             native_variants: Default::default(),
             payloads: HashMap::new(),
@@ -4705,17 +4938,41 @@ mod tests {
 
         // Source 0: its own delivery target plus the DLQ that target salvages to -- a source can write to a
         // destination no route names.
-        assert_eq!(compiled.destinations_reachable_from(0), vec![2, 3, 4, 5, 8]);
+        assert_eq!(
+            compiled.destinations_reachable_from(SourceId::new(0)),
+            vec![
+                DestId::new(2),
+                DestId::new(3),
+                DestId::new(4),
+                DestId::new(5),
+                DestId::new(8)
+            ]
+        );
         // Source 1 reaches neither of those.
-        assert_eq!(compiled.destinations_reachable_from(1), vec![3, 4, 7, 8]);
+        assert_eq!(
+            compiled.destinations_reachable_from(SourceId::new(1)),
+            vec![DestId::new(3), DestId::new(4), DestId::new(7), DestId::new(8)]
+        );
         // A source with no routes reaches only where its unmatched and unprocessable rows go, and the chain behind
         // them.
-        assert_eq!(compiled.destinations_reachable_from(9), vec![3, 4, 8]);
+        assert_eq!(
+            compiled.destinations_reachable_from(SourceId::new(9)),
+            vec![DestId::new(3), DestId::new(4), DestId::new(8)]
+        );
 
         // Where the flow goes: the delivery targets alone, no DLQ of any kind.
-        assert_eq!(compiled.delivery_destinations_from(0), vec![2]);
-        assert_eq!(compiled.delivery_destinations_from(1), vec![7]);
-        assert_eq!(compiled.delivery_destinations_from(9), Vec::<DestId>::new());
+        assert_eq!(
+            compiled.delivery_destinations_from(SourceId::new(0)),
+            vec![DestId::new(2)]
+        );
+        assert_eq!(
+            compiled.delivery_destinations_from(SourceId::new(1)),
+            vec![DestId::new(7)]
+        );
+        assert_eq!(
+            compiled.delivery_destinations_from(SourceId::new(9)),
+            Vec::<DestId>::new()
+        );
     }
 
     /// The metadata `seed_batch`'s layout assumes, for a route condition over `__source.offset`.
@@ -4764,13 +5021,13 @@ mod tests {
 
     #[test]
     fn a_single_route_with_no_condition_catches_everything() {
-        let routes = compile_routes(&[route(0, None, 7)], &SourceMetas::new()).unwrap();
+        let routes = compile_routes(&[route(SourceId::new(0), None, 7)], &SourceMetas::new()).unwrap();
         let mut pool = BufferPool::new();
         let mut errors = ErrorSink::new();
         let mut batch = seed_batch(&mut pool, &["a", "b", "c"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId::new(0), &mut batch, &mut ctx);
         assert_eq!(masks.len(), 1);
         let rows: Vec<bool> = (0..3)
             .map(|r| bits::get_row(masks[0].1.bool().unwrap().values, r))
@@ -4782,13 +5039,13 @@ mod tests {
 
     #[test]
     fn routes_for_a_different_source_are_skipped() {
-        let routes = compile_routes(&[route(1, None, 7)], &SourceMetas::new()).unwrap();
+        let routes = compile_routes(&[route(SourceId::new(1), None, 7)], &SourceMetas::new()).unwrap();
         let mut pool = BufferPool::new();
         let mut errors = ErrorSink::new();
         let mut batch = seed_batch(&mut pool, &["a"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId::new(0), &mut batch, &mut ctx);
         assert!(masks.is_empty(), "route belongs to source 1, not 0");
         batch.reclaim(&mut pool);
     }
@@ -4798,8 +5055,11 @@ mod tests {
         // Route on __source.offset (here just the row index -- see seed_batch) rather than a parsed field, since routes only
         // see ingest fields. Row 0 matches both routes, so it runs both pipelines.
         let routes = compile_routes(
-            &[route(0, Some("__source.offset == 0"), 1), route(0, None, 2)],
-            &kafka_metas(0),
+            &[
+                route(SourceId::new(0), Some("__source.offset == 0"), 1),
+                route(SourceId::new(0), None, 2),
+            ],
+            &kafka_metas(SourceId::new(0)),
         )
         .unwrap();
         let mut pool = BufferPool::new();
@@ -4807,7 +5067,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["x", "yy"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId::new(0), &mut batch, &mut ctx);
         let rows = |m: &Column| {
             (0..2)
                 .map(|r| bits::get_row(m.bool().unwrap().values, r))
@@ -4835,7 +5095,7 @@ mod tests {
 
     #[test]
     fn a_non_bool_route_condition_is_a_compile_error() {
-        let err = compile_routes(&[route(0, Some("_raw"), 1)], &SourceMetas::new());
+        let err = compile_routes(&[route(SourceId::new(0), Some("_raw"), 1)], &SourceMetas::new());
         assert!(err.is_err());
     }
 
@@ -4848,8 +5108,8 @@ mod tests {
     fn a_route_condition_using_a_regex_literal_actually_matches() {
         let routes = compile_routes(
             &[
-                route(0, Some("test(_raw, /^x/)"), 1),
-                route(0, None, 2), // catch-all
+                route(SourceId::new(0), Some("test(_raw, /^x/)"), 1),
+                route(SourceId::new(0), None, 2), // catch-all
             ],
             &SourceMetas::new(),
         )
@@ -4859,7 +5119,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["x1", "y2"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId::new(0), &mut batch, &mut ctx);
         let (_, m0) = &masks[0];
         assert_eq!(
             (0..2)

@@ -38,7 +38,8 @@
     type Requirement,
     type SchemaFieldDto,
   } from './api';
-  import { downloadJson, fileName, matchesOf, userHash, usersOf, type User } from './schemas';
+  import { fileName, matchesOf, userHash, usersOf, type User } from './schemas';
+  import { downloadJson } from './download';
   import { idProblem } from './ids';
   import { count } from './time';
   import { editable } from './access';

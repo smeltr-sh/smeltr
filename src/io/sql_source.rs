@@ -1018,18 +1018,46 @@ fn hash(row: &[&Value]) -> String {
     })
 }
 
-/// `rows` as a chunk with a column per field, each read from result column `columns[i]`. A value that cannot be
-/// its field's type is null and counted failed.
+/// `rows` as a chunk with a column per field the record declares, each read from result column `columns[i]`: a field
+/// declared as an object is its leaves (`SourceMeta::declaring`), each read from inside the column's value. A value
+/// that cannot be its field's type is null and counted failed, and so is a leaf under a value that is no object.
 fn chunk(fields: &[(String, DataType)], columns: &[usize], rows: &[Vec<Value>]) -> RecordChunk {
+    use crate::plan::tree;
     let mut pool = crate::core::buffer::BufferPool::new();
     let mut failed = Vec::new();
     let mut out = Vec::with_capacity(fields.len());
-    for (f, ((_, ty), &at)) in fields.iter().zip(columns).enumerate() {
-        let values: Vec<Value> = rows.iter().map(|r| r[at].clone()).collect();
-        let (column, refused) =
-            column(&mut pool, ty, &values).expect("match_fields refuses a type no column is built as");
-        failed.extend(refused.into_iter().map(|row| (row as u32, f, spell(&values[row]))));
-        out.push(column);
+    for ((name, ty), &at) in fields.iter().zip(columns) {
+        let mut leaves = Vec::new();
+        crate::plan::topology::leaves(name, ty, &mut leaves).expect("the record declared these fields");
+        // Each leaf by its keys below the column's value, and whether it is the unclaimed fields of the object there.
+        let depth = tree::object_keys(name).count();
+        let below: Vec<(Vec<String>, bool)> = (leaves.iter())
+            .map(|(leaf, _)| (leaf.keys().split_off(depth), leaf.field().is_none()))
+            .collect();
+        for ((keys, unclaimed), (_, ty)) in below.iter().zip(&leaves) {
+            let f = out.len();
+            let claimed = |key: &str| {
+                let under = |k: &&(Vec<String>, bool)| k.0.len() > keys.len() && k.0.starts_with(keys);
+                below.iter().filter(under).any(|k| k.0[keys.len()] == key)
+            };
+            let values: Vec<Value> = (rows.iter().enumerate())
+                .map(|(row, r)| {
+                    let held = crate::io::values::at(&r[at], keys);
+                    let held = match (held, unclaimed) {
+                        (Ok(object), true) => crate::io::values::rest(&object, claimed).map_err(spell),
+                        (held, _) => held.map_err(spell),
+                    };
+                    held.unwrap_or_else(|unfit| {
+                        failed.push((row as u32, f, unfit));
+                        Value::Null
+                    })
+                })
+                .collect();
+            let (column, refused) =
+                column(&mut pool, ty, &values).expect("match_fields refuses a type no column is built as");
+            failed.extend(refused.into_iter().map(|row| (row as u32, f, spell(&values[row]))));
+            out.push(column);
+        }
     }
     RecordChunk::new(out, failed)
 }
@@ -1041,7 +1069,7 @@ mod fuzz;
 mod tests {
     use super::*;
     use crate::io::TopicPartition;
-    use std::sync::Mutex;
+    use crate::sync::Mutex;
 
     /// `v` as a driver reads a JSON column.
     fn json(v: serde_json::Value) -> Value {
@@ -1064,7 +1092,7 @@ mod tests {
 
     impl Scripted {
         fn answer(&self, columns: &[&str], rows: Vec<Vec<Value>>) {
-            self.answers.lock().unwrap().push_back(Ok(Rows {
+            self.answers.lock().push_back(Ok(Rows {
                 columns: columns.iter().map(|c| c.to_string()).collect(),
                 rows,
                 as_text: Vec::new(),
@@ -1072,15 +1100,15 @@ mod tests {
         }
 
         fn fail(&self, why: &str) {
-            self.answers.lock().unwrap().push_back(Err(why.to_string()));
+            self.answers.lock().push_back(Err(why.to_string()));
         }
 
         fn panic_once(&self) {
-            *self.panic_next.lock().unwrap() = true;
+            *self.panic_next.lock() = true;
         }
 
         fn last_asked(&self) -> (Statement, Vec<Value>) {
-            self.asked.lock().unwrap().last().cloned().expect("a run")
+            self.asked.lock().last().cloned().expect("a run")
         }
     }
 
@@ -1090,18 +1118,14 @@ mod tests {
         }
 
         fn run(&mut self, statement: &Statement, values: &[Value]) -> Result<Rows, String> {
-            self.asked.lock().unwrap().push((statement.clone(), values.to_vec()));
-            if std::mem::take(&mut *self.panic_next.lock().unwrap()) {
+            self.asked.lock().push((statement.clone(), values.to_vec()));
+            if std::mem::take(&mut *self.panic_next.lock()) {
                 panic!("the wire said nothing a driver expects");
             }
-            if let Some(gate) = self.gate.lock().unwrap().as_ref() {
+            if let Some(gate) = self.gate.lock().as_ref() {
                 gate.recv().unwrap();
             }
-            self.answers
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Ok(Rows::default()))
+            self.answers.lock().pop_front().unwrap_or_else(|| Ok(Rows::default()))
         }
 
         fn describe(&mut self, _: &Statement) -> Result<Vec<Described>, String> {
@@ -1300,7 +1324,7 @@ mod tests {
         assert_eq!(ids(&poll(&mut s, 10)), [1, 2]);
         assert_eq!(ids(&poll(&mut s, 10)), [3]);
         assert!(poll(&mut s, 10).is_empty());
-        assert_eq!(driver.asked.lock().unwrap().len(), 2);
+        assert_eq!(driver.asked.lock().len(), 2);
     }
 
     #[test]
@@ -1353,7 +1377,7 @@ mod tests {
     fn a_statement_that_outlasts_the_timeout_is_picked_up_by_a_later_poll() {
         let driver = Scripted::default();
         let (go, gate) = mpsc::channel();
-        *driver.gate.lock().unwrap() = Some(gate);
+        *driver.gate.lock() = Some(gate);
         driver.answer(COLUMNS, vec![row(1, "a")]);
         let mut s = source(&driver, by_id(), 100);
         let started = Instant::now();
@@ -1370,7 +1394,7 @@ mod tests {
         go.send(()).unwrap();
         let got = s.poll_batch(10, usize::MAX, Duration::from_secs(5)).unwrap();
         assert_eq!(ids(&got), [1]);
-        assert_eq!(driver.asked.lock().unwrap().len(), 1, "one statement ran");
+        assert_eq!(driver.asked.lock().len(), 1, "one statement ran");
     }
 
     #[test]
@@ -1527,7 +1551,7 @@ mod tests {
     #[test]
     fn a_position_read_only_as_text_fails_the_poll() {
         let driver = Scripted::default();
-        driver.answers.lock().unwrap().push_back(Ok(Rows {
+        driver.answers.lock().push_back(Ok(Rows {
             columns: COLUMNS.iter().map(|c| c.to_string()).collect(),
             rows: vec![row(1, "a")],
             as_text: vec!["id".into()],
@@ -1633,6 +1657,44 @@ mod tests {
         assert_eq!(chunk.failed(), [(0, 1, r#"{"a":1}"#.to_string())]);
     }
 
+    /// An open object keeps the keys of its column's value that it declares no field for, and a value that is not an
+    /// object is noted under each field read from inside it.
+    #[test]
+    fn an_open_object_column_keeps_its_other_keys() {
+        let driver = Scripted::default();
+        driver.answer(
+            &["id", "owner"],
+            vec![
+                vec![
+                    Value::Int(1),
+                    json(serde_json::json!({"name": "ann", "age": 4, "home": {"city": "Oslo"}})),
+                ],
+                vec![Value::Int(2), json(serde_json::json!("ann"))],
+            ],
+        );
+        let mut s = source(&driver, by_id(), 100);
+        s.config.fields = Arc::from(vec![
+            ("id".to_string(), DataType::I64),
+            (
+                "owner".to_string(),
+                DataType::Struct(vec![("name".into(), DataType::Str)], true),
+            ),
+        ]);
+        let meta = crate::plan::topology::SourceMeta::POSTGRES
+            .declaring(s.config.fields.to_vec())
+            .unwrap();
+        let records = poll(&mut s, 10);
+        let row =
+            |at: usize| -> serde_json::Value { serde_json::from_slice(&meta.record_json(&records[at], "")).unwrap() };
+        assert_eq!(
+            row(0),
+            serde_json::json!({"id": 1, "owner": {"name": "ann", "age": 4, "home": {"city": "Oslo"}}})
+        );
+        assert_eq!(row(1), serde_json::json!({"id": 2}));
+        let noted = r#""ann""#.to_string();
+        assert_eq!(records[0].chunk.failed(), [(1, 1, noted.clone()), (1, 2, noted)]);
+    }
+
     #[test]
     fn an_array_or_object_column_takes_its_declared_shape() {
         let driver = Scripted::default();
@@ -1655,13 +1717,17 @@ mod tests {
         s.config.fields = Arc::from(vec![
             ("id".to_string(), DataType::I64),
             ("tags".to_string(), DataType::Array(Box::new(DataType::Str))),
-            ("owner".to_string(), owner.clone()),
+            ("owner".to_string(), owner),
         ]);
         let records = poll(&mut s, 10);
         let chunk = &records[0].chunk;
         assert_eq!(chunk.column(1).data_type(), DataType::Array(Box::new(DataType::Str)));
-        assert_eq!(chunk.column(2).data_type(), owner);
-        assert!(chunk.column(1).is_valid(0) && chunk.column(2).is_valid(0));
+        // `owner` is declared as its leaves, each read from inside the `owner` column.
+        assert_eq!(chunk.column(2).data_type(), DataType::I64);
+        assert_eq!(chunk.column(3).data_type(), DataType::Str);
+        assert_eq!(chunk.column(2).i64().unwrap().values[0], 4);
+        assert!(chunk.column(1).is_valid(0) && chunk.column(3).is_valid(0));
+        assert!(!chunk.column(2).is_valid(1) && !chunk.column(3).is_valid(1));
         assert!(!chunk.column(1).is_valid(1), "text is not a list");
         assert_eq!(chunk.failed(), [(1, 1, r#""not a list""#.to_string())]);
     }
@@ -1710,11 +1776,7 @@ mod tests {
         assert!(poll(&mut s, 10).is_empty());
         assert_eq!(s.connection_error().as_deref(), Some("connection refused"));
         assert!(poll(&mut s, 10).is_empty());
-        assert_eq!(
-            driver.asked.lock().unwrap().len(),
-            1,
-            "not asked again before the backoff"
-        );
+        assert_eq!(driver.asked.lock().len(), 1, "not asked again before the backoff");
     }
 
     /// A driver parses what the database sent, so a panic in it is the database's failure: reported, backed off
@@ -1731,7 +1793,7 @@ mod tests {
             error.starts_with("the driver panicked running the statement"),
             "{error}"
         );
-        assert_eq!(driver.asked.lock().unwrap().len(), 1);
+        assert_eq!(driver.asked.lock().len(), 1);
         s.pacer.retry_now();
         s.next_poll = Instant::now();
         assert_eq!(poll(&mut s, 10).len(), 1, "the retry runs on the same driver");
@@ -1792,11 +1854,7 @@ mod tests {
         })
         .unwrap();
         poll(&mut s, 10);
-        assert_eq!(
-            driver.asked.lock().unwrap().len(),
-            1,
-            "where it began is not found again"
-        );
+        assert_eq!(driver.asked.lock().len(), 1, "where it began is not found again");
         assert_eq!(driver.last_asked().1, [Value::Int(41)]);
     }
 

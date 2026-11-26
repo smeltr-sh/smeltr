@@ -502,12 +502,13 @@ fn record_error_metrics(
     errors: &crate::core::error::ErrorSink,
     err_start: usize,
 ) {
-    let mut counts: std::collections::HashMap<(FunctionId, &'static str), u64> = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<(Option<FunctionId>, &'static str), u64> =
+        std::collections::HashMap::new();
     for a in &errors.entries()[err_start..] {
         *counts.entry((a.function, a.kind.label())).or_insert(0) += 1;
     }
     for ((function, kind), count) in counts {
-        let function_label = function.to_string();
+        let function_label = function.map_or_else(|| crate::core::error::INGEST_LABEL.to_string(), |f| f.to_string());
         metrics.incr(
             "smeltr_rows_errored_total",
             &[
@@ -637,7 +638,7 @@ fn run_loop(layout: &[DataType], spec: &Loop, batch: &mut Batch, ctx: &mut Ctx, 
         for &i in &stalled {
             ctx.errors.raise(
                 active[i as usize] as usize,
-                function,
+                Some(function),
                 None,
                 ExceptionKind::LoopBudgetExceeded { trips },
             );

@@ -2055,7 +2055,7 @@ pub fn outside_normal_warnings(
             };
             let since_millis = starts.get(&outside_key(r, side)).copied();
             let answer = marks
-                .answer(&r.group, &r.source, None, since_millis)
+                .answer(throughput::Subject::source(&r.group, &r.source), since_millis)
                 .filter(|_| side == throughput::Outside::Below);
             let said_normal = answer.is_some_and(|a| a.was == Was::Normal);
             let severity = match answer {
@@ -2136,7 +2136,12 @@ pub fn senders_below_warnings(
         .map(|((group, source, since), below)| {
             let answers: Vec<(&Sender, &Mark)> = below
                 .iter()
-                .filter_map(|&s| Some((s, marks.answer(group, source, Some(s), Some(since))?)))
+                .filter_map(|&s| {
+                    Some((
+                        s,
+                        marks.answer(throughput::Subject::new(group, source, Some(s)), Some(since))?,
+                    ))
+                })
                 .collect();
             let severity = match answers.len() == below.len() {
                 true => Severity::Info,
@@ -6559,8 +6564,8 @@ mod tests {
         assert!(msg.contains("reader capacity") || msg.contains("reduce"), "{msg}");
     }
 
-    /// The defect this fixes: two groups running a source of the same id used to share one lag series, so a climb
-    /// in one was indistinguishable from a climb in the other.
+    /// Two groups running a source of the same id keep a lag series each, so a climb in one is told from a climb in
+    /// the other.
     #[test]
     fn two_groups_reporting_lag_for_the_same_source_id_are_two_series_and_two_warnings() {
         let g1 = store_with_lag_in("g1", &[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
@@ -6709,10 +6714,10 @@ mod tests {
         assert!(json.contains(r#""sinceMillis":null"#), "{json}");
     }
 
-    // -- group scoping (defect fix: a source or destination id is unique only within its group) ------------------
+    // -- group scoping (a source or destination id is unique only within its group) ------------------
 
     /// Two groups running a source of the same id must not collapse into one warning: source ids are unique only
-    /// within a group plus `shared/`, and `or_insert_with` used to keep whichever worker's report sorted first.
+    /// within a group plus `shared/`.
     #[test]
     fn two_groups_running_a_source_of_the_same_id_are_two_separate_warnings() {
         let snapshot = vec![

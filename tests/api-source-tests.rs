@@ -358,7 +358,7 @@ pub(crate) fn verified(
 }
 
 /// A DPoP proof's claims, once it verifies under the key its header names, which must be `jwk` once known.
-fn proof(request: &Request, jwk: &std::sync::Mutex<Option<serde_json::Value>>) -> serde_json::Value {
+fn proof(request: &Request, jwk: &smeltr::sync::Mutex<Option<serde_json::Value>>) -> serde_json::Value {
     let jws = request.header("dpop");
     let header: serde_json::Value = serde_json::from_slice(&unb64url(jws.split('.').next().unwrap())).unwrap();
     assert_eq!(header["typ"], "dpop+jwt");
@@ -366,7 +366,7 @@ fn proof(request: &Request, jwk: &std::sync::Mutex<Option<serde_json::Value>>) -
     point.extend(unb64url(header["jwk"]["x"].as_str().unwrap()));
     point.extend(unb64url(header["jwk"]["y"].as_str().unwrap()));
     let (header, claims) = verified(jws, &aws_lc_rs::signature::ECDSA_P256_SHA256_FIXED, &point);
-    let mut known = jwk.lock().unwrap();
+    let mut known = jwk.lock();
     assert_eq!(
         known.get_or_insert(header["jwk"].clone()),
         &header["jwk"],
@@ -400,8 +400,8 @@ pub(crate) fn app_key() -> (String, Vec<u8>) {
 #[test]
 fn an_okta_service_app_signs_in_with_dpop_and_replaces_a_refused_token() {
     let (pem, public) = app_key();
-    let jwk = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let origin = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let jwk = std::sync::Arc::new(smeltr::sync::Mutex::new(None));
+    let origin = std::sync::Arc::new(smeltr::sync::Mutex::new(String::new()));
     let ath = |token: &str| {
         let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, token.as_bytes());
         smeltr::format::bytes_text::BytesForm::Base64
@@ -412,11 +412,11 @@ fn an_okta_service_app_signs_in_with_dpop_and_replaces_a_refused_token() {
     };
     let token = |n: &'static str,
                  jwk: std::sync::Arc<_>,
-                 origin: std::sync::Arc<std::sync::Mutex<String>>,
+                 origin: std::sync::Arc<smeltr::sync::Mutex<String>>,
                  public: Vec<u8>|
      -> Handler {
         Box::new(move |r: &Request| {
-            let url = format!("{}/oauth2/v1/token", origin.lock().unwrap());
+            let url = format!("{}/oauth2/v1/token", origin.lock());
             assert_eq!(r.line, "POST /oauth2/v1/token HTTP/1.1");
             assert_eq!(r.field("grant_type"), "client_credentials");
             assert_eq!(r.field("scope"), "okta.logs.read");
@@ -448,17 +448,13 @@ fn an_okta_service_app_signs_in_with_dpop_and_replaces_a_refused_token() {
                 next: &'static str,
                 nonce: Option<&'static str>,
                 jwk: std::sync::Arc<_>,
-                origin: std::sync::Arc<std::sync::Mutex<String>>|
+                origin: std::sync::Arc<smeltr::sync::Mutex<String>>|
      -> Handler {
         Box::new(move |r: &Request| {
             assert_eq!(r.header("authorization"), format!("DPoP {n}"));
             let proof = proof(r, &jwk);
             assert_eq!(proof["htm"], "GET");
-            assert_eq!(
-                proof["htu"],
-                format!("{}/api/v1/logs", origin.lock().unwrap()),
-                "no query"
-            );
+            assert_eq!(proof["htu"], format!("{}/api/v1/logs", origin.lock()), "no query");
             assert_eq!(proof["ath"], ath(n));
             assert_eq!(proof["nonce"], nonce.map_or(serde_json::Value::Null, Into::into));
             (
@@ -492,7 +488,7 @@ fn an_okta_service_app_signs_in_with_dpop_and_replaces_a_refused_token() {
         // The nonce the last page named, though it came on a 200.
         logs("at2", "[]", "a2", Some("r-a1"), jwk.clone(), origin.clone()),
     ]);
-    *origin.lock().unwrap() = url.clone();
+    *origin.lock() = url.clone();
 
     let kind = SourceKind::Api(ApiSourceConfig {
         api: Api::OktaLogs(OktaLogsConfig {
@@ -643,12 +639,12 @@ fn json_answer(body: String) -> (String, String) {
 #[test]
 fn an_app_finds_its_token_endpoint_through_the_issuer_and_sends_the_token() {
     use smeltr::plan::topology::{AppSignIn, TokenAt};
-    let origin = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let origin = std::sync::Arc::new(smeltr::sync::Mutex::new(String::new()));
     let (o1, o2) = (origin.clone(), origin.clone());
     let (url, served) = scripted(vec![
         Box::new(move |r: &Request| {
             assert_eq!(r.line, "GET /realm/.well-known/openid-configuration HTTP/1.1");
-            let issuer = format!("{}/realm", o1.lock().unwrap());
+            let issuer = format!("{}/realm", o1.lock());
             json_answer(
                 serde_json::json!({
                     "issuer": issuer,
@@ -673,7 +669,7 @@ fn an_app_finds_its_token_endpoint_through_the_issuer_and_sends_the_token() {
             json_answer(r#"[{"n":1}]"#.to_string())
         }),
     ]);
-    *o2.lock().unwrap() = url.clone();
+    *o2.lock() = url.clone();
     let mut s = signed_in(
         &url,
         AppSignIn {
@@ -769,7 +765,7 @@ fn a_new_token_refused_is_shown_and_the_next_poll_signs_in_again() {
 fn an_app_with_a_key_signs_in_with_an_assertion() {
     use smeltr::plan::topology::{AppProof, AppSignIn, TokenAt};
     let (pem, public) = app_key();
-    let origin = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let origin = std::sync::Arc::new(smeltr::sync::Mutex::new(String::new()));
     let seen = origin.clone();
     let (url, served) = scripted(vec![
         Box::new(move |r: &Request| {
@@ -782,7 +778,7 @@ fn an_app_with_a_key_signs_in_with_an_assertion() {
             );
             assert_eq!(header["kid"], serde_json::Value::Null);
             assert_eq!(claims["sub"], "app");
-            assert_eq!(claims["aud"], format!("{}/token", seen.lock().unwrap()));
+            assert_eq!(claims["aud"], format!("{}/token", seen.lock()));
             json_answer(r#"{"access_token":"at1","token_type":"Bearer","expires_in":3600}"#.to_string())
         }),
         Box::new(|r: &Request| {
@@ -790,7 +786,7 @@ fn an_app_with_a_key_signs_in_with_an_assertion() {
             json_answer("[]".to_string())
         }),
     ]);
-    *origin.lock().unwrap() = url.clone();
+    *origin.lock() = url.clone();
     let mut s = signed_in(
         &url,
         AppSignIn {

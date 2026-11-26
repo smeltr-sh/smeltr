@@ -1,0 +1,28 @@
+# A pull request runs `just check`: the checks the files it changes since origin/main can break. Main runs everything
+# nightly (`nightly.yml`). A newer push to the pull request cancels the run on the older one.
+name: Check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `tools/check-scope` diffs against origin/main's merge base.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache: 'true'
+      - run: just check

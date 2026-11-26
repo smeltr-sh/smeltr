@@ -1,0 +1,39 @@
+{
+  "authority": "-----BEGIN CERTIFICATE-----",
+  "captures": [
+    {
+      "deadlineSecs": 60,
+      "filter": "true",
+      "group": "default",
+      "maxBytes": 1000,
+      "maxMatches": 10,
+      "secrets": [
+        {
+          "name": "kafka-cred",
+          "value": "x",
+          "version": 4
+        }
+      ],
+      "session": "s1",
+      "source": {
+        "bucketSeconds": 5,
+        "id": "probe",
+        "type": "metrics"
+      }
+    }
+  ],
+  "holds": [
+    {
+      "cursor": "c1",
+      "place": "s3://logs/app/",
+      "source": "listing"
+    }
+  ],
+  "secrets": [
+    {
+      "name": "kafka-cred",
+      "value": "x",
+      "version": 4
+    }
+  ]
+}

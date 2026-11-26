@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pastedTable } from './capture';
 import { mount, unmount } from 'svelte';
 import PipelineEditor from './PipelineEditor.svelte';
 import { RECOMPUTE_MS } from './FindBox.svelte';
@@ -54,7 +55,10 @@ beforeEach(async () => {
           errors: [],
         };
       } else if (sample) {
-        answer = { ok: true, sample: { id: sample, name: sample, records: [{ _raw: sample }] } };
+        answer = {
+          ok: true,
+          sample: { id: sample, name: sample, ...pastedTable([{ _raw: sample }]) },
+        };
       } else if (path === '/api/areas/shared/preview/pipeline') {
         ranOver.push(JSON.parse(init!.body as string).sample ?? null);
         answer = { ok: true, stage: null, errors: [], rows: [], parsers: [] };
@@ -144,7 +148,7 @@ describe('the sample a pipeline opens on', () => {
       },
     });
     await lastRan('s1');
-    const chip = () => target.querySelector<HTMLButtonElement>('[aria-label="Choose a sample"]')!;
+    const chip = () => target.querySelector<HTMLButtonElement>('[aria-label^="Choose a sample"]')!;
     await vi.waitFor(() => expect(chip().textContent).toContain('0 records'));
 
     chip().click();

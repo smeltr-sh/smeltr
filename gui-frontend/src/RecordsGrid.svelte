@@ -7,6 +7,7 @@
 -->
 <script module lang="ts">
   import type { NumberedStep, Step } from './pipeline';
+  import type { Difference } from './api';
 
   /** One row: a record on either side of what was done to it. */
   export type GridRow = {
@@ -24,7 +25,7 @@
 
   /** A chip in the find box: the rows it keeps. */
   export type FindChip =
-    | { kind: 'failing' | 'dropped' | 'changed' }
+    | { kind: 'failing' | 'dropped' | 'changed' | 'differs' }
     | { kind: 'has'; path: string }
     | {
         kind: 'rows';
@@ -48,7 +49,16 @@
   /** The test on screen. When it is `ready`, on its sample's run, the grid shows what the test checks, one
    * time; after that the fields and rows are the reader's. `rowOf` numbers a row as the test does; without it, a row
    * is numbered by its key. */
-  export type TestOnScreen = { test: string; ready: boolean; rowOf?: (row: GridRow) => number };
+  export type TestOnScreen = {
+    test: string;
+    ready: boolean;
+    rowOf?: (row: GridRow) => number;
+    /** Each test row's documents in the order a test lists them: the key of the row that shows each, or none where it
+     * is not on screen. Without it, each row is one document. */
+    documents?: Map<number, (number | undefined)[]>;
+    /** Where the leader's run of the test over the steps on screen differs from what it locks. */
+    differences?: Difference[];
+  };
 
   /** The steps that touched a field, in the order they ran, each with its number in the step list. */
   export type Touched = (path: string) => NumberedStep[];
@@ -72,6 +82,7 @@
   import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
   import { formatDiffValue } from './diff';
+  import { rowDifferences, type RowDifference } from './testDiff';
   import { RECOMMENDED_NAMED } from './schemas';
   import ShowAll from './ShowAll.svelte';
   import {
@@ -91,6 +102,7 @@
     type MissingField,
     type PreviewResult,
     type TestDto,
+    testFields,
   } from './api';
 
   let {
@@ -515,16 +527,26 @@
     untrack(() => showTest(dto, rowOf));
   });
 
+  /** How each row on screen differs from what the test locks, by key, once the leader has run the test over it. */
+  let diffs = $derived.by((): Map<number, RowDifference> | null => {
+    if (!test?.ready || !test.differences || !rows) return null;
+    return rowDifferences(
+      test.differences,
+      test.documents ?? new Map(rows.map((row) => [row.key, [row.key]])),
+    );
+  });
+
   /** Shows what `test` checks: its fields the rows still hold and nothing else, and a chip keeping its rows unless it
    * checks every row. A field it checks that the rows no longer hold is left out and named; if it was renamed, the
    * reader chooses it under its new name. */
   function showTest(test: TestDto, rowOf: (row: GridRow) => number) {
     clearFind();
     chosenFields.clear();
-    const held = new Set(test.fields.filter((f) => allColumns.includes(f)));
-    gone = test.fields.filter((f) => !held.has(f));
+    const fields = testFields(test);
+    const held = new Set(fields.filter((f) => allColumns.includes(f)));
+    gone = fields.filter((f) => !held.has(f));
     for (const { path } of menuFields) chosenFields.set(path, held.has(path));
-    const checked = new Set(test.rows.map((o) => o.row));
+    const checked = new Set(test.shown.map((s) => s.row));
     if (rows?.every((row) => checked.has(rowOf(row)))) return;
     addChip({
       kind: 'rows',
@@ -573,6 +595,7 @@
     if (c.kind === 'rows') return c.keeps(row);
     if (c.kind === 'failing') return row.exceptions.length > 0;
     if (c.kind === 'dropped') return row.dropped;
+    if (c.kind === 'differs') return diffs?.has(row.key) ?? false;
     return rowChanged(i);
   }
 
@@ -582,6 +605,7 @@
     failing: 'Failing',
     dropped: '⌫ Dropped',
     changed: '~ Changed by a step',
+    differs: 'Differs from the test',
   } as const;
 
   // What the find box offers: the kinds of row a chip keeps, with how many there are, narrowed to what is typed.
@@ -593,6 +617,7 @@
       failing: () => failingCount,
       dropped: () => all.filter((r) => r.dropped).length,
       changed: () => all.filter((_, i) => rowChanged(i)).length,
+      differs: () => diffs?.size ?? 0,
     };
     return (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
       .filter((kind) => !chips.some((c) => c.kind === kind))
@@ -833,7 +858,13 @@
                 {@const m = rowsMaps[i]}
                 {@const open = expanded.has(row.key)}
                 {@const failing = row.exceptions.length > 0}
-                <tr class="grid-row" class:dropped={row.dropped} class:open class:failing>
+                <tr
+                  class="grid-row"
+                  class:dropped={row.dropped}
+                  class:open
+                  class:failing
+                  class:differs={diffs?.has(row.key)}
+                >
                   <td class="fold-cell">
                     <button
                       type="button"
@@ -876,6 +907,7 @@
 
                 {#if open}
                   {@const marks = rowMarks(m)}
+                  {@const differs = diffs?.get(row.key)}
                   <!-- Named apart from its row, which is named by its fold button. -->
                   <tr
                     class="expanded-row"
@@ -904,6 +936,9 @@
                             <span class="badge dropped-badge">dropped</span>
                           {/if}
                         </div>
+                        {#each differs?.notes ?? [] as note}
+                          <p class="differs-note">{note}</p>
+                        {/each}
                         {#each row.exceptions as a}
                           <p class="exception">
                             {#if a.by}<button
@@ -924,6 +959,7 @@
                           fullPaths={view.fullPaths}
                           showTypes={view.showTypes}
                           touched={touched?.(row.key)}
+                          locked={differs?.fields}
                           {onjump}
                         />
                         {#each lackingBySchema as [schema, { required, recommended }] (schema)}
@@ -1136,6 +1172,15 @@
   }
 
   .grid-row.failing .index-cell {
+    color: var(--error);
+  }
+
+  /* A row that differs from what the open test locks: a rule, so the run's own colors stay readable. */
+  .grid-row.differs .index-cell {
+    box-shadow: inset 3px 0 0 var(--error);
+  }
+
+  .differs-note {
     color: var(--error);
   }
 

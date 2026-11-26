@@ -17,6 +17,8 @@ pub mod receiver;
 pub mod registry;
 pub mod sender;
 
+use std::time::{Duration, Instant};
+
 use smeltr::core::batch::{Batch, SLOT_RAW};
 use smeltr::core::buffer::BufferPool;
 use smeltr::core::column::{StrBuilder, VarType};
@@ -28,12 +30,38 @@ use smeltr::plan::config::{CompileError, FunctionConfig, FunctionKind, PipelineC
 use smeltr::plan::output::run_to_json;
 use smeltr::plan::topology::SourceMeta;
 
-pub fn func(id: FunctionId, kind: FunctionKind) -> Step {
+/// How long a waiting test leaves between two looks.
+const LOOK_EVERY: Duration = Duration::from_millis(10);
+
+/// What `look` finds, looking again every [`LOOK_EVERY`] until it finds something. Once `within` has passed, an error
+/// naming `what`, so that a test that must clean up can do so before it fails.
+pub fn wait_for<T>(what: &str, within: Duration, mut look: impl FnMut() -> Option<T>) -> Result<T, String> {
+    let deadline = Instant::now() + within;
+    loop {
+        if let Some(found) = look() {
+            return Ok(found);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("gave up after {within:?} waiting for {what}"));
+        }
+        std::thread::sleep(LOOK_EVERY);
+    }
+}
+
+/// Waits until `holds`, as [`wait_for`] does, and panics naming `what` once `within` has passed.
+pub fn wait_until(what: &str, within: Duration, mut holds: impl FnMut() -> bool) {
+    if let Err(late) = wait_for(what, within, || holds().then_some(())) {
+        panic!("{late}");
+    }
+}
+
+pub fn func(id: u32, kind: FunctionKind) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, kind))
 }
 
 /// A code step: `body` in the code language.
-pub fn code(id: FunctionId, body: &str) -> Step {
+pub fn code(id: u32, body: &str) -> Step {
     func(id, FunctionKind::Code { body: body.to_string() })
 }
 

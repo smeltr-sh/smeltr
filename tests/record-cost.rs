@@ -1,12 +1,13 @@
 //! What a typed record costs against the same data arriving as `_raw` JSON: one source's rows, once as
 //! a chunk handing `id`, `service`, `message`, `total` and `status` as typed columns, and once as the JSON
 //! text a parse step reads those fields out of. The same eval runs after either, and both make the same documents.
-//! `cargo test --profile dist --test record-cost -- --ignored --nocapture`.
+//! `cargo test --profile optimized --test record-cost -- --ignored --nocapture`.
 
 mod panos;
 mod reference;
 
-use std::sync::{Arc, Mutex};
+use smeltr::sync::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::core::buffer::MemoryBudget;
@@ -20,7 +21,7 @@ const ROWS: u64 = 400_000;
 const BATCH: usize = 5_000;
 const RUNS: usize = 7;
 
-fn fields() -> Vec<(String, DataType)> {
+fn fields() -> Vec<(smeltr::plan::topology::Entry, DataType)> {
     [
         ("id", DataType::I64),
         ("service", DataType::Str),
@@ -29,7 +30,7 @@ fn fields() -> Vec<(String, DataType)> {
         ("status", DataType::I64),
     ]
     .into_iter()
-    .map(|(n, t)| (n.to_string(), t))
+    .map(|(n, t)| (smeltr::plan::topology::Entry::Field(n.into()), t))
     .collect()
 }
 
@@ -66,7 +67,7 @@ struct Rows(Arc<Mutex<(Vec<Arc<RecordChunk>>, u64)>>);
 
 impl Source for Rows {
     fn poll_batch(&mut self, max_rows: usize, _max_bytes: usize, _t: Duration) -> Result<Vec<SourceRecord>, IoError> {
-        let mut g = self.0.lock().unwrap();
+        let mut g = self.0.lock();
         let (chunks, next) = &mut *g;
         if *next >= ROWS {
             return Ok(Vec::new());
@@ -92,7 +93,7 @@ impl Source for Rows {
     }
 
     fn is_exhausted(&self) -> bool {
-        self.0.lock().unwrap().1 >= ROWS
+        self.0.lock().1 >= ROWS
     }
 }
 
@@ -137,7 +138,10 @@ fn typed_against_raw() {
     let corpus: Vec<RecordObject> = (0..50_000).map(object).collect();
     let chunks: Vec<Arc<RecordChunk>> = corpus
         .chunks(BATCH)
-        .map(|c| Arc::new(RecordChunk::from_objects(&fields(), &c.iter().collect::<Vec<_>>(), &[]).unwrap()))
+        .map(|c| {
+            let table = smeltr::heartbeat::CaptureBatch::pasted(c.to_vec());
+            Arc::new(RecordChunk::from_cells(&fields(), &table.columns, &table.rows).unwrap())
+        })
         .collect();
     let lines: fn(u64) -> String = |i| serde_json::Value::Object(object(i)).to_string();
 
@@ -169,7 +173,9 @@ fn typed_against_raw() {
         let (t, sink) = time(
             &typed_bundle,
             Box::new(rows),
-            SourceMeta::KAFKA.declaring(fields()).unwrap(),
+            SourceMeta::KAFKA
+                .declaring(fields().into_iter().map(|(entry, ty)| (entry.column(), ty)).collect())
+                .unwrap(),
         );
         typed.push(t);
         typed_doc = sink.kept();

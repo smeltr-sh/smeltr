@@ -1,6 +1,8 @@
 <!--
-  Tests: every test in the branch chip's scope, run on the branch, each saying whether it passes. A failing one says why under
-  its row. Open shows a test where it is locked (the pipeline editor or Route a sample), on its sample with the
+  Tests: every test in the branch chip's scope, run on the branch, each saying whether it passes, under the pipeline it
+  tests; the end-to-end ones under their own, each saying the routes its sample takes. A failing one says why under its
+  row, and a group with failing tests comes before one without. A pipeline's Tests link opens the page narrowed to its
+  tests (`?only=`). Open shows a test where it is locked (the pipeline editor or Route a sample), on its sample with the
   fields and rows it checks; new tests are locked there too.
 -->
 <script lang="ts">
@@ -15,10 +17,14 @@
   import SecondaryTabs from './SecondaryTabs.svelte';
   import SortButton from './SortButton.svelte';
   import TestFailure from './TestFailure.svelte';
+  import TestStanding from './TestStanding.svelte';
+  import TestTally from './TestTally.svelte';
+  import OnlyNotice from './OnlyNotice.svelte';
+  import { Narrowing } from './narrowing.svelte';
   import { ask } from './Confirm.svelte';
   import { TableSort } from './sort.svelte';
   import { RESOURCES_TABS, testHash } from './nav';
-  import { checksOf } from './objectChanges';
+  import { checksOf, standingOf } from './objectChanges';
   import { editable } from './access';
   import { names } from './names.svelte';
   import {
@@ -34,7 +40,10 @@
     type TestResult,
   } from './api';
 
+  let { only }: { only?: string[] } = $props();
+
   const readOnly = !editable();
+  const narrowing = new Narrowing(() => only);
 
   let tests: TestSummary[] = $state([]);
   let samples: SampleSummary[] = $state([]);
@@ -50,11 +59,8 @@
   const nameOf = (kind: 'pipelines' | 'routes', id: string) =>
     names.of(currentBranch(), currentScope(), kind, id);
 
-  /** What a test covers: for an end-to-end test the routes its sample takes, else its pipelines. */
-  function coversOf(t: TestSummary): string {
-    if (t.routes?.length) return `via ${t.routes.map((r) => nameOf('routes', r)).join(', ')}`;
-    return t.pipelines.map((p) => nameOf('pipelines', p)).join(', ');
-  }
+  /** The routes an end-to-end test's sample takes. */
+  const routesOf = (t: TestSummary) => (t.routes ?? []).map((r) => nameOf('routes', r)).join(', ');
 
   /** The name a row shows for its sample: the sample's id when the sample is gone. */
   const sampleNameOf = (t: TestSummary) => samples.find((s) => s.id === t.sample)?.name ?? t.sample;
@@ -62,24 +68,41 @@
   /** Sort rank: failing, could not run, passing, not run yet; what needs a decision comes first. */
   function standing(t: TestSummary): number {
     const r = results[t.id];
-    return !r ? 3 : r.error ? 1 : r.verdict?.passed ? 2 : 0;
+    return r ? { failing: 0, error: 1, passing: 2 }[standingOf(r)] : 3;
   }
 
-  const sort = new TableSort<'result' | 'name' | 'covers' | 'sample' | 'checks'>();
+  let shown = $derived(tests.filter((t) => narrowing.keeps(t.id)));
+  const sort = new TableSort<'result' | 'name' | 'sample' | 'checks'>();
   let sorted = $derived(
     sort.apply(
-      [...tests].sort((a, b) => standing(a) - standing(b) || a.name.localeCompare(b.name)),
-      {
-        result: standing,
-        name: (t) => t.name,
-        covers: coversOf,
-        sample: sampleNameOf,
-        checks: checksOf,
-      },
+      [...shown].sort((a, b) => standing(a) - standing(b) || a.name.localeCompare(b.name)),
+      { result: standing, name: (t) => t.name, sample: sampleNameOf, checks: checksOf },
     ),
   );
-  let failing = $derived(tests.filter((t) => standing(t) === 0).length);
-  let passing = $derived(tests.filter((t) => standing(t) === 2).length);
+  /** The rows under each heading: a pipeline's tests under the pipeline's name, and the end-to-end ones under their
+   * own. The headings go by their rows' worst standing (failing, then could not run, then passing), then by name with
+   * the end-to-end ones last among equals. Under each, the tests keep the order the sort gave them. */
+  let groups = $derived.by(() => {
+    const by = new Map<string, TestSummary[]>();
+    for (const t of sorted) {
+      const key = t.pipeline ?? '';
+      const rows = by.get(key) ?? [];
+      rows.push(t);
+      by.set(key, rows);
+    }
+    return [...by]
+      .map(([key, rows]) => ({
+        key,
+        heading: key ? nameOf('pipelines', key) : 'end-to-end',
+        rank: Math.min(...rows.map(standing)),
+        rows,
+      }))
+      .sort(
+        (a, b) =>
+          a.rank - b.rank || Number(!a.key) - Number(!b.key) || a.heading.localeCompare(b.heading),
+      );
+  });
+  const tallied = (rank: number) => shown.filter((t) => standing(t) === rank).length;
 
   async function load() {
     loading = true;
@@ -136,9 +159,9 @@
       it produces.
     </p>
   {:else}
+    <OnlyNotice {narrowing} ids={tests.map((t) => t.id)} />
     <p class="tally">
-      {#if failing > 0}<span class="failing">{failing} failing</span>{/if}
-      {#if passing > 0}<span class="passing">{passing} passing</span>{/if}
+      <TestTally failing={tallied(0)} errored={tallied(1)} passing={tallied(2)} />
     </p>
     <div class="table-wrap">
       <table class="readings">
@@ -148,9 +171,6 @@
               ><SortButton {sort} key="result">Result</SortButton></th
             >
             <th aria-sort={sort.aria('name')}><SortButton {sort} key="name">Test</SortButton></th>
-            <th aria-sort={sort.aria('covers')}
-              ><SortButton {sort} key="covers">Covers</SortButton></th
-            >
             <th aria-sort={sort.aria('sample')}
               ><SortButton {sort} key="sample">Sample</SortButton></th
             >
@@ -161,54 +181,49 @@
           </tr>
         </thead>
         <tbody>
-          {#each sorted as t (t.id)}
-            {@const r = results[t.id]}
-            {@const fails = !!r?.verdict && !r.verdict.passed}
-            <tr class:open={fails}>
-              <td>
-                {#if !r}
-                  <span class="dim">Running…</span>
-                {:else if r.error}
-                  <span class="warn" title={r.error}>Could not run</span>
-                {:else if r.verdict?.passed}
-                  <span class="passing">Passing</span>
-                {:else}
-                  <span class="failing">Failing</span>
-                {/if}
-              </td>
-              <td><strong>{t.name}</strong></td>
-              <td class="mono dim" data-label="Covers">{coversOf(t)}</td>
-              <td class="mono dim" data-label="Sample">{sampleNameOf(t)}</td>
-              <td class="mono" data-label="Checks">{checksOf(t)}</td>
-              <td class="row-actions">
-                <a class="btn" href={testHash(t.id, t.sample, t.pipeline)}>Open</a>
-                {#if !readOnly}
-                  <RowMenu label="More actions for {t.name}">
-                    {#if areas.length > 1}
-                      <button
-                        type="button"
-                        class="pick"
-                        onclick={() => (moving = { part: 'test', id: t.id, name: t.name })}
-                        >Move to&hellip;</button
+          {#each groups as g (g.key)}
+            <tr class="bandrow"><td class="whole" colspan="5">{g.heading}</td></tr>
+            {#each g.rows as t (t.id)}
+              {@const r = results[t.id]}
+              {@const fails = !!r?.verdict && !r.verdict.passed}
+              <tr class:open={fails}>
+                <td><TestStanding standing={r && standingOf(r)} error={r?.error} /></td>
+                <td
+                  ><strong>{t.name}</strong>
+                  {#if t.routes?.length}<span class="mono dim">via {routesOf(t)}</span>{/if}</td
+                >
+                <td class="mono dim" data-label="Sample">{sampleNameOf(t)}</td>
+                <td class="mono" data-label="Checks">{checksOf(t)}</td>
+                <td class="row-actions">
+                  <a class="btn" href={testHash(t.id, t.sample, t.pipeline)}>Open</a>
+                  {#if !readOnly}
+                    <RowMenu label="More actions for {t.name}">
+                      {#if areas.length > 1}
+                        <button
+                          type="button"
+                          class="pick"
+                          onclick={() => (moving = { part: 'test', id: t.id, name: t.name })}
+                          >Move to&hellip;</button
+                        >
+                      {/if}
+                      <Button
+                        class="pick remove"
+                        onclick={() => remove(t)}
+                        disabled={deleting.on ? BUSY : ''}>Delete</Button
                       >
-                    {/if}
-                    <Button
-                      class="pick remove"
-                      onclick={() => remove(t)}
-                      disabled={deleting.on ? BUSY : ''}>Delete</Button
-                    >
-                  </RowMenu>
-                {/if}
-              </td>
-            </tr>
-            {#if fails}
-              <tr class="open">
-                <td></td>
-                <td class="whole" colspan="5">
-                  <TestFailure verdict={r!.verdict!} routeName={(id) => nameOf('routes', id)} />
+                    </RowMenu>
+                  {/if}
                 </td>
               </tr>
-            {/if}
+              {#if fails}
+                <tr class="open">
+                  <td></td>
+                  <td class="whole" colspan="4">
+                    <TestFailure verdict={r!.verdict!} routeName={(id) => nameOf('routes', id)} />
+                  </td>
+                </tr>
+              {/if}
+            {/each}
           {/each}
         </tbody>
       </table>
@@ -225,14 +240,6 @@
     display: flex;
     gap: 1rem;
     margin: 1.2rem 0 0.6rem;
-  }
-  .passing {
-    color: var(--added);
-    font-weight: 600;
-  }
-  .failing {
-    color: var(--error);
-    font-weight: 600;
   }
   tr.open:has(+ tr.open),
   tr.open:has(+ tr.open) td {

@@ -173,9 +173,8 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await expect
     .poll(
       async () =>
-        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
-          (t: { kind: string }) => t.kind === 'source',
-        ).length,
+        (await api.get('/api/series?metric=smeltr_rows_polled_total&by=source&windowMinutes=5'))
+          .series.length,
       {
         timeout: 60_000,
       },
@@ -304,9 +303,8 @@ test('History lists the quiet spells a sparse source learned, and an editor pick
   await expect
     .poll(
       async () =>
-        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
-          (t: { kind: string }) => t.kind === 'source',
-        ).length,
+        (await api.get('/api/series?metric=smeltr_rows_polled_total&by=source&windowMinutes=5'))
+          .series.length,
       {
         timeout: 60_000,
       },
@@ -398,9 +396,8 @@ test('senders that stop while their source stays within its normal are warned of
   await expect
     .poll(
       async () =>
-        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
-          (t: { kind: string }) => t.kind === 'source',
-        ).length,
+        (await api.get('/api/series?metric=smeltr_rows_polled_total&by=source&windowMinutes=5'))
+          .series.length,
       {
         timeout: 60_000,
       },

@@ -8,7 +8,7 @@ import subprocess
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # The reference generators' driver (`examples/demo-traffic.rs`): the live traffic, the samples and the lookup tables
 # all come from it, so a pipeline here joins on what the logs carry.
-TRAFFIC = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "release", "examples", "demo-traffic")
+TRAFFIC = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "optimized", "examples", "demo-traffic")
 
 
 def traffic(*args):
@@ -543,6 +543,11 @@ def records(topic, n, seed):
     return [{"_raw": line} for line in traffic("sample", topic, n, seed).splitlines()]
 
 
+def pasted(records):
+    """The table of `records` a person pasted, as the leader makes it (`CaptureBatch::pasted`)."""
+    return {"columns": [{"name": "...", "type": "variant"}], "rows": [{"values": [r]} for r in records]}
+
+
 def panos_sample():
     # Ten sessions picked for variety: web, SaaS, DNS, a DMZ server and a denied app.
     want = ["ms-office365-base", "ssl", "dns-base", "slack-base", "bittorrent", "github-base", "ms-teams",
@@ -563,17 +568,17 @@ def samples():
     return {
         "network": [
             {"id": "panos-traffic-sample", "name": "PAN-OS traffic, mixed sessions", "source": "panw-firewalls",
-             "records": panos_sample()},
+             **pasted(panos_sample())},
             {"id": "fortigate-sample", "name": "FortiGate forward traffic", "source": "fortigate-firewalls",
-             "records": records("syslog.fortigate", 10, 21)},
+             **pasted(records("syslog.fortigate", 10, 21))},
         ],
         "apps": [
             {"id": "nginx-sample", "name": "Storefront access log", "source": "nginx-access",
-             "records": records("web.nginx.access", 12, 31)},
+             **pasted(records("web.nginx.access", 12, 31))},
             {"id": "auth-sample", "name": "Bastion auth.log", "source": "linux-auth",
-             "records": records("syslog.auth", 10, 41)},
+             **pasted(records("syslog.auth", 10, 41))},
             {"id": "cloudtrail-sample", "name": "CloudTrail management and data events", "source": "aws-cloudtrail",
-             "records": records("aws.cloudtrail", 8, 51)},
+             **pasted(records("aws.cloudtrail", 8, 51))},
         ],
     }
 
@@ -584,20 +589,20 @@ def waiting():
     return {
         "network": [
             {"id": "panos-threat-sample", "name": "PAN-OS threats", "source": "panw-threats",
-             "records": records("syslog.panos.threat", 10, 61)},
+             **pasted(records("syslog.panos.threat", 10, 61))},
             {"id": "versa-sample", "name": "Versa flow, access, IDP and SLA logs", "source": "versa-sdwan",
-             "records": records("syslog.versa", 12, 73)},
+             **pasted(records("syslog.versa", 12, 73))},
             {"id": "netscout-sample", "name": "Arbor Edge Defense events", "source": "netscout-aed",
-             "records": records("syslog.netscout", 10, 81)},
+             **pasted(records("syslog.netscout", 10, 81))},
             {"id": "snmp-sample", "name": "Router interface counters", "source": "router-snmp",
-             "records": records("metrics.snmp.interface", 10, 91)},
+             **pasted(records("metrics.snmp.interface", 10, 91))},
         ],
         "apps": [
             {"id": "elastic-agent-linux-sample", "name": "Elastic Agent, Linux hosts", "source": "elastic-agent-linux",
-             "records": records("elastic.agent.linux", 10, 101)},
+             **pasted(records("elastic.agent.linux", 10, 101))},
             {"id": "elastic-agent-windows-sample", "name": "Elastic Agent, Windows hosts",
-             "source": "elastic-agent-windows", "records": records("elastic.agent.windows", 10, 111)},
+             "source": "elastic-agent-windows", **pasted(records("elastic.agent.windows", 10, 111))},
             {"id": "sentinel-sample", "name": "Sentinel tables from Event Hubs", "source": "sentinel-eventhub",
-             "records": records("azure.eventhub.sentinel", 6, 121)},
+             **pasted(records("azure.eventhub.sentinel", 6, 121))},
         ],
     }

@@ -68,6 +68,8 @@ pub fn backfill_env(env_var: &str, value: Option<impl ToString>) {
     let current = std::env::var(env_var).ok();
     if should_backfill(current.as_deref()) {
         tracing::debug!(name: "setting_from_file", target: "processes", var = env_var, "a setting the environment did not give was taken from the config file");
+        // SAFETY: `start` calls this before it starts a thread. As a Windows service `start` is on a second thread
+        // itself, and there the environment may be set from any thread.
         unsafe { std::env::set_var(env_var, value.to_string()) };
     }
 }
@@ -83,6 +85,8 @@ pub fn never_proxy_this_host(own: Option<std::net::IpAddr>) {
     let listed = ["NO_PROXY", "no_proxy"].map(|var| std::env::var(var).unwrap_or_default());
     let value = with_this_host(&listed.join(","), own);
     for var in ["NO_PROXY", "no_proxy"] {
+        // SAFETY: `start` calls this before it starts a thread. As a Windows service `start` is on a second thread
+        // itself, and there the environment may be set from any thread.
         unsafe { std::env::set_var(var, &value) };
     }
 }

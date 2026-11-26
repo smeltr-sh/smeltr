@@ -15,7 +15,17 @@
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
   import { NOT_IN_DEMO, editable } from './access';
-  import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
+  import {
+    sharedConfig,
+    listPipelines,
+    listTests,
+    deletePipeline,
+    type PipelineDto,
+    type TestSummary,
+  } from './api';
+  import { narrowedHash } from './connections';
+  import { count } from './time';
+  import TestIcon from './TestIcon.svelte';
   import ExportDialog from './ExportDialog.svelte';
   import ImportDialog from './ImportDialog.svelte';
   import RowMenu from './RowMenu.svelte';
@@ -57,11 +67,25 @@
   let moving = $state<MoveTarget | null>(null);
   let areas: Area[] = $state([]);
 
+  // This area's tests, for the Tests column, which counts them and runs none: the list stays as quick with thousands
+  // of tests as with none, and the Tests tab it links to says how they stand. Loaded with the pipelines, so a delete
+  // or a move counts again. A failure to load them leaves the column without them.
+  let tests: TestSummary[] = $state([]);
+  async function loadTests() {
+    tests = await listTests()
+      .then((res) => res.tests)
+      .catch(() => []);
+  }
+
+  /** Pipeline `id`'s tests: each that runs it, its own and the end-to-end ones whose records it takes. */
+  const testIdsOf = (id: string) => tests.filter((t) => t.pipelines.includes(id)).map((t) => t.id);
+
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
-  const pipelineSort = new TableSort<'name' | 'steps'>();
+  const pipelineSort = new TableSort<'name' | 'steps' | 'tests'>();
   const pipelineColumns = {
     name: (p: PipelineDto) => p.name,
     steps: (p: PipelineDto) => p.steps.length,
+    tests: (p: PipelineDto) => testIdsOf(p.id).length,
   };
   const narrowing = new Narrowing(() => only);
   const kept = (p: PipelineDto) => narrowing.keeps(p.id);
@@ -71,6 +95,7 @@
   );
 
   async function load() {
+    void loadTests();
     loading = true;
     loadFailed = false;
     bundleProblems = [];
@@ -162,13 +187,16 @@
             <th aria-sort={pipelineSort.aria('steps')}
               ><SortButton sort={pipelineSort} key="steps">Steps</SortButton></th
             >
+            <th aria-sort={pipelineSort.aria('tests')}
+              ><SortButton sort={pipelineSort} key="tests">Tests</SortButton></th
+            >
             <th></th>
           </tr>
         </thead>
         <tbody>
           {#if sortedSharedPipelines.length > 0}
             <tr class="bandrow"
-              ><td class="whole" colspan="3"
+              ><td class="whole" colspan="4"
                 >from shared/ &mdash; every worker group can call or route to these</td
               ></tr
             >
@@ -179,17 +207,28 @@
                   <span class="shared-chip"><span class="shared-dot"></span>shared</span></td
                 >
                 <td class="dim" data-label="Steps">{p.steps.length}</td>
+                <td></td>
                 <td class="row-actions">
                   <EditInShared hash="#/build/pipelines" />
                 </td>
               </tr>
             {/each}
-            <tr class="bandrow"><td class="whole" colspan="3">this worker group</td></tr>
+            <tr class="bandrow"><td class="whole" colspan="4">this worker group</td></tr>
           {/if}
           {#each sortedPipelines as p (p.id)}
+            {@const ids = testIdsOf(p.id)}
             <tr>
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
               <td class="dim" data-label="Steps">{p.steps.length}</td>
+              <td data-label="Tests">
+                {#if ids.length === 0}
+                  <span class="dim">none</span>
+                {:else}
+                  <a class="glyphed" href={narrowedHash('#/build/tests', ids)}
+                    ><TestIcon />{count(ids.length, 'test')}</a
+                  >
+                {/if}
+              </td>
               <td class="row-actions">
                 <RowMenu label="More actions for {p.name || p.id}">
                   <button
@@ -240,16 +279,6 @@
 
 <style>
   /* What `shared/` gave this group: listed, because the group runs it, and not this page's to change. */
-  .bandrow td {
-    padding-top: 0.9rem;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    border-bottom: 1px solid var(--border);
-  }
-
   tr.fromshared td {
     color: var(--dim);
   }

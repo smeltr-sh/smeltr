@@ -11,11 +11,13 @@
 //!
 //! Live, the same draws, pointed at the Splunk `just live-up` runs, land there and are searched back.
 
+use smeltr::core::id::DestId;
+use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -1083,8 +1085,15 @@ fn mismatch_option(c: &SplunkHecDestinationConfig) -> &'static str {
 
 fn build(c: &SplunkHecDestinationConfig, secrets: &HeldSecrets) -> Result<Box<dyn Destination>, String> {
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-    smeltr::io::build_destination(&DestinationKind::SplunkHec(c.clone()), 0, "d", metrics, secrets, None)
-        .map_err(|e| e.to_string())
+    smeltr::io::build_destination(
+        &DestinationKind::SplunkHec(c.clone()),
+        DestId::new(0),
+        "d",
+        metrics,
+        secrets,
+        None,
+    )
+    .map_err(|e| e.to_string())
 }
 
 // -- the collector in this process -------------------------------------------------------------------------------
@@ -1203,7 +1212,7 @@ impl Drop for FakeHec {
 fn converse<S: Read + Write>(stream: S, hec: &Hec, seen: &Mutex<Seen>) {
     let mut reader = BufReader::new(stream);
     while let Some(request) = read_request(&mut reader) {
-        let (status, body) = answer(hec, &mut seen.lock().unwrap(), &request);
+        let (status, body) = answer(hec, &mut seen.lock(), &request);
         let reason = match status {
             200 => "OK",
             400 => "Bad Request",
@@ -1652,7 +1661,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
     let batches: Vec<Vec<OwnedRecord>> = sent.iter().map(|b| b.iter().map(|s| s.row.clone()).collect()).collect();
     let written = destination::write(d.as_mut(), &batches, Duration::from_secs(60));
     drop(d);
-    let seen = collector.seen.lock().unwrap();
+    let seen = collector.seen.lock();
     if mismatch {
         // No row was delivered, so what the rows drew was not checked.
         reached.forget_where(|n| n.starts_with("row.") || n == "batches.several");

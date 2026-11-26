@@ -27,6 +27,7 @@ Fixing or extending a mechanism that already exists is ordinary work and needs n
 - Say what a thing is and what must hold. Do not list what it is not.
 - One name for one thing. A second name makes it look like a second thing.
 - Do not tell the document's own history. No "this used to say."
+- A comment does not tell the code's history either. It says why the code is the way it is now.
 - A picture is better than text. When the shape is the point — how it flows, what comes after what — draw it. Mermaid diagrams are our friend.
 - Let the code say what it does. The comment says why, when why is not plain.
 - A function's comment gives the caller what he needs to know. A line comment says why that line is the way it is.
@@ -40,6 +41,23 @@ Fixing or extending a mechanism that already exists is ordinary work and needs n
 - Put your reasoning only where order is the point — what must come before what, and why.
 - Say what must be true. A signature or a default value, copied into a design doc, goes stale the day the code changes, because code cannot go stale against itself. Name the thing. Let `src/` carry the detail.
 
+## Code
+
+- A `String` error is for a person to read. When a caller, a status code or a test needs to know which failure it
+  was, return an enum that names it.
+- An invariant lives in a type. When only one variant can reach a line, give that line a type that holds only that
+  variant. `unreachable!` is for what the compiler cannot be told.
+- An id is a type of its own, so one kind cannot be passed for another. A time or a duration that crosses a function
+  boundary is a type too; a unit in a name, like `since_ms`, belongs where the value is stored or sent.
+- A mutex's type decides what a poisoned lock means for the data it guards, so the policy is chosen where the mutex
+  is declared.
+- Every `unsafe` block has a `// SAFETY:` line that says why it is sound.
+- Use `as` where it cannot lose bits. A cast that can uses `try_from`, or a comment says why the value fits.
+- A test that expects something waits for it, up to a deadline, through the helper in `tests/harness`. A fixed sleep
+  is for showing that nothing happens, and its length is a named constant.
+- A function is private until another module needs it, then `pub(crate)`; it is `pub` only where `src/bin` or
+  `tests/` calls it.
+
 ## Stored formats
 
 What a leader stores and what builds send each other outlive the build that wrote them
@@ -52,15 +70,17 @@ What a leader stores and what builds send each other outlive the build that wrot
 
 ## Checks
 
-One thread watches main. On each commit that lands there it runs `just check`, which on main itself is
-`just check-all`, and the whole of `just check-gui`, and it fixes a failure in a PR of its own before other work. John
-runs `just check-all` before a merge to main. Nothing runs on a PR.
+GitHub runs the checks. Each push to a pull request runs `just check` (`.github/workflows/check.yml`). Each night that
+main has moved, GitHub runs the rest on main (`.github/workflows/nightly.yml`): `just check-live`, as
+`just check-all` and `just live-tests` on runners of their own, the whole of `just check-gui`, `just check-fuzz`, `just check-kerberos`, and `just check-rust`
+on Windows. One thread watches that nightly run and fixes a failure in a PR of its own before other work. John runs
+`just check-all` before a merge to main.
 
 Every other thread tests only what it changed, once, before its push: the tests of the modules it touched
 (`SMELTR_NO_GUI=1 cargo nextest run <module>::`, as the checks build them, so neither rebuilds for the other), and
 after a change to the GUI or the API it calls, the specs it touched (`just check-gui specs/<name>.spec.ts`). It runs no `just check`, `just check-all` or whole `just check-gui`. A thread
-that changes `Cargo.toml`, `Cargo.lock` or the Kerberos tests also runs `just check-kerberos`, which the main
-checks leave out.
+that changes `Cargo.toml`, `Cargo.lock` or the Kerberos tests also runs `just check-kerberos`, which `just check`
+leaves out.
 
 A dependency change also needs `just notices`: nothing else keeps
 `THIRD-PARTY-NOTICES.md` current.
@@ -74,11 +94,10 @@ Live checks are expensive. Run one only when a change touches a live
 integration directly and `just check` cannot cover it. Never run the whole
 `just check-live`: run only the lines of its recipe the change affects, with
 the `SMELTR_LIVE_TESTS=required` and service variables the recipe sets for
-them. Start the Docker daemon first, then `just live-up`. Windows is checked
-nowhere.
+them. Start the Docker daemon first, then `just live-up`.
 
 While building, run the app with `just build-dev` or `just run-dev`, and take screenshots from it. `just build` and
-`just run` are for checking how a release build behaves.
+`just run` are for checking how an optimized build behaves.
 
 A machine builds into one `target/`, the main checkout's. A worktree or second clone sets `CARGO_TARGET_DIR` to
 it, so dependencies build once and a new checkout recompiles only smeltr. Cargo commands on one `target/` run one
@@ -95,8 +114,7 @@ draw from `src/fuzz.rs` (`crate::fuzz` in the crate's tests, `harness::fuzz` und
 seed.
 
 The offline fuzzers run in `just check-fuzz`, which picks them by the `fuzz` in their test names, so a fuzzer's
-module or file is named for it. They run weekly, in the scheduled check that also runs `cargo deny check advisories`
-and `npm audit`, and after a change to anything a fuzzer exercises: a source, a destination, a parser or the
+module or file is named for it. They run in the nightly check on main, and after a change to anything a fuzzer exercises: a source, a destination, a parser or the
 compiler. The live one is a live test like any other: it takes its service
 from `tests/live`, so it skips without one, and it gets its own line in `just check-live`.
 

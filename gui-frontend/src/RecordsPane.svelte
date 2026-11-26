@@ -26,14 +26,19 @@
   import RecordsGrid, { type GridRow, type TestOnScreen } from './RecordsGrid.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import { count } from './time';
+  import { downloadRecords } from './download';
+  import { reported } from './errors.svelte';
   import { type Declared } from './recordDiff';
   import {
     sampleSource,
-    type LockChoice,
+    type ShownCut,
     type PreviewResult,
     type PreviewRow,
+    heldSession,
+    type CaptureBatchDto,
     type SampleRecordDto,
   } from './api';
+  import { tableRecords } from './capture';
 
   let {
     pipelineId,
@@ -56,6 +61,7 @@
     relocking = false,
     onsaveoutput,
     saveinput,
+    outputOf,
     onjump,
     onassign,
     preview,
@@ -90,14 +96,15 @@
     lockBlocked: string;
     /** Locks the fields and rows on screen as a test, by `PreviewRow.row`; absent where the pipeline is read
      * only. */
-    onlock?: (choice: LockChoice) => void;
+    onlock?: (choice: ShownCut) => void;
     /** Locking replaces a test rather than making one. */
     relocking?: boolean;
     /** Saves the output rows on screen as a sample, by `PreviewRow.row`; absent where no sample may be saved. */
-    onsaveoutput?: (rows: Set<number>) => void;
-    /** The input's record count and its save action, given while the input is a capture not saved yet. The output's
-     * save button then opens a menu of both. */
+    onsaveoutput?: (cut: ShownCut) => void;
+    /** The input's record count and its save action, given while the input is a capture not saved yet. */
     saveinput?: { records: number; onsave: () => void };
+    /** The output rows `rows`, by `PreviewRow.row`, each with every field, as a sample holds them. */
+    outputOf: (rows: number[], fields?: string[]) => Promise<CaptureBatchDto>;
     onjump: (step: Step) => void;
     /** Writes a field in an eval step; absent where the pipeline is read only. */
     onassign?: (path: string) => void;
@@ -241,8 +248,19 @@
     };
   });
 
-  /** The menu of the input's and the output's saves is open. */
+  /** The menu of the input's and the output's saves and downloads is open. */
   let savingOpen = $state(false);
+
+  async function downloadOutput(rows: number[]) {
+    try {
+      downloadRecords(
+        `${pipelineId}-output`,
+        tableRecords(await outputOf(rows)).map((held) => held.record),
+      );
+    } catch (e) {
+      reported(e);
+    }
+  }
 </script>
 
 <section
@@ -279,37 +297,54 @@
     {/snippet}
     {#snippet actions(kept, shown)}
       <!-- The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. -->
-      {@const outputShown = new Set(kept.filter((r) => !r.dropped).map((r) => r.key))}
-      {#if onsaveoutput && saveinput}
-        <ChipPicker kind="columns" compact bind:open={savingOpen}>
-          {#snippet face()}Save as sample <span aria-hidden="true">▾</span>{/snippet}
-          <!-- Choosing closes the menu (`ChipPicker` leaves that to its caller). -->
-          <div onclick={() => (savingOpen = false)} role="presentation">
-            <button type="button" class="pick" onclick={saveinput.onsave}
-              >Save input as sample <span class="dim"
-                >Your {count(saveinput.records, 'record')}</span
-              ></button
-            >
+      {@const output = { fields: shown, rows: kept.filter((r) => !r.dropped).map((r) => r.key) }}
+      {#snippet rowsOnScreen()}<span class="dim"
+          >The {count(output.rows.length, 'row')} on screen</span
+        >{/snippet}
+      <ChipPicker kind="columns" compact bind:open={savingOpen}>
+        {#snippet face()}{onsaveoutput ? 'Save or download' : 'Download'}
+          <span aria-hidden="true">▾</span>{/snippet}
+        <!-- Choosing closes the menu (`ChipPicker` leaves that to its caller). -->
+        <div onclick={() => (savingOpen = false)} role="presentation">
+          {#if onsaveoutput}
+            {#if saveinput}
+              <button type="button" class="pick" onclick={saveinput.onsave}
+                >Save input as sample <span class="dim"
+                  >Your {count(saveinput.records, 'record')}</span
+                ></button
+              >
+            {/if}
             <Button
               type="button"
               class="pick"
-              onclick={() => onsaveoutput(outputShown)}
-              disabled={outputShown.size === 0 ? INCOMPLETE : ''}
+              onclick={() => onsaveoutput(output)}
+              disabled={output.rows.length === 0 ? INCOMPLETE : ''}
               >Save output as sample <span class="dim"
-                >The {count(outputShown.size, 'row')} on screen</span
+                >The {count(shown.length, 'field')} on {count(output.rows.length, 'row')} on screen</span
               ></Button
             >
-          </div>
-        </ChipPicker>
-      {:else if onsaveoutput}
-        <Button
-          type="button"
-          onclick={() => onsaveoutput(outputShown)}
-          disabled={outputShown.size === 0 ? INCOMPLETE : ''}
-        >
-          Save output as sample
-        </Button>
-      {/if}
+            <hr />
+          {/if}
+          <button
+            type="button"
+            class="pick"
+            onclick={() => downloadRecords(`${pipelineId}-input`, sampleRows)}
+            >Download input <span class="dim"
+              >{heldSession(selectedSample) ? 'Your ' : ''}{count(
+                sampleRows.length,
+                'record',
+              )}</span
+            ></button
+          >
+          <Button
+            type="button"
+            class="pick"
+            onclick={() => downloadOutput(output.rows)}
+            disabled={output.rows.length === 0 ? INCOMPLETE : ''}
+            >Download output {@render rowsOnScreen()}</Button
+          >
+        </div>
+      </ChipPicker>
       {#if onlock}
         <span class="dim"
           >The {count(shown.length, 'field')} on {count(kept.length, 'row')} on screen</span

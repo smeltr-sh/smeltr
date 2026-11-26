@@ -1,5 +1,7 @@
 //! The egress stage: one thread per destination, shared by every reader.
 
+use crate::harness::{wait_for, wait_until};
+use smeltr::core::id::DestId;
 use std::time::Duration;
 
 use smeltr::egress::Egress;
@@ -21,6 +23,9 @@ fn timeout() -> Duration {
     Duration::from_secs(5)
 }
 
+/// Long enough for the egress thread to have acted on what it was handed.
+const SETTLED: Duration = Duration::from_millis(50);
+
 /// Hand `rows` to `h` as `batch`, in one call, as a transform thread does.
 fn hand(h: &mut dyn Destination, batch: u64, rows: &[OutgoingRecord<'_>]) -> Dispatched {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
@@ -33,7 +38,14 @@ fn hand(h: &mut dyn Destination, batch: u64, rows: &[OutgoingRecord<'_>]) -> Dis
 #[test]
 fn every_reader_shares_one_destination_client() {
     let dest = FakeDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
 
     let mut readers: Vec<_> = (0..3).map(|_| egress.handle()).collect();
     for (i, h) in readers.iter_mut().enumerate() {
@@ -55,7 +67,14 @@ fn every_reader_shares_one_destination_client() {
 #[test]
 fn completions_go_back_to_the_reader_that_dispatched_them() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
 
     let mut first = egress.handle();
     let mut second = egress.handle();
@@ -65,15 +84,10 @@ fn completions_go_back_to_the_reader_that_dispatched_them() {
     hand(&mut second, 7, &[OutgoingRecord::new(b"from-second")]);
 
     // Wait for both to reach the destination, then acknowledge them.
-    let mut outstanding = Vec::new();
-    for _ in 0..200 {
-        outstanding = dest.outstanding();
-        if outstanding.len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(outstanding.len(), 2, "both batches reached the destination");
+    let outstanding = wait_for("both batches to reach the destination", timeout(), || {
+        Some(dest.outstanding()).filter(|sent| sent.len() == 2)
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
     for b in outstanding {
         dest.complete(b);
     }
@@ -97,17 +111,21 @@ fn completions_go_back_to_the_reader_that_dispatched_them() {
 #[test]
 fn a_finishing_destination_acknowledges_what_it_holds_without_waiting() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut reader = egress.handle();
     hand(&mut reader, 1, &[OutgoingRecord::new(b"held")]);
-    for _ in 0..200 {
-        if dest.outstanding().len() == 1 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the batch to reach the destination", timeout(), || {
+        dest.outstanding().len() == 1
+    });
     assert_eq!(dest.outstanding().len(), 1, "the batch reached the destination");
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(SETTLED);
     assert!(
         reader.poll_completions().unwrap().is_empty(),
         "nothing is acknowledged before finishing"
@@ -123,7 +141,14 @@ fn a_finishing_destination_acknowledges_what_it_holds_without_waiting() {
 #[test]
 fn a_batch_with_no_rows_for_this_destination_stays_off_the_queue() {
     let dest = FakeDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     assert!(matches!(hand(&mut h, 1, &[]), smeltr::io::Dispatched::Complete));
@@ -137,7 +162,14 @@ fn a_batch_with_no_rows_for_this_destination_stays_off_the_queue() {
 #[test]
 fn a_destination_that_never_drains_fails_the_reader() {
     let dest = FakeDestination::always_failing();
-    let mut egress = Egress::start(0, "d", Box::new(dest), Duration::from_millis(200), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest),
+        Duration::from_millis(200),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
@@ -155,7 +187,7 @@ fn a_transient_failure_is_re_sent_from_here_not_re_run_upstream() {
     // The first two attempts at this row fail; the third works.
     dest.fail_next_sends(2);
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_secs(5),
@@ -185,7 +217,7 @@ fn each_destination_holds_its_own_budget() {
     let big = vec![b'x'; budget / 2];
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_millis(300),
@@ -197,12 +229,9 @@ fn each_destination_holds_its_own_budget() {
     for batch in 0..2 {
         hand(&mut h, batch, &[OutgoingRecord::new(&big)]);
     }
-    for _ in 0..200 {
-        if dest.outstanding().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("both batches to reach the destination", timeout(), || {
+        dest.outstanding().len() == 2
+    });
     assert_eq!(dest.outstanding().len(), 2, "both were sent");
 
     let started = std::time::Instant::now();
@@ -223,16 +252,14 @@ fn each_destination_holds_its_own_budget() {
 fn freed_room_wakes_the_pool() {
     let dest = AsyncDestination::new();
     let pool = Arc::new(Ready::new());
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), 1, metrics()).with_pool(pool.clone());
+    let mut egress =
+        Egress::start(DestId::new(0), "d", Box::new(dest.clone()), timeout(), 1, metrics()).with_pool(pool.clone());
     let mut h = egress.handle();
 
     hand(&mut h, 1, &[OutgoingRecord::new(b"fills the budget alone")]);
-    for _ in 0..200 {
-        if dest.outstanding().len() == 1 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the batch to reach the destination", timeout(), || {
+        dest.outstanding().len() == 1
+    });
     let Dispatched::NoRoom { bytes, .. } = hand(&mut h, 2, &[OutgoingRecord::new(b"row")]) else {
         panic!("the one unit fills the budget");
     };
@@ -258,7 +285,7 @@ fn rows_sent_but_not_acknowledged_still_count_against_the_budget() {
     let big = vec![b'x'; BUDGET / 2];
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_millis(300),
@@ -271,12 +298,9 @@ fn rows_sent_but_not_acknowledged_still_count_against_the_budget() {
     for batch in 0..2 {
         hand(&mut h, batch, &[OutgoingRecord::new(&big)]);
     }
-    for _ in 0..200 {
-        if dest.outstanding().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("both batches to reach the destination", timeout(), || {
+        dest.outstanding().len() == 2
+    });
     assert_eq!(dest.outstanding().len(), 2, "both were sent");
 
     let Dispatched::NoRoom { bytes, .. } = hand(&mut h, 2, &[OutgoingRecord::new(&big)]) else {
@@ -287,12 +311,9 @@ fn rows_sent_but_not_acknowledged_still_count_against_the_budget() {
     for b in dest.outstanding() {
         dest.complete(b);
     }
-    for _ in 0..200 {
-        if h.poll_completions().map(|c| !c.is_empty()).unwrap_or(false) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the rows to be acknowledged", timeout(), || {
+        h.poll_completions().map(|c| !c.is_empty()).unwrap_or(false)
+    });
     assert!(h.has_room(big.len()), "room again once the rows are acknowledged");
     assert_eq!(hand(&mut h, 3, &[OutgoingRecord::new(&big)]), Dispatched::InFlight);
 }
@@ -301,7 +322,14 @@ fn rows_sent_but_not_acknowledged_still_count_against_the_budget() {
 #[test]
 fn dropping_the_stage_releases_a_waiting_reader() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest), Duration::from_secs(30), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest),
+        Duration::from_secs(30),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
@@ -325,17 +353,21 @@ fn dropping_the_stage_releases_a_waiting_reader() {
 #[test]
 fn a_batch_acknowledged_while_the_queue_is_idle_still_comes_back() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     hand(&mut h, 3, &[OutgoingRecord::new(b"row")]);
 
-    for _ in 0..200 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the batch to reach the destination", timeout(), || {
+        !dest.outstanding().is_empty()
+    });
 
     for b in dest.outstanding() {
         dest.complete(b);
@@ -357,7 +389,7 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_millis(500),
@@ -387,7 +419,7 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
 fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_own() {
     /// Reports whatever it is told to, so this test is about egress reading the figure, not about what sets it.
     #[derive(Clone)]
-    struct Reporting(Arc<std::sync::Mutex<Option<usize>>>);
+    struct Reporting(Arc<smeltr::sync::Mutex<Option<usize>>>);
 
     impl Destination for Reporting {
         fn deliver(
@@ -401,7 +433,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
             Ok(())
         }
         fn concurrency(&mut self) -> Option<usize> {
-            *self.0.lock().unwrap()
+            *self.0.lock()
         }
     }
 
@@ -412,10 +444,10 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
         })
     };
 
-    let level = Arc::new(std::sync::Mutex::new(Some(7)));
+    let level = Arc::new(smeltr::sync::Mutex::new(Some(7)));
     let registry = Arc::new(Metrics::new());
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(Reporting(level.clone())),
         timeout(),
@@ -425,20 +457,17 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     let mut h = egress.handle();
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
     h.flush().unwrap();
-    for _ in 0..200 {
-        if gauge(&registry).is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the destination to report the level it allows", timeout(), || {
+        gauge(&registry).is_some()
+    });
     assert_eq!(gauge(&registry), Some(7.0), "the level it allows");
 
     // A destination with no loop of its own leaves the series absent.
     let quiet = Arc::new(Metrics::new());
     let mut egress = Egress::start(
-        1,
+        DestId::new(1),
         "d",
-        Box::new(Reporting(Arc::new(std::sync::Mutex::new(None)))),
+        Box::new(Reporting(Arc::new(smeltr::sync::Mutex::new(None)))),
         timeout(),
         BUDGET,
         MetricsHandle::new(quiet.clone(), "egress-1"),
@@ -446,7 +475,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     let mut h = egress.handle();
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
     h.flush().unwrap();
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(SETTLED);
     assert_eq!(gauge(&quiet), None, "no loop, no series");
 }
 
@@ -459,7 +488,7 @@ fn a_stall_and_its_recovery_are_reported_on_the_destination_gauge() {
     let dest = FakeDestination::new();
     dest.fail_next_sends(2);
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_secs(5),
@@ -498,7 +527,7 @@ fn a_client_that_reaches_no_broker_marks_its_destination_down_until_it_does() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -513,13 +542,9 @@ fn a_client_that_reaches_no_broker_marks_its_destination_down_until_it_does() {
         })
     };
     let wait_for = |want: Option<f64>| {
-        for _ in 0..200 {
-            if gauge() == want {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(gauge(), want);
+        wait_until(&format!("the destination's health to read {want:?}"), timeout(), || {
+            gauge() == want
+        });
     };
 
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
@@ -539,7 +564,7 @@ fn neither_a_landed_send_nor_a_broker_coming_back_clears_the_other_cause() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -553,39 +578,35 @@ fn neither_a_landed_send_nor_a_broker_coming_back_clears_the_other_cause() {
             _ => None,
         })
     };
-    let wait_until = |done: &dyn Fn() -> bool| {
-        for _ in 0..200 {
-            if done() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("timed out");
-    };
-
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
-    wait_until(&|| !dest.outstanding().is_empty());
+    wait_until("the batch to reach the destination", timeout(), || {
+        !dest.outstanding().is_empty()
+    });
     dest.set_connection_error(Some("1/1 brokers are down"));
-    wait_until(&|| gauge() == Some(0.0));
+    wait_until("the destination to be marked down", timeout(), || gauge() == Some(0.0));
 
     // A batch lands while the client still reaches nothing: down again by the next pass.
     let batch = dest.outstanding()[0];
     dest.complete(batch);
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(SETTLED);
     assert_eq!(gauge(), Some(0.0), "the client still reaches no broker");
 
     // A send fails, then the broker comes back: still down until the re-send lands.
     hand(&mut h, 2, &[OutgoingRecord::new(b"row")]);
-    wait_until(&|| !dest.outstanding().is_empty());
+    wait_until("the batch to reach the destination", timeout(), || {
+        !dest.outstanding().is_empty()
+    });
     dest.fail_next_poll("timed out");
-    wait_until(&|| dest.outstanding().len() == 1 && dest.units().len() == 3);
+    wait_until("the failed batch to be sent again", timeout(), || {
+        dest.outstanding().len() == 1 && dest.units().len() == 3
+    });
     dest.set_connection_error(None);
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(SETTLED);
     assert_eq!(gauge(), Some(0.0), "the failed send has not been re-sent and landed");
 
     let batch = dest.outstanding()[0];
     dest.complete(batch);
-    wait_until(&|| gauge() == Some(1.0));
+    wait_until("the destination to be marked up", timeout(), || gauge() == Some(1.0));
 }
 
 /// `Dispatched::InFlight` means only that a batch was handed to the transport, not that anything landed --
@@ -596,7 +617,7 @@ fn an_in_flight_dispatch_alone_never_reports_recovered() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -613,12 +634,9 @@ fn an_in_flight_dispatch_alone_never_reports_recovered() {
     };
 
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
-    for _ in 0..200 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the batch to reach the destination", timeout(), || {
+        !dest.outstanding().is_empty()
+    });
     assert!(!dest.outstanding().is_empty(), "the batch reached the destination");
     assert_eq!(
         gauge("smeltr_destination_healthy"),
@@ -628,21 +646,15 @@ fn an_in_flight_dispatch_alone_never_reports_recovered() {
 
     // The delivery report never comes -- a real timeout, or here, the test saying so directly.
     dest.fail_next_poll("boom");
-    for _ in 0..200 {
-        if gauge("smeltr_destination_healthy") == Some(0.0) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the destination to be marked down", timeout(), || {
+        gauge("smeltr_destination_healthy") == Some(0.0)
+    });
     assert_eq!(gauge("smeltr_destination_healthy"), Some(0.0));
 
     // The retry reaches the transport again -- still not itself a delivery.
-    for _ in 0..200 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the retry to reach the destination", timeout(), || {
+        !dest.outstanding().is_empty()
+    });
     assert_eq!(
         gauge("smeltr_destination_healthy"),
         Some(0.0),
@@ -653,12 +665,9 @@ fn an_in_flight_dispatch_alone_never_reports_recovered() {
     for b in dest.outstanding() {
         dest.complete(b);
     }
-    for _ in 0..200 {
-        if gauge("smeltr_destination_healthy") == Some(1.0) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the destination to be marked up", timeout(), || {
+        gauge("smeltr_destination_healthy") == Some(1.0)
+    });
     assert_eq!(gauge("smeltr_destination_healthy"), Some(1.0));
 }
 
@@ -668,16 +677,20 @@ fn an_in_flight_dispatch_alone_never_reports_recovered() {
 #[test]
 fn a_completion_that_arrived_before_the_stage_stopped_is_not_lost() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     hand(&mut h, 4, &[OutgoingRecord::new(b"row")]);
-    for _ in 0..200 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the batch to reach the destination", timeout(), || {
+        !dest.outstanding().is_empty()
+    });
     for b in dest.outstanding() {
         dest.complete(b);
     }
@@ -701,7 +714,7 @@ fn a_destination_reports_what_its_queue_holds_and_what_it_may_hold() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let _egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -721,12 +734,9 @@ fn a_destination_reports_what_its_queue_holds_and_what_it_may_hold() {
         "the bound is stated up front, before anything is offered"
     );
 
-    for _ in 0..200 {
-        if gauge("smeltr_destination_queue_bytes").is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the destination to report what its queue holds", timeout(), || {
+        gauge("smeltr_destination_queue_bytes").is_some()
+    });
     assert_eq!(
         gauge("smeltr_destination_queue_bytes"),
         Some(0.0),
@@ -741,7 +751,7 @@ fn a_queue_holding_an_unacknowledged_batch_reports_the_bytes() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -758,12 +768,9 @@ fn a_queue_holding_an_unacknowledged_batch_reports_the_bytes() {
     let mut h = egress.handle();
     hand(&mut h, 1, &[OutgoingRecord::new(b"a row worth some bytes")]);
 
-    for _ in 0..200 {
-        if held().unwrap_or(0.0) > 0.0 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the queue to report the bytes it holds", timeout(), || {
+        held().unwrap_or(0.0) > 0.0
+    });
     let bytes = held().expect("the queue reports what it holds");
     assert!(bytes > 0.0, "a batch nobody acknowledged is still held: {bytes}");
     assert!(
@@ -779,7 +786,7 @@ fn a_rows_salvage_plan_counts_against_the_budget() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -792,9 +799,9 @@ fn a_rows_salvage_plan_counts_against_the_budget() {
             _ => None,
         })
     };
-    let plan: Vec<SalvageTarget> = (1..=3)
+    let plan: Vec<SalvageTarget> = (1..=3u32)
         .map(|dlq| SalvageTarget {
-            dlq,
+            dlq: DestId::new(dlq),
             doc_id: Some("k".repeat(1000)),
             reached: false,
         })
@@ -803,26 +810,19 @@ fn a_rows_salvage_plan_counts_against_the_budget() {
     let mut h = egress.handle();
     hand(&mut h, 1, &[OutgoingRecord::new(b"x").with_salvage_to(Some(&plan))]);
 
-    for _ in 0..200 {
-        if held().unwrap_or(0.0) > 0.0 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the queue to report the bytes it holds", timeout(), || {
+        held().unwrap_or(0.0) > 0.0
+    });
     let bytes = held().expect("the queue reports what it holds");
     assert!(bytes >= 3001.0, "the plan's three identities are held: {bytes}");
 }
 
 /// Wait for `handle`'s completions, up to `within`, and answer what came back.
 fn completions_within(handle: &mut smeltr::egress::EgressHandle, within: Duration) -> Vec<smeltr::io::BatchCompletion> {
-    let deadline = std::time::Instant::now() + within;
-    loop {
-        let got = handle.poll_completions().unwrap();
-        if !got.is_empty() || std::time::Instant::now() >= deadline {
-            return got;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for("a batch to complete", within, || {
+        Some(handle.poll_completions().unwrap()).filter(|got| !got.is_empty())
+    })
+    .unwrap_or_default()
 }
 
 /// A refusal comes back with the document it refused, so a reader whose destination sends refusals to a DLQ has what
@@ -831,7 +831,14 @@ fn completions_within(handle: &mut smeltr::egress::EgressHandle, within: Duratio
 fn a_refusal_comes_back_with_its_document() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     hand(
         &mut h,
@@ -861,7 +868,15 @@ fn a_refusal_comes_back_with_its_document() {
 fn a_blocking_destination_holds_its_refusals_and_sends_them_again() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics()).holding_refusals();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    )
+    .holding_refusals();
     let mut h = egress.handle();
     hand(
         &mut h,
@@ -869,15 +884,11 @@ fn a_blocking_destination_holds_its_refusals_and_sends_them_again() {
         &[OutgoingRecord::new(b"refused"), OutgoingRecord::new(b"taken")],
     );
 
-    let deadline = std::time::Instant::now() + timeout();
-    let held = loop {
+    let held = wait_for("the refused batch to be held", timeout(), || {
         assert!(h.poll_completions().unwrap().is_empty(), "held, not done");
-        let held = h.take_held();
-        if !held.is_empty() || std::time::Instant::now() >= deadline {
-            break held;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+        Some(h.take_held()).filter(|held| !held.is_empty())
+    })
+    .unwrap_or_default();
     assert_eq!(held.len(), 1);
     assert_eq!((held[0].batch, held[0].rejections.len()), (3, 1));
 
@@ -899,16 +910,24 @@ fn a_blocking_destination_holds_its_refusals_and_sends_them_again() {
 fn a_blocking_dlq_holds_a_salvaged_row_it_refuses() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics()).holding_refusals();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    )
+    .holding_refusals();
     let mut h = egress.handle();
     hand(&mut h, 4, &[OutgoingRecord::new(b"salvaged").salvaged()]);
 
-    let deadline = std::time::Instant::now() + timeout();
-    while h.take_held().is_empty() {
-        assert!(std::time::Instant::now() < deadline, "held");
-        assert!(h.poll_completions().unwrap().is_empty(), "not done");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the refused batch to be held", timeout(), || {
+        !h.take_held().is_empty() || {
+            assert!(h.poll_completions().unwrap().is_empty(), "not done");
+            false
+        }
+    });
     let done = completions_within(&mut h, timeout());
     assert_eq!(done.len(), 1, "done once it landed");
     assert!(done[0].rejections.is_empty());
@@ -922,8 +941,15 @@ fn dropping_an_egress_ends_the_capture_at_its_destination() {
     use smeltr::worker::capture::Captures;
 
     let captures = Arc::new(Captures::default());
-    let egress = Egress::start(0, "es", Box::new(FakeDestination::new()), timeout(), BUDGET, metrics())
-        .with_captures(captures.clone());
+    let egress = Egress::start(
+        DestId::new(0),
+        "es",
+        Box::new(FakeDestination::new()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    )
+    .with_captures(captures.clone());
     assert!(captures.sends_to("es"));
     captures.admit(&[CaptureInvitation {
         raw: false,
@@ -968,7 +994,7 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
         })
     };
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "es",
         Box::new(dest.clone()),
         timeout(),
@@ -997,18 +1023,11 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
         &[OutgoingRecord::new(br#"{"a":1}"#).with_doc_id(Some("id-1"))],
     );
 
-    let deadline = std::time::Instant::now() + timeout();
-    while kept() != Some(1.0) {
-        assert!(std::time::Instant::now() < deadline, "the refused row is kept");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the refused row to be held", timeout(), || kept() == Some(1.0));
     let done = completions_within(&mut h, timeout());
     assert_eq!(done.len(), 1, "done once the refused row landed");
     // Written later in the pass that reported the batch done.
-    while kept() != Some(0.0) {
-        assert!(std::time::Instant::now() < deadline, "nothing kept once it landed");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("no row to be held once it landed", timeout(), || kept() == Some(0.0));
     let report = captures.progress("w1").remove(0);
     let [batch] = &report.batches[..] else {
         panic!("one batch, got {:?}", report.batches)
@@ -1092,7 +1111,7 @@ fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
     let pool = smeltr::egress::QueuePool::new(64 * 1024 * 1024);
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -1135,9 +1154,16 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
         .enumerate()
         .map(|(i, d)| {
             let metrics = MetricsHandle::new(registry.clone(), format!("egress-{i}"));
-            Egress::start(i as u32, "d", Box::new(d.clone()), timeout(), pool.limit(), metrics)
-                .borrowing(pool.clone(), row.len(), 1)
-                .paced(row.len())
+            Egress::start(
+                DestId::try_from(i).unwrap(),
+                "d",
+                Box::new(d.clone()),
+                timeout(),
+                pool.limit(),
+                metrics,
+            )
+            .borrowing(pool.clone(), row.len(), 1)
+            .paced(row.len())
         })
         .collect();
     let mut handles: Vec<_> = egresses.iter_mut().map(Egress::handle).collect();
@@ -1205,7 +1231,14 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
 #[test]
 fn only_the_rows_that_did_not_land_are_sent_again() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     hand(
         &mut h,
@@ -1218,14 +1251,10 @@ fn only_the_rows_that_did_not_land_are_sent_again() {
     );
     hand(&mut h, 2, &[OutgoingRecord::new(b"beside")]);
     let units_within = |n: usize| {
-        let deadline = std::time::Instant::now() + timeout();
-        loop {
-            let units = dest.units();
-            if units.len() >= n || std::time::Instant::now() >= deadline {
-                return units;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_for(&format!("{n} batches to reach the destination"), timeout(), || {
+            Some(dest.units()).filter(|units| units.len() >= n)
+        })
+        .unwrap_or_else(|_| dest.units())
     };
     let units = units_within(2);
     assert_eq!(units.len(), 2, "both batches reached the destination");
@@ -1269,17 +1298,20 @@ fn only_the_rows_that_did_not_land_are_sent_again() {
 #[test]
 fn a_batch_the_destination_would_not_take_is_sent_again_alone() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     let units_within = |n: usize| {
-        let deadline = std::time::Instant::now() + timeout();
-        loop {
-            let units = dest.units();
-            if units.len() >= n || std::time::Instant::now() >= deadline {
-                return units;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_for(&format!("{n} batches to reach the destination"), timeout(), || {
+            Some(dest.units()).filter(|units| units.len() >= n)
+        })
+        .unwrap_or_else(|_| dest.units())
     };
     hand(&mut h, 1, &[OutgoingRecord::new(b"in flight")]);
     assert_eq!(units_within(1).len(), 1);
@@ -1307,31 +1339,24 @@ fn a_batch_the_destination_would_not_take_is_sent_again_alone() {
 
 /// Wait for `dest` to have taken `n` batches, and answer when the last arrived.
 fn taken_within(dest: &AsyncDestination, n: usize) -> std::time::Instant {
-    let deadline = std::time::Instant::now() + timeout();
-    loop {
-        let units = dest.units();
-        if units.len() >= n {
-            return std::time::Instant::now();
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{n} batches taken, not {}",
-            units.len()
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_until(&format!("{n} batches to reach the destination"), timeout(), || {
+        dest.units().len() >= n
+    });
+    std::time::Instant::now()
 }
 
 /// The first batch taken after the first `from` whose one row is `row`, and when it was seen.
 fn taken_with(dest: &AsyncDestination, from: usize, row: &[u8]) -> (BatchId, std::time::Instant) {
-    let deadline = std::time::Instant::now() + timeout();
-    loop {
-        if let Some((batch, _)) = dest.units()[from..].iter().find(|(_, rows)| rows[..] == [row.to_vec()]) {
-            return (*batch, std::time::Instant::now());
-        }
-        assert!(std::time::Instant::now() < deadline, "no batch of {row:?} taken");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_for(
+        &format!("a batch of {row:?} to reach the destination"),
+        timeout(),
+        || {
+            let units = dest.units();
+            let (batch, _) = units[from..].iter().find(|(_, rows)| rows[..] == [row.to_vec()])?;
+            Some((*batch, std::time::Instant::now()))
+        },
+    )
+    .unwrap_or_else(|late| panic!("{late}"))
 }
 
 /// A route that keeps failing beside ones that land: what lands does not clear the stall, and the rows that fail are
@@ -1341,7 +1366,7 @@ fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        0,
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -1402,7 +1427,14 @@ fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
 #[test]
 fn a_destination_where_nothing_lands_backs_off_as_a_whole() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
     taken_within(&dest, 1);

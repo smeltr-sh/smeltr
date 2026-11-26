@@ -1026,6 +1026,8 @@ fn live_senders_deliver_every_line_once_under_random_configurations() {
         }
         settings.transport = transport;
         settings.tls = tls;
+        // Real senders end each message with a newline, which a line breaker would not break at.
+        settings.line_breaker = None;
         settings.allow_from = match tls {
             tls if tls.checks_sender() && rng.chance(2) => Vec::new(),
             _ => vec![*rng.pick(&["127.0.0.0/8", "127.0.0.1/32", "0.0.0.0/0"])],

@@ -58,13 +58,11 @@ struct Control {
 impl Control {
     fn over(mut stdin: std::process::ChildStdin) -> std::io::Result<Control> {
         let (jobs, queued) = std::sync::mpsc::channel::<(ToRuntime, std::sync::mpsc::Sender<std::io::Result<()>>)>();
-        std::thread::Builder::new()
-            .name("smeltr-runtime-control".to_string())
-            .spawn(move || {
-                for (frame, wrote) in queued {
-                    let _ = wrote.send(send(&mut stdin, &frame));
-                }
-            })?;
+        crate::sync::spawn("smeltr-runtime-control", move || {
+            for (frame, wrote) in queued {
+                let _ = wrote.send(send(&mut stdin, &frame));
+            }
+        })?;
         Ok(Control { jobs })
     }
 
@@ -451,8 +449,9 @@ fn frames<T: serde::de::DeserializeOwned>(from: impl std::io::Read) -> impl Iter
 /// A frame the other process wrote that this one cannot read: a build this one does not know, most likely. Said
 /// once per change and on the interval, with how many since; the console sees it even when nothing else does.
 fn frame_unreadable(e: &serde_json::Error) {
-    static UNREAD: std::sync::Mutex<(crate::logs::Relog, u64)> = std::sync::Mutex::new((crate::logs::Relog::new(), 0));
-    let mut unread = UNREAD.lock().unwrap_or_else(|e| e.into_inner());
+    static UNREAD: crate::sync::Mutex<(crate::logs::Relog, u64)> =
+        crate::sync::Mutex::new((crate::logs::Relog::new(), 0));
+    let mut unread = UNREAD.lock();
     unread.1 += 1;
     let (failing, count) = &mut *unread;
     if let Some(error) = failing.fail_due(e.to_string()) {
@@ -466,9 +465,9 @@ fn frame_unreadable(e: &serde_json::Error) {
 
 /// Runtime logs the supervisor could not deliver before its buffer filled, said once per outage with the count.
 fn logs_dropped(dropped: usize) {
-    static DROPPING: std::sync::Mutex<(crate::logs::Relog, u64)> =
-        std::sync::Mutex::new((crate::logs::Relog::new(), 0));
-    let mut dropping = DROPPING.lock().unwrap_or_else(|e| e.into_inner());
+    static DROPPING: crate::sync::Mutex<(crate::logs::Relog, u64)> =
+        crate::sync::Mutex::new((crate::logs::Relog::new(), 0));
+    let mut dropping = DROPPING.lock();
     dropping.1 += dropped as u64;
     if dropping.0.fail_due("dropping".to_string()).is_some() {
         let dropped = dropping.1;
@@ -545,7 +544,7 @@ pub fn run_runtime_child() -> ! {
     let stopping = Arc::new(AtomicBool::new(false));
     {
         let (stopping, runtime) = (stopping.clone(), runtime.clone());
-        std::thread::spawn(move || {
+        crate::sync::spawn("smeltr-runtime-commands", move || {
             for frame in incoming {
                 if !obey(frame, &runtime) {
                     stopping.store(true, Ordering::Relaxed);
@@ -572,7 +571,8 @@ pub fn run_runtime_child() -> ! {
                 // worse than ending now, ahead of the budget, while the stop it might have let finish is lost.
                 std::process::exit(1);
             }
-        });
+        })
+        .expect("start the thread that reads the supervisor's commands");
     }
 
     let out = std::io::stdout();
@@ -802,7 +802,7 @@ fn collect_report(
 
     let report = RuntimeReport {
         state: RuntimeState {
-            readers: facts.readers.iter().map(|r| r.lock().unwrap().clone()).collect(),
+            readers: facts.readers.iter().map(|r| r.lock().clone()).collect(),
             pool_thread_ids: facts.pool_thread_ids.clone(),
             egress_ids: facts.egress_ids.clone(),
             egress_refusals: facts
@@ -883,10 +883,10 @@ pub struct RuntimeHandle {
 /// every window in between -- including all of them while the deployer is busy stopping something.
 #[derive(Default)]
 pub struct RuntimeInbox {
-    pub report: std::sync::Mutex<Option<RuntimeReport>>,
-    pub captured: std::sync::Mutex<Vec<CaptureReport>>,
+    pub report: crate::sync::Mutex<Option<RuntimeReport>>,
+    pub captured: crate::sync::Mutex<Vec<CaptureReport>>,
     pub ready: AtomicBool,
-    pub failed: std::sync::Mutex<Option<String>>,
+    pub failed: crate::sync::Mutex<Option<String>>,
     pub exited: AtomicBool,
 }
 
@@ -1013,20 +1013,18 @@ impl RuntimeHandle {
         // Drained on a thread of its own, so a full pipe can never be what stops this child being controlled.
         let reader = {
             let inbox = inbox.clone();
-            std::thread::Builder::new()
-                .name("smeltr-runtime-reader".to_string())
-                .spawn(move || read_from_runtime(stdout, &inbox, incarnation))?
+            crate::sync::spawn("smeltr-runtime-reader", move || {
+                read_from_runtime(stdout, &inbox, incarnation)
+            })?
         };
         if let Some(stderr) = stderr {
-            std::thread::Builder::new()
-                .name("smeltr-runtime-stderr".to_string())
-                .spawn(move || {
-                    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                        // Already formatted by the child's own console layer, so it is passed through rather than
-                        // parsed: what a runtime says about itself reads the same wherever it ran.
-                        eprintln!("{line}");
-                    }
-                })?;
+            crate::sync::spawn("smeltr-runtime-stderr", move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    // Already formatted by the child's own console layer, so it is passed through rather than
+                    // parsed: what a runtime says about itself reads the same wherever it ran.
+                    eprintln!("{line}");
+                }
+            })?;
         }
         Ok((control, reader, incarnation, commit))
     }
@@ -1222,15 +1220,15 @@ fn read_from_runtime_frames(from: impl std::io::Read, inbox: &Arc<RuntimeInbox>,
         }
         match frame {
             FromRuntime::Ready { .. } => inbox.ready.store(true, Ordering::Relaxed),
-            FromRuntime::Failed { reason, .. } => *inbox.failed.lock().unwrap() = Some(reason),
+            FromRuntime::Failed { reason, .. } => *inbox.failed.lock() = Some(reason),
             FromRuntime::Report { report, .. } => {
-                let mut held = inbox.report.lock().unwrap();
+                let mut held = inbox.report.lock();
                 match held.take() {
                     Some(previous) => *held = Some(previous.followed_by(*report)),
                     None => *held = Some(*report),
                 }
             }
-            FromRuntime::Captured { report, .. } => inbox.captured.lock().unwrap().push(*report),
+            FromRuntime::Captured { report, .. } => inbox.captured.lock().push(*report),
             // Said here, where it can still reach the leader: the runtime sends nothing after this.
             FromRuntime::Stopped { .. } => {
                 tracing::info!(name: "stopped", target: "processes", incarnation, "the runtime stopped");
@@ -1350,8 +1348,8 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "confirming a reported exit took longer than the hard budget"
         );
-        // SAFETY: signal 0 delivers nothing and only asks whether the id is still addressable.
         let gone = (0..200).any(|_| {
+            // SAFETY: signal 0 delivers nothing and only asks whether the id is still addressable.
             let alive = unsafe { libc::kill(pid, 0) } == 0;
             if alive {
                 std::thread::sleep(Duration::from_millis(10));
@@ -1402,7 +1400,7 @@ mod tests {
             "the stop returned with the frame reader still running, so the inbox may still be filling"
         );
         assert_eq!(
-            inbox.captured.lock().unwrap().len(),
+            inbox.captured.lock().len(),
             WRITTEN,
             "frames the runtime wrote before exiting did not reach the inbox"
         );
@@ -1773,7 +1771,7 @@ mod tests {
     /// a heartbeat would report it from again.
     #[test]
     fn obeying_a_mirror_fills_the_registrys_mirror_and_the_logs_readers_only() {
-        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = crate::logs::TAPS_LOCK.lock();
         let reader = crate::logs::tap();
         let runtime = Runtime::default();
         let registry = &runtime.registry;

@@ -33,9 +33,9 @@
     sourceIdsInScope,
     saveCapture,
     type CaptureStatus,
-    type SampleDto,
+    type CaptureBatchDto,
   } from './api';
-  import { heldCount } from './capture';
+  import { heldCount, pastedTable } from './capture';
   import { NOT_IN_DEMO, mayCapture } from './access';
 
   let {
@@ -58,7 +58,7 @@
     onuse?: ComponentProps<typeof CaptureFlow>['onuse'];
     /** A pipeline's output rows, as a sample holds them: what the dialog saves when it opens at `output`, the
      * `SampleWay` for a pipeline's output. */
-    output?: () => Promise<Pick<SampleDto, 'columns' | 'records'>>;
+    output?: () => Promise<CaptureBatchDto>;
     /** The finished capture the leader holds for whoever is signed in: what the dialog saves when it opens at
      * `input`, the `SampleWay` for a pipeline's input that is not saved yet. */
     input?: CaptureStatus;
@@ -107,10 +107,12 @@
   let sources = $state<string[]>([]);
   let text = $state('');
   /** The records `output` returned, for the `output` `SampleWay`. */
-  let taken = $state<Pick<SampleDto, 'columns' | 'records'> | null>(null);
-  let records = $derived(way === 'output' ? (taken?.records ?? []) : recordsFromText(text));
+  let taken = $state<CaptureBatchDto | null>(null);
+  let records = $derived(recordsFromText(text));
+  /** What `save` keeps of an output, a paste or an upload. */
+  let table = $derived(way === 'output' ? taken : pastedTable(records));
   /** How many records `save` keeps. */
-  let kept = $derived(way === 'input' ? (input ? heldCount(input) : 0) : records.length);
+  let kept = $derived(way === 'input' ? (input ? heldCount(input) : 0) : (table?.rows.length ?? 0));
   /** Why the leader refused to save the capture: the input's own, since a capture says what went wrong in its flow. */
   let error = $state('');
 
@@ -131,7 +133,7 @@
     });
   });
 
-  async function take(output: () => Promise<Pick<SampleDto, 'columns' | 'records'>>) {
+  async function take(output: () => Promise<CaptureBatchDto>) {
     const at = opening;
     loading = true;
     try {
@@ -179,8 +181,7 @@
         id,
         name: name.trim(),
         source: source || undefined,
-        columns: taken?.columns,
-        records,
+        ...table!,
       });
       // A refusal is the dialog's error bar's to say.
       if (res.ok) onsaved?.(id);
@@ -247,8 +248,9 @@
     <div class="form-body">
       {#if way === 'upload'}
         <Field required label="File">
-          {#snippet help()}One record per non-empty line; each line becomes <code>_raw</code
-            >.{/snippet}
+          {#snippet help()}One record per line, or per element of a JSON array, the text in <code
+              >_raw</code
+            >. A record that already has a <code>_raw</code> field is kept as it is.{/snippet}
           <input type="file" accept=".json,.ndjson,.jsonl,.txt,.log" onchange={pickFile} />
         </Field>
       {/if}
@@ -261,11 +263,13 @@
       {@render sourceField()}
       {#if way === 'paste'}
         <Field required label="Records">
-          {#snippet help()}One record per line; each line becomes <code>_raw</code>.{/snippet}
+          {#snippet help()}One record per line, or per element of a JSON array, the text in <code
+              >_raw</code
+            >. A record that already has a <code>_raw</code> field is kept as it is.{/snippet}
           <textarea bind:value={text} rows="8" spellcheck="false"></textarea>
         </Field>
       {/if}
-      <span class="dim">{count(records.length, 'record')}</span>
+      <span class="dim">{count(kept, 'record')}</span>
       <InlineError message={error} />
     </div>
   {:else if way === 'output'}
@@ -273,7 +277,7 @@
       <Field required label="Name">
         <input bind:value={name} placeholder="orders-west, enriched" />
       </Field>
-      <span class="dim">{count(records.length, 'record')}</span>
+      <span class="dim">{count(kept, 'record')}</span>
     </div>
   {:else if way === 'input'}
     <div class="form-body">

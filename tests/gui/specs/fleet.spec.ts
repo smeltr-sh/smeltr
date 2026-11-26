@@ -319,11 +319,15 @@ test('rows in and out are charted over the window the engineer picks', async ({
     timeout: 30_000,
   });
 
-  const windows = flow.getByRole('group', { name: 'Chart window' });
-  await windows.getByRole('button', { name: '15m' }).click();
-  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
-  await windows.getByRole('button', { name: '60m' }).click();
-  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
+  for (const [range, spoken] of [
+    ['10 min', '10 minutes'],
+    ['1 hour', 'hour'],
+  ]) {
+    await flow.getByRole('button', { name: 'Chart range' }).click();
+    await admin.getByRole('button', { name: range, exact: true }).click();
+    await expect(flow.getByText(`Over the last ${spoken}`)).toBeVisible();
+    await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
+  }
 
   // Under the chart, each source's rows over the window; one picked narrows the chart to it.
   const table = flow.getByRole('table');
@@ -348,10 +352,12 @@ test('rows in and out are charted over the window the engineer picks', async ({
     .getByRole('button', { name: 'Routes' })
     .click();
   await expect(
-    table.getByRole('row', { name: /^all\s+(east|west)\s+own-metrics\s+pass/ }).first(),
+    table
+      .getByRole('row', { name: /^own-metrics → pass\s+(east|west)\s+own-metrics\s+pass/ })
+      .first(),
   ).toBeVisible();
   await expect(table.getByRole('row', { name: /^Total/ })).toHaveCount(0);
-  await table.getByRole('button', { name: 'all' }).first().click();
+  await table.getByRole('button', { name: 'own-metrics → pass' }).first().click();
   await expect(flow.getByRole('heading')).toContainText(/route own-metrics → pass \((east|west)\)/);
   await expect(flow.getByText(new RegExp(`^matched ${MOVING.source}`))).toBeVisible({
     timeout: 30_000,
@@ -383,6 +389,55 @@ test('rows in and out are charted over the window the engineer picks', async ({
   await expect(band(admin, 'east').getByRole('link', { name: /search/ })).toContainText(MOVING, {
     timeout: 30_000,
   });
+});
+
+test("exceptions are counted from the leader's series over the range their own clock picks", async ({
+  admin,
+  leader,
+}) => {
+  const asked: { by: string | null; minutes: string | null }[] = [];
+  await admin.route('**/api/series?*', (route) => {
+    const q = new URL(route.request().url()).searchParams;
+    if (q.get('metric') !== 'smeltr_rows_errored_total') return route.continue();
+    const by = q.get('by');
+    const minutes = q.get('windowMinutes');
+    asked.push({ by, minutes });
+    // Ten closed one-minute points averaging 1 row a second over 1 hour and 10 over 24: 600 rows, then 6,000.
+    const pointMillis = 60_000;
+    const fromMillis = Math.floor(Date.now() / pointMillis) * pointMillis - 10 * pointMillis;
+    const points: [number, number][] = Array.from({ length: 10 }, (_, i) => [
+      fromMillis + i * pointMillis,
+      (minutes === '1440' ? 10 : 1) * (i % 3 === 0 ? 0.25 : 1.5),
+    ]);
+    const values = ['default', 'orders', '3', 'Conversion'];
+    return route.fulfill({
+      json: {
+        metric: 'smeltr_rows_errored_total',
+        counter: true,
+        draw: 'perSecond',
+        pointMillis,
+        fromMillis,
+        series: by
+          ? [{ name: values.join(', '), values, points }]
+          : [{ name: '', values: [], points }],
+      },
+    });
+  });
+
+  await goto(admin, leader, '#/status');
+  const errors = admin.locator('section.exceptions');
+  await expect(errors.getByText('600 exceptions.')).toBeVisible();
+  await expect(errors.getByRole('row', { name: /orders\s+3\s+Conversion\s+600/ })).toBeVisible();
+  expect(asked).toContainEqual({ by: 'group,pipeline,function,kind', minutes: '60' });
+
+  await errors.getByRole('button', { name: 'Chart range' }).click();
+  await admin.getByRole('button', { name: '24 hours', exact: true }).click();
+  await expect(errors.getByText('Over the last 24 hours')).toBeVisible();
+  await expect(errors.getByText('6,000 exceptions.')).toBeVisible();
+  await shoot(admin, errors, 'errors-range');
+  await errors.getByRole('button', { name: 'About Exceptions' }).click();
+  await expect(admin.getByText(/counted per pipeline/)).toBeVisible();
+  if (SHOTS) await admin.screenshot({ path: path.join(SHOTS, 'errors-help.png') });
 });
 
 test('the Metrics page charts any stored metric, split by a label, as a rate or in totals', async ({
@@ -670,7 +725,7 @@ test('rows that do not come out are put down to a route or a step', async ({
   ).toBeVisible();
   // The counts are over the panel's range, so the tab names it and offers its picker.
   await expect(
-    focus(admin, 'own-metrics').getByRole('heading', { name: /^Routes, over the last 10 min/ }),
+    focus(admin, 'own-metrics').getByRole('heading', { name: /^Routes, over the last hour/ }),
   ).toBeVisible();
   await expect(
     focus(admin, 'own-metrics').getByRole('button', { name: 'Chart range' }),

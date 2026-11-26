@@ -63,7 +63,7 @@ fn refuse_oversized<'a>(
     }
     samples
         .into_iter()
-        .try_for_each(|s| config_file::refuse_sample_size(s.records.len()))
+        .try_for_each(|s| config_file::refuse_sample_size(s.table.rows.len()))
         .map_err(too_large)
 }
 
@@ -179,13 +179,11 @@ struct PreviewBody {
     #[serde(default)]
     show_internal: bool,
     #[serde(default)]
-    at_micros: Option<i64>,
-    #[serde(default)]
     filter: Option<String>,
     #[serde(default)]
     attribution: bool,
     #[serde(default)]
-    as_sample: bool,
+    as_sample: Option<smeltr::leader::preview::ShownCut>,
     #[serde(default)]
     dictionary: bool,
     after_dot: Option<AfterDotRequest>,
@@ -210,21 +208,22 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                 Ok(config) => config,
                 Err(e) => return Envelope::refused(Refusal::internal(e.to_string())),
             };
-            let (columns, records) = body.sample.map(|s| (s.columns, s.records)).unwrap_or_default();
+            let table = body.sample.map(|s| s.table).unwrap_or_default();
             let req = PreviewRequest {
                 config,
                 pipeline,
                 sample: None,
                 show_internal: body.show_internal,
-                at_micros: body.at_micros,
                 filter: body.filter,
                 attribution: body.attribution,
                 as_sample: body.as_sample,
                 dictionary: body.dictionary,
                 after_dot: body.after_dot,
                 capture_filter: body.capture_filter,
+                test: None,
+                locked: None,
             };
-            run_preview(req, declared_at, &columns, records)
+            run_preview(req, declared_at, &table)
         })
         .await
 }
@@ -235,8 +234,6 @@ struct RoutePreviewBody {
     #[serde(flatten)]
     bundle: Bundle,
     sample: SampleDto,
-    #[serde(default)]
-    at_micros: Option<i64>,
 }
 
 async fn route_preview(State(service): State<Service>, Json(body): Json<RoutePreviewBody>) -> Envelope<RoutePreview> {
@@ -246,7 +243,7 @@ async fn route_preview(State(service): State<Service>, Json(body): Json<RoutePre
     let s = service.clone();
     service
         .run(unavailable, move || match s.runnable(body.bundle) {
-            Ok((config, declared_at)) => run_route_preview(&config, body.sample, declared_at, body.at_micros),
+            Ok((config, declared_at)) => run_route_preview(&config, body.sample, declared_at),
             Err(e) => Envelope::refused(e),
         })
         .await
@@ -501,7 +498,7 @@ async fn capture_filter(State(service): State<Service>, Json(body): Json<Capture
                     Ok(filter) => filter,
                     Err(e) => return Envelope::refused(Refusal::invalid(e)),
                 };
-            let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.columns, &body.sample.records) {
+            let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.table) {
                 Ok(read) => read,
                 Err(e) => return Envelope::refused(Refusal::invalid(e)),
             };
@@ -783,7 +780,11 @@ mod tests {
     }
 
     fn sample(records: serde_json::Value) -> serde_json::Value {
-        serde_json::json!({"id": "s", "name": "s", "records": records})
+        let table = smeltr::heartbeat::CaptureBatch::pasted(serde_json::from_value(records).unwrap());
+        let mut sample = serde_json::to_value(table).unwrap();
+        sample["id"] = "s".into();
+        sample["name"] = "s".into();
+        sample
     }
 
     async fn previewed(service: &Service, mut body: serde_json::Value) -> serde_json::Value {
@@ -977,20 +978,13 @@ mod tests {
                 {"id": "c", "type": "code", "body": body}]}]})
         };
         let service = service("tests");
-        let at = 1_790_000_000_000_000_i64;
-        let locked = previewed(
-            &service,
-            serde_json::json!({"shared": bundle("from = \"a\";"), "atMicros": at}),
-        )
-        .await;
-        let rows: Vec<_> = locked["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| serde_json::json!({"row": r["row"], "values": {"from": r["json"]["from"]}}))
-            .collect();
-        let test = serde_json::json!({"id": "t", "name": "t", "pipeline": "p", "sample": "s", "lockedAt": at,
-            "rowsIn": 1, "fields": ["from"], "rows": rows});
+        let locked = previewed(&service, serde_json::json!({"shared": bundle("from = \"a\";")})).await;
+        let rows = locked["rows"].as_array().unwrap();
+        let table = serde_json::json!({"columns": [{"name": "from", "type": "str"}],
+            "rows": rows.iter().map(|r| serde_json::json!({"values": [r["json"]["from"]]})).collect::<Vec<_>>()});
+        let shown: Vec<_> = rows.iter().map(|r| serde_json::json!({"row": r["row"]})).collect();
+        let test = serde_json::json!({"id": "t", "name": "t", "pipeline": "p", "sample": "s",
+            "rowsIn": 1, "table": table, "shown": shown});
         let run = |body: &str| {
             let request = serde_json::json!({"shared": bundle(body), "tests": [test.clone()],
                 "samples": [sample(serde_json::json!([{"_raw": "ann"}]))], "run": ["t"]});

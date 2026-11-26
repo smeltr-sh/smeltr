@@ -520,7 +520,7 @@ async fn compacted(host: &dyn Host, turns: &mut Vec<Turn>, fresh: Fresh) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use crate::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -581,8 +581,8 @@ mod tests {
     #[async_trait::async_trait]
     impl Model for Scripted {
         async fn ask(&self, request: Request<'_>) -> Result<Reply, String> {
-            self.asked.lock().unwrap().push(request.turns.to_vec());
-            let reply = self.replies.lock().unwrap().pop().ok_or("no reply left")?;
+            self.asked.lock().push(request.turns.to_vec());
+            let reply = self.replies.lock().pop().ok_or("no reply left")?;
             if let Some(Heard(heard)) = request.heard {
                 heard(&reply.text);
             }
@@ -590,7 +590,7 @@ mod tests {
         }
         fn due(&self, _turns: &[Turn]) -> bool {
             let due = self.due.load(Ordering::SeqCst);
-            due > 0 && due == self.asked.lock().unwrap().len()
+            due > 0 && due == self.asked.lock().len()
         }
     }
 
@@ -623,18 +623,18 @@ mod tests {
                 .is_ok()
         }
         async fn keep(&self, turn: &Turn) -> Result<(), String> {
-            self.kept.lock().unwrap().push(turn.clone());
+            self.kept.lock().push(turn.clone());
             Ok(())
         }
         async fn request(&self, call: &ApiCall) -> Answer {
-            self.sent.lock().unwrap().push(call.clone());
+            self.sent.lock().push(call.clone());
             Answer {
                 status: 200,
                 body: self.answer.clone(),
             }
         }
         fn heard(&self, text: &str) {
-            self.heard.lock().unwrap().push_str(text);
+            self.heard.lock().push_str(text);
         }
     }
 
@@ -683,7 +683,7 @@ mod tests {
         )
         .await;
         assert_eq!(ended, Ok(Ended::Answered));
-        let sent = host.sent.lock().unwrap();
+        let sent = host.sent.lock();
         assert_eq!(
             sent[0],
             ApiCall {
@@ -693,14 +693,14 @@ mod tests {
                 body: None,
             }
         );
-        let kept = host.kept.lock().unwrap();
+        let kept = host.kept.lock();
         assert_eq!(kept.len(), 4, "asked, answered, results, answered");
         assert_eq!(
             results(&kept[2]),
             vec![("c1".to_string(), "200\n{\"ok\":true}".to_string(), false)]
         );
-        assert_eq!(model.asked.lock().unwrap()[1].len(), 3);
-        assert_eq!(*host.heard.lock().unwrap(), "orders runs in shared.");
+        assert_eq!(model.asked.lock()[1].len(), 3);
+        assert_eq!(*host.heard.lock(), "orders runs in shared.");
     }
 
     #[tokio::test]
@@ -738,8 +738,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(host.sent.lock().unwrap().is_empty());
-        let kept = host.kept.lock().unwrap();
+        assert!(host.sent.lock().is_empty());
+        let kept = host.kept.lock();
         let refused = results(&kept[2]);
         assert_eq!(refused.len(), 4);
         assert!(refused.iter().all(|(_, _, error)| *error), "{refused:?}");
@@ -767,7 +767,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let output = &results(&host.kept.lock().unwrap()[2])[0].1;
+        let output = &results(&host.kept.lock()[2])[0].1;
         assert!(output.len() < MAX_RESULT + 100);
         assert!(
             output.ends_with(&format!("only the first {MAX_RESULT} are shown]")),
@@ -801,15 +801,15 @@ mod tests {
         )
         .await;
         assert_eq!(ended, Ok(Ended::Rounds));
-        assert_eq!(host.sent.lock().unwrap().len(), MAX_ROUNDS);
+        assert_eq!(host.sent.lock().len(), MAX_ROUNDS);
 
         // The model is told why the calls were not run and asked where it stopped; only its answer is kept.
-        let asked_last = model.asked.lock().unwrap().last().unwrap().clone();
+        let asked_last = model.asked.lock().last().unwrap().clone();
         let Turn::Asked(said) = asked_last.last().unwrap() else {
             panic!("the model's last request is the closing ask: {asked_last:?}");
         };
         assert_eq!(said.last(), Some(&Said::Text(ROUNDS_OUT.to_string())));
-        let kept = host.kept.lock().unwrap().clone();
+        let kept = host.kept.lock().clone();
         let [.., Turn::Answered(closing)] = kept.as_slice() else {
             panic!("the turn ends with the closing answer: {kept:?}");
         };
@@ -826,7 +826,7 @@ mod tests {
         run(&model, &host, CATALOG, "", kept, asked("Go on."), &Asking::default())
             .await
             .unwrap();
-        let last = model.asked.lock().unwrap().last().unwrap().clone();
+        let last = model.asked.lock().last().unwrap().clone();
         let Turn::Asked(said) = last.last().unwrap() else {
             panic!("the conversation ends with what was said");
         };
@@ -855,8 +855,8 @@ mod tests {
         )
         .await;
         assert_eq!(ended, Ok(Ended::Stopped));
-        assert_eq!(host.sent.lock().unwrap().len(), 1);
-        let kept = host.kept.lock().unwrap();
+        assert_eq!(host.sent.lock().len(), 1);
+        let kept = host.kept.lock();
         assert_eq!(results(&kept[2]).len(), 1);
         let ready = ready(kept.clone());
         let answered: Vec<String> = results(&ready[2]).into_iter().map(|(id, _, _)| id).collect();
@@ -910,7 +910,7 @@ mod tests {
                 tokens: 1
             }
         );
-        let asked = model.asked.lock().unwrap();
+        let asked = model.asked.lock();
         let last = asked[0].last().unwrap();
         assert_eq!(results(last), vec![("call_1".to_string(), NOT_RUN.to_string(), true)]);
         assert!(matches!(last, Turn::Asked(said) if said.last() == Some(&Said::Text(model::SUMMARIZE.to_string()))));
@@ -956,10 +956,10 @@ mod tests {
                 tokens: 1,
             })
         };
-        let kept = host.kept.lock().unwrap();
+        let kept = host.kept.lock();
         assert_eq!(kept[1], fresh("By the model."));
         assert_eq!(kept[4], fresh("By the leader."));
-        let asked = model.asked.lock().unwrap();
+        let asked = model.asked.lock();
         assert_eq!(asked[1].last(), Some(&fresh("By the model.")));
         assert_eq!(asked[3].last(), Some(&fresh("By the leader.")));
     }
@@ -971,7 +971,7 @@ mod tests {
         let host = Fake::new(usize::MAX, "");
         let ended = run(&model, &host, CATALOG, "", Vec::new(), asked("Go."), &Asking::default()).await;
         assert_eq!(ended, Ok(Ended::Answered));
-        assert_eq!(model.asked.lock().unwrap().len(), 2);
-        assert!(!host.kept.lock().unwrap().iter().any(|t| matches!(t, Turn::Fresh(_))));
+        assert_eq!(model.asked.lock().len(), 2);
+        assert!(!host.kept.lock().iter().any(|t| matches!(t, Turn::Fresh(_))));
     }
 }

@@ -49,9 +49,10 @@ export interface MutationResult {
 }
 
 import { editedBy, suggestBranchName } from './branchNames';
-import { store, stored, storedJson } from './stored';
+import { store, stored } from './stored';
 import { csrf, recheck, session, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
+import { heldTable, tableRecords } from './capture';
 
 export function errorText(errors: ApiError[]): string {
   return errors.map((e) => e.message).join('; ');
@@ -2108,7 +2109,7 @@ export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveRes
 
 // -- samples ----------------------------------------------------------------
 //
-// Records under a name, saved beside the config they are authored against
+// A capture's table under a name, saved beside the config it is authored against
 // (`config_file::sample`). A paste and an uploaded file both land here, so a
 // preview always runs over a saved sample rather than over whatever was in a
 // text box.
@@ -2117,9 +2118,7 @@ export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveRes
  * under `__source` every field its source set. A byte source's record is
  * `{ _raw: text }`. A pasted record was read from nowhere and has no
  * `__source`. One captured at a destination also has the `__destination`
- * fields it was sent with. A value that failed its type is kept as the
- * source spelled it, its field listed under `__capture.mistyped`, and fails
- * again when the sample is read. */
+ * fields it was sent with. */
 export type SampleRecordDto = Record<string, unknown>;
 
 /** Whether the root key of `path`, a field's path, is internal: smeltr's own, starting `__`, as
@@ -2150,17 +2149,14 @@ export function recordLine(record: Record<string, unknown>): string {
   return JSON.stringify(record);
 }
 
-export interface SampleDto {
+/** A sample is its capture's table under a name. */
+export interface SampleDto extends CaptureBatchDto {
   /** Stable across renames; the filename is its slug. */
   id: string;
   name: string;
   /** The source these records stand for. Routing selects on a source, so a
    * sample naming none can be run through a pipeline but not through a route. */
   source?: string;
-  /** The columns a captured sample was taken under, each named and typed once.
-   * A pasted sample has none. */
-  columns?: { name: string; type: string }[];
-  records: SampleRecordDto[];
 }
 
 /** When `sample` was captured, in unix milliseconds, if it was. */
@@ -2227,9 +2223,8 @@ export function deleteSample(id: string): Promise<MutationResult> {
 // -- pipeline preview ---------------------------------------------------
 //
 // Runs one pipeline over a saved sample in memory (`leader::preview::run_preview`).
-// Nothing is saved. `atMicros` is what `now()` and a reference-less
-// `parseTime` read; a fresh one is an ordinary preview, a locked one is
-// how a test re-runs against the instant it was captured at.
+// Nothing is saved. `now()` reads the instant the sample was taken, so a
+// preview and a test over one sample read the same instant.
 
 export interface PreviewRequest {
   /** A whole `FileConfigDto` bundle, serialized. */
@@ -2240,8 +2235,6 @@ export interface PreviewRequest {
   sample?: string;
   /** Show `__`-prefixed control variables in the output. */
   showInternal?: boolean;
-  /** Unix microseconds. Omitted reads the wall clock. */
-  atMicros?: number;
   /** A Bool over the pipeline's output: only the rows it is true for come back.
    * One that does not parse fails at the `filterParse` stage, and one that parses but does not compile at the
    * `filter` stage. */
@@ -2249,13 +2242,16 @@ export interface PreviewRequest {
   /** Say which steps changed each row's fields and dropped it. The leader
    * runs the pipeline once more per step for it. */
   attribution?: boolean;
-  /** Also return the rows as a sample holds them (`PreviewResult.as_sample`), to save as one. */
-  asSample?: boolean;
+  /** Also return these fields and rows of the output as a sample holds them (`PreviewResult.as_sample`), to save as
+   * one. */
+  asSample?: { rows: number[]; fields?: string[] };
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
    * instead of running a sample. */
   captureFilter?: { text: string; destination: string };
+  /** A test of this pipeline over this sample, by id: the rows are compared with it (`PreviewResult.verdict`). */
+  test?: string;
 }
 
 /** Where an expression sits, which decides what its names read: at the start
@@ -2340,6 +2336,8 @@ export interface PreviewResult {
   after_dot?: DotAnswer;
   /** The answer to `PreviewRequest.captureFilter`. */
   capture_filter?: CaptureFilterCheck;
+  /** What these rows make of `PreviewRequest.test`. Absent over another sample than the test's. */
+  verdict?: Verdict;
   /** What compiles but is likely a mistake, each placed at its step as an error is. */
   warnings?: ApiError[];
   /** How many of `warnings` are where the rows break the schemas the pipeline produces. */
@@ -2347,14 +2345,7 @@ export interface PreviewResult {
   /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
   missing?: MissingField[];
   /** Answers `PreviewRequest.asSample`. */
-  as_sample?: AsSample;
-}
-
-/** A sample's columns and records, without its name, and each record's `PreviewRow.row`. */
-export interface AsSample {
-  columns: { name: string; type: string }[];
-  records: SampleRecordDto[];
-  rows: number[];
+  as_sample?: CaptureBatchDto;
 }
 
 /** A field a schema requires or recommends that a pipeline's rows lack (`schema::Missing`). */
@@ -2406,13 +2397,13 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       sample: (!capture && req.sample) || null,
       capture: capture || null,
       show_internal: req.showInternal ?? false,
-      at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
       attribution: req.attribution ?? false,
-      as_sample: req.asSample ?? false,
+      as_sample: req.asSample ?? null,
       dictionary: true,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
+      test: req.test ?? null,
     },
     'quiet',
   );
@@ -2565,16 +2556,47 @@ export type TestDto = {
    * preview, which needs `SampleDto.source`. */
   pipeline?: string;
   sample: string;
-  /** The instant the test was first locked, in unix microseconds: what `now()`
-   * reads on every run, and on every lock again. */
-  lockedAt: number;
   /** Records the sample held when this was locked. */
   rowsIn: number;
-  /** The fields checked, named as the records grid names its columns. */
-  fields: string[];
-  /** What the run made of each checked row, in the order it made them. */
-  rows: Outcome[];
+  /** The rows checked, under the fields checked, each field named as the records grid names its column and
+   * typed as the run typed it. A field a row lacks is null, and so is every field of a row that made none. */
+  table: CaptureBatchDto;
+  /** Each row of `table`, in its order. */
+  shown: Shown[];
 };
+
+/** Which row of a run a test's table row is, and how it was made. Mirrors `config_file::Shown`. */
+export type Shown = {
+  row: number;
+  /** The row made no document: a pipeline dropped it, or no route kept it. */
+  dropped?: boolean;
+  /** End-to-end only: where the document went. */
+  sent?: Sent;
+};
+
+/** The fields `test` checks. */
+export function testFields(test: TestDto): string[] {
+  return test.table.columns.map((c) => c.name);
+}
+
+/** What `test` checks of each row, as a run's documents are cut down to its fields: `TestDto::outcomes`. */
+export function testOutcomes(test: TestDto): Outcome[] {
+  const { columns, rows } = heldTable(test.table);
+  return test.shown.map((shown, i) => ({
+    row: shown.row,
+    ...(shown.dropped
+      ? {}
+      : {
+          values: Object.fromEntries(
+            columns.flatMap((c, j) => {
+              const value = rows[i]?.values[j];
+              return value == null ? [] : [[c.name, value]];
+            }),
+          ),
+        }),
+    ...(shown.sent ? { sent: shown.sent } : {}),
+  }));
+}
 
 /** What locking a test asks for: a `TestDto` without what the run made. The leader makes that itself from
  * the same run a test run compares, so a test passes the moment it is locked. Mirrors `config_file::Lock`. */
@@ -2583,51 +2605,43 @@ export type Lock = {
   /** Absent routes the sample by its source, as `TestDto.pipeline`. */
   pipeline?: string;
   sample: string;
-  lockedAt: number;
   /** Absent checks every field the run made. */
   fields?: string[];
   /** Absent checks every row the run made. */
   rows?: number[];
 };
 
-/** What a lock holds of a run: a `TestDto`'s `rowsIn`, `fields` and `rows`. Mirrors `config_file::Locked`. */
-export type Locked = { rowsIn: number; fields: string[]; rows: Outcome[] };
+/** What a lock holds of a run: a `TestDto`'s `rowsIn`, `table` and `shown`. Mirrors `config_file::Locked`. */
+export type Locked = { rowsIn: number; table: CaptureBatchDto; shown: Shown[] };
 
 export type LockedResult = Partial<Locked> & { ok: boolean; errors: ApiError[] };
 
-/** What Lock this as a test locks: the fields and rows on screen when it was pressed. */
-export type LockChoice = { fields: string[]; rows: number[] };
-
-const LOCK_CHOICE_KEY = 'smeltr-lock-choice';
-
-/** Hands `choice` to the lock page at `hash` and opens it. The choice is kept in this tab, so a reload of that page
- * still has it, and only for that page, so another lock page opened later by its address locks everything. A field
- * under `__` is never delivered, so no test checks one. */
-export function chooseLock(choice: LockChoice, hash: string): void {
-  const fields = choice.fields.filter((f) => !isInternal(f));
-  const rows = [...new Set(choice.rows)];
-  store(LOCK_CHOICE_KEY, JSON.stringify({ fields, rows, hash }), 'session');
-  location.hash = hash;
-}
-
-/** What `chooseLock` handed this page, or null when it handed nothing here. */
-export function lockChoice(): LockChoice | null {
-  const kept = storedJson<(LockChoice & { hash: string }) | null>(LOCK_CHOICE_KEY, null, 'session');
-  return kept && kept.hash === location.hash ? { fields: kept.fields, rows: kept.rows } : null;
-}
+/** The fields and rows on screen, `__` fields shown included: what Lock locks and Save output as sample saves. */
+export type ShownCut = { fields: string[]; rows: number[] };
 
 /** Where a run first stopped matching what a test locks, on one checked row: what the test expects there and
  * what the run made, one document at a time. Either side is absent past its own end. */
 export type Difference = {
   row: number;
+  /** Which of the row's documents, counted from 0 in the order they were made. */
+  document: number;
   expected?: Outcome;
   actual?: Outcome;
+  /** The values that differ, where both sides made a document. */
+  fields?: FieldDifference[];
 };
 
-/** What a run made of a test: whether it passed, and where it first did not. */
+/** A field a run types otherwise than the test locked it: its values may read the same and still differ, as `10`
+ * and `10.0` do. */
+export type Retyped = { field: string; locked: string; now: string };
+
+/** What a run made of a test: whether it passed, and where it did not. */
 export type Verdict = {
   passed: boolean;
-  firstDifference?: Difference;
+  /** Every document that differs, row by checked row, each row's documents in the order they were made. */
+  differences?: Difference[];
+  /** Each field the run types otherwise than the test locked it. */
+  retyped?: Retyped[];
   /** Present when the sample no longer holds the records it held at lock: a
    * changed input, which fails the test whatever the output says. */
   rowsIn?: { locked: number; now: number };
@@ -2734,12 +2748,12 @@ export function testAt(
   return apiJson(`${inArea(`/tests/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
-/** What locking `lock` would hold on this branch, written nowhere. */
-export function previewLock(lock: Lock): Promise<LockedResult> {
-  return post(branched(inArea('/preview/test-lock')), lock, 'quiet');
-}
+/** A value that differs from what a test locked, by its path; an array names each element that differs. `locked` is
+ * absent where the test locked no value, and `made` says whether the run made one. */
+export type FieldDifference = { path: string; locked?: unknown; made: boolean };
 
-/** Lock test `id`, or replace the one under that id, holding what a run of it makes now on this branch. */
+/** Lock test `id`, or replace the one under that id, holding the fields and rows of the preview on screen. Locking
+ * needs the pipeline saved, so the branch runs what the preview ran. */
 export function putTest(id: string, lock: Lock): Promise<MutationResult> {
   return configJson(inArea(`/tests/${encodeURIComponent(id)}`), json('PUT', lock));
 }
@@ -2806,6 +2820,8 @@ export interface RoutePreviewRow {
 export interface RoutePreviewResult {
   ok: boolean;
   errors: ApiError[];
+  /** What this run made of the request's test (`routePreview`'s `test`). */
+  verdict?: Verdict;
   /** The pipeline each route dispatches to, by route index. */
   route_pipelines: string[];
   /** The id of the pipeline each route dispatches to, position-parallel to
@@ -2821,22 +2837,17 @@ export interface RoutePreviewResult {
   /** What happens to a row no route matched, with the destination by its author's id. */
   unmatched: Answer;
   rows: RoutePreviewRow[];
-  /** How the columns the sample was captured under differ from what its source
-   * declares now. */
-  warnings?: string[];
 }
 
 /** Routes `sample`, a saved sample's id or a held capture's choice (`heldChoice`), through `config`.
  *
  * `config` is the whole bundle as the editor has it, so unsaved route edits
- * are what gets previewed. `atMicros` pins `now()` and a reference-less
- * `parseTime`, the way a locked test re-runs against the instant it locked
- * at; an ordinary preview omits it and reads the wall clock. `source` is the
- * source the records stand for where the sample names none. */
+ * are what gets previewed. `source` is the source the records stand for where
+ * the sample names none. */
 export function routePreview(
   config: string,
   sample: string,
-  { atMicros, source }: { atMicros?: number; source?: string } = {},
+  { source, test }: { source?: string; test?: string } = {},
 ): Promise<RoutePreviewResult> {
   const capture = heldSession(sample);
   return post(
@@ -2846,7 +2857,7 @@ export function routePreview(
       sample: capture ? null : sample,
       capture: capture ?? null,
       source: source ?? null,
-      at_micros: atMicros ?? null,
+      test: test ?? null,
     },
     'quiet',
   );
@@ -3070,12 +3081,12 @@ export interface CaptureBatchDto {
   rows: CapturedRowDto[];
 }
 
-/** A record a capture holds, as a sample of it holds it (`config_file::sample_records`), and the worker that sent
- * it. A value that failed its type is kept as its source spelled it, its field listed under `__capture.mistyped`;
- * a record a block holds says why under `__exception.message`. */
+/** A record a capture holds, to show, and the worker that sent it. A value that failed its type is as its source
+ * spelled it, its column named in `failed`; a record a block holds says why under `__exception.message`. */
 export interface HeldRecord {
   worker?: string;
   record: SampleRecordDto;
+  failed?: string[];
 }
 
 /** One worker in a capture, and where it stands. */
@@ -3174,14 +3185,14 @@ async function withRecords(
 
 /** What `session` holds so far, running or over. */
 async function heldRecords(session: string): Promise<Pick<CaptureStatus, 'columns' | 'records'>> {
-  const res: {
-    ok: boolean;
-    errors: ApiError[];
-    columns?: CaptureStatus['columns'];
-    records?: HeldRecord[];
-  } = await apiJson(`/api/captures/${encodeURIComponent(session)}/records`, undefined, 'quiet');
+  const res: { ok: boolean; errors: ApiError[] } & Partial<CaptureBatchDto> = await apiJson(
+    `/api/captures/${encodeURIComponent(session)}/records`,
+    undefined,
+    'quiet',
+  );
   if (!res.ok) throw new Error(errorText(res.errors) || "the capture's records could not be read");
-  return { columns: res.columns ?? [], records: res.records ?? [] };
+  const table = { columns: res.columns ?? [], rows: res.rows ?? [] };
+  return { columns: table.columns, records: tableRecords(table) };
 }
 
 export interface SaveCaptureResult {
@@ -3251,15 +3262,9 @@ export function holdPaste(
   return withRecords(post('/api/captures/paste', { group: scope, source, records }, 'quiet'));
 }
 
-/** A finished capture's records, as a sample holds them. */
+/** A capture's records. */
 export async function capturedRecords(session: string): Promise<SampleRecordDto[]> {
-  const res = await fetch(captureDownloadUrl(session));
-  if (!res.ok) throw new Error(`the capture's records could not be read (${res.status})`);
-  const text = await res.text();
-  return text
-    .split('\n')
-    .filter((line) => line.trim() !== '')
-    .map((line) => JSON.parse(line) as SampleRecordDto);
+  return (await heldRecords(session)).records.map((held) => held.record);
 }
 
 /** Where `session` stands. Its records are read again only when they changed
@@ -3312,12 +3317,6 @@ export function saveCapture(
     // A capture says what went wrong in its own flow, from start to save.
     { base, weight: 'quiet' },
   );
-}
-
-/** A finished capture's records as NDJSON. A plain link rather than a fetch: the browser names the file and puts it
- * where downloads go. */
-export function captureDownloadUrl(session: string): string {
-  return `/api/captures/${encodeURIComponent(session)}/download`;
 }
 
 export function discardCapture(session: string): Promise<{ ok: boolean }> {
@@ -4187,30 +4186,12 @@ export function regenerateEncryptionKey(): Promise<
 /** The Status page's table over the window: its chart reads the same counters from `getSeries`
  * (`flow.ts`, `FLOW_METRICS`). */
 export type FlowResponseDto = {
-  /** Every source's reading against its normal, whatever window the response is for. */
+  /** Every source's reading against its normal. */
   normals: FlowNormalDto[];
-  /** Every object's counts over the window, per worker, in the points the chart draws. */
-  totals: FlowTotalDto[];
 };
 
-/** What the Status page totals by (`leader::FlowKind`). */
+/** What the Status page's flow table lists. */
 export type FlowKind = 'source' | 'pipeline' | 'route' | 'destination';
-
-/** One object's counts over the window, on one worker. Out is what was handed to destinations,
- * a row sent to two counting twice; a destination's own out is what it delivered. */
-export type FlowTotalDto = {
-  kind: FlowKind;
-  group: string;
-  workerId?: string | null;
-  subjectId: string;
-  /** A route's source and pipeline. */
-  source?: string | null;
-  pipeline?: string | null;
-  rowsIn: number;
-  rowsOut: number;
-  bytesIn: number;
-  bytesOut: number;
-};
 
 /** One source's reading against its normal at the width it is shown at (`throughput::Reading::shown`), in rows
  * per second: its normal holds `low` to `high`. */
@@ -4264,15 +4245,16 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
   return readJson(`/api/logs?${query}`);
 }
 
-export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
-  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+export function getFlow(): Promise<FlowResponseDto> {
+  return readJson('/api/flow');
 }
 
 /** How a counter is drawn: its rate, or what each minute, hour or day added up to (`leader::query::Draw`). */
 export type SeriesDraw = 'perSecond' | 'totals';
 
-/** One series of `GET /api/series`: the subjects whose split label holds `name`, added together. */
-export type SeriesSplitDto = { name: string; points: [number, number][] };
+/** One series of `GET /api/series`: the subjects whose split labels hold `values`, added together
+ * (`leader::query::Split`). */
+export type SeriesSplitDto = { name: string; values: string[]; points: [number, number][] };
 
 /** `GET /api/series` (`leader::query::SeriesAnswer`). */
 export type SeriesAnswerDto = {
@@ -4764,11 +4746,13 @@ export type ParserShapeDto = {
 
 type StreamsDto = { parsers: ParserShapeDto[]; unmatched: UnmatchedStreamsDto[] };
 
-/** `GET /api/streams` at the groups that run `scope`: its own group, or every group for `shared`. */
-function streamsAt(scope: string): Promise<StreamsDto> {
+/** `GET /api/streams` at the groups that run `scope`: its own group, or every group for `shared`. A Parser's counts
+ * are those of the last `windowMinutes`, or of every bucket the leader keeps when it is absent. */
+function streamsAt(scope: string, windowMinutes?: number): Promise<StreamsDto> {
   const at = (g: { groupId: string }) => scope === SHARED_SCOPE || g.groupId === scope;
+  const query = windowMinutes === undefined ? '' : `?windowMinutes=${windowMinutes}`;
   // Best-effort everywhere it is read: what production saw is offered, never needed.
-  return apiJson<StreamsDto>('/api/streams', undefined, 'quiet').then((r) => ({
+  return apiJson<StreamsDto>(`/api/streams${query}`, undefined, 'quiet').then((r) => ({
     parsers: r.parsers.filter(at),
     unmatched: r.unmatched.filter(at),
   }));
@@ -4779,9 +4763,10 @@ export function streamsIn(scope: string): Promise<UnmatchedStreamsDto[]> {
   return streamsAt(scope).then((r) => r.unmatched);
 }
 
-/** What the Parser steps of `scope`'s pipelines produced in production, at the groups that run `scope`. */
-export function parsersIn(scope: string): Promise<ParserShapeDto[]> {
-  return streamsAt(scope).then((r) => r.parsers);
+/** What the Parser steps of `scope`'s pipelines produced in production over the last `windowMinutes`, at the groups
+ * that run `scope`. */
+export function parsersIn(scope: string, windowMinutes: number): Promise<ParserShapeDto[]> {
+  return streamsAt(scope, windowMinutes).then((r) => r.parsers);
 }
 
 // -- object stats (design doc "The map": the focus view) -------------------

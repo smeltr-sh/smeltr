@@ -2,9 +2,10 @@
 //! Ids count from 1; a subject's versions from 1, in the order they were registered. The crate's own Avro tests
 //! include it too (`src/io/avro/tests.rs`).
 
+use smeltr::sync::Mutex;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 
@@ -47,36 +48,36 @@ impl Registry {
     pub fn sign_in(&self, user: &str, password: &str) {
         use base64::Engine;
         let token = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
-        self.state.lock().unwrap().authorization = Some(format!("Basic {token}"));
+        self.state.lock().authorization = Some(format!("Basic {token}"));
     }
 
     /// `subject`'s compatibility refuses every schema registered under it.
     pub fn refuse(&self, subject: &str) {
-        self.state.lock().unwrap().refusing.push(subject.to_string());
+        self.state.lock().refusing.push(subject.to_string());
     }
 
     /// The next `n` calls answer 500.
     pub fn fail(&self, n: usize) {
-        self.state.lock().unwrap().failing = n;
+        self.state.lock().failing = n;
     }
 
     /// Every schema registered, by id less one: its subject and its text.
     pub fn schemas(&self) -> Vec<(String, String)> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         state.schemas.iter().map(|(s, t, _)| (s.clone(), t.clone())).collect()
     }
 
     /// Registers `text` under `subject`, referencing `references` (a JSON array of Confluent's references), and
     /// answers its id.
     pub fn hold(&self, subject: &str, text: &str, references: Value) -> u32 {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.schemas.push((subject.into(), text.into(), references));
         state.schemas.len() as u32
     }
 
     /// Every request line so far, and the `Authorization` it carried.
     pub fn seen(&self) -> Vec<(String, Option<String>)> {
-        self.state.lock().unwrap().seen.clone()
+        self.state.lock().seen.clone()
     }
 
     fn answer_one(&self, conn: std::net::TcpStream) {
@@ -116,7 +117,7 @@ impl Registry {
     fn answer(&self, line: &str, authorization: Option<String>, body: &[u8]) -> (u16, String) {
         let refused =
             |status: u16, message: &str| (status, json!({ "error_code": status, "message": message }).to_string());
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.seen.push((line.to_string(), authorization.clone()));
         if state.authorization.is_some() && state.authorization != authorization {
             return refused(401, "Unauthorized");

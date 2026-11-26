@@ -1,11 +1,12 @@
 //! A service on this host for the fuzzers of the destinations on the HTTP destination core (`io::http`), and the
 //! checks they share of what it read.
 
+use smeltr::sync::Mutex;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::value::RawValue;
@@ -150,7 +151,7 @@ fn serve<S: Read + Write, A: Answers>(stream: S, script: &Mutex<A>, conn: usize)
             headers,
             body,
         };
-        let answer = script.lock().unwrap().answer(&seen, conn);
+        let answer = script.lock().answer(&seen, conn);
         let close = answer.headers.iter().any(|(n, _)| n == "Connection");
         let mut head = format!(
             "HTTP/1.1 {} Fuzz\r\nContent-Length: {}\r\n",

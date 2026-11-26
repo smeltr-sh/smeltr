@@ -16,11 +16,13 @@
 //! the mapping of the record its documents are, so a document the mapping refuses and one that is not JSON are
 //! refused by the cluster itself, and the documents read back through the search API are the ones sent.
 
+use smeltr::core::id::DestId;
+use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -1186,14 +1188,14 @@ fn converse(mut s: impl Read + Write, cluster: &Mutex<Cluster>) {
     let mut buf = Vec::new();
     while let Some((head, body)) = read_request(&mut s, &mut buf) {
         let slow = {
-            let mut cluster = cluster.lock().unwrap();
+            let mut cluster = cluster.lock();
             let carried = (cluster.answers.slow_on.as_ref()).is_some_and(|(doc, _)| contains(&body, doc));
             if carried { cluster.answers.slow_on.take() } else { None }
         };
         if let Some((_, wait)) = slow {
             std::thread::sleep(wait);
         }
-        let (status, headers, text) = cluster.lock().unwrap().answer(&head, &body);
+        let (status, headers, text) = cluster.lock().answer(&head, &body);
         let extra: String = headers.iter().map(|(n, v)| format!("{n}: {v}\r\n")).collect();
         // One write: a response in pieces waits out the client's delayed acknowledgement between them.
         let response = format!(
@@ -1257,7 +1259,7 @@ impl Fake {
         let _ = TcpStream::connect(self.addr);
         let _ = self.accept.join();
         // A connection still open holds the cluster too, so what it holds is taken rather than unwrapped.
-        std::mem::take(&mut *self.cluster.lock().unwrap())
+        std::mem::take(&mut *self.cluster.lock())
     }
 }
 
@@ -1347,7 +1349,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     let metrics = smeltr::metrics::MetricsHandle::new(registry.clone(), "fuzz");
     let built = smeltr::io::build_destination(
         &DestinationKind::Elasticsearch(c.clone()),
-        0,
+        DestId::new(0),
         "d",
         metrics,
         &secrets,
@@ -1927,7 +1929,7 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Elasticsearch(c.clone()),
-        0,
+        DestId::new(0),
         "d",
         metrics,
         &secrets,

@@ -2,6 +2,7 @@
 // from an OpenTelemetry signal's records, from a standard's file (ECS, OCSF, a CSV of fields, JSON Schema) or by an importer pipeline, a pipeline's Produces and a destination's accepts, and what review finds
 // where rows do not fit.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { pasted } from '../samples';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -825,7 +826,7 @@ test('an OCSF class comes in with only the profiles ticked, and then names them 
   expect(field('device'), "the Host profile's").toBeUndefined();
   expect(field('src_endpoint.ip')).toBeDefined();
   const described =
-    'OCSF 1.9.0 Network Activity, 2 levels deep, required and recommended fields, profiles: none';
+    'OCSF 1.10.0 Network Activity, 2 levels deep, required and recommended fields, profiles: none';
   await expect(admin.getByText(described, { exact: true })).toBeVisible();
 
   // A profile ticked stays ticked on a class that takes it too.
@@ -1235,7 +1236,7 @@ test('a field the schema requires and the rows lack is a column of its own, with
   await api.put(`${SHARED}/samples/logins-sample${ON}`, {
     id: 'logins-sample',
     name: 'logins',
-    records: [{ _raw: '{"when":"2026-10-27T10:00:00Z"}' }],
+    ...pasted([{ _raw: '{"when":"2026-10-27T10:00:00Z"}' }]),
   });
   await goto(admin, leader, '#/build/pipelines/logins/for/logins-sample');
 
@@ -1285,7 +1286,7 @@ test('a schema recommending more than five fields the rows lack names five, and 
   await api.put(`${SHARED}/samples/conns-sample${ON}`, {
     id: 'conns-sample',
     name: 'conns',
-    records: [{ _raw: '{"user":"ana"}' }],
+    ...pasted([{ _raw: '{"user":"ana"}' }]),
   });
   await admin.setViewportSize({ width: 1920, height: 1080 });
   await goto(admin, leader, '#/build/pipelines/conns/for/conns-sample');
@@ -1384,7 +1385,7 @@ async function stageLogins(api: Api) {
   await api.put(`${SHARED}/samples/logins-sample${ON}`, {
     id: 'logins-sample',
     name: 'logins',
-    records: [{ _raw: '{"when":"2026-10-27T10:00:00Z"}' }],
+    ...pasted([{ _raw: '{"when":"2026-10-27T10:00:00Z"}' }]),
   });
 }
 

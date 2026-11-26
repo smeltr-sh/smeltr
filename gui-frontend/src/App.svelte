@@ -653,7 +653,7 @@
     {:else if route.page === 'tests'}
       {#if pages.tests}
         {@const TestsPage = pages.tests}
-        <TestsPage />
+        <TestsPage only={route.only} />
       {/if}
     {:else if route.page === 'pipelines'}
       {#if pages.pipelines}
@@ -700,15 +700,6 @@
           back={route.back}
           test={route.test}
         />
-      {/if}
-    {:else if route.page === 'lock-test'}
-      {#if pages['lock-test']}
-        {@const LockTestPage = pages['lock-test']}
-        {#if 'relock' in route}
-          <LockTestPage relock={route.relock} />
-        {:else}
-          <LockTestPage pipeline={route.pipeline} sample={route.sample} />
-        {/if}
       {/if}
     {:else if route.page === 'file'}
       {#if pages.file}

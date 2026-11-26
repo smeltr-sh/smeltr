@@ -16,9 +16,10 @@
 //! At a destination, the transform thread copies each row a route's pipeline finished for it, as the pipeline left it,
 //! before it is handed to egress. Its filter reads that row, compiled exactly as a `deliver` rule's `when` is.
 
+use crate::sync::Mutex;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::core::batch::{Batch, SLOT_LIVE};
@@ -34,7 +35,7 @@ use crate::io::SourceRecord;
 use crate::plan::compile::parse;
 use crate::plan::compile::{compile_patterns, ingest_fields};
 use crate::plan::resolve::{ResourceBuilder, SymbolTable, resolve};
-use crate::plan::topology::SourceMeta;
+use crate::plan::topology::{Entry, SourceMeta};
 
 /// A compiled filter, or nothing when the invitation carried none.
 #[derive(Debug)]
@@ -410,8 +411,8 @@ pub struct Holding {
 
 impl Drop for Holding {
     fn drop(&mut self) {
-        let mut sessions = self.captures.sessions.lock().unwrap();
-        let mut holders = self.captures.holders.lock().unwrap();
+        let mut sessions = self.captures.sessions.lock();
+        let mut holders = self.captures.holders.lock();
         let Some(count) = holders.get_mut(&self.at) else {
             return;
         };
@@ -444,7 +445,7 @@ impl Captures {
     ///
     /// Returns the sessions that were new, for the caller to open a source for where one is needed.
     pub fn admit(&self, invitations: &[CaptureInvitation]) -> Vec<Admitted> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let mut started = Vec::new();
         for invitation in invitations {
             if !sessions.contains_key(&invitation.session) {
@@ -452,7 +453,7 @@ impl Captures {
                 let mut session = Session::new(invitation.clone(), admission);
                 session.awaiting_held = session
                     .held_at()
-                    .is_some_and(|at| self.holders.lock().unwrap().contains_key(&at));
+                    .is_some_and(|at| self.holders.lock().contains_key(&at));
                 sessions.insert(invitation.session.clone(), session);
                 started.push(Admitted {
                     invitation: invitation.clone(),
@@ -475,7 +476,7 @@ impl Captures {
     /// One that already reached a bound is a finished answer and stays: it is what the leader asked for, nothing
     /// else is going to produce it, and the session it belongs to may expire before a replacement could.
     pub fn set_deployed(&self, deployed: &Arc<crate::metrics::Subjects>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.retain(|_, s| {
             !s.open()
                 || !s
@@ -484,12 +485,12 @@ impl Captures {
                     .is_some_and(|source| deployed.sources.contains(&source.id))
         });
         self.recount(&sessions);
-        *self.deployed.lock().unwrap() = deployed.clone();
+        *self.deployed.lock() = deployed.clone();
     }
 
     /// Note that something here holds rows a block keeps at `at`, until the returned [`Holding`] is dropped.
     pub fn holding(self: &Arc<Self>, at: HeldAt) -> Holding {
-        *self.holders.lock().unwrap().entry(at.clone()).or_default() += 1;
+        *self.holders.lock().entry(at.clone()).or_default() += 1;
         Holding {
             captures: self.clone(),
             at,
@@ -498,14 +499,14 @@ impl Captures {
 
     /// Note that an egress thread here sends to `destination`, so a capture there reads what it takes.
     pub fn send_to(&self, destination: &str) {
-        self.sending.lock().unwrap().insert(destination.to_string());
+        self.sending.lock().insert(destination.to_string());
     }
 
     /// Note that nothing here sends to `destination` any more. A capture still filling there ends with what it has:
     /// it would otherwise wait out its deadline on a destination nothing feeds.
     pub fn stop_sending_to(&self, destination: &str) {
-        self.sending.lock().unwrap().remove(destination);
-        for s in self.sessions.lock().unwrap().values_mut() {
+        self.sending.lock().remove(destination);
+        for s in self.sessions.lock().values_mut() {
             if s.open() && s.sends(destination) {
                 s.end = Some(CaptureEnd::Failed(format!(
                     "this worker stopped sending to destination {destination:?}"
@@ -516,7 +517,7 @@ impl Captures {
 
     /// Whether an egress thread here sends to `destination`.
     pub fn sends_to(&self, destination: &str) -> bool {
-        self.sending.lock().unwrap().contains(destination)
+        self.sending.lock().contains(destination)
     }
 
     /// Every capture at a destination still taking rows. Asked by a transform thread on every attempt, so a worker
@@ -525,7 +526,7 @@ impl Captures {
         if self.at_destinations.load(Ordering::Relaxed) == 0 {
             return Vec::new();
         }
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions
             .iter_mut()
             .filter_map(|(id, s)| {
@@ -544,7 +545,7 @@ impl Captures {
 
     /// Offer `rows`, each under its columns, to `at`'s session, while it is still that admission.
     pub fn offer_sent(&self, at: &AtDestination, rows: Vec<(Vec<CaptureColumn>, CapturedRow)>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, &at.session, at.admission) else {
             return;
         };
@@ -584,7 +585,7 @@ impl Captures {
             .enumerate()
             .map(|(i, row)| held_row(row, why.get(i).map_or("", String::as_str)))
             .collect();
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         for (session, admission) in &owed {
             let Some(s) = admitted_session(&mut sessions, session, *admission) else {
                 continue;
@@ -602,7 +603,7 @@ impl Captures {
     /// The open sessions `at` picks whose admission is not in `shown`, by id and admission: those held rows are still
     /// owed to. An admission no longer open leaves `shown`.
     fn owed(&self, shown: &mut HashSet<u64>, at: impl Fn(&Session) -> bool) -> Vec<(String, u64)> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let mut open = HashSet::new();
         let owed = sessions
             .iter_mut()
@@ -621,7 +622,7 @@ impl Captures {
     /// End `at`'s session with `why`, for a filter that will not compile against a route feeding its destination. A
     /// later admission under the same id is left alone.
     pub fn fail_at(&self, at: &AtDestination, why: String) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &at.session, at.admission) {
             s.end = Some(CaptureEnd::Failed(why));
         }
@@ -646,7 +647,7 @@ impl Captures {
     /// Offer `read` to every open session `at` names.
     fn offer_raw(&self, at: &RawAt, read: crate::io::raw::RawRead<'_>) {
         let (columns, row) = raw_row(read, at.source());
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         for session in sessions.values_mut().filter(|s| at.takes(s)) {
             session.offer(&columns, row.clone(), false);
         }
@@ -654,7 +655,7 @@ impl Captures {
 
     /// Whether a deployment is reading `source` right now.
     pub fn is_deployed(&self, source: &str) -> bool {
-        self.deployed.lock().unwrap().sources.iter().any(|s| s == source)
+        self.deployed.lock().sources.iter().any(|s| s == source)
     }
 
     /// Whether `admitted` needs no reader of its own: it names no source, so it was admitted finished, or a
@@ -670,11 +671,7 @@ impl Captures {
         if self.reading.load(Ordering::Relaxed) == 0 {
             return false;
         }
-        self.sessions
-            .lock()
-            .unwrap()
-            .values_mut()
-            .any(|s| s.open() && s.reads(source))
+        self.sessions.lock().values_mut().any(|s| s.open() && s.reads(source))
     }
 
     /// Offer one batch to every session watching `source`, each keeping what its own filter matches.
@@ -684,7 +681,7 @@ impl Captures {
     /// capture never makes a worker decode twice.
     pub fn tap(&self, source: &str, records: &[SourceRecord], text: &[&str]) {
         let watching: Vec<(String, u64)> = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock();
             sessions
                 .iter_mut()
                 .filter_map(|(id, s)| (s.reads(source) && s.open()).then(|| (id.clone(), s.admission)))
@@ -699,7 +696,6 @@ impl Captures {
     pub fn owed_held(&self, source: &str, shown: &HashSet<u64>) -> bool {
         self.sessions
             .lock()
-            .unwrap()
             .values_mut()
             .any(|s| s.open() && s.reads(source) && !shown.contains(&s.admission))
     }
@@ -719,7 +715,7 @@ impl Captures {
         for (session, admission) in &watching {
             self.fill(session, *admission, records, text, Some(why));
         }
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         for (session, admission) in &watching {
             if let Some(s) = admitted_session(&mut sessions, session, *admission) {
                 s.awaiting_held = false;
@@ -742,7 +738,7 @@ impl Captures {
     /// `why`, for records a block holds, says why each blocked, and is kept beside it as [`EXCEPTION_MESSAGE`].
     fn fill(&self, session: &str, admission: u64, records: &[SourceRecord], text: &[&str], why: Option<&[String]>) {
         let filter = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock();
             let Some(s) = admitted_session(&mut sessions, session, admission) else {
                 return;
             };
@@ -756,7 +752,7 @@ impl Captures {
         };
         let keep = filter.keeps(records, text);
 
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, session, admission) else {
             return;
         };
@@ -810,14 +806,14 @@ impl Captures {
     /// Whether `admitted` is still held and still wants records. The cold driver's loop condition: false once its
     /// session is let go, even while a later admission holds the same id.
     pub fn open(&self, admitted: &Admitted) -> bool {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission).is_some_and(|s| s.open())
     }
 
     /// Keep what Run found out about `admitted`'s query. `meta`, where given, is the record the worker declared from
     /// the query's columns for a source that declared none, and the session's filter is compiled against it.
     pub fn describe(&self, admitted: &Admitted, run: crate::heartbeat::SqlRun, meta: Option<SourceMeta>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission) else {
             return;
         };
@@ -834,7 +830,7 @@ impl Captures {
     /// Mark `admitted` finished with `reason`, for a source that would not open or a poll that failed. A later
     /// admission under the same id is left alone.
     pub fn fail(&self, admitted: &Admitted, reason: impl Into<String>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission) {
             s.end = Some(CaptureEnd::Failed(reason.into()));
         }
@@ -843,7 +839,7 @@ impl Captures {
     /// End `admitted` with what it has, for a capture that has read all its source gives it. It ends as at its match
     /// count, the bound a leader already knows: the sample is as large as it will get.
     pub fn end(&self, admitted: &Admitted) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission)
             && s.open()
         {
@@ -855,7 +851,7 @@ impl Captures {
     /// worth more delivered short than lost with the process, and a leader that invites the session again gets a
     /// fresh one in the replacement, never these.
     pub fn end_all(&self, reason: &str) {
-        for s in self.sessions.lock().unwrap().values_mut() {
+        for s in self.sessions.lock().values_mut() {
             if s.open() {
                 s.end = Some(CaptureEnd::Failed(reason.to_string()));
             }
@@ -870,7 +866,7 @@ impl Captures {
     /// rest, so sending one twice cannot double a sample. A session still unacknowledged [`REPORT_GRACE`] past its
     /// deadline is dropped.
     pub fn finished(&self, worker_id: &str) -> Vec<CaptureReport> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.retain(|_, s| s.started.elapsed() < Duration::from_secs(s.invitation.deadline_secs) + REPORT_GRACE);
         self.recount(&sessions);
 
@@ -894,7 +890,7 @@ impl Captures {
     /// something new. Polled on the same schedule as [`Captures::finished`]; a session with nothing new since its
     /// last progress report is left out rather than repeating a list nothing changed.
     pub fn progress(&self, worker_id: &str) -> Vec<CaptureReport> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions
             .iter_mut()
             .filter_map(|(id, s)| s.progress(id, worker_id))
@@ -903,7 +899,7 @@ impl Captures {
 
     /// Forget a session the leader has acknowledged.
     pub fn sent(&self, session: &str) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.remove(session);
         self.recount(&sessions);
     }
@@ -914,14 +910,14 @@ impl Captures {
     /// source and its copy of the lent credentials; the invitation, and what it lent, go with the session. A finished
     /// session stays until its report is sent: it is this worker's answer, and the leader still takes its reason.
     pub fn drop_unlisted(&self, listed: &HashSet<String>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.retain(|id, s| !s.open() || listed.contains(id));
         self.recount(&sessions);
     }
 
     /// Whether this process holds `session`, filling or finished and waiting for its report to be sent.
     pub fn holds(&self, session: &str) -> bool {
-        self.sessions.lock().unwrap().contains_key(session)
+        self.sessions.lock().contains_key(session)
     }
 }
 
@@ -929,41 +925,41 @@ impl Captures {
 /// field of the record, so a sample's preview leaves it out.
 pub const EXCEPTION_MESSAGE: &str = "__exception.message";
 
-/// A source batch's columns: the record's fields, then the `__source` fields, each as the source declares it.
-fn source_columns(meta: &SourceMeta) -> Vec<CaptureColumn> {
-    let record = meta
-        .record_fields()
-        .into_iter()
-        .map(|(name, ty)| (name.to_string(), ty));
-    let source = meta
-        .source_fields()
-        .iter()
-        .map(|(name, ty)| (name.to_string(), ty.clone()));
-    record
-        .chain(source)
-        .map(|(name, ty)| match name == UNCLAIMED {
-            // Spelled as a destination's open record spells it (`written_columns`).
-            true => CaptureColumn {
-                name,
-                ty: "{...}".to_string(),
-            },
-            false => CaptureColumn { name, ty: ty.spell() },
+/// The columns of a record of `fields`, at a source and at a destination alike: each field under its path, and each
+/// object's unclaimed fields under theirs.
+fn record_columns(fields: &[(Entry, DataType)]) -> impl Iterator<Item = CaptureColumn> {
+    fields.iter().map(|(entry, ty)| CaptureColumn {
+        name: entry.column(),
+        ty: match entry {
+            Entry::Field(_) => ty.spell(),
+            Entry::Unclaimed(_) => "{...}".to_string(),
+        },
+    })
+}
+
+/// `object`, a record of `fields`, as its values under `record_columns(fields)`.
+fn record_values(fields: &[(Entry, DataType)], object: &crate::io::RecordObject) -> Vec<serde_json::Value> {
+    (fields.iter())
+        .map(|(entry, _)| match entry {
+            Entry::Unclaimed(at) => crate::io::unclaimed_of(object, at, fields).unwrap_or_default(),
+            Entry::Field(name) => crate::io::value_at(object, name).cloned().unwrap_or_default(),
         })
         .collect()
+}
+
+/// A source batch's columns: the record's fields, then the `__source` fields, each as the source declares it.
+fn source_columns(meta: &SourceMeta) -> Vec<CaptureColumn> {
+    let source = meta.source_fields().iter().map(|(name, ty)| CaptureColumn {
+        name: name.to_string(),
+        ty: ty.spell(),
+    });
+    record_columns(meta.record()).chain(source).collect()
 }
 
 /// One record as a row of `source_columns(meta)`: its fields from its record object, a value that failed its type as
 /// the source spelled it, then its `__source` fields from `source`, the record's `__source` object.
 fn source_row(meta: &SourceMeta, record: &SourceRecord, text: &str, source: &crate::io::SourceFields) -> CapturedRow {
-    let object = meta.record_object(record, text);
-    let fields = meta.record_fields();
-    let mut values: Vec<serde_json::Value> = fields
-        .iter()
-        .map(|(name, _)| match *name {
-            UNCLAIMED => crate::io::unclaimed_of(&object, &fields).unwrap_or_default(),
-            name => crate::io::value_at(&object, name).cloned().unwrap_or_default(),
-        })
-        .collect();
+    let mut values = record_values(meta.record(), &meta.record_object(record, text));
     let mut failed = Vec::new();
     for (_, field, original) in record.chunk.failed().iter().filter(|(r, _, _)| *r == record.row) {
         values[*field] = serde_json::Value::String(original.clone());
@@ -1122,24 +1118,31 @@ pub struct AtDestination {
 /// The column an open record's unclaimed keys go in, as one object.
 pub use crate::plan::tree::UNCLAIMED;
 
-/// The fields a pipeline writes (`plan::dictionary::record_type`), each as a column, and [`UNCLAIMED`] for the keys
-/// an open record leaves unclaimed. None for a record that is not a struct: its rows are shown by their own keys.
-pub fn written_columns(record: &DataType) -> Vec<CaptureColumn> {
-    let mut written: Vec<CaptureColumn> = match record {
-        DataType::Struct(fields, _) => fields
-            .iter()
-            .map(|(name, ty)| CaptureColumn {
-                name: name.clone(),
-                ty: ty.spell(),
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    if matches!(record, DataType::Struct(_, true)) {
-        written.push(CaptureColumn {
-            name: UNCLAIMED.to_string(),
-            ty: "{...}".to_string(),
-        });
+/// The fields a pipeline writes (`plan::dictionary::record_type`), as a source's record declares its own: each leaf,
+/// and each open object's unclaimed fields. None for a record that is not a struct: its rows are shown by their own
+/// keys.
+pub fn written_fields(record: &DataType) -> Vec<(Entry, DataType)> {
+    // An object a pipeline wrote with nothing in it declares no field: here it is an object that holds whatever
+    // keys it has.
+    fn holding(ty: &DataType) -> DataType {
+        match ty {
+            DataType::Struct(members, open) => DataType::Struct(
+                members.iter().map(|(k, t)| (k.clone(), holding(t))).collect(),
+                *open || members.is_empty(),
+            ),
+            other => other.clone(),
+        }
+    }
+    let mut written = Vec::new();
+    if let DataType::Struct(members, open) = holding(record) {
+        for (key, ty) in &members {
+            // A root key is a field's name as a path spells it, so a key holding a `.` stays one key.
+            crate::plan::topology::leaves(&crate::plan::tree::spell(key), ty, &mut written)
+                .expect("every object holds a field or is open");
+        }
+        if open && !members.is_empty() {
+            written.push((Entry::Unclaimed("".into()), DataType::Variant));
+        }
     }
     written
 }
@@ -1178,7 +1181,7 @@ fn tapped_value(doc: Option<&[u8]>) -> serde_json::Value {
 /// document as sent to a destination leaves out.
 pub struct Finished<'a> {
     plan: &'a crate::plan::compile::Plan,
-    written: Vec<CaptureColumn>,
+    written: Vec<(Entry, DataType)>,
     internal: Vec<(CaptureColumn, crate::core::id::SlotId)>,
 }
 
@@ -1188,7 +1191,7 @@ impl<'a> Finished<'a> {
         let record = crate::plan::dictionary::record_type(plan, tag_field);
         Finished {
             plan,
-            written: written_columns(&record),
+            written: written_fields(&record),
             internal: internal_columns(plan),
         }
     }
@@ -1226,48 +1229,32 @@ pub fn place(
     }
 }
 
-/// One row a pipeline finished: `object`, the row's document, under `written` (`written_columns`), then `fields`, its
-/// values of `internal` (`internal_columns`). Returns the columns and the row under them.
+/// One row a pipeline finished. `object` is the row's document, read under `written` (`written_fields`), and `fields`
+/// holds the row's values of `internal` (`internal_columns`). Returns the columns and the row under them.
 ///
 /// A document `written` does not describe is shown by its own keys, each a variant.
 fn finished_row(
-    mut object: crate::io::RecordObject,
-    written: &[CaptureColumn],
+    object: crate::io::RecordObject,
+    written: &[(Entry, DataType)],
     internal: &[(CaptureColumn, crate::core::id::SlotId)],
     fields: Vec<serde_json::Value>,
 ) -> (Vec<CaptureColumn>, CapturedRow) {
-    let fits =
-        written.iter().any(|c| c.name == UNCLAIMED) || object.keys().all(|k| written.iter().any(|c| &c.name == k));
-    let (mut columns, mut values) = match fits && !written.is_empty() {
-        true => {
-            let mut values: Vec<serde_json::Value> = written
-                .iter()
-                .filter(|c| c.name != UNCLAIMED)
-                .map(|c| object.remove(&c.name).unwrap_or_default())
-                .collect();
-            if written.iter().any(|c| c.name == UNCLAIMED) {
-                values.push(match object.is_empty() {
-                    true => serde_json::Value::Null,
-                    false => serde_json::Value::Object(object),
-                });
-            }
-            (written.to_vec(), values)
-        }
-        false => {
-            let columns = object
-                .keys()
-                .map(|k| CaptureColumn {
-                    name: k.clone(),
-                    ty: "variant".to_string(),
-                })
-                .collect();
-            (columns, object.into_iter().map(|(_, v)| v).collect())
-        }
+    let described = |key: &String| {
+        written
+            .iter()
+            .any(|(entry, _)| entry.keys().first().is_none_or(|k| k == key))
     };
-    // A root key is a column's name as a path spells it, so a key holding a `.` stays one key when the row is read back.
-    for column in columns.iter_mut().filter(|c| c.name != UNCLAIMED) {
-        column.name = crate::plan::tree::spell(&column.name).into_owned();
-    }
+    let (mut columns, mut values): (Vec<_>, Vec<_>) = match !written.is_empty() && object.keys().all(described) {
+        true => (record_columns(written).collect(), record_values(written, &object)),
+        // A root key is a column's name as a path spells it, so a key holding a `.` stays one key.
+        false => (object.into_iter())
+            .map(|(key, value)| {
+                let name = crate::plan::tree::spell(&key).into_owned();
+                let ty = "variant".to_string();
+                (CaptureColumn { name, ty }, value)
+            })
+            .unzip(),
+    };
     columns.extend(internal.iter().map(|(c, _)| c.clone()));
     values.extend(fields);
     (
@@ -1444,7 +1431,7 @@ pub fn run_cold_capture(
 
     // A metrics or logs source reads the process this runs in: the runtime when one was running as the capture
     // arrived, the supervisor otherwise.
-    let subjects = captures.deployed.lock().unwrap().clone();
+    let subjects = captures.deployed.lock().clone();
     let mut source = match crate::io::build_source(&kind, registry, &subjects, &secrets, None) {
         Ok(source) => source,
         Err(e) => {
@@ -1747,6 +1734,7 @@ pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::heartbeat::pasted_from;
 
     /// A deployment reading `sources`.
     fn deployed(sources: &[&str]) -> Arc<crate::metrics::Subjects> {
@@ -1863,7 +1851,7 @@ mod tests {
 
     /// What `session` holds so far.
     fn held(captures: &Captures, session: &str) -> Vec<CaptureBatch> {
-        captures.sessions.lock().unwrap()[session].batches.clone()
+        captures.sessions.lock()[session].batches.clone()
     }
 
     /// Records as a broker delivers them: consecutive offsets from `base`, which is what tells one apart from
@@ -2613,7 +2601,7 @@ mod tests {
     /// A cold logs capture the leader stops listing ends, and its end closes its queue.
     #[test]
     fn a_cold_logs_capture_closes_its_queue_when_the_leader_stops_listing_it() {
-        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = crate::logs::TAPS_LOCK.lock();
 
         let captures = Arc::new(Captures::default());
         let mut inv = invitation("s1", 10, 1_000_000, 30);
@@ -2747,7 +2735,7 @@ mod tests {
             Some(route.to_string()),
             Some(format!("{route} name")),
         ];
-        let mut sent = finished_row(object(v), &columns(written), &[], Vec::new());
+        let mut sent = finished_row(object(v), &written_fields(&record(written)), &[], Vec::new());
         place(&mut sent, destination);
         sent
     }
@@ -2761,12 +2749,72 @@ mod tests {
         let object = |v: serde_json::Value| v.as_object().unwrap().clone();
         let none = crate::io::SourceFields::new();
         let stored = [object(serde_json::json!({"id": true, "name": "ann"}))];
-        let records = meta.read_stored(&[(&stored[0], &none)]).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&stored[0], &none)])).unwrap();
 
         let row = source_row(&meta, &records[0], "", &none);
         assert_eq!(&row.values[..2], [serde_json::json!("true"), serde_json::json!("ann")]);
         assert_eq!(row.failed, [0]);
         assert_eq!(source_columns(&meta)[0].ty, "i64");
+    }
+
+    /// A source that declares an object is captured by its leaves, an open object's other keys as one column, and the
+    /// capture saved as a sample reads back as the record it was.
+    #[test]
+    fn a_declared_object_is_captured_by_its_leaves_and_reads_back() {
+        let home = DataType::Struct(vec![("city".into(), DataType::Str)], true);
+        let meta = SourceMeta::KAFKA
+            .declaring(vec![("id".into(), DataType::I64), ("home".into(), home)])
+            .unwrap();
+        let object = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let none = crate::io::SourceFields::new();
+        let stored = object(serde_json::json!({"id": 1, "home": {"city": "Oslo", "zip": "0150"}}));
+        let records = meta.read_table(&pasted_from(&[(&stored, &none)])).unwrap();
+
+        let captured: Vec<_> = (source_columns(&meta).into_iter())
+            .filter(|c| !c.name.starts_with("__"))
+            .collect();
+        assert_eq!(
+            captured,
+            columns(&[("id", "i64"), ("home.city", "str"), ("home....", "{...}")])
+        );
+        let row = source_row(&meta, &records[0], "", &none);
+        assert_eq!(
+            row.values[..3],
+            [
+                serde_json::json!(1),
+                serde_json::json!("Oslo"),
+                serde_json::json!({"zip": "0150"})
+            ]
+        );
+
+        let sample = SourceMeta::of_columns(&captured).unwrap();
+        assert_eq!(sample.record(), meta.record());
+        let read = sample.read_table(&pasted_from(&[(&stored, &none)])).unwrap();
+        assert_eq!(sample.record_object(&read[0], ""), stored);
+    }
+
+    /// Two routes into one destination: one declares `id`, the other passes it through undeclared. A sample of both
+    /// holds a column for each, and a row reads its `id` from whichever its route filled.
+    #[test]
+    fn a_row_reads_a_field_from_its_unclaimed_fields_where_its_batch_had_no_column() {
+        let batch = |spelled: &[(&str, &str)], value: serde_json::Value| crate::heartbeat::CaptureBatch {
+            columns: columns(spelled),
+            rows: vec![CapturedRow {
+                values: vec![value],
+                failed: Vec::new(),
+                worker: None,
+            }],
+        };
+        let declared = batch(&[("id", "i64")], serde_json::json!(7));
+        let passed = batch(&[(UNCLAIMED, "{...}")], serde_json::json!({"id": 1, "x": 2}));
+        let table = crate::config_file::sample_table(&[declared, passed]);
+        let sample = SourceMeta::of_columns(&table.columns).unwrap();
+        let read = sample.read_table(&table).unwrap();
+        assert_eq!(sample.record_object(&read[0], ""), object(serde_json::json!({"id": 7})));
+        assert_eq!(
+            sample.record_object(&read[1], ""),
+            object(serde_json::json!({"id": 1, "x": 2}))
+        );
     }
 
     /// A finished row is shown under the fields its pipeline writes, typed as declared, then where the destination
@@ -2793,14 +2841,14 @@ mod tests {
     /// An open record's keys its pipeline does not declare go in one column, as one object.
     #[test]
     fn an_open_record_s_unclaimed_keys_are_one_column() {
-        let written = &[("b", "str"), (UNCLAIMED, "{...}")];
-        let (_, row) = sent(serde_json::json!({"b": "x", "c": true}), written, "db");
+        let written = written_fields(&DataType::Struct(vec![("b".to_string(), DataType::Str)], true));
+        let row = |v: serde_json::Value| finished_row(object(v), &written, &[], Vec::new()).1;
         assert_eq!(
-            row.values[..2],
+            row(serde_json::json!({"b": "x", "c": true})).values,
             [serde_json::json!("x"), serde_json::json!({"c": true})]
         );
-        let (_, row) = sent(serde_json::json!({"b": "x"}), written, "db");
-        assert_eq!(row.values[1], serde_json::Value::Null, "nothing unclaimed is null");
+        let none = row(serde_json::json!({"b": "x"}));
+        assert_eq!(none.values[1], serde_json::Value::Null, "nothing unclaimed is null");
     }
 
     /// A document that is not what its route declares is shown by its own keys, not cut to the route's.
@@ -2816,15 +2864,48 @@ mod tests {
         assert_eq!(columns[0].name, r#"["a.b"]"#, "a key with a `.` is one key");
     }
 
-    /// The written columns are the record type's fields, and an open record adds the unclaimed column.
+    /// The closed record type of `fields`, each typed as spelled.
+    fn record(fields: &[(&str, &str)]) -> DataType {
+        let typed = |(name, ty): &(&str, &str)| (name.to_string(), crate::expr::parse::parse_type(ty).unwrap());
+        DataType::Struct(fields.iter().map(typed).collect(), false)
+    }
+
+    /// A pipeline's record is written as a source's is declared: each leaf a column, an open object's unclaimed
+    /// fields one more, and an object written with nothing in it holds whatever keys it has.
     #[test]
-    fn a_closed_record_writes_its_fields_and_an_open_one_adds_the_rest() {
-        let fields = vec![("a".to_string(), DataType::I64)];
-        let closed = written_columns(&DataType::Struct(fields.clone(), false));
-        assert_eq!(closed, columns(&[("a", "i64")]));
-        let open = written_columns(&DataType::Struct(fields, true));
-        assert_eq!(open, columns(&[("a", "i64"), (UNCLAIMED, "{...}")]));
-        assert!(written_columns(&DataType::Variant).is_empty());
+    fn a_written_record_is_its_leaves_and_each_open_object_s_unclaimed_fields() {
+        let written = record(&[
+            ("a", "i64"),
+            ("user", "{name: str, ...}"),
+            ("made", "{}"),
+            ("x.y", "str"),
+        ]);
+        let DataType::Struct(fields, _) = &written else {
+            unreachable!()
+        };
+        let names =
+            |record: &DataType| -> Vec<String> { record_columns(&written_fields(record)).map(|c| c.name).collect() };
+        assert_eq!(
+            names(&written),
+            ["a", "user.name", "user....", "made....", r#"["x.y"]"#]
+        );
+        let open = DataType::Struct(fields.clone(), true);
+        assert_eq!(names(&open).last().map(String::as_str), Some(UNCLAIMED));
+        assert!(written_fields(&DataType::Variant).is_empty());
+
+        let doc = serde_json::json!({"a": 1, "user": {"name": "ann", "age": 3}, "made": {"k": true}, "x.y": "z"});
+        let (columns, row) = finished_row(object(doc), &written_fields(&written), &[], Vec::new());
+        assert_eq!(columns.len(), 5);
+        assert_eq!(
+            row.values,
+            [
+                serde_json::json!(1),
+                "ann".into(),
+                serde_json::json!({"age": 3}),
+                serde_json::json!({"k": true}),
+                "z".into()
+            ]
+        );
     }
 
     /// Only an open capture at a destination is served to the transform threads, with its filter and what it still

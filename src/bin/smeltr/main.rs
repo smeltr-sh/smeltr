@@ -47,7 +47,7 @@ use smeltr::config_file;
 use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::preview::{
     FormatRequest, Formatted, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, RoutePreviewRequest,
-    format_code, line_breaker_verdict, run_preview, run_route_preview, single_origin_declared_at,
+    format_code, line_breaker_verdict, route_run, run_preview, run_route_preview, single_origin_declared_at,
 };
 use smeltr::leader::sessions;
 use smeltr::leader::{blocking, blocking_answer};
@@ -86,16 +86,30 @@ fn route_preview_on(
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
+    // A test is compared only over its own sample: over another, its rows are other rows.
+    let locked = (req.test.as_deref())
+        .filter(|_| given.is_none())
+        .and_then(|id| config_file::read_test(&mut reading.files(), id).ok().flatten())
+        .filter(|test| Some(&test.sample) == req.sample.as_ref() && test.pipeline.is_none());
     match sample_to_run(&reading, given, req.sample.as_deref()) {
         Ok(Some(mut sample)) => {
             sample.source = sample.source.or(req.source.clone());
-            match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
-                Some(run) => run_route_preview(&run.config, sample, run.declared_at, req.at_micros),
+            let rows_in = sample.table.rows.len();
+            let mut answer = match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
+                Some(run) => run_route_preview(&run.config, sample, run.declared_at),
                 None => {
                     let declared_at = single_origin_declared_at(&req.config, &reading.at());
-                    run_route_preview(&req.config, sample, declared_at, req.at_micros)
+                    run_route_preview(&req.config, sample, declared_at)
                 }
+            };
+            if answer.succeeded()
+                && let Some(test) = locked
+            {
+                answer.body.verdict = route_run(&answer)
+                    .ok()
+                    .map(|run| config_file::compare(&test, rows_in, &run));
             }
+            answer
         }
         Ok(None) => Envelope::refused(Refusal::invalid("name a sample or a held capture to route")),
         Err(refusal) => Envelope::refused(refusal),
@@ -495,16 +509,21 @@ fn preview_on(
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
+    // A test is compared only over its own sample: over another, its rows are other rows.
+    req.locked = (req.test.as_deref())
+        .filter(|_| given.is_none())
+        .and_then(|id| config_file::read_test(&mut reading.files(), id).ok().flatten())
+        .filter(|test| Some(&test.sample) == req.sample.as_ref() && test.pipeline == req.pipeline);
     // An editor with no sample chosen yet previews over none.
-    let sample = sample_to_run(&reading, given, req.sample.as_deref())
-        .map(|sample| sample.map(|s| (s.columns, s.records)).unwrap_or_default());
+    let sample =
+        sample_to_run(&reading, given, req.sample.as_deref()).map(|sample| sample.map(|s| s.table).unwrap_or_default());
     match sample {
-        Ok((columns, records)) => {
+        Ok(table) => {
             with_branch_schemas(&mut req, &reading);
             let produced = produced_in(&req);
             let declared_at = merge_shared_into(&mut req, &reading)
                 .unwrap_or_else(|| single_origin_declared_at(&req.config, &reading.at()));
-            let mut answer = run_preview(req, declared_at, &columns, records);
+            let mut answer = run_preview(req, declared_at, &table);
             if let Some((pipeline, produces)) = produced {
                 refused_on_branch(&mut answer, data_dir, &reading, &pipeline, &produces);
             }
@@ -552,20 +571,20 @@ async fn import_schema(
                 pipeline: Some(req.pipeline),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Some(config_file::SampleDto {
                 id: req.id.clone(),
                 name: req.title.clone(),
                 source: None,
-                columns: Vec::new(),
-                records,
+                table: smeltr::heartbeat::CaptureBatch::pasted(records),
             }),
         );
         if !preview.succeeded() {
@@ -904,7 +923,7 @@ fn spawn_embedded_worker(
     let code = smeltr::worker::needs_an_enrollment_code(&state_dir)
         .then(|| mint_embedded_enrollment_code(&store, &group_id, &smeltr::leader::tls::dir_of(data_dir)));
 
-    std::thread::spawn(move || {
+    smeltr::sync::spawn("smeltr-worker", move || {
         start_worker(
             leader_url,
             leader_ca_pem,
@@ -914,7 +933,8 @@ fn spawn_embedded_worker(
             code,
             true,
         )
-    });
+    })
+    .expect("start the worker's thread");
 }
 
 /// An enrollment code for the worker inside this process.
@@ -1099,16 +1119,34 @@ async fn setup_leader(
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     smeltr::leader::log_levels::keep_stored(&state).await;
-    tokio::spawn(smeltr::leader::remote::poll(state.clone()));
-    tokio::spawn(smeltr::leader::updates::poll(state.clone()));
-    tokio::spawn(smeltr::leader::alerts::run(state.clone()));
-    tokio::spawn(smeltr::leader::housekeeping::run(state.clone()));
-    tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
+    smeltr::sync::keep_running("git-sync", {
+        let state = state.clone();
+        move || smeltr::leader::remote::poll(state.clone())
+    });
+    smeltr::sync::keep_running("update-check", {
+        let state = state.clone();
+        move || smeltr::leader::updates::poll(state.clone())
+    });
+    smeltr::sync::keep_running("alerts", {
+        let state = state.clone();
+        move || smeltr::leader::alerts::run(state.clone())
+    });
+    smeltr::sync::keep_running("housekeeping", {
+        let state = state.clone();
+        move || smeltr::leader::housekeeping::run(state.clone())
+    });
+    smeltr::sync::keep_running("git-push", {
+        let state = state.clone();
+        move || smeltr::leader::remote::push_saves(state.clone())
+    });
     // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {
         smeltr::logs::runs_no_worker();
     }
-    tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
+    smeltr::sync::keep_running("leader-logs", {
+        let state = state.clone();
+        move || smeltr::leader::keep_own_logs(state.clone())
+    });
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
     // that stopped between the two came back to a finished cutover with no rotation left to notice it, so the same
@@ -1170,7 +1208,6 @@ async fn setup_leader(
             get(capture_api::capture_status).delete(capture_api::discard_capture),
         )
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
-        .route("/api/captures/:session/download", get(capture_api::download_capture))
         .route("/api/captures/:session/records", get(capture_api::capture_records))
         .route("/api/captures/mine", get(capture_api::my_capture))
         .route("/api/captures/paste", post(capture_api::hold_paste))
@@ -1391,8 +1428,7 @@ struct LeaderLookupsFileConfig {
 
 /// The listen address. Pure, so the decision is testable without a socket.
 ///
-/// Every bind is allowed now. What used to make a non-loopback one dangerous was a config API that answered
-/// anonymously without a token; every operator route requires a session, whatever this binds.
+/// Every bind is allowed: every operator route requires a session, whatever this binds.
 fn resolve_listen_addr(bind: &str, port: u16) -> Result<std::net::SocketAddr, String> {
     let ip: std::net::IpAddr = bind
         .parse()
@@ -1882,13 +1918,14 @@ fn start() {
     } else {
         stop_on_signal
     };
-    ctrlc::set_handler(on_signal).expect("install the signal handler (called exactly once, at startup)");
 
     // Before any thread exists: `backfill_env` mutates the environment.
     if !runtime_child {
         load_and_apply_config_file();
         smeltr::startup_config::check_lazy_settings();
     }
+    // After the environment is set: `ctrlc` starts a thread, and `set_var` must run before any thread exists.
+    ctrlc::set_handler(on_signal).expect("install the signal handler (called exactly once, at startup)");
 
     // Before either role starts, so nothing this process has to say about itself predates somewhere to say it.
     smeltr::logs::start();
@@ -2141,7 +2178,7 @@ async fn run_leader() {
     );
 
     // `open` rather than `default`: the durable registry is what makes a warning's start time survive a restart, and
-    // what gives `/api/flow` anything to serve. Its own file, since the series is written per heartbeat and
+    // what gives `/api/series` anything to serve. Its own file, since the series is written per heartbeat and
     // `leader.db` is for operator actions.
     let registry = smeltr::leader::registry::Registry::open(&data_dir.join("registry.db")).unwrap_or_else(|e| {
         eprintln!("smeltr: refusing to start -- {e}");
@@ -2261,7 +2298,6 @@ async fn run_leader() {
                 .delete(test_api::delete_test),
         )
         .route("/api/areas/:area/test-runs", post(test_api::run_tests))
-        .route("/api/areas/:area/preview/test-lock", post(test_api::preview_lock))
         .route("/api/branches/:name/tests", get(test_api::list_change_tests))
         .route("/api/branches/:name/test-runs", post(test_api::run_change_tests))
         .route("/api/areas/:area", get(config_api::get_config))
@@ -2438,12 +2474,21 @@ async fn run_leader() {
     // What an agent's calls go through: this router, gate and all.
     auth.chats.serve(app.clone());
 
-    tokio::spawn(chat_api::sweep(auth.clone()));
-    tokio::spawn(refresh_oidc_sessions(auth.clone()));
+    smeltr::sync::keep_running("chat-sweep", {
+        let auth = auth.clone();
+        move || chat_api::sweep(auth.clone())
+    });
+    smeltr::sync::keep_running("oidc-refresh", {
+        let auth = auth.clone();
+        move || refresh_oidc_sessions(auth.clone())
+    });
     if let Some(serving) = certificates {
-        tokio::spawn(certificates_api::keep_renewed(auth.clone(), serving, list));
+        let auth = auth.clone();
+        smeltr::sync::keep_running("certificate-renewal", move || {
+            certificates_api::keep_renewed(auth.clone(), serving.clone(), list.clone())
+        });
     }
-    tokio::spawn(sweep_sessions(auth));
+    smeltr::sync::keep_running("session-sweep", move || sweep_sessions(auth.clone()));
 
     match tls {
         Some((resolver, _ca_pem)) => {
@@ -2548,37 +2593,54 @@ mod tests {
         }
     }
 
-    /// Two captured records: `id` and `user.name` with their offsets, the second's `id` failed as `true`.
-    fn captured() -> (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>) {
-        let record = |v: serde_json::Value| v.as_object().unwrap().clone();
-        (
-            vec![
-                column("id", "i64"),
-                column("user.name", "str"),
-                column("__source.offset", "i64"),
-            ],
-            vec![
-                record(serde_json::json!({"id": 1, "user": {"name": "ann"}, "__source": {"offset": 7}})),
-                record(
-                    serde_json::json!({"id": "1", "user": {"name": "bo"}, "__source": {"offset": 8},
-                    "__capture": {"mistyped": ["id", "user.name"]}}),
-                ),
-            ],
-        )
+    /// The table a capture under `columns` holds of `records`, each cell its record's value at the column's name. With
+    /// no columns it is the table of a paste.
+    fn table(
+        columns: &[smeltr::heartbeat::CaptureColumn],
+        records: Vec<smeltr::io::RecordObject>,
+    ) -> smeltr::heartbeat::CaptureBatch {
+        if columns.is_empty() {
+            return smeltr::heartbeat::CaptureBatch::pasted(records);
+        }
+        let cell = |record, name| smeltr::io::value_at(record, name).cloned().unwrap_or_default();
+        let rows = (records.iter())
+            .map(|record| smeltr::heartbeat::CapturedRow {
+                values: columns.iter().map(|c| cell(record, &c.name)).collect(),
+                ..Default::default()
+            })
+            .collect();
+        smeltr::heartbeat::CaptureBatch {
+            columns: columns.to_vec(),
+            rows,
+        }
     }
 
-    /// A captured sample reads by the columns it was captured under, each value typed and each one its record lists
-    /// as failed failed again as the source spelled it, though its type would take that text.
+    /// Two captured rows: `id` and `user.name` with their offsets, the second's `id` and `user.name` failed.
+    fn captured() -> smeltr::heartbeat::CaptureBatch {
+        let columns = [
+            column("id", "i64"),
+            column("user.name", "str"),
+            column("__source.offset", "i64"),
+        ];
+        let mut held = table(
+            &columns,
+            serde_json::from_value(serde_json::json!([
+                {"id": 1, "user": {"name": "ann"}, "__source": {"offset": 7}},
+                {"id": "1", "user": {"name": "bo"}, "__source": {"offset": 8}},
+            ]))
+            .unwrap(),
+        );
+        held.rows[1].failed = vec![0, 1];
+        held
+    }
+
+    /// A captured sample reads by the columns it was captured under: each value typed, and a value its row lists as
+    /// failed fails again, as the source spelled it, though its type would take that text.
     #[test]
     fn a_captured_sample_reads_by_its_own_columns() {
-        let (columns, records) = captured();
-        let meta = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
-        let smeltr::leader::preview::SampleRead {
-            records: read,
-            warnings,
-            ..
-        } = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
-        assert!(warnings.is_empty(), "{warnings:?}");
+        let held = captured();
+        let meta = smeltr::plan::topology::SourceMeta::of_columns(&held.columns).unwrap();
+        let read = smeltr::leader::preview::read_sample(&meta, &held).unwrap().records;
         let chunk = &read[1].chunk;
         assert_eq!(chunk.failed(), &[(1, 0, "1".to_string()), (1, 1, "bo".to_string())]);
         assert_eq!(
@@ -2590,23 +2652,19 @@ mod tests {
     }
 
     /// A sample's internal fields -- where a record was read from, why a block held it, how it was captured -- are its
-    /// fields like any other: a pipeline previewed over the sample reads them, and a route preview, which reads the
-    /// record as its live source sets it, checks only the record's own fields and says nothing of them.
+    /// fields like any other: a pipeline previewed over the sample reads them. A route preview reads the record as its
+    /// live source sets it, the record's own fields alone.
     #[test]
     fn a_sample_s_internal_fields_are_read_as_any_field() {
-        let (mut columns, mut records) = captured();
-        columns.push(column(smeltr::worker::capture::EXCEPTION_MESSAGE, "str"));
-        columns.push(column("__capture.group", "str"));
-        for record in &mut records {
-            record.insert(
-                "__exception".to_string(),
-                serde_json::json!({"message": "matched no route"}),
-            );
-            record.insert("__capture".to_string(), serde_json::json!({"group": "west"}));
+        let mut held = captured();
+        held.columns
+            .push(column(smeltr::worker::capture::EXCEPTION_MESSAGE, "str"));
+        held.columns.push(column("__capture.group", "str"));
+        for row in &mut held.rows {
+            row.values.extend(["matched no route".into(), "west".into()]);
         }
-        let own = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
-        let read = smeltr::leader::preview::read_sample(&own, &columns, &records).unwrap();
-        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        let own = smeltr::plan::topology::SourceMeta::of_columns(&held.columns).unwrap();
+        let read = smeltr::leader::preview::read_sample(&own, &held).unwrap();
         let object = own.record_object(&read.records[0], "");
         assert_eq!(
             object["__exception"],
@@ -2620,54 +2678,72 @@ mod tests {
                 ("user.name".into(), smeltr::core::column::DataType::Str),
             ])
             .unwrap();
-        let read = smeltr::leader::preview::read_sample(&live, &columns, &records).unwrap();
-        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        let read = smeltr::leader::preview::read_sample(&live, &held).unwrap();
+        assert_eq!(
+            live.record_object(&read.records[0], ""),
+            *serde_json::json!({"id": 1, "user": {"name": "ann"}})
+                .as_object()
+                .unwrap()
+        );
     }
 
-    /// A route preview reads a sample as its source declares now, and says how that differs from what was captured.
+    /// A sample read under a source takes each field the source declares from the column that holds it: a value
+    /// under the type declared now, a failed cell still failed, a field no column holds read as null, and a column
+    /// the source declares no field for left out.
     #[test]
-    fn a_sample_read_under_a_changed_source_says_what_changed() {
-        let (columns, records) = captured();
-        let now = smeltr::plan::topology::SourceMeta::KAFKA
-            .declaring(vec![
-                ("id".into(), smeltr::core::column::DataType::Str),
-                ("region".into(), smeltr::core::column::DataType::Str),
-            ])
-            .unwrap();
-        let smeltr::leader::preview::SampleRead {
-            records: read,
-            warnings,
-            ..
-        } = smeltr::leader::preview::read_sample(&now, &columns, &records).unwrap();
+    fn a_sample_reads_as_its_source_declares_now() {
+        let held = captured();
+        let read_as = |declared: Vec<(String, smeltr::core::column::DataType)>| {
+            let now = smeltr::plan::topology::SourceMeta::KAFKA.declaring(declared).unwrap();
+            let read = smeltr::leader::preview::read_sample(&now, &held).unwrap().records;
+            let failed = read[0].chunk.failed().to_vec();
+            let rows: Vec<_> = (read.iter())
+                .map(|r| serde_json::Value::Object(now.record_object(r, "")))
+                .collect();
+            (rows, failed)
+        };
+        use smeltr::core::column::DataType;
+        let (rows, failed) = read_as(vec![("id".into(), DataType::Str), ("region".into(), DataType::Str)]);
         assert_eq!(
-            warnings,
+            rows[0],
+            serde_json::json!({"id": "1"}),
+            "a number reads as its text under str"
+        );
+        assert_eq!(failed, [(1, 0, "1".to_string())]);
+
+        // A sample captured with an object's leaves as columns reads as one value where the source now declares the
+        // object as one value.
+        let (rows, failed) = read_as(vec![("user".into(), DataType::Variant)]);
+        assert_eq!(rows[0], serde_json::json!({"user": {"name": "ann"}}));
+        assert_eq!(failed, []);
+
+        // A field under a column's value reads from inside it, and fails with that value where it is no object.
+        let (rows, failed) = read_as(vec![
+            ("id.high".into(), DataType::I64),
+            ("user.name".into(), DataType::Str),
+        ]);
+        assert_eq!(rows[0], serde_json::json!({"user": {"name": "ann"}}));
+        assert_eq!(
+            failed,
             [
-                "`id` was captured as i64 and its source now declares it str",
-                "`user.name` was captured, and its source no longer declares it, so it is left out",
-                "`region` is declared and was not captured, so it reads null",
+                (0, 0, "1".to_string()),
+                (1, 0, "1".to_string()),
+                (1, 1, "bo".to_string())
             ]
         );
-        assert!(
-            read[0].chunk.failed().is_empty(),
-            "a number reads as its text under str, and the second `id`'s mark is dropped"
-        );
-        let ids: Vec<serde_json::Value> = read.iter().map(|r| now.record_object(r, "")["id"].clone()).collect();
-        assert_eq!(ids, [serde_json::json!("1"), serde_json::json!("1")]);
     }
 
     /// A capture keeps the payload as read and the text its source decoded: a Latin-1 `café` previews as `café`, its
     /// `__source.bytes` still `caf\xe9`.
     #[test]
     fn a_captured_byte_record_previews_with_the_text_its_source_decoded() {
-        let columns = vec![column("_raw", "str"), column("__source.bytes", "bytes")];
-        let records = vec![
-            serde_json::json!({"_raw": "caf\u{e9}", "__source": {"bytes": "Y2Fm6Q=="}})
-                .as_object()
-                .unwrap()
-                .clone(),
-        ];
-        let meta = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
-        let read = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
+        let held = table(
+            &[column("_raw", "str"), column("__source.bytes", "bytes")],
+            serde_json::from_value(serde_json::json!([{"_raw": "caf\u{e9}", "__source": {"bytes": "Y2Fm6Q=="}}]))
+                .unwrap(),
+        );
+        let meta = smeltr::plan::topology::SourceMeta::of_columns(&held.columns).unwrap();
+        let read = smeltr::leader::preview::read_sample(&meta, &held).unwrap();
         assert_eq!(read.texts, ["caf\u{e9}"]);
         assert_eq!(bytes_of(&read.records[0]), b"caf\xe9");
     }
@@ -2676,16 +2752,13 @@ mod tests {
     /// `__source.bytes` is a column like any other.
     #[test]
     fn a_sample_captured_with_no_raw_reads_its_bytes() {
-        let columns = vec![column("__source.offset", "i64"), column("__source.bytes", "bytes")];
-        let meta = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
+        let held = table(
+            &[column("__source.offset", "i64"), column("__source.bytes", "bytes")],
+            serde_json::from_value(serde_json::json!([{"__source": {"offset": 7, "bytes": "Y2Fm6Q=="}}])).unwrap(),
+        );
+        let meta = smeltr::plan::topology::SourceMeta::of_columns(&held.columns).unwrap();
         assert_eq!(meta.field_type("_raw"), None);
-        let records = vec![
-            serde_json::json!({"__source": {"offset": 7, "bytes": "Y2Fm6Q=="}})
-                .as_object()
-                .unwrap()
-                .clone(),
-        ];
-        let read = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
+        let read = smeltr::leader::preview::read_sample(&meta, &held).unwrap();
         assert_eq!(bytes_of(&read.records[0]), b"caf\xe9");
     }
 
@@ -2712,22 +2785,25 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
-            &[
-                column("n", "i64"),
-                column("__source.topic", "str"),
-                column("__destination.route", "str"),
-                column("__destination.id", "str"),
-            ],
-            records,
+            &table(
+                &[
+                    column("n", "i64"),
+                    column("__source.topic", "str"),
+                    column("__destination.route", "str"),
+                    column("__destination.id", "str"),
+                ],
+                records,
+            ),
         );
         assert!(
             previewed.succeeded(),
@@ -2757,17 +2833,20 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: true,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
-            &[column("n", "i64")],
-            serde_json::from_value(serde_json::json!([{"n": 2}, {"n": 1}])).unwrap(),
+            &table(
+                &[column("n", "i64")],
+                serde_json::from_value(serde_json::json!([{"n": 2}, {"n": 1}])).unwrap(),
+            ),
         );
         assert!(
             previewed.succeeded(),
@@ -2798,17 +2877,20 @@ mod tests {
                 pipeline: Some("p".to_string()),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: true,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
-            &[column("n", "i64")],
-            serde_json::from_value(serde_json::json!([{"n": 2}])).unwrap(),
+            &table(
+                &[column("n", "i64")],
+                serde_json::from_value(serde_json::json!([{"n": 2}])).unwrap(),
+            ),
         );
         assert!(
             previewed.succeeded(),
@@ -2829,17 +2911,12 @@ mod tests {
         assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("c"));
     }
 
-    /// A pasted sample has no columns, and reads as `_raw` text.
+    /// A pasted sample reads as `_raw` text.
     #[test]
-    fn a_sample_with_no_columns_reads_as_raw_text() {
-        let meta = smeltr::plan::topology::SourceMeta::of_columns(&[]).unwrap();
-        let records = vec![smeltr::io::raw_object("a line")];
-        let smeltr::leader::preview::SampleRead {
-            records: read,
-            warnings,
-            ..
-        } = smeltr::leader::preview::read_sample(&meta, &[], &records).unwrap();
-        assert!(warnings.is_empty());
+    fn a_pasted_sample_reads_as_raw_text() {
+        let held = table(&[], vec![smeltr::io::raw_object("a line")]);
+        let meta = smeltr::plan::topology::SourceMeta::of_columns(&held.columns).unwrap();
+        let read = smeltr::leader::preview::read_sample(&meta, &held).unwrap().records;
         assert_eq!(read[0].bytes(), Some(&b"a line"[..]));
     }
 
@@ -2862,17 +2939,17 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
-            columns,
-            serde_json::from_str(records).unwrap(),
+            &table(columns, serde_json::from_str(records).unwrap()),
         )
     }
 
@@ -2887,17 +2964,17 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: Some(filter.to_string()),
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: true,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
-            &[],
-            serde_json::from_str(records).unwrap(),
+            &table(&[], serde_json::from_str(records).unwrap()),
         )
     }
 
@@ -2914,6 +2991,66 @@ mod tests {
         assert!(sampled.iter().any(|(name, _)| name == "y"), "{sampled:?}");
     }
 
+    /// A preview asked for a test compares every row against it, the rows its filter hides and the `__` fields it does
+    /// not show too, and marks each row that differs.
+    #[test]
+    fn a_preview_compares_every_row_with_its_test() {
+        use smeltr::config_file;
+        let config = |code: &str| {
+            format!(
+                r#"{{"version":1,"sources":[],"destinations":[],"routes":[],
+                "pipelines":[{{"id":"p","name":"p","steps":[{{"id":"c","type":"code","body":{code:?}}}]}}]}}"#
+            )
+        };
+        let records = table(
+            &[],
+            serde_json::from_str(r#"[{"_raw":"a"},{"_raw":"b"},{"_raw":"c"}]"#).unwrap(),
+        );
+        let run = smeltr::leader::preview::run_pipeline_actual(
+            "p",
+            &config("x = _raw; __k = 1;"),
+            Default::default(),
+            &records,
+        )
+        .unwrap();
+        let lock = config_file::Lock {
+            name: "t".to_string(),
+            pipeline: Some("p".to_string()),
+            sample: "s".to_string(),
+            fields: Some(vec!["x".to_string(), "__k".to_string()]),
+            rows: None,
+        };
+        let locked = lock.locked(3, &run);
+        let test = lock.test("t".to_string(), locked);
+
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config(r#"x = _raw; if (_raw != "a") { __k = 2; } else { __k = 1; }"#),
+                pipeline: Some("p".to_string()),
+                sample: Some("s".to_string()),
+                show_internal: false,
+                filter: Some(r#"x != "c""#.to_string()),
+                attribution: false,
+                as_sample: None,
+                dictionary: false,
+                after_dot: None,
+                capture_filter: None,
+                test: Some("t".to_string()),
+                locked: Some(test),
+            },
+            Default::default(),
+            &records,
+        );
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
+        let verdict = previewed.verdict.as_ref().expect("a verdict");
+        let rows: Vec<usize> = verdict.differences.iter().map(|d| d.row).collect();
+        assert_eq!(rows, [1, 2]);
+        let shown: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
+        assert_eq!(shown, [0, 1]);
+        let row = previewed.rows[0].json.as_ref().unwrap();
+        assert!(row.get("__k").is_none(), "{row}");
+    }
+
     /// The dictionary comes only when asked: it is the largest part of an answer.
     #[test]
     fn a_preview_returns_the_dictionary_only_when_asked() {
@@ -2925,17 +3062,17 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
-            &[],
-            serde_json::from_str(r#"[{"_raw":"a"}]"#).unwrap(),
+            &table(&[], serde_json::from_str(r#"[{"_raw":"a"}]"#).unwrap()),
         );
         assert!(previewed.succeeded(), "{:?}", previewed.errors);
         assert_eq!(previewed.rows.len(), 1);
@@ -2981,17 +3118,17 @@ mod tests {
                 pipeline: Some("pipeline-b".to_string()),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
-            &[],
-            serde_json::from_str(r#"[{"_raw":"{}"}]"#).unwrap(),
+            &table(&[], serde_json::from_str(r#"[{"_raw":"{}"}]"#).unwrap()),
         );
         assert!(
             previewed.succeeded(),
@@ -3321,8 +3458,7 @@ mod tests {
             id: "s".to_string(),
             name: "s".to_string(),
             source: None,
-            records: vec![smeltr::io::raw_object("{}".to_string())],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![smeltr::io::raw_object("{}".to_string())]),
         };
         seed_west_over_shared(&data, &group, &sample);
 
@@ -3336,13 +3472,14 @@ mod tests {
                 pipeline: None,
                 sample: Some(sample.id.clone()),
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             None,
         );
@@ -3374,13 +3511,14 @@ mod tests {
                 pipeline: None,
                 sample: Some(sample.id.clone()),
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             None,
         );
@@ -3408,8 +3546,7 @@ mod tests {
             id: "s".to_string(),
             name: "s".to_string(),
             source: None,
-            records: vec![smeltr::io::raw_object("{}".to_string())],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![smeltr::io::raw_object("{}".to_string())]),
         };
         seed_west_over_shared(&data, &group, &sample);
 
@@ -3426,13 +3563,14 @@ mod tests {
                 pipeline: None,
                 sample: Some(sample.id.clone()),
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             None,
         );
@@ -3477,8 +3615,7 @@ mod tests {
             id: "s".to_string(),
             name: "s".to_string(),
             source: None,
-            records: vec![smeltr::io::raw_object("{}".to_string())],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![smeltr::io::raw_object("{}".to_string())]),
         };
         seed_west_over_shared(&data, &group, &sample);
 
@@ -3498,13 +3635,14 @@ mod tests {
                     pipeline: None,
                     sample: Some(sample.id.clone()),
                     show_internal: false,
-                    at_micros: None,
                     filter: None,
                     attribution: false,
-                    as_sample: false,
+                    as_sample: None,
                     dictionary: false,
                     after_dot: None,
                     capture_filter: None,
+                    test: None,
+                    locked: None,
                 },
                 None,
             );
@@ -3549,8 +3687,7 @@ mod tests {
             id: "s".to_string(),
             name: "s".to_string(),
             source: Some("orders".to_string()),
-            records: vec![smeltr::io::raw_object("{}".to_string())],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![smeltr::io::raw_object("{}".to_string())]),
         };
         seed_west_over_shared(&data, &group, &sample);
 
@@ -3563,7 +3700,7 @@ mod tests {
                 config: serde_json::to_string(&group).unwrap(),
                 sample: Some(sample.id.clone()),
                 source: None,
-                at_micros: None,
+                test: None,
             },
             None,
         );
@@ -3594,7 +3731,7 @@ mod tests {
             config: serde_json::to_string(&group).unwrap(),
             sample: None,
             source: source.map(str::to_string),
-            at_micros: None,
+            test: None,
         };
         let held = config_file::SampleDto {
             id: "c1".to_string(),
@@ -3630,8 +3767,7 @@ mod tests {
 
     use super::{gate, origin_hosts, reached_at, resolve_listen_addr, resolve_origin};
 
-    /// Every bind is allowed. What used to make a public one dangerous was a config API that answered without a
-    /// credential; every operator route needs a session now, whatever this binds.
+    /// Every bind is allowed: every operator route needs a session, whatever this binds.
     #[test]
     fn any_address_may_be_bound() {
         let addr = resolve_listen_addr("127.0.0.1", 4000).unwrap();
@@ -4007,13 +4143,12 @@ mod tests {
             id: "s1".to_string(),
             name: "s1".to_string(),
             source: Some("orders".to_string()),
-            records: vec![smeltr::io::raw_object("{}".to_string())],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![smeltr::io::raw_object("{}".to_string())]),
         };
         let at = config_file::BundleAt::Dir(std::path::PathBuf::from("."));
         let declared_at = super::single_origin_declared_at(config, &at);
 
-        let response = super::run_route_preview(config, sample, declared_at, None);
+        let response = super::run_route_preview(config, sample, declared_at);
 
         assert!(
             response.succeeded(),

@@ -13,6 +13,7 @@
 
 use crate::harness;
 use crate::live;
+use smeltr::core::id::DestId;
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -107,7 +108,7 @@ fn writing(config: ObjectsDestinationConfig, record: Option<&DataType>) -> Box<d
     let records = record.map(|r| smeltr::plan::topology::Records::from([(None, r.clone())]));
     smeltr::io::build_destination(
         &DestinationKind::Objects(config),
-        0,
+        DestId::new(0),
         "d",
         metrics,
         &secrets,

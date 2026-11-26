@@ -78,6 +78,7 @@ mod imp {
         ];
         // Returns at once, failing, in a process the Service Control Manager did not start. In one it did, it
         // returns only after the service has stopped -- and `start` ends the process before that.
+        // SAFETY: `table` ends in the null entry the call requires, and it and `name` outlive the call.
         if unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) } == 0 {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() != Some(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT as i32) {
@@ -93,6 +94,8 @@ mod imp {
 
     unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core::PWSTR) {
         let mut name = [0u16];
+        // SAFETY: `name` is a NUL-terminated string that outlives the call, and `on_control` is the handler the call
+        // asks for.
         let handle = unsafe { RegisterServiceCtrlHandlerExW(name.as_mut_ptr(), Some(on_control), std::ptr::null()) };
         if handle.is_null() {
             eprintln!(
@@ -155,6 +158,7 @@ mod imp {
             .open(&path);
         if let Ok(file) = opened {
             // Never closed: stderr writes to it until the process ends.
+            // SAFETY: the handle is an open file's, and `into_raw_handle` gave it up, so nothing else closes it.
             unsafe { SetStdHandle(STD_ERROR_HANDLE, file.into_raw_handle() as _) };
         }
     }
@@ -182,6 +186,7 @@ mod imp {
             dwCheckPoint: 0,
             dwWaitHint: wait_hint.as_millis() as u32,
         };
+        // SAFETY: `handle` is the one `RegisterServiceCtrlHandlerExW` gave, and `status` outlives the call.
         unsafe { SetServiceStatus(handle as _, &status) };
     }
 }

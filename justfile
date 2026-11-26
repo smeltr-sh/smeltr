@@ -14,6 +14,12 @@ set shell := ["cmd.exe", "/c"]
 # which works only in a POSIX shell. `[env]` reaches a recipe's commands
 # from just 1.56.0.
 
+# The vendored C (krb5, SASL, librdkafka, AWS-LC) is written for C17, and GCC 15 defaults to C23. krb5 also promotes
+# warnings to errors, and a newer glibc raises one of them; WARN_CFLAGS stops the promotion. Linux only: Windows
+# builds with MSVC, and macOS's clang defaults to C17. The Dockerfile's builder sets the same two.
+export CFLAGS := env("CFLAGS", if os() == "linux" { "-std=gnu17" } else { "" })
+export WARN_CFLAGS := env("WARN_CFLAGS", if os() == "linux" { "-Wall" } else { "" })
+
 [private]
 default:
     @just --list
@@ -74,7 +80,7 @@ need-docker: (need "docker" "Install Docker from https://docs.docker.com/get-doc
 # Frontends, then an optimized binary embedding them. Quick to rebuild; `dist` builds what you ship.
 [group("dev")]
 build: need-rust frontends
-    cargo build --release --bin smeltr
+    cargo build --profile optimized --bin smeltr
 
 # What the GUI tests and screenshots run: the frontends, the demo site and unoptimized binaries embedding them. They
 # share `target/debug` with the Rust tests, so the dependencies build once, and a GUI edit rebuilds in less than half
@@ -101,7 +107,7 @@ fips-dll: need-rust
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
 demo: need-rust (frontends "gui" "docs" "demo")
-    cargo build --release --bin smeltr-demo
+    cargo build --profile optimized --bin smeltr-demo
 
 # Builds the frontends `tools/frontends.json` names, or each one the binary embeds when none is named, each only when
 # stale -- what to run when build.rs says one is stale.
@@ -143,7 +149,8 @@ handoff: need-docker
 
 # A release, from a commit with nothing uncommitted, so its version names a commit anyone can check out:
 # the handoff tarball (binary, license, notices) as `smeltr-linux.tar.gz`, the image built from it as
-# `smeltr-image.tar.gz`, and SHA256SUMS over both. Any branch builds one; the release workflow holds a published
+# `smeltr-image-linux.tar.gz`, and SHA256SUMS over both. An arm64 machine names them `smeltr-linux-arm64.tar.gz` and
+# `smeltr-image-linux-arm64.tar.gz`. Any branch builds one; the release workflow holds a published
 # release to `main`. On Windows, `smeltr-windows.zip` of the binary, the license and the notices, and SHA256SUMS
 # over it. The file names carry no version, so a link to the newest release's file never changes; the release
 # they are attached to, the binary and the image's tags carry it. On a commit tagged `v1.2.0` the image is
@@ -156,11 +163,12 @@ dist: need-docker committed handoff
       && r=$(git tag --points-at HEAD --list 'v[0-9]*') \
       && { test "$(echo "$r" | wc -w)" -le 1 || { echo "more than one v* tag on this commit: $r" >&2; exit 1; }; } \
       && n=${r#v} && n=${n:-$v} \
-      && mv "smeltr-$v.tar.gz" smeltr-linux.tar.gz \
+      && case $(uname -m) in x86_64) a= ;; aarch64) a=-arm64 ;; *) echo "no release for $(uname -m)" >&2; exit 1 ;; esac \
+      && mv "smeltr-$v.tar.gz" "smeltr-linux$a.tar.gz" \
       && docker build --build-arg VERSION="$n" -t smeltr:latest -t "smeltr:$(echo "$n" | tr + -)" handoff \
-      && docker save -o smeltr-image.tar smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
-      && gzip -f smeltr-image.tar \
-      && sha256sum smeltr-linux.tar.gz smeltr-image.tar.gz | tee SHA256SUMS
+      && docker save -o "smeltr-image-linux$a.tar" smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
+      && gzip -f "smeltr-image-linux$a.tar" \
+      && sha256sum "smeltr-linux$a.tar.gz" "smeltr-image-linux$a.tar.gz" | tee SHA256SUMS
 
 # DISA's GPOS SRG (Chainguard's profile for Wolfi), scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
@@ -168,24 +176,32 @@ dist: need-docker committed handoff
 stig image="smeltr:latest": need-docker
     docker build --build-arg IMAGE={{image}} --output type=local,dest=stig - < tools/stig.Dockerfile
 
-# Known vulnerabilities in an image's OS packages and in the binary's crates, which `cargo auditable` records in it:
-# `cves/report.txt`, and `cves/report.json` for tools. A report, not a gate.
+# Known vulnerabilities in an image's OS packages and its binary's crates, or in the crates of the executables in a
+# folder: `cves/report.txt`, and `cves/report.json` for tools. A report, not a gate.
 [unix]
-cves image="smeltr:latest": need-docker
-    mkdir -p cves && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/cves:/out" \
-      aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      image --scanners vuln --format json --output /out/report.json {{image}}
+cves target="smeltr:latest": (trivy target "cves" "--scanners vuln --format json --output /out/report.json")
     docker run --rm -v "$PWD/cves:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       convert --scanners vuln --format table --output /out/report.txt /out/report.json
 
-# An image's packages and the binary's crates as a CycloneDX SBOM: `sbom/sbom.cdx.json`. The release attests it on
-# the pushed image.
+# A CycloneDX SBOM, `sbom/sbom.cdx.json`, of an image (its packages and its binary's crates) or of a folder (the
+# crates of the executables in it). The recipe fails if the SBOM lists no crates: its binary carries no record from
+# `cargo auditable`. The release attests an image's SBOM on the pushed image.
 [unix]
-sbom image="smeltr:latest": need-docker
-    mkdir -p sbom && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/sbom:/out" \
-      aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      image --format cyclonedx --output /out/sbom.cdx.json {{image}}
+sbom target="smeltr:latest": (trivy target "sbom" "--format cyclonedx --output /out/sbom.cdx.json")
+    grep -q '"pkg:cargo/' sbom/sbom.cdx.json \
+      || { echo "sbom/sbom.cdx.json lists no crates: {{target}} carries no record from cargo auditable; build it with \`cargo auditable build\`" >&2; exit 1; }
+
+# Trivy on an image, or on a folder (it reads only the files there marked executable), writing into `out/`.
+[private]
+[unix]
+trivy target out +args: need-docker
+    mkdir -p {{out}} && if [ -d '{{target}}' ]; then \
+        kind=rootfs scan=/scan mount="$(realpath '{{target}}'):/scan:ro"; \
+      else kind=image scan='{{target}}' mount=/var/run/docker.sock:/var/run/docker.sock; fi \
+      && docker run --rm -v "$mount" -v "$PWD/{{out}}:/out" \
+        aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+        "$kind" {{args}} "$scan"
 
 # The integration tests, run in an image's own root, so code that needs something the image lacks fails here and
 # not at a site. They are built in the image's builder (`Dockerfile`'s `tests` stage), so they link the glibc the
@@ -199,7 +215,7 @@ image-tests image="smeltr:latest": need-docker kerberos-up tls-up
     docker build --target tests-archive --output type=local,dest=target/image-tests .
     cp -r /tmp/krb /tmp/smeltr-tls target/image-tests/ && chmod -R a+rX target/image-tests/krb target/image-tests/smeltr-tls
     export SMELTR_TEST_IMAGE={{image}} SMELTR_TEST_SOURCE="$PWD" SMELTR_TEST_DIR="$PWD/target/image-tests" \
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/tools/image-test-runner.sh" \
+        "CARGO_TARGET_$(uname -m | tr a-z A-Z)_UNKNOWN_LINUX_GNU_RUNNER=$PWD/tools/image-test-runner.sh" \
       && run="cargo nextest run --archive-file target/image-tests/tests.tar.zst --workspace-remap . --extract-to target/image-tests/archive --extract-overwrite" \
       && $run \
       && set -a && . /tmp/krb/env && . /tmp/smeltr-tls/env && set +a \
@@ -256,7 +272,7 @@ check: need-checks
 need-checks: need-rust need-nextest need-node need-deny
 
 # Kerberos is not in it, since it needs a KDC: after a change to `Cargo.toml`, `Cargo.lock` or the Kerberos tests,
-# run `just check-kerberos`. `just check-live` adds the live services. Windows is checked nowhere.
+# run `just check-kerberos`. `just check-live` adds the live services. GitHub checks Windows nightly.
 #
 # The five share nothing but `stable`, so `[parallel]` runs them at once: 25s
 # of work in 12s. Two costs. Their output interleaves -- run one by name
@@ -485,7 +501,7 @@ uap-refresh:
     curl -fsSL https://raw.githubusercontent.com/ua-parser/uap-core/master/regexes.yaml -o src/ops/useragent/regexes.yaml
 
 # The ECS and OCSF releases the Add schema dialog offers built in (`schema::standard`), as
-# `just schemas-refresh 9.5.0 1.9.0 1.3.0`: ECS's fields.csv at that tag, and each OCSF release compiled and cut.
+# `just schemas-refresh 9.5.0 1.10.0 1.3.0`: ECS's fields.csv at that tag, and each OCSF release compiled and cut.
 [private]
 schemas-refresh ecs +ocsf:
     tools/schema-standards/refresh {{ecs}} {{ocsf}}
@@ -541,13 +557,17 @@ live-up: need-docker
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-b --partitions 4 --replication-factor 1
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-c --partitions 4 --replication-factor 1
 
+# `check-all`, then every live test that asserts behavior.
+[group("dev")]
+check-live: check-all live-tests
+
 # `SMELTR_LIVE_TESTS=required`: without it a missing service makes the
 # live tests skip, and a skipped test reports `ok`. Only the suites that
 # assert behavior; the measurement suites assert on timings. The tests
 # share one broker, hence `--test-threads` and one suite at a time.
 # Services stay up afterward; `just down` clears them.
 
-# `check-all`, plus every live test that asserts behavior.
+# Every live test that asserts behavior, without `check-all`. The nightly check runs the two on separate runners.
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]
 [env("ES_TEST_URL", "http://localhost:9200")]
@@ -585,50 +605,53 @@ live-up: need-docker
 [env("SOCKET_SENDER_TEST_IMAGE", "python:3.13-slim@sha256:d0a9e379c0c588befb0e427db17ca9731751d281f32c6cb1a90a1277b680bdad")]
 [env("S2S_FORWARDER_TEST_IMAGE", "splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3")]
 [env("SMELTR_LIVE_TESTS", "required")]
-check-live: live-up check-all
-    cargo test --test integration kafka_tests:: -- --test-threads=4
-    cargo test --test integration kafka_fuzz::
-    cargo test --test integration kafka_destination_fuzz::live_
-    cargo test --test integration kafka_avro_fuzz::live_
-    cargo test --test integration worker_tests:: -- --test-threads=4
-    cargo test --test integration elastic_live_tests:: -- --test-threads=4
-    cargo test --test integration splunk_live_tests:: -- --test-threads=4
-    cargo test --test integration elastic_fuzz::live_
-    cargo test --test integration splunk_fuzz::live_
-    cargo test --test integration http_fuzz::live_
-    cargo test --test integration s2s_live_tests::
-    cargo test --test integration s2s_receiver_fuzz::live_
-    cargo test --test integration objects_live_tests:: -- --test-threads=4
-    cargo test --test integration objects_fuzz::live_ -- --test-threads=4
-    cargo test --test integration object_source_fuzz::live_ -- --test-threads=7
-    cargo test --test integration iceberg_live_tests::
-    cargo test --test integration iceberg_live_fuzz::
-    cargo test --test integration delta_live_tests::
-    cargo test --test integration delta_live_fuzz::
-    cargo test --test integration event_hubs_live_fuzz::
-    cargo test --lib io::sftp::tests::live_ -- --test-threads=4
-    cargo test --test integration git_remote_live_tests:: -- --test-threads=4
-    cargo test --test integration postgres_live_tests:: -- --test-threads=4
-    cargo test --test integration mysql_live_tests:: -- --test-threads=4
-    cargo test --test integration sql_live_fuzz::
-    cargo test --test integration receiver_tests::an_opentelemetry_
-    cargo test --test integration otlp_receiver_fuzz::live_
-    cargo test --test integration otlp_destination_fuzz::live_
-    cargo test --test integration receiver_tests::prometheus_
-    cargo test --test integration remote_write_tests::prometheus_
-    cargo test --test integration prometheus_receiver_fuzz::live_
-    cargo test --test integration remote_write_fuzz::prometheus_
-    cargo test --test integration hec_receiver_fuzz::live_
-    cargo test --test integration http_receiver_fuzz::live_
-    cargo test --test integration receiver_tests::elastic_
-    cargo test --test integration elastic_receiver_fuzz::live_
-    cargo test --test integration syslog_receiver_tests::a_real_
-    cargo test --test integration syslog_receiver_fuzz::live_
-    cargo test --test integration socket_receiver_fuzz::live_
-    cargo test --test integration okta_live_tests:: -- --ignored
-    cargo test --test integration log_analytics_fuzz::live_ -- --ignored
-    cargo test --test integration gate_tests::live_ -- --test-threads=4
-    cargo test --test integration acme_live_tests:: -- --test-threads=1
+live-tests: live-up
+    #!/usr/bin/env bash
+    # Every line runs, whichever failed before it, so one failure hides no other; the recipe fails at the end.
+    failed=()
+    t() { "$@" || failed+=("$*"); }
+    t cargo test --test integration kafka_tests:: -- --test-threads=4
+    t cargo test --test integration kafka_fuzz::
+    t cargo test --test integration kafka_destination_fuzz::live_
+    t cargo test --test integration kafka_avro_fuzz::live_
+    t cargo test --test integration worker_tests:: -- --test-threads=4
+    t cargo test --test integration elastic_live_tests:: -- --test-threads=4
+    t cargo test --test integration splunk_live_tests:: -- --test-threads=4
+    t cargo test --test integration elastic_fuzz::live_
+    t cargo test --test integration splunk_fuzz::live_
+    t cargo test --test integration http_fuzz::live_
+    t cargo test --test integration s2s_live_tests::
+    t cargo test --test integration s2s_receiver_fuzz::live_
+    t cargo test --test integration objects_live_tests:: -- --test-threads=4
+    t cargo test --test integration objects_fuzz::live_ -- --test-threads=4
+    t cargo test --test integration object_source_fuzz::live_ -- --test-threads=7
+    t cargo test --test integration iceberg_live_tests::
+    t cargo test --test integration iceberg_live_fuzz::
+    t cargo test --test integration delta_live_tests::
+    t cargo test --test integration delta_live_fuzz::
+    t cargo test --test integration event_hubs_live_fuzz::
+    t cargo test --lib io::sftp::tests::live_ -- --test-threads=4
+    t cargo test --test integration git_remote_live_tests:: -- --test-threads=4
+    t cargo test --test integration postgres_live_tests:: -- --test-threads=4
+    t cargo test --test integration mysql_live_tests:: -- --test-threads=4
+    t cargo test --test integration sql_live_fuzz::
+    t cargo test --test integration receiver_tests::an_opentelemetry_
+    t cargo test --test integration otlp_receiver_fuzz::live_
+    t cargo test --test integration otlp_destination_fuzz::live_
+    t cargo test --test integration receiver_tests::prometheus_
+    t cargo test --test integration remote_write_tests::prometheus_
+    t cargo test --test integration prometheus_receiver_fuzz::live_
+    t cargo test --test integration remote_write_fuzz::prometheus_
+    t cargo test --test integration hec_receiver_fuzz::live_
+    t cargo test --test integration http_receiver_fuzz::live_
+    t cargo test --test integration receiver_tests::elastic_
+    t cargo test --test integration elastic_receiver_fuzz::live_
+    t cargo test --test integration syslog_receiver_tests::a_real_
+    t cargo test --test integration syslog_receiver_fuzz::live_
+    t cargo test --test integration socket_receiver_fuzz::live_
+    t cargo test --test integration gate_tests::live_ -- --test-threads=4
+    t cargo test --test integration acme_live_tests:: -- --test-threads=1
+    [ ${#failed[@]} = 0 ] || { printf 'failed: %s\n' "${failed[@]}"; exit 1; }
 
 # A KDC and a broker that demands GSSAPI, for the Kerberos tests. Needs
 # `krb5-kdc krb5-admin-server krb5-user` and a JRE; the scripts say what
@@ -648,8 +671,7 @@ check-kerberos: kerberos-up
     set -a && . /tmp/krb/env && set +a && PATH="$PWD/tests/kerberos/no-kinit:$PATH" KRB5CCNAME=MEMORY:smeltr SMELTR_KINIT_RAN=/tmp/krb/kinit-ran SMELTR_LIVE_TESTS=required cargo test --test integration kerberos_tests::
 
 # Reads a real Okta org's System Log, by API token and as a service app with
-# DPoP: the one check of what Okta itself takes. `check-live` runs it too;
-# `check` never does. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
+# DPoP: the one check of what Okta itself takes. No other check runs it. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
 # OKTA_PRIVATE_KEY (PEM, or that PEM in base64 on one line), from an Okta org
 # with an API Services app granted okta.logs.read and the Read-only
 # Administrator role. OKTA_KEY_ID names its key when it holds several.
@@ -657,8 +679,7 @@ check-okta:
     SMELTR_LIVE_TESTS=required cargo test --test integration okta_live_tests:: -- --ignored
 
 # What a real Log Analytics workspace takes from smeltr: rows
-# sent to a data collection rule, queried back. `check-live` runs it too;
-# `check` never does. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
+# sent to a data collection rule, queried back. No other check runs it. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
 # endpoint), LOG_ANALYTICS_TEST_RULE_ID, LOG_ANALYTICS_TEST_STREAM, LOG_ANALYTICS_TEST_TABLE
 # (a table with TimeGenerated, Tag and Message columns, which the stream fills
 # as it is), LOG_ANALYTICS_TEST_WORKSPACE (the workspace's id), and
@@ -699,9 +720,9 @@ check-tls: tls-up
 [env("ES_TEST_URL", "http://localhost:9200")]
 [env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 measure:
-    cargo test --profile dist --test panos-ecs-profile --test logs-cost --test memory-budget-cost --test record-cost --test guard-cost -- --ignored --nocapture --test-threads=1
+    cargo test --profile optimized --test panos-ecs-profile --test logs-cost --test memory-budget-cost --test record-cost --test guard-cost -- --ignored --nocapture --test-threads=1
     just live-up
-    cargo test --profile dist --test tick-profile --test flush-cost -- --test-threads=1 --nocapture
+    cargo test --profile optimized --test tick-profile --test flush-cost -- --test-threads=1 --nocapture
 
 # The transform's work alone at each count of threads in `BENCH_THREADS` (1,2,4 when unset), each a copy of a
 # reference pipeline: whether this host's hyperthreads add throughput. Needs no services.
@@ -709,7 +730,7 @@ measure:
 [group("dev")]
 [env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 thread-scaling:
-    cargo test --profile dist --test thread-scaling -- --ignored --exact thread_scaling --nocapture
+    cargo test --profile optimized --test thread-scaling -- --ignored --exact thread_scaling --nocapture
 
 # A row per reference pipeline in the log `BENCH_LOG` names, HEAD against the
 # pinned reference, and the ratio chart beside it as an .svg. Run daily.
@@ -749,7 +770,7 @@ bench-log:
 [env("SMELTR_LIVE_TESTS", "required")]
 [env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 connector-speed: live-up
-    cargo test --profile dist --test connector-speed -- --ignored --exact speed --nocapture
+    cargo test --profile optimized --test connector-speed -- --ignored --exact speed --nocapture
 
 # Smeltr beside Logstash, Vector and NiFi: each engine in a container on the same cores and memory, fed the same
 # records over HTTP and from Kafka, its output checked before it is timed. `ENGINES`, `ENGINE_PIPELINES` and
@@ -788,14 +809,14 @@ run-dev: build-dev
 # Frontends, then an optimized binary, started.
 [unix]
 run: frontends
-    cargo run --release --bin smeltr
+    cargo run --profile optimized --bin smeltr
 
 # Windows loads the AWS-LC FIPS module from a DLL beside the binary (`tools/fips-dll.ps1`).
 [windows]
 run: frontends
-    cargo build --release --bin smeltr
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/release"
-    cargo run --release --bin smeltr
+    cargo build --profile optimized --bin smeltr
+    powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/optimized"
+    cargo run --profile optimized --bin smeltr
 
 # Each test starts its own leader and workers from empty data directories, so
 # they run side by side. Arguments go to Playwright: a file, `-g <title>`,

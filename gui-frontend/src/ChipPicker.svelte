@@ -258,6 +258,12 @@
     font-weight: 600;
   }
 
+  /* Between groups of picks. */
+  .picker :global(hr) {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 2px 6px;
+  }
   .picker :global(.pick.remove) {
     color: var(--error);
   }

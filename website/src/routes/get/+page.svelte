@@ -57,13 +57,17 @@
             <a href="/docs/install-leader/binary">Install the binary</a>
           </li>
           <li>
+            <a href={latestFile('smeltr-linux-arm64.tar.gz')}>Linux Arm64</a>
+            <a href="/docs/install-leader/binary">Install the binary</a>
+          </li>
+          <li>
             <a href={latestFile('smeltr-windows.zip')}>Windows x86-64</a>
             <a href="/docs/install-leader/binary">Install the binary</a>
           </li>
           <li>
             <span
-              ><a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, CVE report
-              and STIG report</span
+              ><a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archives, SBOMs, CVE
+              reports and STIG reports</span
             >
             <a href="/docs/release-extras">Release extras</a>
           </li>

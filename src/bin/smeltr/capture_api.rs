@@ -424,13 +424,11 @@ pub fn held_for_preview(
     if !status.done {
         return Err("this capture is still running. Stop it to use what it holds".to_string());
     }
-    let (columns, records) = held_records(captures, session, &status);
     Ok(config_file::SampleDto {
         id: session.to_string(),
         name: session.to_string(),
+        table: held_table(captures, session, &status),
         source: status.source,
-        columns,
-        records,
     })
 }
 
@@ -446,44 +444,18 @@ fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Fo
     Followed::found(followed_status(captures, access, session))
 }
 
-/// What a capture holds, read apart from its status, which only counts it: its records as a sample of it holds them
-/// (`held_records`), each with the worker that sent it.
-#[derive(Default, serde::Serialize)]
-pub struct HeldRecords {
-    columns: Vec<smeltr::heartbeat::CaptureColumn>,
-    records: Vec<HeldRecord>,
-}
-
-#[derive(serde::Serialize)]
-struct HeldRecord {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    worker: Option<String>,
-    record: smeltr::io::RecordObject,
-}
-
 /// What `session` holds so far, running or over. Worth reading again only once its status's `revision` moves.
 pub async fn capture_records(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
     AxPath(session): AxPath<String>,
-) -> Envelope<HeldRecords> {
+) -> Envelope<smeltr::heartbeat::CaptureBatch> {
     records_of(&state.captures, &access, &session)
 }
 
-fn records_of(captures: &Captures, access: &Access, session: &str) -> Envelope<HeldRecords> {
+fn records_of(captures: &Captures, access: &Access, session: &str) -> Envelope<smeltr::heartbeat::CaptureBatch> {
     match followed_status(captures, access, session) {
-        Some(status) => {
-            let (columns, records) = held_records(captures, session, &status);
-            let workers = status
-                .batches
-                .iter()
-                .flat_map(|b| b.rows.iter().map(|r| r.worker.clone()));
-            let records = workers
-                .zip(records)
-                .map(|(worker, record)| HeldRecord { worker, record })
-                .collect();
-            Envelope::ok(HeldRecords { columns, records })
-        }
+        Some(status) => Envelope::ok(held_table(captures, session, &status)),
         None => Envelope::refused(Refusal::not_found(NO_CAPTURE)),
     }
 }
@@ -597,54 +569,19 @@ fn savable(captures: &Captures, access: &Access, session: &str) -> Result<Captur
     Ok(status)
 }
 
-/// What `status`, the capture `session`, holds, as a sample of it holds it: its columns, and its records with how it
-/// was taken on each, as its `__source` fields are. One record for each row of its batches, in their order.
-fn held_records(
-    captures: &Captures,
-    session: &str,
-    status: &CaptureStatus,
-) -> (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>) {
-    let mut records: Vec<smeltr::io::RecordObject> =
-        status.batches.iter().flat_map(config_file::sample_records).collect();
+/// What `status`, the capture `session`, holds, as a sample of it holds it: one table of its batches' rows
+/// (`config_file::sample_table`), each naming the worker that sent it, with how the capture was taken in every row,
+/// as its `__source` fields are. Pasted records were not captured, so they say nothing of it.
+fn held_table(captures: &Captures, session: &str, status: &CaptureStatus) -> smeltr::heartbeat::CaptureBatch {
+    let mut table = config_file::sample_table(&status.batches);
     if status.pasted {
-        return (Vec::new(), records);
+        return table;
     }
-    let mut columns = config_file::sample_columns(&status.batches);
     for (column, value) in captures.capture_fields(session) {
-        for record in &mut records {
-            config_file::put_path(record, &column.name, value.clone());
-        }
-        columns.push(column);
+        table.columns.push(column);
+        table.rows.iter_mut().for_each(|row| row.values.push(value.clone()));
     }
-    (columns, records)
-}
-
-/// A finished capture's records as a file to keep or send on: one JSON record a line, each as a sample of it holds
-/// it. The session stays, to be saved or discarded after.
-pub async fn download_capture(
-    State(state): State<AppState>,
-    Extension(access): Extension<Access>,
-    AxPath(session): AxPath<String>,
-) -> Response {
-    let status = match savable(&state.captures, &access, &session) {
-        Ok(status) => status,
-        Err(e) => return Envelope::<()>::refused(e).into_response(),
-    };
-    let (_, records) = held_records(&state.captures, &session, &status);
-    let mut body = Vec::new();
-    for record in &records {
-        serde_json::to_writer(&mut body, record).expect("a record object serializes");
-        body.push(b'\n');
-    }
-    let disposition = format!("attachment; filename=\"capture-{session}.ndjson\"");
-    (
-        [
-            (axum::http::header::CONTENT_TYPE, "application/x-ndjson".to_string()),
-            (axum::http::header::CONTENT_DISPOSITION, disposition),
-        ],
-        body,
-    )
-        .into_response()
+    table
 }
 
 /// Save a finished capture as a sample, and forget the session.
@@ -665,15 +602,13 @@ pub async fn save_capture(
     };
 
     let source = status.source.clone().or(request.source.clone());
-    let (columns, records) = held_records(&state.captures, &session, &status);
     let sample = config_file::SampleDto {
         id: request.sample_id(),
         name: request.name,
         source,
-        columns,
-        records,
+        table: held_table(&state.captures, &session, &status),
     };
-    let records = sample.records.len();
+    let records = sample.table.rows.len();
 
     let saved = blocking(move || {
         let path = config_file::sample_path(&sample.id).map_err(|e| Refusal::invalid(e.to_string()))?;
@@ -969,8 +904,8 @@ mod tests {
         assert!(held_for_preview(&captures, &own, &person("alice"), "c1").is_ok());
     }
 
-    /// A paste is held in place of its owner's capture and reads back as written: no columns of its own, no
-    /// `__capture` fields, and the source it was given.
+    /// A paste is held in place of its owner's capture and reads back as written, stamped with when it was held: no
+    /// columns of its own, and the source it was given.
     #[test]
     fn a_paste_replaces_its_owner_s_capture_and_runs_as_written() {
         let (captures, own, _) = payments_capture();
@@ -994,14 +929,12 @@ mod tests {
             "the paste replaced the capture"
         );
         let sample = held_for_preview(&captures, &own, &alice, "p1").unwrap();
-        assert!(sample.columns.is_empty(), "{:?}", sample.columns);
-        assert_eq!(sample.records, vec![record("a"), record("b")]);
+        let held = sample.table.instant().expect("a held paste says when it was taken");
+        let pasted = smeltr::heartbeat::CaptureBatch::pasted(vec![record("a"), record("b")]).stamped(held);
+        assert_eq!(sample.table, pasted);
         assert_eq!(sample.source.as_deref(), Some("orders"));
         // The records the GUI reads are those a sample holds; a paste was sent by no worker.
-        assert_eq!(
-            serde_json::to_value(records_of(&captures, &own, "p1").body).unwrap(),
-            serde_json::json!({"columns": [], "records": [{"record": {"_raw": "a"}}, {"record": {"_raw": "b"}}]})
-        );
+        assert_eq!(records_of(&captures, &own, "p1").body, pasted);
 
         let too_many = vec![record("x"); config_file::MAX_SAMPLE_RECORDS + 1];
         assert!(

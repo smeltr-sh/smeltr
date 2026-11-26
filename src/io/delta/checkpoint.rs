@@ -883,10 +883,10 @@ fn covered(name: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    use crate::sync::Mutex;
     use std::collections::BTreeMap;
     use std::fmt;
     use std::ops::Range;
-    use std::sync::Mutex;
     use std::time::Duration;
 
     use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -953,7 +953,7 @@ mod tests {
         }
 
         fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-            let aged = self.aged.lock().unwrap().clone();
+            let aged = self.aged.lock().clone();
             self.inner
                 .list(prefix)
                 .map(move |meta| {

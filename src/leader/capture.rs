@@ -8,8 +8,8 @@
 //! The leader opens no connection of its own here. It hands every heartbeating worker the same invitation and merges
 //! what comes back, so a source running on one worker and a source running on none are the same request.
 
+use crate::sync::Mutex;
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::heartbeat::{CaptureBatch, CaptureEnd, CaptureInvitation, CaptureReport, CapturedRow};
@@ -96,7 +96,7 @@ pub struct CaptureStatus {
     /// order. No worker leaves the list for the capture's life.
     pub workers: Vec<CaptureWorker>,
     /// What every worker sent, folded: one batch per distinct column list, each row naming its worker. Left out of
-    /// the status a caller polls, which counts them in `records`: they are read on their own (`HeldRecords`).
+    /// the status a caller polls, which counts them in `records`: they are read on their own (`capture_records`).
     #[serde(skip)]
     pub batches: Vec<CaptureBatch>,
     /// How many records the capture holds, across its batches.
@@ -534,7 +534,7 @@ impl Captures {
                 .clamp(1, MAX_DEADLINE_SECS),
             secrets,
         };
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         drop_to_hold(&mut sessions, &owner);
         sessions.insert(
             id,
@@ -560,17 +560,7 @@ impl Captures {
         records: Vec<crate::io::RecordObject>,
     ) -> Result<(), String> {
         crate::config_file::refuse_sample_size(records.len())?;
-        let mut batch = CaptureBatch::new(vec![crate::heartbeat::CaptureColumn {
-            name: crate::plan::tree::UNCLAIMED.to_string(),
-            ty: crate::core::column::DataType::Variant.spell(),
-        }]);
-        batch.rows = records
-            .into_iter()
-            .map(|record| CapturedRow {
-                values: vec![serde_json::Value::Object(record)],
-                ..CapturedRow::default()
-            })
-            .collect();
+        let batch = CaptureBatch::pasted(records).stamped(crate::core::ctx::wall_clock_micros());
         let bytes = batch.size();
         if bytes > SESSION_BYTES_CEILING {
             return Err(format!(
@@ -591,7 +581,7 @@ impl Captures {
             deadline_secs: 0,
             secrets: Vec::new(),
         };
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         drop_to_hold(&mut sessions, &owner);
         sessions.insert(
             id,
@@ -628,7 +618,7 @@ impl Captures {
         group: &str,
         holder: impl Fn(&str) -> Option<String>,
     ) -> Vec<CaptureInvitation> {
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         let mut out = Vec::new();
         for session in sessions.values_mut() {
             if session.invitation.group != group || session.done() || session.answered.contains(worker_id) {
@@ -659,11 +649,11 @@ impl Captures {
     /// has no part in this capture.
     pub fn record(&self, report: CaptureReport) {
         // Late reports come in runs as a capture ends, so one is said at debug every RELOG_EVERY and the rest at trace.
-        static DROPPED: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
+        static DROPPED: crate::sync::Mutex<crate::logs::Repeat> = crate::sync::Mutex::new(crate::logs::Repeat::new());
         let dropped = |why: &str| {
-            crate::debug_when!(DROPPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "report_dropped", target: "captures", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
+            crate::debug_when!(DROPPED.lock().due(), name: "report_dropped", target: "captures", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
         };
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         let Some(session) = sessions.get_mut(&report.session) else {
             dropped("no such session");
             return;
@@ -705,7 +695,7 @@ impl Captures {
 
     /// Where `session` stands. Reading it keeps it held.
     pub fn status(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         let s = sessions.get_mut(session)?;
         s.used = Instant::now();
         Some(s.status(session))
@@ -713,16 +703,12 @@ impl Captures {
 
     /// Who opened `session`, by `Actor::id`.
     pub fn owner(&self, session: &str) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(session)
-            .map(|s| s.owner.clone())
+        self.0.lock().get(session).map(|s| s.owner.clone())
     }
 
     /// The capture `owner` holds, by its session id.
     pub fn held_by(&self, owner: &str) -> Option<String> {
-        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let sessions = self.0.lock();
         sessions
             .iter()
             .find(|(_, s)| s.owner == owner)
@@ -733,7 +719,7 @@ impl Captures {
     /// opened, what it read, in which group, under which filter, on which commit, and each worker that failed with
     /// why. A field with nothing to say is left out.
     pub fn capture_fields(&self, session: &str) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
-        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let sessions = self.0.lock();
         let Some(s) = sessions.get(session) else {
             return Vec::new();
         };
@@ -783,11 +769,7 @@ impl Captures {
 
     /// The group `session` was opened against, which is the area whoever follows it must edit.
     pub fn group(&self, session: &str) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(session)
-            .map(|s| s.invitation.group.clone())
+        self.0.lock().get(session).map(|s| s.invitation.group.clone())
     }
 
     /// End a capture still running where it stands. What it holds is what it will ever hold: records that land
@@ -795,7 +777,7 @@ impl Captures {
     /// its next heartbeat's answer no longer lists it -- a supervisor's own capture on that beat, a runtime's on the
     /// deployer's next turn. A capture already over is answered as it ended.
     pub fn stop(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         let s = sessions.get_mut(session)?;
         if !s.done() {
             s.stopped = true;
@@ -805,7 +787,7 @@ impl Captures {
 
     /// Forget a session. Called when its records have been saved as a sample, or when whoever started it gave up.
     pub fn close(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         sessions.remove(session).map(|s| s.status(session))
     }
 
@@ -815,7 +797,7 @@ impl Captures {
     pub fn sweep(&self, idle: Duration, at_most: Duration) {
         let _pass =
             tracing::trace_span!(target: "captures", "a background pass", task = "drop finished captures").entered();
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self.0.lock();
         sessions.retain(|id, s| {
             let keep = (!s.done() || s.used.elapsed() < idle) && s.elapsed() < at_most;
             if !keep {
@@ -1013,9 +995,7 @@ mod tests {
         let meta =
             crate::plan::topology::SourceMeta::of_columns(&columns).expect("a sample reads its `__capture` columns");
         assert!(
-            meta.record()
-                .iter()
-                .any(|(name, _)| name.as_ref() == "__capture.config"),
+            meta.fields().any(|(name, _)| name == "__capture.config"),
             "a pipeline reads them"
         );
     }
@@ -1739,7 +1719,7 @@ mod tests {
         captures.record(progress_report("s1", "w2", &["c", "d"]));
         assert!(captures.status("s1").unwrap().done, "it holds its total");
 
-        let sessions = captures.0.lock().unwrap();
+        let sessions = captures.0.lock();
         let session = sessions.get("s1").unwrap();
         assert_eq!(rows_in(&session.per_worker["w1"]), 2, "all of w1's report fit");
         assert_eq!(
@@ -1851,9 +1831,9 @@ mod tests {
         assert_eq!(count(&status), 1, "with what did arrive");
     }
 
-    /// The bug this replaced: `done` keyed on the set of workers that happened to have heartbeated, so the first
-    /// worker to be invited and answer finished the capture -- and `invitations_for` then skipped it forever, so a
-    /// worker that had not heartbeated yet was never asked at all. The sample was silently one worker's.
+    /// `done` is not keyed on the workers that happen to have heartbeated: the first worker to be invited and answer
+    /// would then finish the capture, a worker that had not heartbeated yet would never be asked, and the sample
+    /// would silently be one worker's.
     #[test]
     fn a_capture_is_not_finished_by_the_first_worker_to_answer() {
         let captures = Captures::default();

@@ -36,7 +36,7 @@ pub struct SeriesQuery {
     /// `label:value` pairs, comma-separated; a series must match every one.
     #[serde(default)]
     pub filter: String,
-    /// The label whose values become the answer's series; none adds every subject into one.
+    /// The labels, comma-separated, whose values become the answer's series; if empty, every subject is added into one series.
     #[serde(default)]
     pub by: String,
     #[serde(default = "default_window_minutes")]
@@ -68,12 +68,14 @@ pub struct SeriesAnswer {
     pub series: Vec<Split>,
 }
 
-/// One series of the answer: the subjects whose split label holds `name`, added together.
+/// One series of the answer: the subjects whose split labels hold `values`, added together.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Split {
-    /// The split label's value; empty when nothing splits the answer.
+    /// The split labels' values, joined by ", "; empty when nothing splits the answer.
     pub name: String,
+    /// Each split label's value, in the order `by` names them.
+    pub values: Vec<String>,
     /// `[start, value]`, oldest first. A point nothing landed in is absent rather than zero: an outage is not a quiet
     /// spell.
     pub points: Vec<(i64, f64)>,
@@ -116,7 +118,7 @@ fn grid(draw: Draw, window_minutes: i64, offset_ms: i64, end_ms: i64, now_ms: i6
     let now_ms = end_ms;
     let start = |at: i64| (at - offset_ms).div_euclid(point_ms) * point_ms + offset_ms;
     let from_ms = match draw {
-        // The window's oldest whole point, as `/api/flow` reads it.
+        // The window's oldest whole point.
         Draw::PerSecond => start(now_ms - window_ms),
         // As many bars as the window holds, the last the one still filling.
         Draw::Totals => start(now_ms) - (window_ms / point_ms - 1) * point_ms,
@@ -138,11 +140,7 @@ pub fn answer(
     let window_minutes = query.window_minutes.clamp(1, MAX_WINDOW_MINUTES);
     // Where the reader's midnight falls past UTC's: a reader east of Greenwich starts the day before UTC does.
     let offset_ms = -query.utc_offset_minutes.clamp(-14 * 60, 14 * 60) * MINUTE_MS;
-    let counter = store
-        .metric_subjects()?
-        .into_iter()
-        .find(|(metric, _, _)| *metric == query.metric)
-        .map(|(_, _, counter)| counter);
+    let counter = store.is_counter(&query.metric)?;
     // A metric nothing has reported yet is a quiet one, not a wrong question: by Prometheus's naming, a counter's
     // name ends `_total`.
     let counter = counter.unwrap_or_else(|| query.metric.ends_with("_total"));
@@ -150,9 +148,16 @@ pub fn answer(
     let draw = if counter { query.draw } else { Draw::PerSecond };
     let end_ms = now_ms - query.ago_minutes.clamp(0, MAX_WINDOW_MINUTES) * MINUTE_MS;
     let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, end_ms, now_ms);
-    let mut splits: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
-    for (subject_key, points) in store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms, end_ms)? {
-        let Some(labels) = labels_of(&subject_key) else {
+    let by: Vec<&str> = query.by.split(',').filter(|l| !l.is_empty()).collect();
+    let mut splits: BTreeMap<Vec<String>, BTreeMap<i64, f64>> = BTreeMap::new();
+    // A live window reads through the bucket's cache; one that ends in the past is asked rarely enough to read fresh.
+    let read = if end_ms == now_ms {
+        store.points_this_bucket(&query.metric, counter, point_ms, offset_ms, from_ms, now_ms)?
+    } else {
+        std::sync::Arc::new(store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms, end_ms)?)
+    };
+    for (subject_key, points) in read.iter() {
+        let Some(labels) = labels_of(subject_key) else {
             continue;
         };
         if !value_of(&labels, GROUP_LABEL).is_some_and(&sees) {
@@ -161,15 +166,14 @@ pub fn answer(
         if !filter.iter().all(|(k, v)| value_of(&labels, k) == Some(v.as_str())) {
             continue;
         }
-        let name = if query.by.is_empty() {
-            String::new()
-        } else {
-            match value_of(&labels, &query.by) {
-                Some(value) => value.to_string(),
-                None => continue,
-            }
+        let Some(values) = by
+            .iter()
+            .map(|label| value_of(&labels, label).map(str::to_string))
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
         };
-        add(splits.entry(name).or_default(), points);
+        add(splits.entry(values).or_default(), points);
     }
     let per = |value: f64| match (counter, draw) {
         (true, Draw::PerSecond) => value / (point_ms as f64 / 1000.0),
@@ -183,8 +187,9 @@ pub fn answer(
         from_millis: from_ms,
         series: splits
             .into_iter()
-            .map(|(name, points)| Split {
-                name,
+            .map(|(values, points)| Split {
+                name: values.join(", "),
+                values,
                 points: points.into_iter().map(|(at, value)| (at, per(value))).collect(),
             })
             .collect(),
@@ -192,8 +197,8 @@ pub fn answer(
 }
 
 /// `points` added into `into`, point by point.
-fn add(into: &mut BTreeMap<i64, f64>, points: SubjectPoints) {
-    for (at, value) in points {
+fn add(into: &mut BTreeMap<i64, f64>, points: &SubjectPoints) {
+    for &(at, value) in points {
         *into.entry(at).or_default() += value;
     }
 }
@@ -361,6 +366,21 @@ mod tests {
             &["east", "west"],
         );
         assert_eq!(values(&by_worker), [("e1", 66.0), ("w1", 0.6)]);
+        let by_both = ask(
+            &store,
+            &SeriesQuery {
+                by: "source,group".into(),
+                ..asked(ROWS)
+            },
+            &["east", "west"],
+        );
+        let names: Vec<&[String]> = by_both.series.iter().map(|s| s.values.as_slice()).collect();
+        assert_eq!(
+            names,
+            [["a", "east"], ["a", "west"], ["b", "east"]],
+            "one series per pair, in label order"
+        );
+        assert_eq!(values(&by_both)[0].0, "a, east");
     }
 
     #[test]
@@ -443,6 +463,42 @@ mod tests {
         );
         assert_eq!(week_before.point_millis, 5 * 60_000);
         assert_eq!(week_before.series[0].points, [(NOON - week - 10 * 60_000, 5.0)]);
+    }
+
+    /// Thirty days are read in six-hour points from the coarse tier, and the newest buckets, not yet rolled into it,
+    /// from the finer ones.
+    #[test]
+    fn a_long_window_holds_its_newest_buckets_too() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let key = source("east", "a", "e1");
+        let six_hours = 6 * HOUR_MS;
+        let point = NOON.div_euclid(six_hours) * six_hours;
+        let earlier = point - 2 * DAY_MS;
+        store.record_delta(ROWS, &key, earlier, 4.0).unwrap();
+        store.record_delta(ROWS, &key, earlier + six_hours / 2, 1.0).unwrap();
+        store.maintain(NOON).unwrap();
+        store.record_delta(ROWS, &key, point, 2.0).unwrap();
+        store.record_delta(ROWS, &key, point + 1, 3.0).unwrap();
+        let month = ask(
+            &store,
+            &SeriesQuery {
+                window_minutes: 30 * 24 * 60,
+                draw: Draw::Totals,
+                ..asked(ROWS)
+            },
+            &["east"],
+        );
+        assert_eq!(values(&month), [("", 10.0)]);
+    }
+
+    /// A subject with no group belongs to no caller, so no answer counts it.
+    #[test]
+    fn a_subject_without_a_group_is_left_out() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        store
+            .record_delta(ROWS, r#"[["source","a"]]"#, NOON - 60_000, 5.0)
+            .unwrap();
+        assert!(ask(&store, &asked(ROWS), &["east"]).series.is_empty());
     }
 
     #[test]

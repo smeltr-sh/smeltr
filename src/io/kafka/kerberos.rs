@@ -99,8 +99,9 @@ fn conflict(held: &Identity, asked: &Identity) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 mod imp {
+    use crate::sync::Mutex;
     use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
-    use std::sync::{Arc, Mutex, Once, Weak};
+    use std::sync::{Arc, Once, Weak};
     use std::time::Duration;
 
     use super::{Held, Identity, conflict};
@@ -151,7 +152,7 @@ mod imp {
     static HELD: Mutex<Weak<Identity>> = Mutex::new(Weak::new());
 
     pub(super) fn hold(identity: Identity) -> Result<Option<Held>, IoError> {
-        let mut held = HELD.lock().unwrap_or_else(|p| p.into_inner());
+        let mut held = HELD.lock();
         if let Some(current) = held.upgrade() {
             if let Some(why) = conflict(&current, &identity) {
                 return Err(IoError::transient(why));
@@ -165,10 +166,7 @@ mod imp {
         *held = Arc::downgrade(&identity);
         static RENEWER: Once = Once::new();
         RENEWER.call_once(|| {
-            std::thread::Builder::new()
-                .name("smeltr-kerberos".into())
-                .spawn(renew)
-                .expect("the Kerberos renewal thread starts");
+            crate::sync::spawn("smeltr-kerberos", renew).expect("the Kerberos renewal thread starts");
         });
         Ok(Some(Held { _identity: identity }))
     }
@@ -177,7 +175,7 @@ mod imp {
     fn renew() {
         loop {
             std::thread::sleep(RENEW_EVERY);
-            let Some(identity) = HELD.lock().unwrap_or_else(|p| p.into_inner()).upgrade() else {
+            let Some(identity) = HELD.lock().upgrade() else {
                 continue;
             };
             if let Err(why) = acquire(&identity) {
@@ -264,6 +262,7 @@ mod imp {
             // SAFETY: the cache, principal and credentials above, all live.
             code = unsafe { krb5_cc_initialize(context, cache, client) };
             if code == 0 {
+                // SAFETY: the cache and credentials above, both live.
                 code = unsafe { krb5_cc_store_cred(context, cache, &mut creds) };
             }
             // SAFETY: the cache opened above.

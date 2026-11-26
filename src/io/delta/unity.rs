@@ -228,9 +228,9 @@ fn refused(what: &str, status: u16, body: &[u8]) -> IoError {
 
 #[cfg(test)]
 mod tests {
+    use crate::sync::Mutex;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
-    use std::sync::Mutex;
 
     use super::*;
 
@@ -274,7 +274,7 @@ mod tests {
                 }
                 let mut content = vec![0; length];
                 reader.read_exact(&mut content).unwrap();
-                log.lock().unwrap().push(Request {
+                log.lock().push(Request {
                     line: line.trim_end().to_string(),
                     authorization,
                     body: String::from_utf8(content).unwrap(),
@@ -323,7 +323,7 @@ mod tests {
                 location: "s3://lake/tables/web".into()
             }
         );
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen[0].line, "POST /oidc/v1/token HTTP/1.1");
         assert!(seen[0].body.contains("scope=unity-catalog"), "{}", seen[0].body);
         assert_eq!(
@@ -375,7 +375,7 @@ mod tests {
         );
         assert_eq!(grant.expires, UNIX_EPOCH + Duration::from_millis(1_700_000_000_000));
         assert_eq!(grant.access_point, None);
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(
             seen[1].line,
             "POST /api/2.0/unity-catalog/temporary-table-credentials HTTP/1.1"
@@ -417,7 +417,7 @@ mod tests {
             table("EXTERNAL", "DELTA"),
         ]);
         unity(&url).table("main.web.access").unwrap();
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen[3].authorization.as_deref(), Some("Bearer new"));
     }
 
@@ -1111,7 +1111,7 @@ mod tests {
             let mut unity = unity(&url);
             let fail = |what: String| Err(format!("{what}\ncalls {calls:?}\nanswers {:?}", shown(&answers)));
             for ((is_table, name), expected) in calls.iter().zip(expected) {
-                let before = seen.lock().unwrap().len();
+                let before = seen.lock().len();
                 let got = catch_unwind(AssertUnwindSafe(|| {
                     if *is_table {
                         unity.table(name).map(|t| format!("{t:?}"))
@@ -1136,7 +1136,7 @@ mod tests {
                     (Err(error), Err(phrase)) if error.message.contains(phrase.as_str()) => {}
                     _ => return fail(format!("got {got:?}, expected {expected:?}")),
                 }
-                let seen = seen.lock().unwrap();
+                let seen = seen.lock();
                 let api = |r: &Request| !r.line.contains("/oidc/v1/token");
                 let first_api = seen[before..].iter().position(api).unwrap_or(seen.len() - before);
                 let replaced = seen[before + first_api..].iter().filter(|r| !api(r)).count();
@@ -1144,7 +1144,7 @@ mod tests {
                     return fail(format!("the token was replaced {replaced} times in one call"));
                 }
             }
-            let seen = seen.lock().unwrap();
+            let seen = seen.lock();
             if seen.len() != answers.len() {
                 return fail(format!("{} requests, not {}", seen.len(), answers.len()));
             }

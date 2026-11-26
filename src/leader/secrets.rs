@@ -163,8 +163,8 @@ pub fn load(path: &Path) -> Result<Option<EncryptionKey>, KeyError> {
 /// nothing, so the key exists before the first value needs it.
 pub fn load_or_create(path: &Path) -> Result<EncryptionKey, KeyError> {
     // Two stores at once on a leader with no key would each write one; there is only ever one key.
-    static CREATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
+    static CREATING: crate::sync::Mutex<()> = crate::sync::Mutex::new(());
+    let _one = CREATING.lock();
     if let Some(key) = load(path)? {
         return Ok(key);
     }

@@ -14,7 +14,10 @@ curl -fsSL "https://raw.githubusercontent.com/elastic/ecs/v$ecs/generated/csv/fi
 
 rm -f "$out"/ocsf-*.json
 for ocsf in "$@"; do
-    git -c advice.detachedHead=false clone -q --depth 1 --branch "$ocsf" https://github.com/ocsf/ocsf-schema.git "$work/$ocsf"
+    # OCSF tagged its releases bare up to 1.9.0 and with a `v` from 1.10.0.
+    tag=$ocsf
+    git ls-remote --exit-code --tags https://github.com/ocsf/ocsf-schema.git "refs/tags/$ocsf" >/dev/null || tag=v$ocsf
+    git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" https://github.com/ocsf/ocsf-schema.git "$work/$ocsf"
     uvx --python 3.14 ocsf-schema-compiler "$work/$ocsf" > "$work/$ocsf.json"
     python3 -I "$(dirname "$0")/cut_ocsf.py" "$work/$ocsf.json" "$out/ocsf-$ocsf.json"
 done

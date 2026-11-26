@@ -2064,6 +2064,7 @@ fn every_startup_example_is_read() {
             // SAFETY: nextest runs each test in its own process, and no other thread here reads the environment.
             unsafe { std::env::set_var(&s.env, value) };
             let got = read();
+            // SAFETY: as for `set_var` above.
             unsafe { std::env::remove_var(&s.env) };
             // An example the reader ignores would read as the default; one that names the default is no example. The
             // thread limit's default is this machine's core count, which an example may name.

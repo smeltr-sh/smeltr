@@ -10,9 +10,9 @@
 //! refused; the receiver holds to its connection limits, serves others while some connections idle or stall, never
 //! panics, and serves a fresh connection afterwards.
 
+use smeltr::sync::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -148,7 +148,7 @@ impl Kind {
         };
         let column = record
             .chunk
-            .column(meta.record().iter().position(|(n, _)| n == name).unwrap());
+            .column(meta.record().iter().position(|(n, _)| n.field() == Some(name)).unwrap());
         match column.constant_value() {
             Some(smeltr::core::column::Scalar::Str(s)) => s.as_bytes().to_vec(),
             _ if !column.is_valid(record.row as usize) => Vec::new(),
@@ -710,7 +710,7 @@ fn misbehaving_senders_never_get_a_record_invented_lost_or_taken_twice() {
             let senders: Vec<_> = (planned.iter().zip(&sent))
                 .map(|(plan, slot)| {
                     let pki = &pki;
-                    scope.spawn(move || *slot.lock().unwrap() = Some(sender::send(at, pki, &plan.connection)))
+                    scope.spawn(move || *slot.lock() = Some(sender::send(at, pki, &plan.connection)))
                 })
                 .collect();
             sender::storm(at, from, storm);
@@ -727,7 +727,7 @@ fn misbehaving_senders_never_get_a_record_invented_lost_or_taken_twice() {
                     let musts = musts.get_or_insert_with(|| {
                         (planned.iter().zip(&sent))
                             .flat_map(|(plan, slot)| {
-                                let sent = slot.lock().unwrap();
+                                let sent = slot.lock();
                                 let statuses = sent.as_ref().map(|s| s.statuses.clone()).unwrap_or_default();
                                 (plan.messages.iter().enumerate())
                                     .filter(|&(i, _)| match fates[&plan.messages[i].0] {
@@ -744,7 +744,7 @@ fn misbehaving_senders_never_get_a_record_invented_lost_or_taken_twice() {
                 },
             )
         })?;
-        let sent: Vec<sender::Sent> = sent.into_iter().map(|s| s.into_inner().unwrap().unwrap()).collect();
+        let sent: Vec<sender::Sent> = sent.into_iter().map(|s| s.into_inner().unwrap()).collect();
         let musts = musts.unwrap_or_default();
         if let Some(m) = musts.iter().find(|m| !seen.contains(*m)) {
             return Err(format!(

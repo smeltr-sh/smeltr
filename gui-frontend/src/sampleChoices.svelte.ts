@@ -14,6 +14,7 @@ import {
   type SampleRecordDto,
   type SampleSummary,
 } from './api';
+import { tableRecords } from './capture';
 
 export class SampleChoices {
   samples: SampleSummary[] = $state([]);
@@ -73,5 +74,6 @@ export const HELD_NAME = 'Your records';
 export async function recordsOf(choice: string): Promise<SampleRecordDto[]> {
   const session = heldSession(choice);
   if (session) return capturedRecords(session);
-  return (await getSample(choice)).sample?.records ?? [];
+  const sample = (await getSample(choice)).sample;
+  return sample ? tableRecords(sample).map((held) => held.record) : [];
 }

@@ -252,7 +252,7 @@ mod tests {
     /// debug and above, and says so.
     #[test]
     fn a_logs_source_never_carries_trace() {
-        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = crate::logs::TAPS_LOCK.lock();
         let said = crate::logs::said(|| {
             let source = LogsSource::new(LogsSourceConfig {
                 min_level: tracing::Level::TRACE,
@@ -268,7 +268,7 @@ mod tests {
     /// Two logs sources read side by side, and each sees the whole stream.
     #[test]
     fn two_logs_sources_each_read_every_event() {
-        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = crate::logs::TAPS_LOCK.lock();
         // Every ceiling collects ERROR, so opening one raises no warning.
         let cfg = LogsSourceConfig {
             min_level: tracing::Level::ERROR,

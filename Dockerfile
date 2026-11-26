@@ -37,7 +37,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # packages. The record is a loadable section, which `strip` keeps. It names crates, so a vendored C library shows as
 # its sys crate's version, and advisories reach it only through RUSTSEC; the weekly check lists those libraries.
 RUN --mount=type=cache,target=/root/.cargo/registry \
-    cargo install cargo-auditable --version 0.7.7 --locked
+    cargo install cargo-auditable --version 0.7.8 --locked
 WORKDIR /src
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/
@@ -64,11 +64,19 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 
 # ---- tests: the integration tests, for `just image-tests` -------------------------------------------------------
 # Built on the builder, so they link the glibc the image carries, and archived by nextest, which runs each one in a
-# container of the image. nextest is pinned to the version the release workflow runs the archive with.
+# container of the image. nextest is pinned to the version the release workflow runs the archive with, for the
+# architecture the builder runs on.
 FROM builder AS tests
-ADD --checksum=sha256:682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428 \
-    https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz /nextest.tar.gz
-RUN tar -xzf /nextest.tar.gz -C /root/.cargo/bin && rm /nextest.tar.gz
+RUN arch=$(uname -m) \
+    && case $arch in \
+        x86_64) sum=682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428 ;; \
+        aarch64) sum=b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9 ;; \
+    esac \
+    && : "${sum:?no nextest for $arch}" \
+    && curl --proto '=https' --tlsv1.2 -sSfL -o /nextest.tar.gz \
+        "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-$arch-unknown-linux-gnu.tar.gz" \
+    && echo "$sum  /nextest.tar.gz" | sha256sum -c - \
+    && tar -xzf /nextest.tar.gz -C /root/.cargo/bin && rm /nextest.tar.gz
 COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \

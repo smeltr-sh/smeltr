@@ -18,9 +18,10 @@ accepted = [
 ]
 
 # The platforms a release is built for. A crate that only ever compiles on
-# one of them still ships on that one, so both are resolved.
+# one of them still ships on that one, so all are resolved.
 targets = [
     "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
 ]
 
@@ -33,7 +34,7 @@ ignore-dev-dependencies = true
 ignore-transitive-dependencies = false
 
 # AWS-LC's C sources each carry a license header, and cargo-about would reproduce a share of those files whole,
-# a different share on each machine. Its one LICENSE holds every license the crate is under.
+# a different share on each machine. Each crate's one LICENSE holds every license it is under.
 [aws-lc-fips-sys.clarify]
 license = "ISC AND (Apache-2.0 OR ISC) AND OpenSSL"
 
@@ -41,3 +42,20 @@ license = "ISC AND (Apache-2.0 OR ISC) AND OpenSSL"
 path = "LICENSE"
 license = "ISC AND (Apache-2.0 OR ISC) AND OpenSSL"
 checksum = "5df09a98cac8843239a4d8f48a85089de6b68ed106612afcd2aa37a6453c2e3f"
+
+[aws-lc-sys.clarify]
+license = "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)"
+
+[[aws-lc-sys.clarify.files]]
+path = "LICENSE"
+license = "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)"
+checksum = "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e"
+
+# Its LICENSE carries Amazon's copyright line, which the generic ISC text cargo-about would put in its place lacks.
+[aws-lc-rs.clarify]
+license = "ISC AND (Apache-2.0 OR ISC)"
+
+[[aws-lc-rs.clarify.files]]
+path = "LICENSE"
+license = "ISC AND (Apache-2.0 OR ISC)"
+checksum = "b50b376e7d24a0598488b730c3034ffcd0b58dd36c0913a24b9903a3cfd04bf7"

@@ -742,9 +742,11 @@ export function expected(model: Model, steps = model.editing): Shown[] {
       drop: () => ('condition' in s ? `drop where ${s.condition || '…'}` : ''),
       remove: () =>
         'fields' in s
-          ? s.fields.length
-            ? `${s.fields.length} ${s.fields.length === 1 ? 'name' : 'names'}: ${s.fields.join(', ')}`
-            : '(no names)'
+          ? `${['', 'true'].includes(s.filter.trim()) ? '' : `when ${s.filter.trim()}: `}${
+              s.fields.length
+                ? `${s.fields.length} ${s.fields.length === 1 ? 'name' : 'names'}: ${s.fields.join(', ')}`
+                : '(no names)'
+            }`
           : '',
       call: () => ('pipeline' in s ? s.pipeline : ''),
     }[s.type]();

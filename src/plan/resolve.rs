@@ -122,7 +122,7 @@ impl SymbolTable {
     pub fn over_plan_output(
         layout: &[DataType],
         tree: &Object,
-        ingest: &[(&str, DataType)],
+        ingest: &[(Place, DataType)],
         // Names laid over the tree at slots past the plan's own -- the route's tag field, written over whatever the row
         // holds there. A read is the slot's value where it holds one, else the row's own (`SymbolTable::laid`).
         laid: &[(&str, SlotId)],
@@ -130,8 +130,10 @@ impl SymbolTable {
         let mut root = tree.clone();
         // The ingest names sit at their fixed slots, the same ones the batch lays them in -- `_raw` is readable from a
         // `when` for the same reason a route condition can read it.
-        for (i, (name, _)) in ingest.iter().enumerate() {
-            if *name != tree::UNCLAIMED && root.get(name).is_none() {
+        for (i, (place, _)) in ingest.iter().enumerate() {
+            if let Place::Leaf(name) = place
+                && root.get(name).is_none()
+            {
                 root.put(name, Node::Leaf(i));
             }
         }
@@ -168,7 +170,7 @@ impl SymbolTable {
         }
     }
 
-    pub fn new(ingest: &[(&str, DataType)]) -> SymbolTable {
+    pub fn new(ingest: &[(Place, DataType)]) -> SymbolTable {
         let mut t = SymbolTable {
             root: Object::default(),
             layout: Vec::new(),
@@ -185,18 +187,18 @@ impl SymbolTable {
             under: Object::default(),
             reads_only: false,
         };
-        for (name, ty) in ingest {
+        for (place, ty) in ingest {
             let slot = t.layout.len();
             t.layout.push(ty.clone());
-            match *name {
-                tree::UNCLAIMED => t.root.unclaimed = Some(slot),
-                name => {
+            match place {
+                Place::Unclaimed(object) => t.set_unclaimed(object, Some(slot)),
+                Place::Leaf(name) => {
                     t.root.put(name, Node::Leaf(slot));
                 }
             }
             t.origins.push(SlotOrigin {
                 slot,
-                name: name.to_string(),
+                name: place.to_string(),
                 ty: ty.clone(),
                 origin: Origin::Ingest,
             });
@@ -2211,18 +2213,19 @@ mod tests {
     use crate::ops::testing::rows_of;
 
     fn table() -> SymbolTable {
+        let leaf = |name: &str, ty| (Place::Leaf(name.to_string()), ty);
         SymbolTable::new(&[
-            ("__live", DataType::Bool),
-            ("__source.offset", DataType::I64),
-            ("_raw", DataType::Str),
-            ("__source.topic", DataType::Str),
+            leaf("__live", DataType::Bool),
+            leaf("__source.offset", DataType::I64),
+            leaf("_raw", DataType::Str),
+            leaf("__source.topic", DataType::Str),
         ])
     }
 
     fn with_fields(fields: &[(&str, DataType)]) -> SymbolTable {
         let mut t = table();
         for (n, ty) in fields {
-            t.bind(n, ty.clone(), Origin::Function(0));
+            t.bind(n, ty.clone(), Origin::Function(FunctionId::new(0)));
         }
         t
     }
@@ -2292,8 +2295,8 @@ mod tests {
     fn bind_allocates_a_fresh_slot_each_time() {
         // SSA. `x = x + 1` must not reuse x's slot.
         let mut t = table();
-        let first = t.bind("x", DataType::I64, Origin::Function(0));
-        let second = t.bind("x", DataType::I64, Origin::Function(1));
+        let first = t.bind("x", DataType::I64, Origin::Function(FunctionId::new(0)));
+        let second = t.bind("x", DataType::I64, Origin::Function(FunctionId::new(1)));
         assert_ne!(first, second);
         assert_eq!(t.lookup("x"), Some(second), "the name follows the new slot");
     }
@@ -2343,8 +2346,8 @@ mod tests {
     #[test]
     fn binding_a_scalar_over_an_object_replaces_it() {
         let mut t = with_fields(&[("source.ip", DataType::Str), ("source.port", DataType::I64)]);
-        t.bind_unclaimed("source", Origin::Function(0));
-        let slot = t.bind("source", DataType::Str, Origin::Function(1));
+        t.bind_unclaimed("source", Origin::Function(FunctionId::new(0)));
+        let slot = t.bind("source", DataType::Str, Origin::Function(FunctionId::new(1)));
         assert_eq!(t.node("source"), Some(&Node::Leaf(slot)));
         let under: Vec<Place> = t
             .root()
@@ -2363,7 +2366,7 @@ mod tests {
         // either.
         let mut t = with_fields(&[("source.ip", DataType::Str)]);
         let before = t.warnings.len();
-        t.bind("source.port", DataType::I64, Origin::Function(0));
+        t.bind("source.port", DataType::I64, Origin::Function(FunctionId::new(0)));
         assert_eq!(t.warnings.len(), before, "siblings aren't a conflict");
     }
 
@@ -2373,7 +2376,7 @@ mod tests {
         // binding a DIFFERENT, dot-nested name is flagged.
         let mut t = with_fields(&[("x", DataType::I64)]);
         let before = t.warnings.len();
-        t.bind("x", DataType::I64, Origin::Function(1));
+        t.bind("x", DataType::I64, Origin::Function(FunctionId::new(1)));
         assert_eq!(t.warnings.len(), before);
     }
 
@@ -2383,7 +2386,7 @@ mod tests {
         // test.
         let mut t = with_fields(&[("source", DataType::Str)]);
         let before = t.warnings.len();
-        t.bind("sourceX", DataType::Str, Origin::Function(0));
+        t.bind("sourceX", DataType::Str, Origin::Function(FunctionId::new(0)));
         assert_eq!(t.warnings.len(), before);
     }
 
@@ -2463,7 +2466,7 @@ mod tests {
             None,
             "not even by the name provenance shows"
         );
-        t.bind("b", DataType::I64, Origin::Function(0));
+        t.bind("b", DataType::I64, Origin::Function(FunctionId::new(0)));
         // The runtime reads a slot's provenance at the slot's index.
         assert_eq!(t.origins.len(), t.slot_count());
         assert!(t.origins.iter().enumerate().all(|(i, o)| o.slot == i));
@@ -2499,7 +2502,7 @@ mod tests {
         // Under the null propagation every other operator gets, `x != null` would be null on every row and guard
         // nothing. `d` is a variant. Row 1 of each field is its null.
         let mut t = with_fields(&[("s", DataType::Str)]);
-        t.bind("d", DataType::Variant, Origin::Function(0));
+        t.bind("d", DataType::Variant, Origin::Function(FunctionId::new(0)));
         let fields = [("s", DataType::Str), ("d", DataType::I64)];
         let is_null = [Some(false), Some(true), Some(false), Some(false)];
         let not_null = [Some(true), Some(false), Some(true), Some(true)];
@@ -2521,7 +2524,7 @@ mod tests {
     #[test]
     fn a_variant_is_refused_by_an_operator_and_read_by_a_nullness_test() {
         let mut t = table();
-        t.bind("kind", DataType::Variant, Origin::Function(0));
+        t.bind("kind", DataType::Variant, Origin::Function(FunctionId::new(0)));
         let e = lower("kind == \"a\"", &mut t).unwrap_err();
         assert!(e.message.contains("`kind` is a variant"), "{}", e.message);
         assert!(e.message.contains("`kind: type = kind;`"), "{}", e.message);
