@@ -14,9 +14,9 @@ use crate::core::ctx::Ctx;
 use crate::core::error::Read;
 use crate::expr::ast::Value;
 use crate::expr::ir::{Ir, IrKind, Layer};
-use crate::ops::arrayops::{Piece, build_from_pieces};
 use crate::ops::logic::take_met;
 use crate::ops::objectops::ObjectOp;
+use crate::ops::pieces::{Piece, build_from_pieces};
 use crate::ops::{BinOp, OpKernel, UnOp, convert, table};
 
 /// A borrow of a batch column or an owned intermediate.
@@ -570,7 +570,7 @@ fn name_reads(
 /// `None` for an id outside `Ctx::patterns`: an empty column rather than a panic.
 fn pattern_of<'a>(ir: &Ir, ctx: &Ctx<'a>) -> Option<&'a crate::core::ctx::CompiledPattern> {
     match ir.kind {
-        IrKind::Regex(id) => ctx.patterns.get(id),
+        IrKind::Regex(id) => ctx.patterns.get(id.index()),
         _ => None,
     }
 }

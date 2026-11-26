@@ -12,6 +12,7 @@ use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
+use crate::harness::wait_for;
 use crate::live;
 
 /// The name Pebble reaches this host by, and the name the certificate carries.
@@ -101,26 +102,23 @@ fn serve(dir: &std::path::Path) -> Leader {
         cookie: String::new(),
         csrf: String::new(),
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let said = leader.console.lock().clone();
-        if said.contains("one-time password:") && std::net::TcpStream::connect(("127.0.0.1", TLS_PORT)).is_ok() {
-            leader.password = said
-                .lines()
-                .find_map(|l| l.split_once("one-time password:"))
-                .unwrap()
-                .1
-                .trim()
-                .to_string();
-            break;
-        }
-        assert!(
-            !leader.child.try_wait().is_ok_and(|exited| exited.is_some()),
-            "the leader exited: {said}"
-        );
-        assert!(std::time::Instant::now() < deadline, "the leader did not serve: {said}");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    leader.password = wait_for(
+        "the leader to print its one-time password and listen",
+        std::time::Duration::from_secs(60),
+        || {
+            let said = leader.console.lock().clone();
+            assert!(
+                !leader.child.try_wait().is_ok_and(|exited| exited.is_some()),
+                "the leader exited: {said}"
+            );
+            if std::net::TcpStream::connect(("127.0.0.1", TLS_PORT)).is_err() {
+                return None;
+            }
+            let (_, password) = said.lines().find_map(|l| l.split_once("one-time password:"))?;
+            Some(password.trim().to_string())
+        },
+    )
+    .unwrap_or_else(|late| panic!("{late}: {}", leader.console.lock()));
     // The bootstrap password has to be replaced before anything else is allowed, and replacing it ends the session.
     leader.sign_in();
     let chosen = "a perfectly ordinary passphrase";
@@ -193,18 +191,16 @@ impl Leader {
         let (status, begun) = self.call("POST", "/api/settings/tls/acme/order", None);
         assert_eq!(status, 200, "{begun}");
         assert!(!begun["ordering"].is_null(), "the order is said to run: {begun}");
-        let started = std::time::Instant::now();
-        loop {
+        let mut last = serde_json::Value::Null;
+        wait_for("the ACME order to end", std::time::Duration::from_secs(120), || {
             let (_, acme) = self.call("GET", "/api/settings/tls/acme", None);
             if acme["ordering"].is_null() {
-                return acme;
+                return Some(acme);
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(120),
-                "still ordering: {acme}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
+            last = acme;
+            None
+        })
+        .unwrap_or_else(|late| panic!("{late}: {last}"))
     }
 }
 

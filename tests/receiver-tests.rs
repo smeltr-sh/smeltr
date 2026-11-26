@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::live;
 
 use crate::harness::receiver::{free_loopback, poll_until};
+use crate::harness::{wait_for, wait_until};
 use smeltr::heartbeat::pasted_from;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
@@ -16,6 +17,19 @@ use smeltr::plan::topology::{
     ApiRecords, HecReceiverConfig, HeldSecrets, HttpReceiverConfig, Receiver, ReceiverConfig, SecretRef, Signal,
     SourceKind, Tls,
 };
+
+/// How long a test waits for what it expects.
+const WITHIN: Duration = Duration::from_secs(5);
+
+/// Long enough for a receiver that answers on receipt to have answered.
+const ANSWERED: Duration = Duration::from_millis(200);
+
+/// Long enough for a collector to send an export again when it was refused or never answered: it does so after five
+/// seconds.
+const COLLECTOR_RESENT: Duration = Duration::from_secs(8);
+
+/// Long enough for a shipper to have logged a request it will send again or drop.
+const SHIPPER_LOGGED: Duration = Duration::from_secs(3);
 
 fn token() -> SecretRef {
     SecretRef::LeaderStored {
@@ -113,7 +127,7 @@ fn a_request_is_answered_once_its_records_are_committed() {
     assert_eq!(raw, [br#"{"n":1}"#.as_slice(), br#"{"n":2}"#]);
     assert_eq!(&*records[0].topic, "127.0.0.1", "a record carries its sender's address");
 
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "answered before its records were delivered");
     commit(&mut source, &records);
     assert_eq!(sent.join().unwrap().0, 200);
@@ -420,7 +434,7 @@ fn a_hec_request_is_answered_success_once_its_events_are_committed() {
         "a stored record reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let (status, answer) = sent.join().unwrap();
@@ -448,7 +462,7 @@ fn a_hec_raw_request_is_its_lines_filed_under_its_query() {
     assert_eq!(raw, [b"first line".as_slice(), b"second line"]);
     let objects = smeltr::plan::topology::SourceMeta::HEC_RECEIVER.objects(&records, Some("hec"));
     assert_eq!(objects[1]["sourcetype"], "syslog");
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     assert_eq!(
@@ -724,7 +738,7 @@ fn an_otlp_export_is_answered_once_its_log_records_are_committed() {
         "a stored record reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let (status, answer) = sent.join().unwrap();
@@ -976,7 +990,7 @@ fn a_grpc_export_is_answered_once_its_log_records_are_committed() {
     let record = meta.record_object(&records[0], "");
     assert_eq!(record["body"], "slow");
     assert_eq!(record["severityText"], "WARN");
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let answer = sent.join().unwrap();
@@ -1101,11 +1115,9 @@ fn otlp_receivers_of_each_signal_share_a_port() {
     assert_eq!(sent.join().unwrap().0, 200, "the others still serve");
 
     drop(logs);
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(
-        TcpStream::connect(at).is_err(),
-        "the port closes with its last receiver"
-    );
+    wait_until("the port to close with its last receiver", WITHIN, || {
+        TcpStream::connect(at).is_err()
+    });
     let _again = otlp_receiver_of(at, Signal::Metrics, 4096);
     assert_eq!(post("/v1/metrics", b"{}").0, 200, "and opens again with the next");
 }
@@ -1172,12 +1184,11 @@ service:
 
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
     for (wire, source) in [("gRPC", &mut over_grpc), ("HTTP", &mut over_http)] {
-        let mut records = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        while records.is_empty() {
-            assert!(std::time::Instant::now() < deadline, "nothing arrived over {wire}");
-            records = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
-        }
+        let records = wait_for(&format!("a record over {wire}"), Duration::from_secs(60), || {
+            let records = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
+            (!records.is_empty()).then_some(records)
+        })
+        .unwrap_or_else(|late| panic!("{late}"));
         assert_eq!(records.len(), 1, "over {wire}");
         assert_eq!(
             meta.record_object(&records[0], "")["body"],
@@ -1187,7 +1198,7 @@ service:
         commit(source, &records);
     }
     // An export the collector heard refused, or never heard answered, it sends again after five seconds.
-    std::thread::sleep(Duration::from_secs(8));
+    std::thread::sleep(COLLECTOR_RESENT);
     for (wire, source) in [("gRPC", &mut over_grpc), ("HTTP", &mut over_http)] {
         let again = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
         assert!(again.is_empty(), "the collector sent its export over {wire} again");
@@ -1234,20 +1245,17 @@ fn an_opentelemetry_sdk_exports_every_signal_over_grpc_and_http() {
                 .expect("docker runs");
             // It sends its next export once it hears the last one answered, so each is committed as it arrives.
             let mut records = Vec::new();
-            let deadline = std::time::Instant::now() + Duration::from_secs(60);
-            let exited = loop {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "{what}: {} records, then nothing",
-                    records.len()
-                );
-                let taken = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
-                commit(source, &taken);
-                records.extend(taken);
-                if let Some(exited) = sent.try_wait().unwrap() {
-                    break exited;
-                }
-            };
+            let exited = wait_for(
+                &format!("telemetrygen to finish sending {what}"),
+                Duration::from_secs(60),
+                || {
+                    let taken = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
+                    commit(source, &taken);
+                    records.extend(taken);
+                    sent.try_wait().unwrap()
+                },
+            )
+            .unwrap_or_else(|late| panic!("{late}: {} records arrived", records.len()));
             let mut logs = String::new();
             sent.stderr.take().unwrap().read_to_string(&mut logs).unwrap();
             assert!(exited.success(), "{what}: {logs}");
@@ -1509,7 +1517,7 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
         "a stored sample reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     assert_eq!(sent.join().unwrap().0, 204);
@@ -2261,22 +2269,19 @@ remote_write:
     let prometheus = Container(name);
 
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    let up = loop {
-        assert!(std::time::Instant::now() < deadline, "no `up` sample arrived");
+    let up = wait_for("an `up` sample", Duration::from_secs(60), || {
         let records = source.poll_batch(1000, 16 << 20, Duration::from_millis(200)).unwrap();
         let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
         commit(&mut source, &records);
-        if let Some(up) = rows.into_iter().find(|r| r["name"] == "up") {
-            break up;
-        }
-    };
+        rows.into_iter().find(|r| r["name"] == "up")
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
     assert_eq!(up["value"], 1.0);
     assert_eq!(up["attributes"]["job"], "self");
     assert_eq!(up["attributes"]["instance"], web.to_string());
     // Answered requests leave nothing for Prometheus to retry or drop. Only its remote_write's words are read: a
     // warning of its own about anything else is not this receiver's.
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(SHIPPER_LOGGED);
     let logs = std::process::Command::new("docker")
         .args(["logs", &prometheus.0])
         .output()
@@ -2397,7 +2402,7 @@ fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
         "a stored record reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let (status, named, answer) = sent.join().unwrap();
@@ -2510,24 +2515,18 @@ fn shipper(name: &str, image: &str, dir: &std::path::Path, args: &[&str]) -> Con
 /// is the container sending them, whose logs say why none did.
 fn shipped(source: &mut Box<dyn Source>, shipper: &Container, field: &str, line: &str) -> serde_json::Value {
     let meta = smeltr::plan::topology::SourceMeta::ELASTIC_RECEIVER;
-    let deadline = std::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        if std::time::Instant::now() > deadline {
-            panic!("no document holding {line:?} arrived: {}", logs(&shipper.0));
-        }
+    wait_for(&format!("a document holding {line:?}"), Duration::from_secs(90), || {
         let records = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
         commit(source, &records);
-        let found = records
+        records
             .iter()
             .zip(meta.objects(&records, Some("es")))
             .find_map(|(r, filed)| {
                 let document: serde_json::Value = serde_json::from_slice(r.bytes().unwrap()).unwrap();
                 (document[field] == line).then_some(serde_json::json!({"document": document, "filed": filed}))
-            });
-        if let Some(found) = found {
-            return found;
-        }
-    }
+            })
+    })
+    .unwrap_or_else(|late| panic!("{late}: {}", logs(&shipper.0)))
 }
 
 /// The logs of container `name`, both streams.
@@ -2582,7 +2581,7 @@ setup.ilm.enabled: false
         "{found}"
     );
     // Answered requests leave nothing for Filebeat to retry or drop.
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(SHIPPER_LOGGED);
     let logs = logs(&filebeat.0);
     assert!(!logs.contains(r#""log.level":"error""#), "{logs}");
     drop(filebeat);
@@ -2631,7 +2630,7 @@ fn elastic_fluent_bit_ships_a_line_it_tails() {
 
     let found = shipped(&mut source, &fluent_bit, "log", "shipped by fluent bit");
     assert_eq!(found["filed"]["index"], "apps", "{found}");
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(SHIPPER_LOGGED);
     let logs = logs(&fluent_bit.0);
     assert!(!logs.contains("[error]") && !logs.contains("[ warn]"), "{logs}");
     drop(fluent_bit);

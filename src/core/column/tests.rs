@@ -690,3 +690,27 @@ fn a_str_column_with_a_row_never_pushed_is_refused() {
     b.push(b"a");
     b.finish();
 }
+
+/// A growing builder keeps its nulls in place, and rows taken back are gone, as it grows past one word of validity.
+#[test]
+fn a_growing_str_column_keeps_its_nulls_as_it_grows_and_is_truncated() {
+    let mut p = BufferPool::new();
+    let mut b = StrBuilder::growing(&mut p, VarType::Str);
+    for row in 0..150 {
+        match row % 3 {
+            0 => b.push_null_grow(&mut p),
+            _ => b.push_text_grow(&mut p, &row.to_string()),
+        }
+    }
+    b.truncate(100);
+    b.push_text_grow(&mut p, "last");
+    let c = b.finish_growing();
+    let v = c.str().unwrap();
+    assert_eq!(c.len(), 101);
+    assert_eq!(c.validity().unwrap().valid_count(), 101 - 34);
+    for row in 0..100 {
+        assert_eq!(c.is_valid(row), row % 3 != 0, "row {row}");
+    }
+    assert_eq!((v.get(98), v.get(100)), ("98", "last"));
+    c.reclaim(&mut p);
+}
