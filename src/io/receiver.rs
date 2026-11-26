@@ -189,18 +189,14 @@ pub fn open(
             return open_streams(config, secrets, shared, socket.allow_from.clone(), handle);
         }
         Receiver::Http(http) => {
-            // A client percent-encodes what it must of a path, so a path that is not plain ASCII is receive_decoded encoded
+            // A client percent-encodes what it must of a path, so a path that is not plain ASCII is asked encoded
             // and matched decoded.
             let path = http.path.clone();
-            let records = Arc::new(http.records.clone());
-            let receive = move |s, c, h, b| receive(records.clone(), s, c, h, b);
-            let receive_decoded = receive.clone();
             let encoded = move |method: axum::http::Method, uri: axum::http::Uri, s, c, h, b| {
                 let decoded = crate::ops::webops::percent_decode(uri.path().as_bytes(), false, true);
                 // An encoded `/` is not a separator (RFC 3986), so `/a%2Fb` is not `/a/b`.
                 let slash = uri.path().to_ascii_lowercase().contains("%2f");
                 let ours = !slash && decoded.as_deref() == Some(path.as_bytes());
-                let receive = receive_decoded.clone();
                 async move {
                     match (ours, method == axum::http::Method::POST) {
                         (true, true) => receive(s, c, h, b).await,
@@ -213,27 +209,23 @@ pub fn open(
                 .route(&http.path, post(receive))
                 .route(HEALTH_PATH, get(health))
                 .fallback(encoded);
-            (Speaks::Http, router)
+            (Speaks::Http(http.records.clone()), router)
         }
         // Each path as Splunk serves it, with and without its version.
-        Receiver::Hec(hec) => {
-            let sourcetypes = Arc::new(hec.sourcetypes.clone());
-            let breaks = sourcetypes.clone();
-            let hec_raw = move |s, c, q, h, b| hec_raw(breaks.clone(), s, c, q, h, b);
-            let hec_s2s = move |s, c, h, b| hec_s2s(sourcetypes.clone(), s, c, h, b);
-            let router = axum::Router::new()
+        Receiver::Hec(hec) => (
+            Speaks::Hec(hec.sourcetypes.clone()),
+            axum::Router::new()
                 .route("/services/collector", post(hec_event))
                 .route("/services/collector/event", post(hec_event))
                 .route("/services/collector/event/1.0", post(hec_event))
-                .route("/services/collector/raw", post(hec_raw.clone()))
+                .route("/services/collector/raw", post(hec_raw))
                 .route("/services/collector/raw/1.0", post(hec_raw))
                 .route("/services/collector/s2s", post(hec_s2s))
                 .route("/services/collector/ack", post(hec_ack))
                 .route("/services/collector/ack/1.0", post(hec_ack))
                 .route(hec::HEALTH_PATH, get(health))
-                .route("/services/collector/health/1.0", get(health));
-            (Speaks::Hec, router)
-        }
+                .route("/services/collector/health/1.0", get(health)),
+        ),
         Receiver::Prometheus => (
             Speaks::Prometheus,
             axum::Router::new()
@@ -1764,12 +1756,13 @@ struct Admits {
     acknowledges: bool,
 }
 
-/// The protocol a receiver speaks: how a sender presents its token, and the words of each answer.
+/// The protocol a receiver speaks: how a sender presents its token, how a body becomes records, and the words of
+/// each answer.
 enum Speaks {
     /// A POST of one record, a record per line, or a record per element of a JSON array, with a bearer token.
-    Http,
-    /// Splunk's HTTP Event Collector, with a `Splunk` token.
-    Hec,
+    Http(ApiRecords),
+    /// Splunk's HTTP Event Collector, with a `Splunk` token, and where a raw body of each sourcetype breaks.
+    Hec(BTreeMap<String, LineBreaker>),
     /// OpenTelemetry's OTLP exports, with a bearer token.
     Otlp,
     /// Prometheus remote_write, with a bearer token.
@@ -1843,8 +1836,8 @@ impl Server {
         let is = |name: &str| scheme.eq_ignore_ascii_case(name);
         let decoded = || base64::engine::general_purpose::STANDARD.decode(token).ok();
         match self.speaks {
-            Speaks::Http | Speaks::Otlp | Speaks::Prometheus => is("Bearer").then(|| vec![token.into()]),
-            Speaks::Hec => is("Splunk").then(|| vec![token.into()]),
+            Speaks::Http(_) | Speaks::Otlp | Speaks::Prometheus => is("Bearer").then(|| vec![token.into()]),
+            Speaks::Hec(_) => is("Splunk").then(|| vec![token.into()]),
             Speaks::Elastic if is("Bearer") => Some(vec![token.into()]),
             // A client given an API key as `id:key` sends it encoded; the token may be either.
             Speaks::Elastic if is("ApiKey") => Some([Some(token.into()), decoded()].into_iter().flatten().collect()),
@@ -1860,7 +1853,7 @@ impl Server {
 
     fn answer(&self, outcome: Outcome) -> Response {
         match self.speaks {
-            Speaks::Http => match outcome {
+            Speaks::Http(_) => match outcome {
                 // An HTTP receiver names no channel, so gives no `ackId`.
                 Outcome::Delivered | Outcome::Acked(_) => StatusCode::OK.into_response(),
                 Outcome::Refused(_) => {
@@ -1874,7 +1867,7 @@ impl Server {
                     retry_after((StatusCode::SERVICE_UNAVAILABLE, "busy; send it again\n").into_response())
                 }
             },
-            Speaks::Hec => match outcome {
+            Speaks::Hec(_) => match outcome {
                 Outcome::Delivered => hec_answer(StatusCode::OK, Some(0), "Success"),
                 Outcome::Acked(id) => json(
                     StatusCode::OK,
@@ -1985,13 +1978,15 @@ fn retry_after(mut busy: Response) -> Response {
 }
 
 async fn receive(
-    records: Arc<ApiRecords>,
     State(server): State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
-    let cut = |body, _: &mut Holding<'_>| match split(&records, body) {
+    let Speaks::Http(records) = &server.speaks else {
+        unreachable!("only an HTTP receiver routes here")
+    };
+    let cut = |body, _: &mut Holding<'_>| match split(records, body) {
         Ok(records) => Ok(Cutter::Records(records)),
         Err(why) => Err(Box::new((StatusCode::BAD_REQUEST, format!("{why}\n")).into_response())),
     };
@@ -2157,7 +2152,6 @@ async fn hec_event(
 }
 
 async fn hec_raw(
-    sourcetypes: Arc<BTreeMap<String, LineBreaker>>,
     State(server): State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
@@ -2168,9 +2162,10 @@ async fn hec_raw(
         if body.trim_ascii().is_empty() {
             return Err(Box::new(hec_refused(hec::Invalid::NO_DATA)));
         }
-        let line_breaker = query
-            .get("sourcetype")
-            .and_then(|sourcetype| sourcetypes.get(sourcetype));
+        let line_breaker = match (&server.speaks, query.get("sourcetype")) {
+            (Speaks::Hec(sourcetypes), Some(sourcetype)) => sourcetypes.get(sourcetype),
+            _ => None,
+        };
         let records = Records::broken(body, line_breaker.cloned());
         Ok(Cutter::Filed(records, Arc::new(hec::raw_filed(&query))))
     };
@@ -2184,12 +2179,14 @@ async fn hec_raw(
 /// A forwarder's `httpout` request: S2S, compressed, its channels' streams ending with it. Answered once delivered,
 /// as `httpout` asks after no `ackId`.
 async fn hec_s2s(
-    sourcetypes: Arc<BTreeMap<String, LineBreaker>>,
     State(server): State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
+    let Speaks::Hec(sourcetypes) = &server.speaks else {
+        unreachable!("only a HEC receiver routes here")
+    };
     let cut = |body: Vec<u8>, holding: &mut Holding<'_>| {
         let refused = |outcome| Box::new(server.answer(outcome));
         // What it holds past an inbox is never taken, so it is refused as too large rather than as busy.
@@ -2197,7 +2194,7 @@ async fn hec_s2s(
             bytes if bytes > INBOX_BYTES => Err(Outcome::TooLarge),
             bytes => holding.hold(bytes),
         };
-        let records = match s2s_receiver::httpout(&body, &sourcetypes, server.max_request_bytes, hold) {
+        let records = match s2s_receiver::httpout(&body, sourcetypes, server.max_request_bytes, hold) {
             Ok(records) => records,
             Err(s2s_receiver::HttpoutRefused::TooLarge) => return Err(refused(Outcome::TooLarge)),
             Err(s2s_receiver::HttpoutRefused::Malformed(why)) => return Err(refused(Outcome::Unreadable(why))),
@@ -3034,14 +3031,14 @@ fn budget(reading: &mut Charge<'_>, bytes: usize) -> Result<(), Outcome> {
 async fn health(State(server): State<Arc<Server>>) -> Response {
     let ready = server.shared.ready();
     match (&server.speaks, ready) {
-        (Speaks::Http, true) => StatusCode::OK.into_response(),
-        (Speaks::Hec, true) => hec_answer(StatusCode::OK, Some(17), "HEC is healthy"),
-        (Speaks::Hec, false) => retry_after(hec_answer(
+        (Speaks::Http(_), true) => StatusCode::OK.into_response(),
+        (Speaks::Hec(_), true) => hec_answer(StatusCode::OK, Some(17), "HEC is healthy"),
+        (Speaks::Hec(_), false) => retry_after(hec_answer(
             StatusCode::SERVICE_UNAVAILABLE,
             Some(18),
             "HEC is unhealthy, queues are full",
         )),
-        (Speaks::Http | Speaks::Otlp | Speaks::Prometheus | Speaks::Elastic, false) => server.answer(Outcome::Busy),
+        (Speaks::Http(_) | Speaks::Otlp | Speaks::Prometheus | Speaks::Elastic, false) => server.answer(Outcome::Busy),
         (Speaks::Otlp | Speaks::Prometheus | Speaks::Elastic, true) => StatusCode::OK.into_response(),
     }
 }
@@ -4296,7 +4293,7 @@ mod tests {
     /// A body takes from the receiver's holdings what it sent, not what it may send, and keeps it until it is let go.
     #[tokio::test]
     async fn a_body_takes_the_budget_its_bytes_need() {
-        let server = server(Speaks::Http, &[], 10);
+        let server = server(Speaks::Http(ApiRecords::Body), &[], 10);
         let body = |n: usize| axum::body::Body::from(vec![b'x'; n]);
 
         let (first, held) = read_body(body(8), None, &server).await.ok().unwrap();
@@ -4325,7 +4322,7 @@ mod tests {
             encoder.write_all(bytes).unwrap();
             axum::body::Body::from(encoder.finish().unwrap())
         };
-        let server = server(Speaks::Http, &[], INBOX_BYTES);
+        let server = server(Speaks::Http(ApiRecords::Body), &[], INBOX_BYTES);
         let (inflated, held) = read_body(gzip(b"a\nb\n"), Some("gzip"), &server).await.ok().unwrap();
         assert_eq!(inflated, b"a\nb\n");
         assert!(server.shared.holdings.held() > 0);
@@ -4361,7 +4358,7 @@ mod tests {
             Outcome::Unreadable(_)
         ));
 
-        let tight = super::tests::server(Speaks::Http, &[], 1000);
+        let tight = super::tests::server(Speaks::Http(ApiRecords::Body), &[], 1000);
         let (inflated, held) = read_body(gzip(&[0; 1000]), Some("gzip"), &tight).await.ok().unwrap();
         assert_eq!(inflated.len(), 1000, "what it inflates to is all the budget it needs");
         assert_eq!(tight.shared.holdings.held(), 1000);
@@ -4400,7 +4397,7 @@ mod tests {
 
     #[test]
     fn only_a_listed_token_is_admitted() {
-        let http = server(Speaks::Http, &["one", "two"], INBOX_BYTES);
+        let http = server(Speaks::Http(ApiRecords::Body), &["one", "two"], INBOX_BYTES);
         let admitted = Token::Admitted { acknowledges: false };
         assert_eq!(http.token(&with("Bearer two")), admitted);
         assert_eq!(
@@ -4415,7 +4412,7 @@ mod tests {
 
     #[test]
     fn a_hec_receiver_takes_a_splunk_token() {
-        let hec = server(Speaks::Hec, &["one"], INBOX_BYTES);
+        let hec = server(Speaks::Hec(BTreeMap::new()), &["one"], INBOX_BYTES);
         assert_eq!(hec.token(&with("Splunk one")), Token::Admitted { acknowledges: false });
         assert_eq!(hec.token(&with("Bearer one")), Token::Malformed);
         assert_eq!(hec.token(&with("Splunk two")), Token::Unknown);
@@ -4424,7 +4421,7 @@ mod tests {
     /// HEC answers in its own codes, which its clients read to decide whether to send again.
     #[tokio::test]
     async fn a_hec_receiver_answers_in_hecs_codes() {
-        let hec = server(Speaks::Hec, &["one"], INBOX_BYTES);
+        let hec = server(Speaks::Hec(BTreeMap::new()), &["one"], INBOX_BYTES);
         let read = |r: Response| async move {
             let status = r.status();
             let body = axum::body::to_bytes(r.into_body(), 1024).await.unwrap();
@@ -4445,7 +4442,7 @@ mod tests {
     /// A refusal is read from the answer every protocol gives, gRPC's status included; a delivery is no refusal.
     #[test]
     fn a_refusal_is_named_from_its_answer() {
-        let hec = server(Speaks::Hec, &["one"], INBOX_BYTES);
+        let hec = server(Speaks::Hec(BTreeMap::new()), &["one"], INBOX_BYTES);
         assert_eq!(refusal(&hec.answer(Outcome::Delivered)), None);
         assert_eq!(refusal(&hec.answer(Outcome::Refused(Token::Unknown))), Some("token"));
         assert_eq!(refusal(&hec.answer(Outcome::TooLarge)), Some("too_large"));
