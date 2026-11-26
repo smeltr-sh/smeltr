@@ -1425,6 +1425,94 @@ fn live_a_partition_moved_to_another_member_is_reported_revoked() {
     assert_eq!(revoked, moved, "what the first member lost is what the second took");
 }
 
+/// A client of several consumers reads each record once though its consumers join one after another. On a broker that
+/// ends a new group's first join at once, as this one does, the first consumer is assigned every partition and would
+/// read them for a heartbeat's interval before the group moved some to the others, which would read them again from
+/// the last commit. Each batch is committed a while after it is read, as one is once delivered.
+#[test]
+fn live_a_client_of_several_consumers_reads_each_record_once_while_they_join() {
+    use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
+    let Some(brokers) = live_brokers("live_a_client_of_several_consumers_reads_each_record_once_while_they_join")
+    else {
+        return;
+    };
+    const PARTITIONS: i32 = 12;
+    const RECORDS: i64 = 2_000_000;
+    // How long a batch waits to be committed after it is read.
+    const DELIVERED_AFTER: Duration = Duration::from_millis(200);
+    let topic = unique("several-consumers");
+    make_topic(&brokers, &topic, PARTITIONS);
+    let producer: BaseProducer = rdkafka::ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("linger.ms", "20")
+        .create()
+        .unwrap();
+    for i in 0..RECORDS {
+        let partition = i32::try_from(i % i64::from(PARTITIONS)).unwrap();
+        while let Err((e, _)) = producer.send(BaseRecord::<(), [u8]>::to(&topic).partition(partition).payload(b"row")) {
+            assert!(
+                matches!(
+                    e.rdkafka_error_code(),
+                    Some(rdkafka::types::RDKafkaErrorCode::QueueFull)
+                ),
+                "{e}"
+            );
+            producer.poll(Duration::from_millis(10));
+        }
+    }
+    producer.flush(Duration::from_secs(60)).unwrap();
+
+    let config = KafkaSourceConfig {
+        service: smeltr::plan::topology::KafkaService::Kafka,
+        encoding: Encoding::Auto,
+        fetch_bytes: 64 * 1024 * 1024,
+        brokers: brokers.clone(),
+        topics: vec![topic.clone()],
+        group_id: unique("several-consumers-group"),
+        tls: None,
+        start: StartPosition::Earliest,
+        stop: None,
+        deployed_at: 0,
+        member: None,
+        rack: None,
+        props: Default::default(),
+        avro: None,
+    };
+    // Twelve threads, so three consumers.
+    let clients = Arc::new(smeltr::io::kafka::Clients::for_threads(12));
+    let mut source = KafkaSource::open(&config, &Default::default(), &clients).unwrap();
+    let mut seen = std::collections::HashSet::new();
+    let mut again = 0;
+    let mut read: std::collections::VecDeque<(Instant, CommitMap)> = Default::default();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while seen.len() < RECORDS as usize {
+        assert!(
+            Instant::now() < deadline,
+            "only {} of {RECORDS} records arrived",
+            seen.len()
+        );
+        let mut done = CommitMap::new();
+        for r in source.poll_batch(2_000, 1 << 22, Duration::from_millis(50)).unwrap() {
+            if !seen.insert((r.partition, r.offset)) {
+                again += 1;
+            }
+            let o = done
+                .entry(TopicPartition::new(r.topic.clone(), r.partition))
+                .or_insert(r.offset);
+            *o = (*o).max(r.offset);
+        }
+        source.take_revoked();
+        read.push_back((Instant::now(), done));
+        while read.front().is_some_and(|(at, _)| at.elapsed() >= DELIVERED_AFTER) {
+            let (_, done) = read.pop_front().unwrap();
+            if !done.is_empty() {
+                let _ = source.commit(&done);
+            }
+        }
+    }
+    assert_eq!(again, 0, "records read twice");
+}
+
 /// A record's headers reach `SourceRecord::headers` once the source is asked to keep them, and not before. A header
 /// with no value is left out.
 #[test]

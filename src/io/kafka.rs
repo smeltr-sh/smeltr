@@ -2011,7 +2011,8 @@ mod tests {
     }
 
     /// A client of two consumers splits a source's partitions between them: each partition is read once, in order,
-    /// and each commit lands through the consumer that owns its partition.
+    /// and each commit lands through the consumer that owns its partition. A broker that ends a group's first join at
+    /// once is `live_a_client_of_several_consumers_reads_each_record_once_while_they_join`'s.
     #[test]
     fn a_client_of_two_consumers_reads_each_partition_once_and_commits_through_its_owner() {
         let topic = "two-consumers";
@@ -2028,31 +2029,14 @@ mod tests {
             .push(("session.timeout.ms".to_string(), "6000".to_string()));
         let clients = Arc::new(Clients::with_consumers(2));
         let mut source = KafkaSource::open(&config, &Default::default(), &clients).unwrap();
-        // Held until each consumer owns a partition, so neither reads what the group is about to hand the other.
-        source.block().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let owners: HashSet<usize> = source.slot.lock().owned.values().copied().collect();
-            if owners.len() == 2 {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the group never split the partitions between the consumers"
-            );
-            assert!(
-                source
-                    .poll_batch(10, 1 << 20, Duration::from_millis(100))
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-        source.release().unwrap();
 
+        // Nothing held by the test: the client fetches nothing while its consumers are joining.
         let mut read = Vec::new();
         drain_until_exhausted(&mut [&mut source], &mut read);
         assert_eq!(offsets_of(&read, topic, 0), vec![0, 1, 2, 3]);
         assert_eq!(offsets_of(&read, topic, 1), vec![0, 1, 2, 3]);
+        let owners: HashSet<usize> = source.slot.lock().owned.values().copied().collect();
+        assert_eq!(owners.len(), 2, "the group split the partitions between the consumers");
 
         let offsets: CommitMap = (0..2).map(|p| (TopicPartition::new(Arc::from(topic), p), 3)).collect();
         source.commit(&offsets).expect("handed to the client");
