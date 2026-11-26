@@ -954,7 +954,9 @@ fn rows_chunk(taken: Vec<Queued>, meta: &SourceMeta) -> Vec<SourceRecord> {
                 // An array or struct cell is a variant the decoder wrote in its type's shape.
                 DataType::Array(_) | DataType::Struct(..) => {
                     let values = cells.map(|cell| match cell {
-                        Some(Cell::Variant(v)) => Some(crate::format::typed::Cell::Variant(v)),
+                        Some(Cell::Variant(v)) => Some(crate::format::typed::Cell::Variant(
+                            crate::core::variant::Encoded::check(v),
+                        )),
                         None => None,
                         Some(_) => mismatch(name, ty),
                     });
@@ -4060,7 +4062,7 @@ mod tests {
                 match &cells.0[at] {
                     Some(otlp::Cell::Variant(wrote)) => {
                         typed += 1;
-                        assert_eq!(shown.get(row), wrote.as_slice(), "{name} at row {row}");
+                        assert_eq!(shown.get(row).bytes(), wrote.as_slice(), "{name} at row {row}");
                     }
                     None => assert!(!shown.validity.is_valid(row), "{name} at row {row}"),
                     Some(other) => panic!("{name} is {other:?}"),

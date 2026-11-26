@@ -502,12 +502,13 @@ fn record_error_metrics(
     errors: &crate::core::error::ErrorSink,
     err_start: usize,
 ) {
-    let mut counts: std::collections::HashMap<(FunctionId, &'static str), u64> = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<(Option<FunctionId>, &'static str), u64> =
+        std::collections::HashMap::new();
     for a in &errors.entries()[err_start..] {
         *counts.entry((a.function, a.kind.label())).or_insert(0) += 1;
     }
     for ((function, kind), count) in counts {
-        let function_label = function.to_string();
+        let function_label = function.map_or_else(|| crate::core::error::INGEST_LABEL.to_string(), |f| f.to_string());
         metrics.incr(
             "smeltr_rows_errored_total",
             &[
@@ -637,7 +638,7 @@ fn run_loop(layout: &[DataType], spec: &Loop, batch: &mut Batch, ctx: &mut Ctx, 
         for &i in &stalled {
             ctx.errors.raise(
                 active[i as usize] as usize,
-                function,
+                Some(function),
                 None,
                 ExceptionKind::LoopBudgetExceeded { trips },
             );
@@ -1253,7 +1254,7 @@ fn fold_var(
     keep: &impl Fn(usize) -> bool,
     pool: &mut BufferPool,
 ) -> Column {
-    let sv = seed_col.var().unwrap();
+    let sv = seed_col.sealed_rows().unwrap();
     let mv = mapped.var().unwrap();
     let var_type = if matches!(mapped.data_type(), DataType::Bytes) {
         VarType::Bytes
@@ -1263,16 +1264,16 @@ fn fold_var(
     let mut b = StrBuilder::new(pool, var_type, rows);
     for row in 0..rows {
         let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
-        if !sv.validity.is_valid(row) {
+        if !sv.rows.validity.is_valid(row) {
             b.push_null();
             continue;
         }
         if !(start..end).any(keep) {
-            b.push_grow(pool, sv.get(row));
+            b.push_row_grow(pool, &sv, row);
             continue;
         }
         let mut valid = true;
-        let mut buf: Vec<u8> = sv.get(row).to_vec();
+        let mut buf: Vec<u8> = sv.rows.get(row).to_vec();
         for i in (start..end).filter(|&i| keep(i)) {
             if !mv.validity.is_valid(i) {
                 valid = false;

@@ -38,7 +38,8 @@ fn poison(w: &mut Worker) {
 
 const TEST_TOPIC: &str = "t";
 
-fn if_(id: FunctionId, cond: &str, then: Vec<Step>) -> Step {
+fn if_(id: u32, cond: &str, then: Vec<Step>) -> Step {
+    let id = FunctionId::new(id);
     Step::If {
         id,
         cond: cond.to_string(),
@@ -843,7 +844,7 @@ fn an_ifs_else_guard_is_counted_under_the_if() {
             code(5, "one: bool = null;"),
             // Divides by zero on an empty `_raw`.
             Step::If {
-                id: 2,
+                id: FunctionId::new(2),
                 cond: "1 / n == 1".to_string(),
                 then: vec![code(3, "one = true;")],
                 else_: vec![code(4, "one = false;")],
@@ -874,7 +875,7 @@ fn a_text_condition_takes_the_else_and_records_no_error() {
     let (w, sent) = run_on_text_flags(vec![
         code(1, r#"y = "prior";"#),
         Step::If {
-            id: 2,
+            id: FunctionId::new(2),
             cond: "flag".to_string(),
             then: vec![code(3, r#"y = "then";"#)],
             else_: vec![code(4, r#"y = "else";"#)],

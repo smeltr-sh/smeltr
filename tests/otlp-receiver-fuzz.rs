@@ -143,7 +143,7 @@ impl T {
 }
 
 /// A variant as `T`.
-fn variant_t(encoded: &[u8]) -> T {
+fn variant_t(encoded: variant::Encoded) -> T {
     use variant::Value as V;
     match variant::read(encoded) {
         V::Null => T::Null,
@@ -170,7 +170,7 @@ fn column_t(column: &Column, row: usize) -> T {
             S::DateTime(micros) => T::Time(*micros),
             S::Str(s) => T::Text(s.clone()),
             S::Bytes(b) => T::Bytes(b.clone()),
-            S::Variant(v) => variant_t(v),
+            S::Variant(v) => variant_t(v.get()),
             S::Duration(_) => panic!("an OTLP record holds no duration"),
         };
     }
@@ -232,10 +232,10 @@ fn read_back(signal: Signal, records: &[SourceRecord]) -> Vec<Got> {
             for (key, value) in record.chunk.filed().into_iter().flatten() {
                 let text = || String::from_utf8(value.clone()).unwrap();
                 match key.as_str() {
-                    "resource" => filed.resource = Some(variant_t(value)),
+                    "resource" => filed.resource = Some(variant_t(variant::Encoded::check(value))),
                     "scope.name" => filed.scope_name = Some(text()),
                     "scope.version" => filed.scope_version = Some(text()),
-                    "scope.attributes" => filed.scope_attributes = Some(variant_t(value)),
+                    "scope.attributes" => filed.scope_attributes = Some(variant_t(variant::Encoded::check(value))),
                     other => panic!("a record filed under {other}"),
                 }
             }

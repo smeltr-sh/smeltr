@@ -82,20 +82,20 @@ jobs:
           sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
           just image-tests
       - name: Scan the image against the STIG
-        run: just stig && mv stig/report.html smeltr-stig${{ matrix.arch }}.html
+        run: just stig && mv stig/report.html smeltr-stig-linux${{ matrix.arch }}.html
       - name: Scan the image for known vulnerabilities
-        run: just cves && mv cves/report.txt smeltr-cves${{ matrix.arch }}.txt
+        run: just cves && mv cves/report.txt smeltr-cves-linux${{ matrix.arch }}.txt
       - name: List the image's packages as an SBOM
-        run: just sbom && mv sbom/sbom.cdx.json smeltr-sbom${{ matrix.arch }}.cdx.json
+        run: just sbom && mv sbom/sbom.cdx.json smeltr-sbom-linux${{ matrix.arch }}.cdx.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux${{ matrix.arch }}
           path: |
-            smeltr-stig${{ matrix.arch }}.html
-            smeltr-cves${{ matrix.arch }}.txt
-            smeltr-sbom${{ matrix.arch }}.cdx.json
+            smeltr-stig-linux${{ matrix.arch }}.html
+            smeltr-cves-linux${{ matrix.arch }}.txt
+            smeltr-sbom-linux${{ matrix.arch }}.cdx.json
             smeltr-linux${{ matrix.arch }}.tar.gz
-            smeltr-image${{ matrix.arch }}.tar.gz
+            smeltr-image-linux${{ matrix.arch }}.tar.gz
 
   windows:
     needs: guard
@@ -113,7 +113,7 @@ jobs:
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           # cargo-auditable: the same crate record the Dockerfile writes into the Linux binary.
-          tool: just,cargo-auditable@0.7.7
+          tool: just,cargo-auditable@0.7.8
       # AWS-LC's FIPS build wants NASM and Ninja on Windows; the runner has cmake, Go and perl.
       - run: choco install nasm ninja --no-progress -y
       - name: just dist
@@ -144,6 +144,17 @@ jobs:
           persist-credentials: false
           path: repo
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: just
+      - name: List the Windows binary's crates as an SBOM, and their known vulnerabilities
+        if: needs.windows.result == 'success'
+        run: |
+          # A zip keeps no Unix mode, and Trivy reads only executable files.
+          unzip -q -d smeltr-windows windows/smeltr-windows.zip && chmod +x smeltr-windows/smeltr.exe
+          just --justfile repo/justfile --working-directory . sbom smeltr-windows
+          just --justfile repo/justfile --working-directory . cves smeltr-windows
+          mv sbom/sbom.cdx.json windows/smeltr-sbom-windows.cdx.json && mv cves/report.txt windows/smeltr-cves-windows.txt
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
@@ -157,7 +168,7 @@ jobs:
           # Each architecture's image goes up under a tag of its own; every release tag names the index of both.
           for each in amd64: arm64:-arm64; do
             arch=${each%%:*} suffix=${each#*:}
-            docker load -i "linux$suffix/smeltr-image$suffix.tar.gz"
+            docker load -i "linux$suffix/smeltr-image-linux$suffix.tar.gz"
             docker tag "smeltr:$name" "$image:$name-$arch"
             docker push "$image:$name-$arch"
           done
@@ -197,8 +208,8 @@ jobs:
           # `--recursive` signs the index and each architecture's image in it. The SBOMs go on the index, the digest a
           # pull records, so the check the install page gives finds them.
           cosign sign --yes --recursive "$IMAGE@$INDEX"
-          cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom.cdx.json "$IMAGE@$INDEX"
-          cosign attest --yes --type cyclonedx --predicate linux-arm64/smeltr-sbom-arm64.cdx.json "$IMAGE@$INDEX"
+          cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom-linux.cdx.json "$IMAGE@$INDEX"
+          cosign attest --yes --type cyclonedx --predicate linux-arm64/smeltr-sbom-linux-arm64.cdx.json "$IMAGE@$INDEX"
       - name: Publish the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -206,9 +217,11 @@ jobs:
           OLDER: ${{ steps.push.outputs.older }}
         run: |
           # The release lists what most people download; the image archive and the reports go in one zip beside them.
-          zip -j smeltr-extras.zip linux/smeltr-image.tar.gz linux/smeltr-sbom.cdx.json linux/smeltr-stig.html linux/smeltr-cves.txt \
-            linux-arm64/smeltr-image-arm64.tar.gz linux-arm64/smeltr-sbom-arm64.cdx.json \
-            linux-arm64/smeltr-stig-arm64.html linux-arm64/smeltr-cves-arm64.txt
+          zip -j smeltr-extras.zip linux/smeltr-image-linux.tar.gz linux/smeltr-sbom-linux.cdx.json \
+            linux/smeltr-stig-linux.html linux/smeltr-cves-linux.txt \
+            linux-arm64/smeltr-image-linux-arm64.tar.gz linux-arm64/smeltr-sbom-linux-arm64.cdx.json \
+            linux-arm64/smeltr-stig-linux-arm64.html linux-arm64/smeltr-cves-linux-arm64.txt
+          if [ "$WINDOWS" = success ]; then zip -j smeltr-extras.zip windows/smeltr-sbom-windows.cdx.json windows/smeltr-cves-windows.txt; fi
           # A release's notes are its page on smeltr.sh, as Markdown; a pre-release has none.
           prerelease= notes= latest=
           case "$GITHUB_REF_NAME" in
