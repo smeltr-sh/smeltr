@@ -3357,37 +3357,27 @@ fn a_failed_delivery_is_re_sent_and_only_then_committed() {
     w.add_destination(target_with(DestId::new(0), stage.handle(), Answer::Drop));
 
     tick(&mut w).unwrap();
-    for _ in 0..200 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the batch to reach the destination", Duration::from_secs(5), || {
+        !dest.outstanding().is_empty()
+    });
     assert!(src.committed().is_empty(), "unacknowledged");
 
     // A second `send` of the same row is the proof of the re-send.
     let sent_before = dest.sent();
     dest.fail_next_poll("connection reset");
-    for _ in 0..400 {
-        if dest.sent() > sent_before && !dest.outstanding().is_empty() {
-            break;
-        }
+    wait_until("the batch to be sent again", Duration::from_secs(5), || {
         let _ = tick(&mut w);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(dest.sent() > sent_before, "re-sent, not left to sit");
+        dest.sent() > sent_before && !dest.outstanding().is_empty()
+    });
     assert!(src.committed().is_empty(), "still undelivered");
 
     for b in dest.outstanding() {
         dest.complete(b);
     }
-    for _ in 0..200 {
+    wait_until("the source to commit", Duration::from_secs(5), || {
         let _ = tick(&mut w);
-        if !src.committed().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        !src.committed().is_empty()
+    });
     assert_eq!(
         src.committed().iter().flat_map(|m| m.values().copied()).max(),
         Some(7),
@@ -3857,14 +3847,11 @@ fn a_blocking_destination_blocks_the_source_until_its_refused_row_lands() {
 
     let _ = tick(&mut w);
     let mut saw_blocked = false;
-    for _ in 0..600 {
+    wait_until("the source to commit", Duration::from_secs(10), || {
         let _ = tick(&mut w);
         saw_blocked |= src.is_blocked();
-        if !src.committed().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        !src.committed().is_empty()
+    });
     assert!(saw_blocked, "blocked while the row was refused");
     assert_eq!(src.committed().len(), 1, "committed once it landed");
     assert!(!src.is_blocked(), "resumed on its own");
@@ -3900,12 +3887,9 @@ fn a_batch_waiting_for_room_is_handed_over_without_running_again() {
     let one = |w: &mut Worker| w.tick(1, 1 << 20, Duration::from_millis(1));
 
     one(&mut w).unwrap();
-    for _ in 0..500 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_until("the batch to reach the destination", Duration::from_secs(5), || {
+        !dest.outstanding().is_empty()
+    });
     let first = dest.outstanding()[0];
     one(&mut w).unwrap();
     assert_eq!(
@@ -3915,17 +3899,13 @@ fn a_batch_waiting_for_room_is_handed_over_without_running_again() {
     );
 
     dest.complete(first);
-    for _ in 0..500 {
+    wait_until("both batches to be committed", Duration::from_secs(5), || {
         let _ = one(&mut w);
         if let Some(&second) = dest.outstanding().first() {
             dest.complete(second);
         }
-        if src.committed().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(src.committed().len(), 2, "both landed");
+        src.committed().len() == 2
+    });
     assert_eq!(
         counter(&w, "smeltr_tick_batches_total", &[("source", "0")]),
         Some(2),

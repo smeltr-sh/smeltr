@@ -1,5 +1,4 @@
 pub type SlotId = usize;
-pub type PatternId = usize;
 
 /// Makes `$name` a number of its own kind, so one kind of id cannot be passed for another.
 macro_rules! id {
@@ -48,4 +47,8 @@ id!(
 id!(
     /// A step of a pipeline, by its number among that pipeline's steps.
     FunctionId
+);
+id!(
+    /// A regex literal, by its number among those a plan holds.
+    PatternId
 );

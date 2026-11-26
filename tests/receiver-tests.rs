@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::live;
 
 use crate::harness::receiver::{free_loopback, poll_until};
-use crate::harness::wait_until;
+use crate::harness::{wait_for, wait_until};
 use smeltr::heartbeat::pasted_from;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
@@ -1184,12 +1184,11 @@ service:
 
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
     for (wire, source) in [("gRPC", &mut over_grpc), ("HTTP", &mut over_http)] {
-        let mut records = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        while records.is_empty() {
-            assert!(std::time::Instant::now() < deadline, "nothing arrived over {wire}");
-            records = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
-        }
+        let records = wait_for(&format!("a record over {wire}"), Duration::from_secs(60), || {
+            let records = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
+            (!records.is_empty()).then_some(records)
+        })
+        .unwrap_or_else(|late| panic!("{late}"));
         assert_eq!(records.len(), 1, "over {wire}");
         assert_eq!(
             meta.record_object(&records[0], "")["body"],
@@ -1246,20 +1245,17 @@ fn an_opentelemetry_sdk_exports_every_signal_over_grpc_and_http() {
                 .expect("docker runs");
             // It sends its next export once it hears the last one answered, so each is committed as it arrives.
             let mut records = Vec::new();
-            let deadline = std::time::Instant::now() + Duration::from_secs(60);
-            let exited = loop {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "{what}: {} records, then nothing",
-                    records.len()
-                );
-                let taken = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
-                commit(source, &taken);
-                records.extend(taken);
-                if let Some(exited) = sent.try_wait().unwrap() {
-                    break exited;
-                }
-            };
+            let exited = wait_for(
+                &format!("telemetrygen to finish sending {what}"),
+                Duration::from_secs(60),
+                || {
+                    let taken = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
+                    commit(source, &taken);
+                    records.extend(taken);
+                    sent.try_wait().unwrap()
+                },
+            )
+            .unwrap_or_else(|late| panic!("{late}: {} records arrived", records.len()));
             let mut logs = String::new();
             sent.stderr.take().unwrap().read_to_string(&mut logs).unwrap();
             assert!(exited.success(), "{what}: {logs}");
@@ -2273,16 +2269,13 @@ remote_write:
     let prometheus = Container(name);
 
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    let up = loop {
-        assert!(std::time::Instant::now() < deadline, "no `up` sample arrived");
+    let up = wait_for("an `up` sample", Duration::from_secs(60), || {
         let records = source.poll_batch(1000, 16 << 20, Duration::from_millis(200)).unwrap();
         let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
         commit(&mut source, &records);
-        if let Some(up) = rows.into_iter().find(|r| r["name"] == "up") {
-            break up;
-        }
-    };
+        rows.into_iter().find(|r| r["name"] == "up")
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
     assert_eq!(up["value"], 1.0);
     assert_eq!(up["attributes"]["job"], "self");
     assert_eq!(up["attributes"]["instance"], web.to_string());
@@ -2522,24 +2515,18 @@ fn shipper(name: &str, image: &str, dir: &std::path::Path, args: &[&str]) -> Con
 /// is the container sending them, whose logs say why none did.
 fn shipped(source: &mut Box<dyn Source>, shipper: &Container, field: &str, line: &str) -> serde_json::Value {
     let meta = smeltr::plan::topology::SourceMeta::ELASTIC_RECEIVER;
-    let deadline = std::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        if std::time::Instant::now() > deadline {
-            panic!("no document holding {line:?} arrived: {}", logs(&shipper.0));
-        }
+    wait_for(&format!("a document holding {line:?}"), Duration::from_secs(90), || {
         let records = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
         commit(source, &records);
-        let found = records
+        records
             .iter()
             .zip(meta.objects(&records, Some("es")))
             .find_map(|(r, filed)| {
                 let document: serde_json::Value = serde_json::from_slice(r.bytes().unwrap()).unwrap();
                 (document[field] == line).then_some(serde_json::json!({"document": document, "filed": filed}))
-            });
-        if let Some(found) = found {
-            return found;
-        }
-    }
+            })
+    })
+    .unwrap_or_else(|late| panic!("{late}: {}", logs(&shipper.0)))
 }
 
 /// The logs of container `name`, both streams.

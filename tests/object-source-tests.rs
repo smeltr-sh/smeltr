@@ -130,6 +130,8 @@ impl Setup {
     }
 }
 
+/// Long enough for a source's fetches to have queued all they will before a reader takes more.
+const FETCHED: Duration = Duration::from_millis(500);
 const HOUR: Duration = Duration::from_secs(3600);
 const POLL: Duration = Duration::from_millis(50);
 /// Long enough for a loaded machine. A wait for something that comes ends when it comes.
@@ -147,14 +149,10 @@ fn poll_briefly(source: &mut ObjectSource) -> Vec<SourceRecord> {
 
 /// What the queue was asked to extend, once it was asked: the source extends on a thread of its own, on its own clock.
 fn extended(s: &Setup) -> Vec<String> {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        let extended = s.queue.0.lock().extended.clone();
-        if !extended.is_empty() || Instant::now() > deadline {
-            return extended;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    crate::harness::wait_for("the source to ask the queue to extend", WAIT, || {
+        Some(s.queue.0.lock().extended.clone()).filter(|extended| !extended.is_empty())
+    })
+    .unwrap_or_default()
 }
 
 fn raw(records: &[SourceRecord]) -> Vec<&str> {
@@ -434,7 +432,7 @@ fn a_reader_that_keeps_up_has_no_more_fetched_for_it() {
     s.announce("m", &keys.iter().map(String::as_str).collect::<Vec<_>>());
     let mut source = s.source(Framing::Lines, HOUR);
     assert_eq!(source.poll_batch(1, 1 << 20, WAIT).unwrap().len(), 1);
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(FETCHED);
     let held = source.held_bytes().unwrap();
     // Each fetch queues about 4 MB: the one read and the two its first wait asked for, not all eight.
     assert!(held < 16 << 20, "{held} bytes held");
@@ -449,7 +447,7 @@ fn a_fetch_queues_records_up_to_a_budget_of_bytes() {
     s.announce("m", &["long"]);
     let mut source = s.source(Framing::Lines, HOUR);
     assert_eq!(source.poll_batch(1, 1 << 20, WAIT).unwrap().len(), 1);
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(FETCHED);
     let held = source.held_bytes().unwrap();
     assert!(held < 8 << 20, "{held} bytes held");
 }
@@ -625,14 +623,10 @@ fn a_listed_object_is_read_and_its_progress_taken_once_committed() {
 
 /// What the source reports as lag, once its sampler has asked: the sampler asks on a thread of its own.
 fn lag(source: &mut ObjectSource) -> Vec<PartitionLag> {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        let lag = source.lag();
-        if !lag.is_empty() || Instant::now() > deadline {
-            return lag;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    crate::harness::wait_for("the source to report lag", WAIT, || {
+        Some(source.lag()).filter(|lag| !lag.is_empty())
+    })
+    .unwrap_or_default()
 }
 
 #[test]

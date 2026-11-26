@@ -18,7 +18,7 @@ use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine;
 use serde_json::{Map, Value, json};
@@ -34,6 +34,7 @@ use crate::harness::destination::{
 };
 use crate::harness::fuzz::Rng;
 use crate::harness::http::{self, Answer, Answers, Id, Seen, Sent, Service, fnv, gunzip, json_array_rows};
+use crate::harness::wait_for;
 use crate::live;
 
 const SEEDS: u64 = 350;
@@ -1437,8 +1438,8 @@ fn spaced(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Every event Splunk filed under `sourcetype`, each one's text, joined and [`spaced`]. Asked until each of `items`
-/// is there or a minute passes, since an event is searchable a moment after it is indexed.
+/// The text of every event Splunk filed under `sourcetype`, joined and [`spaced`]. It asks until each of `items` is
+/// there, for up to a minute, since an event is searchable a moment after it is indexed.
 fn filed(s: &live::Splunk, sourcetype: &str, items: &[&[u8]]) -> Result<String, String> {
     let agent = ureq::Agent::new_with_defaults();
     let (user, password) = s.auth.split_once(':').expect("user:password");
@@ -1446,8 +1447,7 @@ fn filed(s: &live::Splunk, sourcetype: &str, items: &[&[u8]]) -> Result<String, 
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
     );
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
+    let search = || -> Result<String, String> {
         let body = agent
             .post(format!("{}/services/search/jobs/export", s.api))
             .header("Authorization", &auth)
@@ -1468,13 +1468,22 @@ fn filed(s: &live::Splunk, sourcetype: &str, items: &[&[u8]]) -> Result<String, 
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .filter_map(|v| Some(v.get("result")?.get("_raw")?.as_str()?.to_string()))
             .collect();
-        let all = spaced(&raw.join("\n"));
-        let found = items.iter().all(|i| all.contains(&spaced(&String::from_utf8_lossy(i))));
-        if found || Instant::now() > deadline {
-            return Ok(all);
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
+        Ok(spaced(&raw.join("\n")))
+    };
+    let mut last = String::new();
+    wait_for(
+        &format!("every row that reached the destination to be searchable under {sourcetype}"),
+        Duration::from_secs(60),
+        || match search() {
+            Ok(all) if items.iter().all(|i| all.contains(&spaced(&String::from_utf8_lossy(i)))) => Some(Ok(all)),
+            Ok(all) => {
+                last = all;
+                None
+            }
+            Err(e) => Some(Err(e)),
+        },
+    )
+    .map_err(|late| format!("{late}, in:\n{last}"))?
 }
 
 /// Each seed's destination, against the save, and delivering to Splunk's HEC raw endpoint, which files what each
