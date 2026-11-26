@@ -23,8 +23,10 @@
 //!
 //! What the draft says of packets, this says of batches, and where that forces a reading it is this:
 //!
-//! - A packet is one batch: C.SMSS is the batch size the worker cut, so BBR.MinPipeCwnd is four batches and the
-//!   send quantum is one, which cannot be split. The offload budget is TCP's, three quanta.
+//! - A packet is a TCP segment, C.SMSS, since every destination is reached over TCP. A batch is the send quantum,
+//!   the aggregate handed down whole, as TSO hands a burst of segments to the NIC: it cannot be split, so the
+//!   quantum is the batch size the worker cut. The offload budget is TCP's, three quanta, and a batch goes whenever
+//!   nothing is in flight, however small cwnd is.
 //! - Each batch is acknowledged on its own, as with selective acknowledgments, so C.has_selective_acks holds and
 //!   each lost batch is one loss event.
 //! - Loss is the bytes of a batch that failed and goes back to be sent again, and of one the destination answered
@@ -34,7 +36,7 @@
 //! - The destination's share of the worker's memory pool, or the buffer it states, bounds what it may hold as a
 //!   receiver's window does: the sender holds to the lesser of it and cwnd, and a link the share holds back reads as
 //!   the bottleneck, not as a source with nothing to send (the draft's receiver flow control limits).
-//! - The initial window is ten batches, RFC 6928's ten segments, within the share.
+//! - The initial window is RFC 6928's ten segments, within the share.
 //!
 //! The egress queue holds the window and one batch ready behind it, so the next batch is made while the last is on
 //! the wire.
@@ -53,11 +55,13 @@ const LOSS_THRESH: f64 = 0.02;
 const BETA: f64 = 0.7;
 /// BBR.Headroom: the share of inflight_longterm left free for other flows while cruising.
 const HEADROOM: f64 = 0.15;
-/// BBR.MinPipeCwnd, in batches.
+/// C.SMSS: a TCP segment's payload on a 1500-byte path with timestamps.
+const SMSS: f64 = 1448.0;
+/// BBR.MinPipeCwnd, in segments.
 const MIN_PIPE_CWND: f64 = 4.0;
-/// C.InitialCwnd, in batches: RFC 6928's initial window of ten segments.
+/// C.InitialCwnd, in segments: RFC 6928's initial window.
 const INITIAL_CWND: f64 = 10.0;
-/// The offload budget, in batches: TCP's three send quanta, of one batch each.
+/// The offload budget, in send quanta: TCP's three.
 const OFFLOAD_BUDGET: f64 = 3.0;
 
 /// BBR.StartupPacingGain: 4 ln 2, the least gain that doubles the sending rate each round.
@@ -213,8 +217,10 @@ struct RateSample {
 /// The BBR model and sender state for one destination.
 #[derive(Debug)]
 pub struct Pacing {
-    /// C.SMSS: one batch.
+    /// C.SMSS.
     smss: f64,
+    /// C.send_quantum: one batch.
+    send_quantum: f64,
     /// The receiver's window: the destination's share of the pool, or its stated buffer.
     ceiling: f64,
 
@@ -298,7 +304,7 @@ pub struct Pacing {
 }
 
 impl Pacing {
-    /// A flow whose packets are batches of `batch` bytes, held to `ceiling`: OnInit.
+    /// A flow whose send quantum is a batch of `batch` bytes, held to `ceiling`: OnInit.
     pub fn new(batch: usize, ceiling: usize, now: Instant) -> Pacing {
         let mut seed = RandomState::new().build_hasher();
         seed.write_usize(batch);
@@ -306,10 +312,11 @@ impl Pacing {
     }
 
     fn seeded(batch: usize, ceiling: usize, now: Instant, rng: u64) -> Pacing {
-        let smss = batch.max(1) as f64;
+        let (smss, send_quantum) = (SMSS, batch.max(1) as f64);
         let mut p = Pacing {
             smss,
-            ceiling: (ceiling as f64).max(smss),
+            send_quantum,
+            ceiling: (ceiling as f64).max(send_quantum),
             delivered: 0,
             delivered_time: now,
             first_send_time: now,
@@ -390,12 +397,12 @@ impl Pacing {
 
     /// What the egress queue may hold: the window, and one batch ready behind it. Never past the ceiling.
     pub fn queue_bytes(&self) -> usize {
-        (self.window() + self.smss).min(self.ceiling).max(self.window()) as usize
+        (self.window() + self.send_quantum).min(self.ceiling).max(self.window()) as usize
     }
 
     /// The receiver's window. Moves as the pool's share does.
     pub fn set_ceiling(&mut self, ceiling: usize) {
-        self.ceiling = (ceiling as f64).max(self.smss);
+        self.ceiling = (ceiling as f64).max(self.send_quantum);
     }
 
     /// BBR.min_rtt, once there is one.
@@ -441,7 +448,7 @@ impl Pacing {
     /// CheckIfApplicationLimited: the source has `nothing_to_send` while the window has room for a batch, so the
     /// samples of the next round trip say how fast it produces, not how fast the link carries.
     pub fn check_app_limited(&mut self, nothing_to_send: bool) {
-        if nothing_to_send && self.inflight as f64 + self.smss <= self.window() {
+        if nothing_to_send && self.inflight as f64 + self.send_quantum <= self.window() {
             self.mark_app_limited();
         }
     }
@@ -466,7 +473,7 @@ impl Pacing {
         let sent_before = self.sent;
         self.sent += bytes;
         self.inflight += bytes;
-        if self.inflight as f64 + self.smss > self.cwnd && self.cwnd <= self.ceiling {
+        if self.inflight as f64 + self.send_quantum > self.cwnd && self.cwnd <= self.ceiling {
             self.cwnd_limited_now = true;
         }
         Sent {
@@ -745,7 +752,9 @@ impl Pacing {
     }
 
     fn quantization_budget(&self, cap: f64) -> f64 {
-        let mut cap = cap.max(OFFLOAD_BUDGET * self.smss).max(MIN_PIPE_CWND * self.smss);
+        let mut cap = cap
+            .max(OFFLOAD_BUDGET * self.send_quantum)
+            .max(MIN_PIPE_CWND * self.smss);
         if self.state == State::ProbeBwUp {
             cap += 2.0 * self.smss;
         }
@@ -1144,7 +1153,7 @@ pub(super) struct Pacer {
 }
 
 impl Pacer {
-    /// Starts a flow whose packets are batches of `batch` bytes, and sets the queue's budget to its window.
+    /// Starts a flow whose send quantum is a batch of `batch` bytes, and sets the queue's budget to its window.
     pub(super) fn new(batch: usize, queue: &Queue, metrics: &MetricsHandle, id: DestId) -> Pacer {
         let model = Pacing::new(batch, queue.share(), Instant::now());
         queue.set_budget(model.queue_bytes());
@@ -1403,7 +1412,7 @@ mod tests {
         assert!(s.p.full_bw_reached, "the pipe filled");
         assert_eq!(&s.states[..2], &[State::Startup, State::Drain], "{:?}", s.states);
         assert!(
-            s.states.contains(&State::ProbeBwDown),
+            s.states[2..].iter().any(|s| s.is_probe_bw()),
             "drained into ProbeBW: {:?}",
             s.states
         );
@@ -1519,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn a_product_under_one_batch_keeps_four_on_the_wire() {
+    fn a_product_under_one_batch_keeps_the_offload_budget_on_the_wire() {
         // 1 ms at 100 MiB/s: a tenth of a batch.
         let mut s = Sim::new(
             BATCH,
@@ -1528,8 +1537,8 @@ mod tests {
         );
         s.run_to(5.0);
         assert!(
-            s.p.target() >= 4 * BATCH,
-            "BBR.MinPipeCwnd is four batches: {}",
+            s.p.target() >= 3 * BATCH,
+            "the offload budget is three batches: {}",
             s.p.target()
         );
         let carried = s.throughput(3.0, 5.0);

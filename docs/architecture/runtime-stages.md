@@ -113,9 +113,10 @@ it; only a destination where nothing lands backs off as a whole.
 Egress paces each destination with BBR (Bottleneck Bandwidth and Round-trip
 propagation time), as the IETF draft
 [draft-ietf-ccwg-bbr](https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/)
-specifies it, with a batch for a packet. It hands over a batch only while the
-congestion window has room for it and the pacing rate allows it. The window is
-never over the destination's limit and never under four batches; the queue's
+specifies it, with a TCP segment for a packet and a batch for the send quantum.
+It hands over a batch only while the congestion window has room for it, or
+nothing is in flight, and the pacing rate allows it. The window is never over
+the destination's limit and never under three batches; the queue's
 budget is the window and one batch ready behind it. An answer that asks to be
 sent less (429, 503, or a full queue) counts as loss.
 
