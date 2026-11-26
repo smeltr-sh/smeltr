@@ -239,6 +239,14 @@ const TRANSPORTS: &[Transport] = &[
         to: Out::Kafka,
     },
     Transport {
+        from: In::Kafka,
+        to: Out::Http,
+    },
+    Transport {
+        from: In::Http,
+        to: Out::Kafka,
+    },
+    Transport {
         from: In::Hec,
         to: Out::Http,
     },
