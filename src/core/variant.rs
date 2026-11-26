@@ -41,6 +41,85 @@ pub const DATETIME: u8 = 8;
 pub const DURATION: u8 = 9;
 pub const BYTES: u8 = 10;
 
+/// One encoded value whose strings and keys are UTF-8, so reading one needs no check of its own. A sealed variant
+/// column's rows are these (`Column::variant`); `Encoded::check` makes one of bytes from anywhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Encoded<'a>(&'a [u8]);
+
+impl<'a> Encoded<'a> {
+    /// The value at the start of `b`. Panics if a string or key in it is not UTF-8, which is a bug: the bytes are written
+    /// with `put_*`, which takes text as `&str`.
+    pub fn check(b: &'a [u8]) -> Encoded<'a> {
+        assert!(text_is_utf8(b), "a variant's strings and keys are UTF-8");
+        Encoded(b)
+    }
+
+    /// # Safety
+    /// Every string and key in the value `b` starts with must be UTF-8.
+    pub(crate) unsafe fn unchecked(b: &'a [u8]) -> Encoded<'a> {
+        Encoded(b)
+    }
+
+    pub fn bytes(self) -> &'a [u8] {
+        self.0
+    }
+}
+
+/// An `Encoded` value that owns its bytes, as a constant column holds one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncodedBuf(Vec<u8>);
+
+impl EncodedBuf {
+    /// Panics as `Encoded::check` does.
+    pub fn check(b: Vec<u8>) -> EncodedBuf {
+        Encoded::check(&b);
+        EncodedBuf(b)
+    }
+
+    /// # Safety
+    /// Every string and key in the value `b` starts with must be UTF-8.
+    pub(crate) unsafe fn unchecked(b: Vec<u8>) -> EncodedBuf {
+        EncodedBuf(b)
+    }
+
+    pub fn get(&self) -> Encoded<'_> {
+        Encoded(&self.0)
+    }
+}
+
+impl From<Encoded<'_>> for EncodedBuf {
+    fn from(v: Encoded<'_>) -> EncodedBuf {
+        EncodedBuf(v.0.to_vec())
+    }
+}
+
+/// Whether every string and key in the value `b` starts with is UTF-8.
+pub(crate) fn text_is_utf8(b: &[u8]) -> bool {
+    let utf8 = |s: &[u8]| s.is_ascii() || simdutf8::basic::from_utf8(s).is_ok();
+    match b[0] {
+        STR => utf8(&b[5..5 + u32_at(b, 1) as usize]),
+        ARRAY | OBJECT => {
+            let end = 5 + u32_at(b, 1) as usize;
+            let mut at = 9;
+            while at < end {
+                if b[0] == OBJECT {
+                    let klen = u32_at(b, at) as usize;
+                    if !utf8(&b[at + 4..at + 4 + klen]) {
+                        return false;
+                    }
+                    at += 4 + klen;
+                }
+                if !text_is_utf8(&b[at..end]) {
+                    return false;
+                }
+                at += len_of(&b[at..end]);
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
 /// One value, read in place.
 #[derive(Clone, Copy, Debug)]
 pub enum Value<'a> {
@@ -56,14 +135,14 @@ pub enum Value<'a> {
     Bytes(&'a [u8]),
 }
 
-/// An array's elements, each as its own encoded bytes.
+/// An array's elements, each as its own encoded value.
 #[derive(Clone, Copy, Debug)]
 pub struct Items<'a> {
     rest: &'a [u8],
     left: u32,
 }
 
-/// An object's entries, each a key and its value's encoded bytes.
+/// An object's entries, each a key and its encoded value.
 #[derive(Clone, Copy, Debug)]
 pub struct Entries<'a> {
     rest: &'a [u8],
@@ -78,9 +157,10 @@ fn i64_at(b: &[u8]) -> i64 {
     i64::from_le_bytes(b[1..9].try_into().expect("eight bytes"))
 }
 
-/// The value `b` starts with. The bytes are this module's own, so a malformed one is a bug and panics.
+/// The value `v` holds. The bytes are this module's own, so a malformed one is a bug and panics.
 #[inline(always)]
-pub fn read(b: &[u8]) -> Value<'_> {
+pub fn read(v: Encoded<'_>) -> Value<'_> {
+    let b = v.0;
     match b[0] {
         NULL => Value::Null,
         FALSE => Value::Bool(false),
@@ -91,7 +171,8 @@ pub fn read(b: &[u8]) -> Value<'_> {
         DURATION => Value::Duration(i64_at(b)),
         STR => {
             let len = u32_at(b, 1) as usize;
-            Value::Str(std::str::from_utf8(&b[5..5 + len]).expect("a str is written from a str"))
+            // SAFETY: an `Encoded`'s strings are UTF-8.
+            Value::Str(unsafe { std::str::from_utf8_unchecked(&b[5..5 + len]) })
         }
         BYTES => Value::Bytes(&b[5..5 + u32_at(b, 1) as usize]),
         ARRAY | OBJECT => {
@@ -120,14 +201,14 @@ pub fn len_of(b: &[u8]) -> usize {
     }
 }
 
-/// Whether `b` holds an object.
-pub fn is_object(b: &[u8]) -> bool {
-    b.first() == Some(&OBJECT)
+/// Whether `v` holds an object.
+pub fn is_object(v: Encoded) -> bool {
+    v.0.first() == Some(&OBJECT)
 }
 
-/// The value at `key` inside the object `b`, as its own bytes. `None` where `b` is no object or has no such key.
-pub fn member<'a>(b: &'a [u8], key: &str) -> Option<&'a [u8]> {
-    at(b, Key::Member(key.as_bytes()))
+/// The value at `key` inside the object `v`. `None` where `v` is no object or has no such key.
+pub fn member<'a>(v: Encoded<'a>, key: &str) -> Option<Encoded<'a>> {
+    at(v, Key::Member(key.as_bytes()))
 }
 
 /// What a variant is read at: an object's member by name, or an array's element by position.
@@ -138,17 +219,18 @@ pub enum Key<'k> {
     Element(i64),
 }
 
-/// The value at `key` inside `b`, as its own bytes. `None` where `b` holds nothing there or null, a key of the
-/// other kind among it.
-pub fn at<'a>(b: &'a [u8], key: Key) -> Option<&'a [u8]> {
-    match (read(b), key) {
+/// The value at `key` inside `v`. `None` where:
+/// - `v` holds no value at `key`, or null there;
+/// - `key` is a member and `v` is no object, or `key` is an element and `v` is no array.
+pub fn at<'a>(v: Encoded<'a>, key: Key) -> Option<Encoded<'a>> {
+    match (read(v), key) {
         (Value::Object(entries), Key::Member(key)) => {
             entries.into_iter().find(|(k, _)| k.as_bytes() == key).map(|(_, v)| v)
         }
         (Value::Array(items), Key::Element(i)) => {
             let at = crate::ops::helpers::position(i, items.len())?;
             // A null element holds its place in the array, and is nothing as a value.
-            items.into_iter().nth(at).filter(|v| v[0] != NULL)
+            items.into_iter().nth(at).filter(|v| v.0[0] != NULL)
         }
         _ => None,
     }
@@ -165,10 +247,10 @@ impl<'a> Items<'a> {
 }
 
 impl<'a> Iterator for Items<'a> {
-    type Item = &'a [u8];
+    type Item = Encoded<'a>;
 
     #[inline]
-    fn next(&mut self) -> Option<&'a [u8]> {
+    fn next(&mut self) -> Option<Encoded<'a>> {
         if self.left == 0 {
             return None;
         }
@@ -176,7 +258,8 @@ impl<'a> Iterator for Items<'a> {
         let (value, rest) = self.rest.split_at(n);
         self.rest = rest;
         self.left -= 1;
-        Some(value)
+        // SAFETY: the items are inside an `Encoded` array, whose strings and keys are all UTF-8.
+        Some(unsafe { Encoded::unchecked(value) })
     }
 }
 
@@ -191,20 +274,23 @@ impl<'a> Entries<'a> {
 }
 
 impl<'a> Iterator for Entries<'a> {
-    type Item = (&'a str, &'a [u8]);
+    type Item = (&'a str, Encoded<'a>);
 
     #[inline]
-    fn next(&mut self) -> Option<(&'a str, &'a [u8])> {
+    fn next(&mut self) -> Option<(&'a str, Encoded<'a>)> {
         if self.left == 0 {
             return None;
         }
         let klen = u32_at(self.rest, 0) as usize;
-        let key = std::str::from_utf8(&self.rest[4..4 + klen]).expect("a key is written from a str");
+        // SAFETY: the entries are inside an `Encoded` object, whose strings and keys are all UTF-8.
+        let key = unsafe { std::str::from_utf8_unchecked(&self.rest[4..4 + klen]) };
         let after = &self.rest[4 + klen..];
         let n = len_of(after);
         let (value, rest) = after.split_at(n);
         self.rest = rest;
         self.left -= 1;
+        // SAFETY: as for the key.
+        let value = unsafe { Encoded::unchecked(value) };
         Some((key, value))
     }
 }
@@ -224,7 +310,7 @@ pub fn at_column<'k>(col: &Column, key_of: impl Fn(usize) -> Option<Key<'k>>, po
             for row in 0..col.len() {
                 let value = v.validity.is_valid(row).then(|| key_of(row)).flatten();
                 match value.and_then(|key| at(v.get(row), key)) {
-                    Some(bytes) => b.push_grow(pool, bytes),
+                    Some(v) => b.push_encoded(pool, v),
                     None => b.push_null(),
                 }
             }
@@ -389,21 +475,22 @@ mod tests {
         end(&mut out, o, 6);
 
         assert_eq!(len_of(&out), out.len());
-        let Value::Object(entries) = read(&out) else {
+        let out = Encoded::check(&out);
+        let Value::Object(entries) = read(out) else {
             panic!("an object")
         };
         let keys: Vec<&str> = entries.map(|(k, _)| k).collect();
         assert_eq!(keys, ["a", "b", "c", "t", "d", "y"], "in the order written");
-        assert!(matches!(read(member(&out, "a").unwrap()), Value::I64(-7)));
-        assert!(matches!(read(member(&out, "c").unwrap()), Value::Bool(true)));
-        assert!(matches!(read(member(&out, "t").unwrap()), Value::DateTime(-1)));
-        assert!(matches!(read(member(&out, "d").unwrap()), Value::Duration(5)));
-        assert!(matches!(read(member(&out, "y").unwrap()), Value::Bytes([0xff, 0])));
-        assert!(member(&out, "z").is_none());
-        let Value::Array(items) = read(member(&out, "b").unwrap()) else {
+        assert!(matches!(read(member(out, "a").unwrap()), Value::I64(-7)));
+        assert!(matches!(read(member(out, "c").unwrap()), Value::Bool(true)));
+        assert!(matches!(read(member(out, "t").unwrap()), Value::DateTime(-1)));
+        assert!(matches!(read(member(out, "d").unwrap()), Value::Duration(5)));
+        assert!(matches!(read(member(out, "y").unwrap()), Value::Bytes([0xff, 0])));
+        assert!(member(out, "z").is_none());
+        let Value::Array(items) = read(member(out, "b").unwrap()) else {
             panic!("an array")
         };
-        let items: Vec<&[u8]> = items.collect();
+        let items: Vec<Encoded> = items.collect();
         assert!(matches!(read(items[0]), Value::Str("x")));
         assert!(matches!(read(items[1]), Value::Null));
         assert!(matches!(read(items[2]), Value::F64(f) if f == 1.5));
@@ -413,7 +500,33 @@ mod tests {
     fn a_scalar_has_no_member() {
         let mut out = Vec::new();
         put_str(&mut out, "k");
-        assert!(member(&out, "k").is_none());
-        assert!(!is_object(&out));
+        let out = Encoded::check(&out);
+        assert!(member(out, "k").is_none());
+        assert!(!is_object(out));
+    }
+
+    #[test]
+    #[should_panic(expected = "a variant's strings and keys are UTF-8")]
+    fn a_key_that_is_not_utf8_is_refused() {
+        let mut out = Vec::new();
+        let o = begin_object(&mut out);
+        put_key(&mut out, "k");
+        put_str(&mut out, "v");
+        end(&mut out, o, 1);
+        // The key's one byte, after the tag, the body's length, the count and the key's length.
+        out[13] = 0x80;
+        Encoded::check(&out);
+    }
+
+    #[test]
+    #[should_panic(expected = "a variant's strings and keys are UTF-8")]
+    fn a_variant_column_with_a_string_that_is_not_utf8_is_refused_when_sealed() {
+        let mut pool = BufferPool::new();
+        let mut out = Vec::new();
+        put_str(&mut out, "é");
+        out[6] = 0xff;
+        let mut b = StrBuilder::new(&mut pool, VarType::Variant, 1);
+        b.push_grow(&mut pool, &out);
+        b.finish();
     }
 }

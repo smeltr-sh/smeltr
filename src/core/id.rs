@@ -1,5 +1,3 @@
-pub type PatternId = usize;
-
 /// Makes `$name` a number of its own kind, so one kind of id cannot be passed for another.
 macro_rules! id {
     ($(#[$doc:meta])* $name:ident) => {
@@ -47,6 +45,10 @@ id!(
 id!(
     /// A step of a pipeline, by its number among that pipeline's steps.
     FunctionId
+);
+id!(
+    /// A regex literal, by its number among those a plan holds.
+    PatternId
 );
 id!(
     /// A slot: a column of a batch, by its number in the plan's layout.

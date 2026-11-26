@@ -135,15 +135,11 @@ fn deliver(d: &mut dyn Destination, rows: Vec<OwnedRecord>) {
     }
     // A file is finished at its interval or here.
     d.flush().expect("flushed");
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        if let Some(c) = d.poll_completions().expect("landed").into_iter().find(|c| c.batch == 1) {
-            assert!(c.rejections.is_empty(), "{:?}", c.rejections);
-            return;
-        }
-        assert!(Instant::now() < deadline, "no completion");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let done = harness::wait_for("the batch to finish", Duration::from_secs(90), || {
+        d.poll_completions().expect("landed").into_iter().find(|c| c.batch == 1)
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
+    assert!(done.rejections.is_empty(), "{:?}", done.rejections);
 }
 
 /// Makes `bucket`. The emulator takes any signature, so this one needs none.
@@ -499,14 +495,11 @@ fn sqs(endpoint: &str, action: &str, body: serde_json::Value) -> serde_json::Val
 
 /// The first lag `source` reports, as (topic, partition, lag): its sampler measures on a thread of its own.
 fn first_lag(source: &mut dyn smeltr::io::Source) -> (String, i32, i64) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Some(lag) = source.lag().pop() {
-            return (lag.partition.topic.to_string(), lag.partition.partition, lag.lag);
-        }
-        assert!(Instant::now() < deadline, "no lag reported");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let lag = harness::wait_for("the source to report lag", Duration::from_secs(30), || {
+        source.lag().pop()
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
+    (lag.partition.topic.to_string(), lag.partition.partition, lag.lag)
 }
 
 /// S3 announces an object on a queue; the source reads it as lines and deletes the message once they are committed.

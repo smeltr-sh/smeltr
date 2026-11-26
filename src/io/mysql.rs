@@ -23,7 +23,7 @@ use super::sql_source::{
 };
 use super::values::Value;
 use crate::core::column::DataType;
-use crate::core::variant;
+use crate::core::variant::{self, Encoded};
 use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, days_from_civil};
 use crate::plan::topology::{HeldSecrets, SecretRef, Tls};
 
@@ -279,8 +279,8 @@ impl Driver for MySqlDriver {
                     },
                     _ => return Err("EXPLAIN returned no plan".to_string().into()),
                 };
-                let rows = limit.map_or(returned(&plan), |limit| returned(&plan).min(limit));
-                Ok(Verdict::of(scans(&plan), indexes(&plan), rows))
+                let rows = limit.map_or(returned(plan.get()), |limit| returned(plan.get()).min(limit));
+                Ok(Verdict::of(scans(plan.get()), indexes(plan.get()), rows))
             }))
         })
     }
@@ -344,7 +344,7 @@ fn encode(number: usize, value: &Value) -> Result<MyValue, String> {
         Value::Duration(d) => time_value(*d),
         Value::Json(j) => {
             let mut text = Vec::new();
-            super::values::json_text(j, &mut text);
+            super::values::json_text(j.get(), &mut text);
             MyValue::Bytes(text)
         }
         Value::Array(_) => return Err(format!("placeholder {number} is an array, and MySQL has no array type")),
@@ -600,7 +600,7 @@ fn cast_unreadable(sql: &str, columns: &[Column]) -> Option<(String, Vec<String>
 }
 
 /// A number in a plan. MySQL writes some as text.
-fn number(value: Option<&[u8]>) -> Option<f64> {
+fn number(value: Option<Encoded>) -> Option<f64> {
     match variant::read(value?) {
         variant::Value::I64(i) => Some(i as f64),
         variant::Value::F64(f) => Some(f),
@@ -610,27 +610,27 @@ fn number(value: Option<&[u8]>) -> Option<f64> {
 }
 
 /// The rows a table read examines: `rows_examined_per_scan` in MySQL's plan, `rows` in MariaDB's.
-fn examined(table: &[u8]) -> Option<f64> {
+fn examined(table: Encoded) -> Option<f64> {
     number(variant::member(table, "rows_examined_per_scan")).or_else(|| number(variant::member(table, "rows")))
 }
 
 /// Whether a table in a plan is one the statement made rather than one the database holds: a derived table, a CTE,
 /// a union's result.
-fn made(table: &[u8]) -> bool {
+fn made(table: Encoded) -> bool {
     variant::member(table, "materialized_from_subquery").is_some()
         || variant::member(table, "materialized").is_some()
         || text_at(table, "table_name").is_none_or(|n| n.starts_with('<'))
 }
 
 /// The table read the plan object `map` holds, if any.
-fn table(map: &[u8]) -> Option<&[u8]> {
-    variant::member(map, "table").filter(|t| variant::member(t, "table_name").is_some())
+fn table(map: Encoded) -> Option<Encoded> {
+    variant::member(map, "table").filter(|t| variant::member(*t, "table_name").is_some())
 }
 
 /// Every table read in `EXPLAIN FORMAT=JSON` output, at any depth, in plan order. MySQL and MariaDB both write each
 /// as a `"table"` object, nested in join, sort, grouping and subquery objects that differ between them.
-fn tables(explained: &[u8]) -> Vec<&[u8]> {
-    fn walk<'p>(node: &'p [u8], found: &mut Vec<&'p [u8]>) {
+fn tables(explained: Encoded) -> Vec<Encoded> {
+    fn walk<'p>(node: Encoded<'p>, found: &mut Vec<Encoded<'p>>) {
         match variant::read(node) {
             variant::Value::Object(entries) => {
                 found.extend(table(node));
@@ -649,10 +649,10 @@ fn tables(explained: &[u8]) -> Vec<&[u8]> {
 
 /// Every read of a whole table in the plan: the table's name, or its alias when the query gives it one (EXPLAIN gives
 /// only the alias then), and the database's estimate of the rows it reads.
-fn scans(explained: &[u8]) -> Vec<(String, u64)> {
+fn scans(explained: Encoded) -> Vec<(String, u64)> {
     tables(explained)
         .into_iter()
-        .filter(|t| text_at(t, "access_type") == Some("ALL") && !made(t))
+        .filter(|t| text_at(*t, "access_type") == Some("ALL") && !made(*t))
         .map(|t| {
             let name = text_at(t, "table_name").unwrap_or_default().to_string();
             (name, examined(t).map_or(0, |r| r as u64))
@@ -661,7 +661,7 @@ fn scans(explained: &[u8]) -> Vec<(String, u64)> {
 }
 
 /// Each index the plan reads through, by name, in plan order, once.
-fn indexes(explained: &[u8]) -> Vec<String> {
+fn indexes(explained: Encoded) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     for key in tables(explained).into_iter().filter_map(|t| text_at(t, "key")) {
         if !found.iter().any(|f| f == key) {
@@ -673,9 +673,9 @@ fn indexes(explained: &[u8]) -> Vec<String> {
 
 /// The database's estimate of the rows the statement returns, before its `LIMIT`. MySQL writes what each join
 /// produces on its last table; MariaDB writes each table's rows and the share its filter keeps, multiplied.
-fn returned(explained: &[u8]) -> u64 {
+fn returned(explained: Encoded) -> u64 {
     /// The tables the block itself joins, leaving out those of its subqueries, which are blocks of their own.
-    fn joined<'p>(node: &'p [u8], found: &mut Vec<&'p [u8]>) {
+    fn joined<'p>(node: Encoded<'p>, found: &mut Vec<Encoded<'p>>) {
         match variant::read(node) {
             variant::Value::Object(entries) if variant::member(node, "query_block").is_none() => {
                 found.extend(table(node));
@@ -687,7 +687,7 @@ fn returned(explained: &[u8]) -> u64 {
             _ => {}
         }
     }
-    fn block(query_block: &[u8]) -> f64 {
+    fn block(query_block: Encoded) -> f64 {
         if let Some(union) = variant::member(query_block, "union_result") {
             let specifications = variant::member(union, "query_specifications").map(variant::read);
             let Some(variant::Value::Array(specifications)) = specifications else {
@@ -702,13 +702,13 @@ fn returned(explained: &[u8]) -> u64 {
         joined(query_block, &mut found);
         if let Some(rows) = found
             .last()
-            .and_then(|t| number(variant::member(t, "rows_produced_per_join")))
+            .and_then(|t| number(variant::member(*t, "rows_produced_per_join")))
         {
             return rows;
         }
         found
             .iter()
-            .map(|t| examined(t).unwrap_or(1.0) * number(variant::member(t, "filtered")).unwrap_or(100.0) / 100.0)
+            .map(|t| examined(*t).unwrap_or(1.0) * number(variant::member(*t, "filtered")).unwrap_or(100.0) / 100.0)
             .product()
     }
     variant::member(explained, "query_block").map_or(0, |b| block(b).round() as u64)
@@ -717,9 +717,10 @@ fn returned(explained: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::variant::EncodedBuf;
 
     /// `explained` as a plan reads, in `core::variant`'s encoding.
-    fn plan(explained: serde_json::Value) -> Vec<u8> {
+    fn plan(explained: serde_json::Value) -> EncodedBuf {
         match crate::io::values::json(&serde_json::to_vec(&explained).unwrap()).unwrap() {
             Value::Json(plan) => plan,
             other => panic!("not JSON: {other:?}"),
@@ -945,13 +946,17 @@ mod tests {
             "table_name": "plan_big", "access_type": "ALL", "rows_examined_per_scan": 999_504,
             "rows_produced_per_join": 99_950, "filtered": "10.00"}}}));
         assert_eq!(
-            Verdict::of(scans(&explained), indexes(&explained), returned(&explained)),
+            Verdict::of(
+                scans(explained.get()),
+                indexes(explained.get()),
+                returned(explained.get())
+            ),
             Verdict::FullScan {
                 relation: "plan_big".into(),
                 rows: 999_504
             }
         );
-        assert_eq!(returned(&explained), 99_950);
+        assert_eq!(returned(explained.get()), 99_950);
     }
 
     #[test]
@@ -965,9 +970,13 @@ mod tests {
                     {"table": {"table_name": "b", "access_type": "eq_ref", "key": "PRIMARY",
                                "rows_examined_per_scan": 1, "rows_produced_per_join": 500}}]}},
                     {"query_block": {"select_id": 3, "message": "No tables used"}}]}}}}}}));
-        assert!(scans(&explained).is_empty(), "q is the statement's own");
+        assert!(scans(explained.get()).is_empty(), "q is the statement's own");
         assert_eq!(
-            Verdict::of(scans(&explained), indexes(&explained), returned(&explained)),
+            Verdict::of(
+                scans(explained.get()),
+                indexes(explained.get()),
+                returned(explained.get())
+            ),
             Verdict::Indexed {
                 indexes: vec!["a_at".into(), "PRIMARY".into()],
                 rows: 333_135
@@ -979,7 +988,7 @@ mod tests {
             "rows_examined_per_scan": 1, "rows_produced_per_join": 1}}}}),
         );
         assert_eq!(
-            Verdict::of(scans(&ordered), indexes(&ordered), returned(&ordered)),
+            Verdict::of(scans(ordered.get()), indexes(ordered.get()), returned(ordered.get())),
             Verdict::Indexed {
                 indexes: vec!["plan_big_indexed".into()],
                 rows: 1
@@ -995,7 +1004,7 @@ mod tests {
             "filtered": 100, "attached_condition": "plan_big.plain = 5"}}]}}),
         );
         assert_eq!(
-            Verdict::of(scans(&scan), indexes(&scan), returned(&scan)),
+            Verdict::of(scans(scan.get()), indexes(scan.get()), returned(scan.get())),
             Verdict::FullScan {
                 relation: "plan_big".into(),
                 rows: 967_853
@@ -1009,9 +1018,9 @@ mod tests {
                 {"table": {"table_name": "b", "access_type": "eq_ref", "key": "PRIMARY", "rows": 1, "filtered": 100}}
             ]}}}}]}}),
         );
-        assert!(scans(&derived).is_empty());
+        assert!(scans(derived.get()).is_empty());
         assert_eq!(
-            Verdict::of(scans(&derived), indexes(&derived), returned(&derived)),
+            Verdict::of(scans(derived.get()), indexes(derived.get()), returned(derived.get())),
             Verdict::Indexed {
                 indexes: vec!["a_at".into(), "PRIMARY".into()],
                 rows: 100
@@ -1021,7 +1030,7 @@ mod tests {
         let small = plan(serde_json::json!({"query_block": {"nested_loop": [{"table": {
             "table_name": "few", "access_type": "ALL", "rows": 40, "filtered": 100}}]}}));
         assert_eq!(
-            Verdict::of(scans(&small), indexes(&small), returned(&small)),
+            Verdict::of(scans(small.get()), indexes(small.get()), returned(small.get())),
             Verdict::Indexed {
                 indexes: Vec::new(),
                 rows: 40

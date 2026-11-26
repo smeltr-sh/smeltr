@@ -21,7 +21,7 @@ use smeltr::core::id::DestId;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int64Type, TimestampMicrosecondType};
@@ -617,6 +617,10 @@ fn row_json(row: &BTreeMap<String, Val>, tags: bool) -> String {
     Value::Object(object).to_string()
 }
 
+/// How long a batch handed over may take to find room, and how long the batches handed over may take to reach the
+/// destination.
+const REACH_DESTINATION: Duration = Duration::from_secs(120);
+
 /// Hands `batches` over as egress would, and waits until every one has landed.
 fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool, batches: &[Batch]) {
     let mut waiting = HashSet::new();
@@ -626,7 +630,6 @@ fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool
             assert!(waiting.remove(&c.batch), "batch {} completed unasked", c.batch);
         }
     };
-    let deadline = Instant::now() + Duration::from_secs(120);
     for batch in batches {
         let texts: Vec<String> = batch.rows.iter().map(|r| row_json(r, tags)).collect();
         let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
@@ -641,21 +644,21 @@ fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool
                 ..OwnedRecord::default()
             })
             .collect();
-        loop {
+        let in_flight = harness::wait_for(&format!("batch {} to find room", batch.id), REACH_DESTINATION, || {
             let (dispatched, refused) = d.deliver(batch.id, Cow::Borrowed(&rows)).expect("delivered");
             assert!(refused.is_empty(), "{refused:?}");
             match dispatched {
-                Dispatched::InFlight => {
-                    waiting.insert(batch.id);
-                    break;
-                }
-                Dispatched::Complete => break,
+                Dispatched::InFlight => Some(true),
+                Dispatched::Complete => Some(false),
                 Dispatched::NoRoom { .. } => {
-                    assert!(Instant::now() < deadline, "batch {} never found room", batch.id);
                     take(d, &mut waiting);
-                    std::thread::sleep(Duration::from_millis(20));
+                    None
                 }
             }
+        })
+        .unwrap_or_else(|late| panic!("{late}"));
+        if in_flight {
+            waiting.insert(batch.id);
         }
         if batch.flush {
             d.flush().expect("flushed");
@@ -663,11 +666,11 @@ fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool
         take(d, &mut waiting);
     }
     d.flush().expect("flushed");
-    while !waiting.is_empty() {
+    harness::wait_for("every batch to reach the destination", REACH_DESTINATION, || {
         take(d, &mut waiting);
-        assert!(Instant::now() < deadline, "batches {waiting:?} never landed");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        waiting.is_empty().then_some(())
+    })
+    .unwrap_or_else(|late| panic!("{late}: batches {waiting:?} have not"));
 }
 
 /// The field at `path` among `fields`.

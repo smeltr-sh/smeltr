@@ -13,6 +13,7 @@ use crate::core::column::{Column, DataType, Scalar};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
 use crate::core::id::{DestId, SourceId};
+use crate::core::variant::EncodedBuf;
 use crate::expr::ast::Span;
 use crate::expr::eval::eval;
 use crate::expr::ir::{Ir, IrKind, flatten};
@@ -987,7 +988,9 @@ impl SourceMeta {
                 let key = &self.source[field].0["__source.".len()..];
                 if let Some(shared) = shared_filed(records) {
                     return match filed_at(shared, key) {
-                        Some(value) => Column::constant(Scalar::Variant(value.to_vec()), records.len()),
+                        Some(value) => {
+                            Column::constant(Scalar::Variant(EncodedBuf::check(value.to_vec())), records.len())
+                        }
                         None => Column::empty(DataType::Variant, records.len()),
                     };
                 }
@@ -4554,7 +4557,10 @@ mod tests {
         );
         let shared = column("__source.resource");
         assert_eq!(shared.len(), 2);
-        assert_eq!(shared.constant_value(), Some(&Scalar::Variant(resource)));
+        assert_eq!(
+            shared.constant_value(),
+            Some(&Scalar::Variant(EncodedBuf::check(resource)))
+        );
         let name = column("__source.scope.name");
         assert_eq!(name.constant_value(), Some(&Scalar::Str("lib".into())));
         let version = column("__source.scope.version");

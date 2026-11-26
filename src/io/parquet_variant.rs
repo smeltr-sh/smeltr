@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::core::variant::{self, Value};
+use crate::core::variant::{self, Encoded, Value};
 
 /// The encoding's version this writes.
 const VERSION: u8 = 1;
@@ -32,7 +32,7 @@ const STRING: u8 = 16;
 const SHORT_STRING_MAX: usize = 63;
 
 /// The variant `b` as its metadata and its value.
-pub fn encode(b: &[u8]) -> (Vec<u8>, Vec<u8>) {
+pub fn encode(b: Encoded) -> (Vec<u8>, Vec<u8>) {
     let mut keys = BTreeMap::new();
     collect_keys(b, &mut keys);
     // Sorted, so the metadata says so and a reader may search it.
@@ -40,12 +40,12 @@ pub fn encode(b: &[u8]) -> (Vec<u8>, Vec<u8>) {
         *slot = id as u32;
     }
     let metadata = metadata(&keys);
-    let mut value = Vec::with_capacity(b.len());
+    let mut value = Vec::with_capacity(b.bytes().len());
     put_value(b, &keys, &mut value);
     (metadata, value)
 }
 
-fn collect_keys<'a>(b: &'a [u8], keys: &mut BTreeMap<&'a str, u32>) {
+fn collect_keys<'a>(b: Encoded<'a>, keys: &mut BTreeMap<&'a str, u32>) {
     match variant::read(b) {
         Value::Array(items) => items.for_each(|item| collect_keys(item, keys)),
         Value::Object(entries) => {
@@ -76,7 +76,7 @@ fn metadata(keys: &BTreeMap<&str, u32>) -> Vec<u8> {
     out
 }
 
-fn put_value(b: &[u8], keys: &BTreeMap<&str, u32>, out: &mut Vec<u8>) {
+fn put_value(b: Encoded, keys: &BTreeMap<&str, u32>, out: &mut Vec<u8>) {
     let primitive = |out: &mut Vec<u8>, ty: u8| out.push(ty << 2 | PRIMITIVE);
     match variant::read(b) {
         Value::Null => primitive(out, NULL),
@@ -136,7 +136,7 @@ fn put_value(b: &[u8], keys: &BTreeMap<&str, u32>, out: &mut Vec<u8>) {
     }
 }
 
-fn value_of(b: &[u8], keys: &BTreeMap<&str, u32>) -> Vec<u8> {
+fn value_of(b: Encoded, keys: &BTreeMap<&str, u32>) -> Vec<u8> {
     let mut out = Vec::new();
     put_value(b, keys, &mut out);
     out
@@ -208,7 +208,7 @@ pub(crate) mod tests {
     }
 
     fn encoded(b: &[u8]) -> String {
-        let (metadata, value) = encode(b);
+        let (metadata, value) = encode(variant::Encoded::check(b));
         read(&metadata, &value)
     }
 
@@ -224,7 +224,7 @@ pub(crate) mod tests {
         assert_eq!(encoded(&own(|o| variant::put_bytes(o, &[0, 1]))), "bin:[0, 1]");
         assert_eq!(encoded(&own(|o| variant::put_str(o, "hi"))), "\"hi\"");
         let long = "x".repeat(64);
-        let (_, value) = encode(&own(|o| variant::put_str(o, &long)));
+        let (_, value) = encode(variant::Encoded::check(&own(|o| variant::put_str(o, &long))));
         assert_eq!(value[0], STRING << 2, "a string past 63 bytes is no short string");
         assert_eq!(encoded(&own(|o| variant::put_str(o, &long))), format!("{long:?}"));
     }
@@ -258,7 +258,7 @@ pub(crate) mod tests {
             }
             variant::end(o, list, 300);
         });
-        let (metadata, value) = encode(&b);
+        let (metadata, value) = encode(variant::Encoded::check(&b));
         assert_eq!(value[0] >> 2 >> 2 & 1, 1, "more than 255 elements is large");
         assert_eq!((value[0] >> 2 & 3) + 1, 2, "offsets past 255 bytes take two");
         let text = read(&metadata, &value);
@@ -273,7 +273,7 @@ pub(crate) mod tests {
             }
             variant::end(o, object, 300);
         });
-        let (metadata, value) = encode(&b);
+        let (metadata, value) = encode(variant::Encoded::check(&b));
         assert_eq!((value[0] >> 2 >> 2 & 3) + 1, 2, "300 keys take two-byte ids");
         assert!(read(&metadata, &value).ends_with("k299:299}"));
     }

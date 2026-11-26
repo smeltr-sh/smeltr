@@ -56,11 +56,11 @@ impl ResourceBuilder {
     /// The grammar guarantees every regex is a compile-time constant, which is what makes this possible — a pattern
     /// built from a runtime value could not be compiled once and shared across every batch.
     pub fn intern(&mut self, p: &PatternSrc) -> PatternId {
-        if let Some(i) = self.patterns.iter().position(|q| q == p) {
-            return i;
-        }
-        self.patterns.push(p.clone());
-        self.patterns.len() - 1
+        let i = self.patterns.iter().position(|q| q == p).unwrap_or_else(|| {
+            self.patterns.push(p.clone());
+            self.patterns.len() - 1
+        });
+        PatternId::try_from(i).expect("the regex literals of one plan fit a u32")
     }
 }
 
