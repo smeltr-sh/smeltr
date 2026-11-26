@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use axum::extract::{Query, State};
 
 use super::envelope::{Envelope, Refusal};
-use super::series::{RegistryStore, SubjectPoints, Tier, chart_point_ms};
+use super::series::{Points, RegistryStore, SubjectPoints, Tier, chart_point_ms};
 use super::store::StoreError;
 use super::{AppState, GROUP_LABEL, MAX_WINDOW_MINUTES, access, warnings};
 
@@ -148,13 +148,20 @@ pub fn answer(
     let draw = if counter { query.draw } else { Draw::PerSecond };
     let end_ms = now_ms - query.ago_minutes.clamp(0, MAX_WINDOW_MINUTES) * MINUTE_MS;
     let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, end_ms, now_ms);
+    let live = end_ms == now_ms;
+    let points = Points {
+        point_ms,
+        offset_ms,
+        since_ms: from_ms,
+        until_ms: if live { i64::MAX } else { end_ms },
+    };
     let by: Vec<&str> = query.by.split(',').filter(|l| !l.is_empty()).collect();
     let mut splits: BTreeMap<Vec<String>, BTreeMap<i64, f64>> = BTreeMap::new();
     // A live window reads through the bucket's cache; one that ends in the past is asked rarely enough to read fresh.
-    let read = if end_ms == now_ms {
-        store.points_this_bucket(&query.metric, counter, point_ms, offset_ms, from_ms, now_ms)?
+    let read = if live {
+        store.points_this_bucket(&query.metric, counter, points, now_ms)?
     } else {
-        std::sync::Arc::new(store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms, end_ms)?)
+        std::sync::Arc::new(store.points_from(&query.metric, counter, points)?)
     };
     for (subject_key, points) in read.iter() {
         let Some(labels) = labels_of(subject_key) else {

@@ -93,7 +93,7 @@ pub fn run_to_json_marked<'a>(
     // The filter's own exceptions are not the pipeline's: a row it cannot decide on is left out, and marks nothing.
     let kept = filter.map(|f| {
         let mut errors = ErrorSink::new();
-        let mut fctx = Ctx::at(ctx.pool, &mut errors, ctx.now_micros);
+        let mut fctx = Ctx::at(ctx.pool, &mut errors, ctx.now);
         fctx.patterns = &f.patterns;
         let mask = crate::expr::eval::eval(&f.ir, batch, &mut fctx);
         let kept: Vec<bool> = (0..rows)

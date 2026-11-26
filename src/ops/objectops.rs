@@ -240,7 +240,7 @@ fn column_of(ctx: &mut Ctx, values: &[Option<Tag<'_>>], ty: &DataType) -> Column
         DataType::Null => Column::empty(DataType::Null, values.len()),
         ty => {
             let cells = values.iter().map(|v| v.as_ref().map(crate::format::typed::Cell::Tag));
-            crate::format::typed::build(cells, values.len(), ty, ctx.now_micros, ctx.pool).0
+            crate::format::typed::build(cells, values.len(), ty, ctx.now.as_micros(), ctx.pool).0
         }
     }
 }

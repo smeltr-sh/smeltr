@@ -240,7 +240,7 @@ pub fn parse_time_with_format(ctx: &mut Ctx, value: &Column, fmt: &str) -> Colum
     if let Some(e) = short_circuit_empty(&[value], &DataType::DateTime, len) {
         return e;
     }
-    let now = ctx.now_micros;
+    let now = ctx.now.as_micros();
     let v = value.var().unwrap();
     map_i64(ctx, &DataType::DateTime, len, &[Some(v.validity)], |i| {
         timeparse::parse_with_format_at(&String::from_utf8_lossy(v.get(i)), fmt, Some(now))
@@ -259,7 +259,7 @@ pub fn parse_time(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     if let Some(e) = short_circuit_empty(ins, &DataType::DateTime, len) {
         return e;
     }
-    let now = ctx.now_micros;
+    let now = ctx.now.as_micros();
     let v = ins[0].var().unwrap();
     let fmt_col = ins
         .get(1)
@@ -361,7 +361,7 @@ pub fn coerce_with_refusals(ctx: &mut Ctx, col: &Column, to: &DataType) -> (Colu
         }
         (T::DateTime, T::Str) => {
             let mut hint = usize::MAX;
-            let now = ctx.now_micros;
+            let now = ctx.now.as_micros();
             from_text(ctx, &col.var().unwrap(), to, len, |s| {
                 read_time(s, None, &mut hint, now).map(Scalar::DateTime)
             })
@@ -460,7 +460,7 @@ fn from_variant(ctx: &mut Ctx, col: &Column, to: &DataType) -> (Column, Option<V
     if *to == DataType::Null {
         return refuse_all(col, to);
     }
-    let (out, failed) = crate::format::tag::decode_column(col, to, ctx.now_micros, ctx.pool);
+    let (out, failed) = crate::format::tag::decode_column(col, to, ctx.now.as_micros(), ctx.pool);
     let refused = (!failed.is_empty()).then(|| {
         let mut r = vec![0u64; bits::words_for(len)];
         for (row, _) in failed {
