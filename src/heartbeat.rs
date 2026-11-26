@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use crate::core::time::DateTime;
+
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::{MetricSample, MetricValue, Metrics};
@@ -1360,9 +1362,9 @@ impl CaptureBatch {
 
     /// What `now()` reads over these rows: the instant they were taken. Every preview of them, and every test over them,
     /// runs at that one instant, so a run of them is a function of the config alone.
-    pub fn instant(&self) -> Option<i64> {
+    pub fn instant(&self) -> Option<DateTime> {
         let column = self.column(Self::TAKEN_AT)?;
-        crate::ops::timeparse::parse_auto(self.rows.first()?.values.get(column)?.as_str()?)
+        crate::ops::timeparse::parse_auto(self.rows.first()?.values.get(column)?.as_str()?).map(DateTime::from_micros)
     }
 
     /// Whether every row says when it was taken.
@@ -1374,9 +1376,9 @@ impl CaptureBatch {
         })
     }
 
-    /// These rows, each saying when it was taken: a row that does not says the table's [`CaptureBatch::instant`], else
-    /// `micros`. What saving a sample stamps it with, so a row added to a capture or a paste reads the same `now()`.
-    pub fn stamped(mut self, micros: i64) -> CaptureBatch {
+    /// These rows, each saying when it was taken: a row with no time gets the table's [`CaptureBatch::instant`], else
+    /// `at`. Saving a sample stamps its rows this way, so a row added to a capture or a paste reads the same `now()`.
+    pub fn stamped(mut self, at: DateTime) -> CaptureBatch {
         let column = self.column(Self::TAKEN_AT).unwrap_or_else(|| {
             self.columns.push(CaptureColumn {
                 name: Self::TAKEN_AT.to_string(),
@@ -1388,7 +1390,7 @@ impl CaptureBatch {
             self.columns.len() - 1
         });
         let mut text = Vec::new();
-        crate::ops::datetime::write_iso8601_micros_bare(self.instant().unwrap_or(micros), &mut text);
+        crate::ops::datetime::write_iso8601_micros_bare(self.instant().unwrap_or(at).as_micros(), &mut text);
         let at = serde_json::Value::String(String::from_utf8(text).expect("an instant is written as ASCII"));
         for cell in self.rows.iter_mut().filter_map(|row| row.values.get_mut(column)) {
             if cell.is_null() {
@@ -2004,15 +2006,15 @@ mod tests {
     /// A row added to a stamped table takes the table's instant; a table with none takes the one given.
     #[test]
     fn a_stamped_table_holds_one_instant_on_every_row() {
-        let pasted = CaptureBatch::pasted(vec![serde_json::Map::new()]).stamped(1_000_000);
+        let pasted = CaptureBatch::pasted(vec![serde_json::Map::new()]).stamped(DateTime::from_micros(1_000_000));
         let at = pasted.instant();
-        assert_eq!(at, Some(1_000_000));
+        assert_eq!(at, Some(DateTime::from_micros(1_000_000)));
         let mut grown = pasted.clone();
         grown.rows.push(CapturedRow {
             values: vec![serde_json::json!({}), serde_json::Value::Null],
             ..CapturedRow::default()
         });
-        let grown = grown.stamped(2_000_000);
+        let grown = grown.stamped(DateTime::from_micros(2_000_000));
         let column = grown.column(CaptureBatch::TAKEN_AT).unwrap();
         assert_eq!(grown.rows[1].values[column], grown.rows[0].values[column]);
         assert_eq!(grown.instant(), at);

@@ -7,4 +7,5 @@ pub mod error;
 pub mod id;
 pub mod keys;
 pub mod tally;
+pub mod time;
 pub mod variant;
