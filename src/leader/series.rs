@@ -147,6 +147,16 @@ pub fn chart_point_ms(window: std::time::Duration) -> i64 {
         .unwrap_or(WIDEST_POINT_MS)
 }
 
+/// Which points a read takes: each `point_ms` wide and starting `offset_ms` past the epoch's boundaries, from the
+/// point `since_ms` is in to the last bucket before `until_ms`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Points {
+    pub point_ms: i64,
+    pub offset_ms: i64,
+    pub since_ms: i64,
+    pub until_ms: i64,
+}
+
 /// One span a fact held for its subject ([`RegistryStore::fact_spans`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactSpan {
@@ -1250,20 +1260,25 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.series_at_from(metric, point_ms, 0, since_ms, i64::MAX)
+        let points = Points {
+            point_ms,
+            offset_ms: 0,
+            since_ms,
+            until_ms: i64::MAX,
+        };
+        self.series_at_from(metric, points)
     }
 
-    /// [`RegistryStore::series_at`] with each point starting `offset_ms` past the epoch's boundaries: a day that
-    /// starts at a reader's midnight rather than UTC's. Buckets from `until_ms` on are left out before they are
-    /// added into a point, so a window ending mid-day ends its last point there too.
-    fn series_at_from(
-        &self,
-        metric: &str,
-        point_ms: i64,
-        offset_ms: i64,
-        since_ms: i64,
-        until_ms: i64,
-    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+    /// [`RegistryStore::series_at`] over `points`. `points`' `offset_ms` starts a day at a reader's midnight rather
+    /// than UTC's. Buckets from `until_ms` on are left out before they are added into a point, so a window ending
+    /// mid-day ends its last point there too.
+    fn series_at_from(&self, metric: &str, points: Points) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        let Points {
+            point_ms,
+            offset_ms,
+            since_ms,
+            until_ms,
+        } = points;
         let mut by_subject: BTreeMap<String, SubjectPoints> = BTreeMap::new();
         for (subject_key, points) in self
             .series_since_at(metric, Tier::within_from(point_ms, offset_ms).and_finer(), since_ms)?
@@ -1296,13 +1311,17 @@ impl RegistryStore {
         &self,
         metric: &str,
         counter: bool,
-        point_ms: i64,
-        offset_ms: i64,
-        since_ms: i64,
+        points: Points,
         now_ms: i64,
     ) -> Result<std::sync::Arc<Vec<(String, SubjectPoints)>>, StoreError> {
         let bucket_ms = Tier::TenSeconds.align(now_ms);
-        let key = (metric.to_string(), counter, point_ms, offset_ms, since_ms);
+        let key = (
+            metric.to_string(),
+            counter,
+            points.point_ms,
+            points.offset_ms,
+            points.since_ms,
+        );
         {
             let mut read = self.points_read.lock();
             if read.bucket_ms != bucket_ms {
@@ -1314,12 +1333,12 @@ impl RegistryStore {
                 return Ok(points.clone());
             }
         }
-        let points = std::sync::Arc::new(self.points_from(metric, counter, point_ms, offset_ms, since_ms, i64::MAX)?);
+        let read_now = std::sync::Arc::new(self.points_from(metric, counter, points)?);
         let mut read = self.points_read.lock();
         if read.bucket_ms == bucket_ms {
-            read.reads.insert(key, points.clone());
+            read.reads.insert(key, read_now.clone());
         }
-        Ok(points)
+        Ok(read_now)
     }
 
     /// [`RegistryStore::series_at`] for a gauge: one value per point, its highest.
@@ -1329,23 +1348,25 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, point_ms, 0, since_ms, i64::MAX, f64::max)
+        let points = Points {
+            point_ms,
+            offset_ms: 0,
+            since_ms,
+            until_ms: i64::MAX,
+        };
+        self.merged_at(metric, points, f64::max)
     }
 
-    /// Every subject of `metric` with a point from `since_ms` and a bucket before `until_ms`, each point `point_ms`
-    /// wide and starting `offset_ms` past the epoch's boundaries, its buckets added for a counter and the highest
-    /// taken for a gauge.
+    /// Every subject of `metric` with a point among `points`, its buckets added for a counter and the highest taken
+    /// for a gauge.
     pub fn points_from(
         &self,
         metric: &str,
         counter: bool,
-        point_ms: i64,
-        offset_ms: i64,
-        since_ms: i64,
-        until_ms: i64,
+        points: Points,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         let merge: fn(f64, f64) -> f64 = if counter { |sum, value| sum + value } else { f64::max };
-        self.merged_at(metric, point_ms, offset_ms, since_ms, until_ms, merge)
+        self.merged_at(metric, points, merge)
     }
 
     /// Whether `metric` is a counter, or `None` when the store holds no series of it.
@@ -1373,14 +1394,11 @@ impl RegistryStore {
     fn merged_at(
         &self,
         metric: &str,
-        point_ms: i64,
-        offset_ms: i64,
-        since_ms: i64,
-        until_ms: i64,
+        points: Points,
         merge: fn(f64, f64) -> f64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         Ok(self
-            .series_at_from(metric, point_ms, offset_ms, since_ms, until_ms)?
+            .series_at_from(metric, points)?
             .into_iter()
             .map(|(subject_key, points)| {
                 let mut merged: SubjectPoints = Vec::new();
@@ -3293,7 +3311,13 @@ mod tests {
         let (point, now) = (Tier::TenSeconds.bucket_ms(), 1_000_000_000_000);
         store.record_delta("m", "s", now, 1.0).unwrap();
         let sum = |now_ms| -> f64 {
-            let read = store.points_this_bucket("m", true, point, 0, 0, now_ms).unwrap();
+            let points = Points {
+                point_ms: point,
+                offset_ms: 0,
+                since_ms: 0,
+                until_ms: i64::MAX,
+            };
+            let read = store.points_this_bucket("m", true, points, now_ms).unwrap();
             read.iter().flat_map(|(_, points)| points.iter().map(|(_, v)| v)).sum()
         };
         assert_eq!(sum(now), 1.0);

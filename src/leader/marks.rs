@@ -598,8 +598,7 @@ async fn chart_of(
         throughput::chart(
             store,
             throughput::Subject::new(&group, &source, sender.as_ref()),
-            asked.from_millis,
-            asked.to_millis,
+            asked.from_millis..asked.to_millis,
             now_ms,
             asked.window_millis,
             &learning,

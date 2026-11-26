@@ -1442,9 +1442,10 @@ impl<'a> Subject<'a> {
     }
 }
 
-/// `subject`'s rows from the point `from_ms` is in until `to_ms`, against its range ([`expected_over`]), as of
-/// `now_ms`. Its points are as wide as a chart of that span draws them ([`super::series::chart_point_ms`]), and no
-/// finer than the rows kept from then: five minutes for the past four weeks, an hour before.
+/// `subject`'s rows from the point `shown_ms` starts in to the end of `shown_ms`, against its range
+/// ([`expected_over`]), as of `now_ms`. Its points are as wide as a chart of that span draws them
+/// ([`super::series::chart_point_ms`]), and no finer than the rows kept from then: five minutes for the past four
+/// weeks, an hour before.
 ///
 /// Given the `window_ms` of one of [`WIDTHS`], each point is instead the rate over that width ending where the point
 /// ends, against that width's range, as that width judged it; its points are then no wider than the width. A point
@@ -1452,12 +1453,12 @@ impl<'a> Subject<'a> {
 pub fn chart(
     store: &RegistryStore,
     subject: Subject,
-    from_ms: i64,
-    to_ms: i64,
+    shown_ms: std::ops::Range<i64>,
     now_ms: i64,
     window_ms: Option<i64>,
     learning: &Marks,
 ) -> Result<Chart, super::store::StoreError> {
+    let (from_ms, to_ms) = (shown_ms.start, shown_ms.end);
     let kept = match now_ms - from_ms <= Tier::FiveMinutes.retention_ms() {
         true => BUCKET.bucket_ms(),
         false => Tier::OneHour.bucket_ms(),
@@ -1493,9 +1494,14 @@ pub fn chart(
                 .collect()
         }
     };
+    let drawn = Drawn {
+        since_ms: since,
+        now_ms: to_ms.min(now_ms),
+        point_ms,
+    };
     let expected = match width {
-        Some(width) => expected_at(store, subject, since, to_ms.min(now_ms), point_ms, width, learning)?,
-        None => expected_over(store, subject, since, to_ms.min(now_ms), point_ms, learning)?,
+        Some(width) => expected_at(store, subject, drawn, width, learning)?,
+        None => expected_over(store, subject, drawn, learning)?,
     };
     Ok(Chart {
         point_millis: point_ms,
@@ -1514,8 +1520,16 @@ pub struct ExpectedPoint {
     pub high: f64,
 }
 
-/// `subject`'s range, as rows per second, for each point of a chart drawn in points `point_ms` wide
-/// ([`super::series::chart_point_ms`]), from the point `since_ms` is in to the point `now_ms` is in. A point's range is
+/// The points a chart draws: each `point_ms` wide ([`super::series::chart_point_ms`]), from the point `since_ms` is in
+/// to the point `now_ms` is in.
+#[derive(Debug, Clone, Copy)]
+pub struct Drawn {
+    pub since_ms: i64,
+    pub now_ms: i64,
+    pub point_ms: i64,
+}
+
+/// `subject`'s range, as rows per second, for each point of `drawn`. A point's range is
 /// the one judged at the widest width no wider than it, as of its hour. For a source's point finer than five minutes,
 /// it is the source's swings at the point's own width ([`record_swings`]); a sender's rows are kept no finer than five
 /// minutes, so its chart is drawn no finer. A point where that width does not judge it has none. The range reads only
@@ -1523,40 +1537,32 @@ pub struct ExpectedPoint {
 pub fn expected_over(
     store: &RegistryStore,
     subject: Subject,
-    since_ms: i64,
-    now_ms: i64,
-    point_ms: i64,
+    drawn: Drawn,
     learning: &Marks,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
-    if point_ms < BUCKET.bucket_ms() {
+    if drawn.point_ms < BUCKET.bucket_ms() {
         return match subject.sender {
             Some(_) => Ok(Vec::new()),
-            None => swung_over(
-                store,
-                subject.group,
-                subject.source,
-                since_ms,
-                now_ms,
-                point_ms,
-                learning,
-            ),
+            None => swung_over(store, subject.group, subject.source, drawn, learning),
         };
     }
     let width = WIDTHS
         .into_iter()
         .rev()
-        .find(|w| w.ms() <= point_ms)
+        .find(|w| w.ms() <= drawn.point_ms)
         .unwrap_or(WIDTHS[0]);
-    expected_at(store, subject, since_ms, now_ms, point_ms, width, learning)
+    expected_at(store, subject, drawn, width, learning)
 }
 
 /// [`expected_over`] at `width`, whatever its points' width.
 fn expected_at(
     store: &RegistryStore,
     subject: Subject,
-    since_ms: i64,
-    now_ms: i64,
-    point_ms: i64,
+    Drawn {
+        since_ms,
+        now_ms,
+        point_ms,
+    }: Drawn,
     width: Width,
     learning: &Marks,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
@@ -1614,14 +1620,16 @@ pub fn rows_of(
 }
 
 /// [`expected_over`] for a chart finer than [`BUCKET`]: each bucket's range is how far the source's rate at
-/// `width_ms` swung in the buckets near that time of day on past days, a [`TAIL`] of them cut from each end.
+/// `drawn`'s point width swung in the buckets near that time of day on past days, a [`TAIL`] of them cut from each end.
 fn swung_over(
     store: &RegistryStore,
     group: &str,
     source: &str,
-    since_ms: i64,
-    now_ms: i64,
-    width_ms: i64,
+    Drawn {
+        since_ms,
+        now_ms,
+        point_ms: width_ms,
+    }: Drawn,
     learning: &Marks,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let width = BUCKET.bucket_ms();
@@ -1960,8 +1968,7 @@ mod tests {
         let at = chart(
             &store,
             Subject::source("g", "s"),
-            END - 2 * HOUR,
-            END,
+            END - 2 * HOUR..END,
             END,
             Some(half_hour),
             &Marks::default(),
@@ -2208,8 +2215,7 @@ mod tests {
         let hour = chart(
             &store,
             Subject::new("g", "s", Some(&fw("fw-01"))),
-            END - HOUR,
-            END,
+            END - HOUR..END,
             END,
             None,
             &Marks::default(),
@@ -2225,8 +2231,7 @@ mod tests {
         let before = chart(
             &store,
             Subject::new("g", "s", Some(&fw("fw-01"))),
-            dropped - DAY_MS,
-            dropped,
+            dropped - DAY_MS..dropped,
             END,
             None,
             &Marks::default(),
@@ -2730,7 +2735,12 @@ mod tests {
     const SUBJECT: Subject = Subject::source("g", "s");
 
     fn expected(store: &RegistryStore, since_ms: i64, point_ms: i64) -> Vec<ExpectedPoint> {
-        expected_over(store, SUBJECT, since_ms, END + 1000, point_ms, &Marks::default()).unwrap()
+        let drawn = Drawn {
+            since_ms,
+            now_ms: END + 1000,
+            point_ms,
+        };
+        expected_over(store, SUBJECT, drawn, &Marks::default()).unwrap()
     }
 
     #[test]
@@ -2783,9 +2793,11 @@ mod tests {
         let none = expected_over(
             &store,
             Subject::source("g", "other"),
-            END - HOUR,
-            END + 1000,
-            BUCKET.bucket_ms(),
+            Drawn {
+                since_ms: END - HOUR,
+                now_ms: END + 1000,
+                point_ms: BUCKET.bucket_ms(),
+            },
             &Marks::default(),
         );
         assert_eq!(none.unwrap(), Vec::new());
@@ -2874,7 +2886,7 @@ mod tests {
     fn a_fine_chart_has_the_range_its_points_swung_in() {
         let store = swung_since(END - 8 * DAY_MS);
         for (width, band) in [(10_000, (4.0, 16.0)), (60_000, (8.0, 12.0))] {
-            let points = expected_over(&store, SUBJECT, END - HOUR, END + 1000, width, &Marks::default()).unwrap();
+            let points = expected(&store, END - HOUR, width);
             assert_eq!(points.len(), 13);
             assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
         }
@@ -2883,9 +2895,7 @@ mod tests {
     /// As the wider widths, a fine chart has no range until the source's swings reach back a week.
     #[test]
     fn a_fine_chart_has_no_range_until_its_swings_reach_back_a_week() {
-        let fine = |store: &RegistryStore| {
-            expected_over(store, SUBJECT, END - HOUR, END + 1000, 10_000, &Marks::default()).unwrap()
-        };
+        let fine = |store: &RegistryStore| expected(store, END - HOUR, 10_000);
         assert_eq!(fine(&swung_since(END - JUDGED_AFTER_MS - HOUR)).len(), 13);
         let half = fine(&swung_since(END - JUDGED_AFTER_MS - HOUR / 2));
         assert_eq!(half.first().map(|p| p.from_millis), Some(END - HOUR / 2));
