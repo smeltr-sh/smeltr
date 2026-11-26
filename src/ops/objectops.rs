@@ -8,6 +8,7 @@ use std::borrow::Cow;
 
 use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
+use crate::core::variant;
 use crate::format::tag::{self, Tag};
 
 /// A function over an object's keys, as `IrKind::ObjectOp` carries it.
@@ -177,6 +178,20 @@ pub fn from_entries(ctx: &mut Ctx, pairs: &Column) -> Column {
 pub fn get(ctx: &mut Ctx, objects: &Column, key: &Column) -> Column {
     let rows = objects.len();
     let mut b = StrBuilder::new(ctx.pool, VarType::Variant, rows);
+    // A variant's member is read in place, with no copy of its object.
+    if let Ok(v) = objects.variant() {
+        for row in 0..rows {
+            let member = match tag::row_tag(key, row) {
+                Some(Tag::Str(key)) if v.validity.is_valid(row) => variant::member(v.get(row), &key),
+                _ => None,
+            };
+            match member {
+                Some(m) => b.push_encoded(ctx.pool, m),
+                None => b.push_null(),
+            }
+        }
+        return b.finish();
+    }
     let mut buf = Vec::new();
     for row in 0..rows {
         let found = match (tag::row_tag(objects, row), tag::row_tag(key, row)) {
