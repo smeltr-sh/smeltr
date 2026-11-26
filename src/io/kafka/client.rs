@@ -2102,7 +2102,11 @@ mod tests {
         };
         assert!(pass(&[record(0, 100), record(1, 100)]), "the first records");
         assert!(!pass(&[record(2, 100)]), "one more, short of a batch's worth");
-        assert!(slot.lock().wait_left() > Duration::ZERO, "the reader waits for more");
+        // Short of a batch's worth, so the reader waits out the small-batch wait (`BatchWait`'s own tests time it).
+        assert!(
+            slot.held() < crate::worker::LEAST_BATCH_BYTES,
+            "the reader waits for more"
+        );
         let worth = crate::worker::LEAST_BATCH_BYTES;
         assert!(pass(&[record(3, worth)]), "the record that makes a batch's worth");
         assert_eq!(slot.lock().wait_left(), Duration::ZERO, "the reader takes it at once");
