@@ -29,6 +29,7 @@ pub use validity::Validity;
 use crate::core::{
     bits,
     buffer::{Buffer, BufferPool},
+    variant::{Encoded, EncodedBuf},
 };
 
 // ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ pub enum Scalar {
     Str(String),
     Bytes(Vec<u8>),
     /// One variant value, in its encoded form.
-    Variant(Vec<u8>),
+    Variant(EncodedBuf),
 }
 
 impl Scalar {
@@ -185,6 +186,52 @@ impl<'a> VarLen<'a> {
     }
 }
 
+/// A `Str` column's rows. Its bytes were checked as UTF-8 once, when the column was sealed (`StrBuilder`'s `finish`
+/// or `finish_growing`), so a row is read as text with no check of its own.
+#[derive(Debug)]
+pub(crate) struct StrRows<'a>(VarLen<'a>);
+
+impl<'a> StrRows<'a> {
+    #[inline]
+    pub fn get(&self, row: usize) -> &'a str {
+        // SAFETY: only a sealed `Str` column makes a `StrRows`. Sealing one checked that its whole buffer is UTF-8 and
+        // that each row starts on a character boundary, so each row is UTF-8 too.
+        unsafe { std::str::from_utf8_unchecked(self.0.get(row)) }
+    }
+
+    /// The rows as bytes, with their validity.
+    #[inline]
+    pub fn rows(&self) -> &VarLen<'a> {
+        &self.0
+    }
+}
+
+/// A variant column's rows. Their strings and keys were checked as UTF-8 once, when the column was sealed
+/// (`StrBuilder`'s `finish` or `finish_growing`), so a row is read with no check of its own.
+#[derive(Debug)]
+pub struct VariantRows<'a> {
+    rows: VarLen<'a>,
+    pub validity: &'a Validity,
+}
+
+impl<'a> VariantRows<'a> {
+    /// A valid row's value. A null row has no bytes, and reading it panics.
+    #[inline]
+    pub fn get(&self, row: usize) -> Encoded<'a> {
+        // SAFETY: only a sealed variant column makes a `VariantRows`, and sealing one checked each row's strings and
+        // keys.
+        unsafe { Encoded::unchecked(self.rows.get(row)) }
+    }
+}
+
+/// A sealed column's rows as bytes, with the type of the column they came from, so a builder of that type copies them
+/// with no check of their text.
+#[derive(Debug)]
+pub(crate) struct SealedRows<'a> {
+    var_type: VarType,
+    pub rows: VarLen<'a>,
+}
+
 #[derive(Debug)]
 pub struct List<'a> {
     pub offsets: &'a [u32],
@@ -255,17 +302,29 @@ impl Column {
                 }
                 c
             }
-            Scalar::Str(text) => Column::repeated(pool, VarType::Str, text.as_bytes(), len),
-            Scalar::Bytes(bytes) => Column::repeated(pool, VarType::Bytes, bytes, len),
-            Scalar::Variant(value) => Column::repeated(pool, VarType::Variant, value, len),
+            Scalar::Str(text) => Column::repeated(pool, VarType::Str, text.len(), len, |b, _| b.push_text(text)),
+            Scalar::Bytes(bytes) => Column::repeated(pool, VarType::Bytes, bytes.len(), len, |b, _| b.push(bytes)),
+            Scalar::Variant(value) => {
+                let v = value.get();
+                Column::repeated(pool, VarType::Variant, v.bytes().len(), len, |b, pool| {
+                    b.push_encoded(pool, v)
+                })
+            }
         }
     }
 
-    fn repeated(pool: &mut BufferPool, var_type: VarType, bytes: &[u8], len: usize) -> Column {
+    /// `len` rows of `row_bytes` bytes each, each written by `push`.
+    fn repeated(
+        pool: &mut BufferPool,
+        var_type: VarType,
+        row_bytes: usize,
+        len: usize,
+        push: impl Fn(&mut StrBuilder, &mut BufferPool),
+    ) -> Column {
         let mut b = StrBuilder::new(pool, var_type, len);
-        b.reserve(pool, bytes.len() * len);
+        b.reserve(pool, row_bytes * len);
         for _ in 0..len {
-            b.push(bytes);
+            push(&mut b, pool);
         }
         b.finish()
     }
@@ -560,13 +619,26 @@ impl Column {
         }
     }
 
+    /// A `Str` column's rows, as text.
+    pub(crate) fn str(&self) -> Result<StrRows<'_>, TypeError> {
+        match &self.storage {
+            Storage::VarLen {
+                var_type: VarType::Str, ..
+            } => self.varlen().map(StrRows),
+            _ => Err(self.wrong("Str")),
+        }
+    }
+
     /// A variant column's rows, each one encoded value (`core::variant`).
-    pub fn variant(&self) -> Result<VarLen<'_>, TypeError> {
+    pub fn variant(&self) -> Result<VariantRows<'_>, TypeError> {
         match &self.storage {
             Storage::VarLen {
                 var_type: VarType::Variant,
                 ..
-            } => self.varlen(),
+            } => self.varlen().map(|rows| VariantRows {
+                validity: rows.validity,
+                rows,
+            }),
             _ => Err(self.wrong("Variant")),
         }
     }
@@ -599,6 +671,17 @@ impl Column {
             Storage::Empty(_) | Storage::Constant(_) | Storage::Fixed { .. } | Storage::Bits { .. } => {
                 sizes.iter_mut().for_each(|size| *size = size.saturating_add(8));
             }
+        }
+    }
+
+    /// The rows of any variable-length column, to copy into a builder (`StrBuilder::push_row`).
+    pub(crate) fn sealed_rows(&self) -> Result<SealedRows<'_>, TypeError> {
+        match &self.storage {
+            Storage::VarLen { var_type, .. } => self.varlen().map(|rows| SealedRows {
+                var_type: *var_type,
+                rows,
+            }),
+            _ => Err(self.wrong("Str, Bytes or Variant")),
         }
     }
 
@@ -888,14 +971,14 @@ impl Column {
             }
 
             Storage::VarLen { var_type, .. } => {
-                let v = self.varlen().expect("VarLen storage matched varlen()");
-                let total: usize = indices.iter().map(|&r| v.row_len(r as usize)).sum();
+                let v = self.sealed_rows().expect("VarLen storage matched sealed_rows()");
+                let total: usize = indices.iter().map(|&r| v.rows.row_len(r as usize)).sum();
                 let mut b = StrBuilder::new(pool, *var_type, n);
                 b.reserve(pool, total);
                 for &r in indices {
                     let r = r as usize;
-                    if v.validity.is_valid(r) {
-                        b.push(v.get(r));
+                    if v.rows.validity.is_valid(r) {
+                        b.push_row(&v, r);
                     } else {
                         b.push_null();
                     }

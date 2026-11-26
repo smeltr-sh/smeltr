@@ -13,7 +13,7 @@ use crate::core::bits;
 use crate::core::buffer::{Buffer, BufferPool};
 use crate::core::column::{Column, DataType, StrBuilder, Validity, VarType};
 use crate::core::tally::TagCounts;
-use crate::core::variant;
+use crate::core::variant::{self, Encoded};
 use crate::format::bytes_text::BytesForm;
 use crate::format::tag::{self, Bytes, Emit, Tag};
 use crate::ops::convert::{parse_bool, parse_f64, parse_i64, read_time, round_i64, timeparse_duration};
@@ -30,7 +30,7 @@ pub enum Cell<'a, 'd> {
         quoted: bool,
     },
     Tag(&'a Tag<'d>),
-    Variant(&'a [u8]),
+    Variant(Encoded<'a>),
 }
 
 /// The kinds `TagCounts` tallies.
@@ -115,6 +115,9 @@ struct Texts {
     /// One entry more than the rows written.
     offsets: Vec<u32>,
     valid: Vec<bool>,
+    /// What every row pushed is known to be, so sealing the column need not check it: UTF-8, or one `Encoded`.
+    all_text: bool,
+    all_encoded: bool,
 }
 
 impl Texts {
@@ -124,11 +127,31 @@ impl Texts {
             len: 0,
             offsets: vec![0],
             valid: Vec::new(),
+            all_text: true,
+            all_encoded: true,
         }
     }
 
     /// Unwinds with `OverBudget` when the pool's budget refuses the bytes.
     fn push(&mut self, bytes: Option<&[u8]>, pool: &mut BufferPool) {
+        if bytes.is_some() {
+            self.all_text = false;
+            self.all_encoded = false;
+        }
+        self.put(bytes, pool);
+    }
+
+    fn push_text(&mut self, text: &str, pool: &mut BufferPool) {
+        self.all_encoded = false;
+        self.put(Some(text.as_bytes()), pool);
+    }
+
+    fn push_encoded(&mut self, v: Encoded, pool: &mut BufferPool) {
+        self.all_text = false;
+        self.put(Some(v.bytes()), pool);
+    }
+
+    fn put(&mut self, bytes: Option<&[u8]>, pool: &mut BufferPool) {
         if let Some(b) = bytes {
             let end = self.len + b.len();
             let data = match &mut self.data {
@@ -163,9 +186,17 @@ impl Texts {
         let mut b = StrBuilder::new(pool, var_type, rows);
         b.reserve(pool, self.len);
         let data = self.data.as_ref().map_or(&[][..], |d| &d.as_slice::<u8>()[..self.len]);
+        let checked = match var_type {
+            VarType::Str => self.all_text,
+            VarType::Variant => self.all_encoded,
+            VarType::Bytes => false,
+        };
         for (row, &valid) in self.valid.iter().enumerate() {
+            let bytes = &data[self.offsets[row] as usize..self.offsets[row + 1] as usize];
             match valid {
-                true => b.push(&data[self.offsets[row] as usize..self.offsets[row + 1] as usize]),
+                // SAFETY: every row of a text column was pushed as a str, and of a variant column as an `Encoded`.
+                true if checked => unsafe { b.push_checked(bytes) },
+                true => b.push(bytes),
                 false => b.push_null(),
             }
         }
@@ -235,9 +266,7 @@ impl TypedBuilder {
                 tag::emit(b, &mut Slot::new(self, row, pool))
             }
             Cell::Tag(t @ (Tag::Array(_) | Tag::Object(_))) => {
-                let mut bytes = Vec::new();
-                tag::encode(t, &mut bytes);
-                self.set(row, Cell::Variant(&bytes), pool);
+                self.set(row, Cell::Variant(tag::encoded(t).get()), pool);
             }
             cell => self.put(row, cell, pool),
         }
@@ -252,13 +281,12 @@ impl TypedBuilder {
         let (fits, kind) = self.write(row, cell, pool);
         self.close_row(row, fits, kind);
         if !fits {
-            let mut bytes = Vec::new();
-            match cell {
-                Cell::Text { text, .. } => tag::encode(&Tag::Str(text.into()), &mut bytes),
-                Cell::Tag(t) => tag::encode(t, &mut bytes),
-                Cell::Variant(b) => bytes.extend_from_slice(b),
-            }
-            self.failed.last_mut().expect("close_row kept it").1 = Some(tag::json_text(&bytes));
+            let text = match cell {
+                Cell::Text { text, .. } => tag::json_text(tag::encoded(&Tag::Str(text.into())).get()),
+                Cell::Tag(t) => tag::json_text(tag::encoded(t).get()),
+                Cell::Variant(b) => tag::json_text(b),
+            };
+            self.failed.last_mut().expect("close_row kept it").1 = Some(text);
         }
     }
 
@@ -349,7 +377,7 @@ impl TypedBuilder {
                     Cell::Tag(t) => tag::stringify_scalar(t),
                     Cell::Variant(b) => tag::json_text(b).into(),
                 };
-                texts.push(Some(text.as_bytes()), pool);
+                texts.push_text(&text, pool);
                 (true, arrived(cell, false, Kind::Str))
             }
             // Text reads as `parseBytes` reads it, in base64.
@@ -375,17 +403,10 @@ impl TypedBuilder {
                 (false, arrived(cell, false, Kind::Object))
             }
             Store::Variant(texts) => {
-                let mut bytes = Vec::new();
                 match cell {
-                    Cell::Variant(b) => texts.push(Some(b), pool),
-                    Cell::Tag(t) => {
-                        tag::encode(t, &mut bytes);
-                        texts.push(Some(&bytes), pool);
-                    }
-                    Cell::Text { text, .. } => {
-                        variant::put_str(&mut bytes, text);
-                        texts.push(Some(&bytes), pool);
-                    }
+                    Cell::Variant(b) => texts.push_encoded(b, pool),
+                    Cell::Tag(t) => texts.push_encoded(tag::encoded(t).get(), pool),
+                    Cell::Text { text, .. } => texts.push_encoded(tag::encoded(&Tag::Str(text.into())).get(), pool),
                 }
                 (true, arrived(cell, false, Kind::Str))
             }
@@ -570,7 +591,8 @@ impl Row<'_> {
     /// The container read whole ends: it is written now, and its buffer goes back to the builder.
     fn end_whole(&mut self) {
         if let State::Whole(bytes) = std::mem::replace(&mut self.state, State::Value) {
-            self.b.put(self.row, Cell::Variant(&bytes.out), self.pool);
+            self.b
+                .put(self.row, Cell::Variant(Encoded::check(&bytes.out)), self.pool);
             self.b.bytes = bytes.out;
         }
     }
@@ -775,7 +797,7 @@ fn is_empty(cell: Cell<'_, '_>, blank_is_null: bool) -> bool {
         Cell::Text { text, .. } => blank_is_null && text.trim().is_empty(),
         Cell::Tag(Tag::Str(s)) => blank_is_null && s.trim().is_empty(),
         Cell::Tag(_) => false,
-        Cell::Variant(b) => b[0] == variant::NULL,
+        Cell::Variant(b) => b.bytes()[0] == variant::NULL,
     }
 }
 
@@ -866,7 +888,7 @@ fn arrived(cell: Cell<'_, '_>, parsed: bool, sink: Kind) -> Kind {
             Tag::Object(_) => Kind::Object,
         },
         // The tag byte alone, as `Tag`'s discriminant above.
-        Cell::Variant(b) => match b[0] {
+        Cell::Variant(b) => match b.bytes()[0] {
             variant::FALSE | variant::TRUE => Kind::Bool,
             variant::I64 | variant::DURATION => Kind::Int,
             variant::F64 => Kind::Float,

@@ -1,7 +1,8 @@
 //! Builds a variable-length column.
 
-use super::{Column, Storage, Validity, VarType};
+use super::{Column, SealedRows, Storage, Validity, VarType};
 use crate::core::buffer::{Buffer, BufferPool};
+use crate::core::variant::{self, Encoded};
 
 // ---------------------------------------------------------------------------
 // StrBuilder
@@ -32,6 +33,8 @@ pub struct StrBuilder {
     cap: usize,
     /// Whether `len` grows with the rows pushed (`growing`).
     growing: bool,
+    /// Whether a push wrote bytes not known to be checked, so sealing checks the text.
+    unchecked: bool,
 }
 
 impl StrBuilder {
@@ -48,6 +51,7 @@ impl StrBuilder {
             len,
             cap: 0,
             growing: false,
+            unchecked: false,
         }
     }
 
@@ -94,6 +98,41 @@ impl StrBuilder {
     /// Panics if the reserved space runs out; a kernel that measured correctly never lands there.
     #[inline]
     pub fn push(&mut self, s: &[u8]) {
+        self.unchecked = true;
+        self.put(s);
+    }
+
+    /// `push` of a row whose text is already checked, so sealing need not check it again.
+    ///
+    /// # Safety
+    /// `s` must be UTF-8 for a `str` builder, and one `variant::Encoded` value for a variant builder.
+    #[inline]
+    pub(crate) unsafe fn push_checked(&mut self, s: &[u8]) {
+        self.put(s);
+    }
+
+    /// `push` of text known to be UTF-8, so a text column need not check it again.
+    #[inline]
+    pub(crate) fn push_text(&mut self, s: &str) {
+        self.unchecked |= self.var_type != VarType::Str;
+        self.put(s.as_bytes());
+    }
+
+    /// `push` of row `row` of `from`, so a builder of `from`'s type need not check it again.
+    #[inline]
+    pub(crate) fn push_row(&mut self, from: &SealedRows, row: usize) {
+        self.unchecked |= from.var_type != self.var_type;
+        self.put(from.rows.get(row));
+    }
+
+    /// `push_grow` of row `row` of `from`, as `push_row`.
+    pub(crate) fn push_row_grow(&mut self, pool: &mut BufferPool, from: &SealedRows, row: usize) {
+        self.unchecked |= from.var_type != self.var_type;
+        self.put_parts_grow(pool, &[from.rows.get(row)]);
+    }
+
+    #[inline]
+    fn put(&mut self, s: &[u8]) {
         debug_assert!(self.row < self.len, "pushed more rows than the column holds");
         if self.pos as usize + s.len() > self.cap {
             let requested = self.pos as usize + s.len();
@@ -116,6 +155,18 @@ impl StrBuilder {
 
     /// `push_grow` of `parts` written one after another as one row, so a caller joins them without a copy of its own.
     pub fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
+        self.unchecked = true;
+        self.put_parts_grow(pool, parts);
+    }
+
+    /// `push_grow` of a variant whose text is already checked, so sealing a variant column need not check it again.
+    pub(crate) fn push_encoded(&mut self, pool: &mut BufferPool, v: Encoded) {
+        // `v`'s bytes hold checked text only in a variant column; in any other they are unchecked.
+        self.unchecked |= self.var_type != VarType::Variant;
+        self.put_parts_grow(pool, &[v.bytes()]);
+    }
+
+    fn put_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
         self.room_for(pool, parts.iter().map(|p| p.len()).sum());
         for part in parts {
             self.data.as_mut_slice::<u8>()[self.pos as usize..self.pos as usize + part.len()].copy_from_slice(part);
@@ -128,6 +179,7 @@ impl StrBuilder {
     /// `push_grow` of a row of `len` bytes that `write` fills in place, so a row larger than its input is held to the
     /// pool's budget before it is written, not after a copy of it is.
     pub fn push_written_grow(&mut self, pool: &mut BufferPool, len: usize, write: impl FnOnce(&mut [u8])) {
+        self.unchecked = true;
         self.room_for(pool, len);
         let start = self.pos as usize;
         write(&mut self.data.as_mut_slice::<u8>()[start..start + len]);
@@ -190,22 +242,58 @@ impl StrBuilder {
         self.len = self.row;
         let validity = std::mem::replace(&mut self.validity, Validity::alloc(pool, self.row));
         validity.reclaim(pool);
-        // A reader's bytes are decoded before any string operation reads them, so nothing asks whether they are ASCII
-        // and the scan would be a pass over every byte read for nothing. `false` claims nothing.
-        self.seal(false)
+        // A reader's bytes are decoded before a string operation reads them, so a bytes column is not worth the scan.
+        let ascii = self.var_type != VarType::Bytes && self.check_text();
+        self.seal(ascii)
     }
 
     /// Seal the column. Every row must have been pushed or nulled.
     pub fn finish(self) -> Column {
-        debug_assert_eq!(
+        // A row that was never pushed has no offsets written, so its place in the buffer is unknown and its text is
+        // unchecked.
+        assert_eq!(
             self.row, self.len,
             "StrBuilder finished with {} of {} rows written — the kernel contract \
              requires every row to be pushed or nulled",
             self.row, self.len
         );
-        // Once over the whole buffer, not once per push: `is_ascii` runs a word at a time.
-        let ascii = self.data.as_slice::<u8>()[..self.pos as usize].is_ascii();
+        let ascii = self.check_text();
         self.seal(ascii)
+    }
+
+    /// Whether the column's bytes are all ASCII. Finding that also checks, once, that the text is UTF-8: a text
+    /// column's whole buffer, a variant column's strings and keys. That check is what lets `Column::str` and
+    /// `Column::variant` hand out their rows unchecked. Text that is not UTF-8 is a bug in the step that wrote it.
+    fn check_text(&self) -> bool {
+        let bytes = &self.data.as_slice::<u8>()[..self.pos as usize];
+        // Once over the whole buffer, not once per push: `is_ascii` runs a word at a time.
+        let ascii = bytes.is_ascii();
+        if !self.unchecked {
+            return ascii;
+        }
+        match self.var_type {
+            // A valid buffer can still split a character between two rows, so each row must start on a character
+            // boundary.
+            VarType::Str => assert!(
+                ascii
+                    || simdutf8::basic::from_utf8(bytes).is_ok_and(|text| {
+                        let starts = &self.offsets.as_slice::<u32>()[1..self.row];
+                        starts.iter().all(|&o| text.is_char_boundary(o as usize))
+                    }),
+                "a str column holds UTF-8"
+            ),
+            VarType::Variant if !ascii => {
+                for span in self.offsets.as_slice::<u32>()[..=self.row].windows(2) {
+                    let row = &bytes[span[0] as usize..span[1] as usize];
+                    assert!(
+                        row.is_empty() || variant::text_is_utf8(row),
+                        "a variant's strings and keys are UTF-8"
+                    );
+                }
+            }
+            VarType::Bytes | VarType::Variant => {}
+        }
+        ascii
     }
 
     fn seal(self, ascii: bool) -> Column {

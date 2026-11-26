@@ -690,7 +690,7 @@ pub fn decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `"auto"`, which detects and so has nothing to write, or where the charset cannot spell a character of the text.
 pub fn encode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    let (Some(v), Some(labels)) = (side::var(ins[0]), side::var(ins[1])) else {
+    let (Some(v), Some(labels)) = (side::str(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Bytes, len);
     };
     let mut charsets = Labels::new(Encoding::for_label);
@@ -707,8 +707,7 @@ pub fn encode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
                 continue;
             }
         };
-        // SAFETY: a `Str` column holds valid UTF-8 by the columnar model's invariant.
-        let text = unsafe { std::str::from_utf8_unchecked(v.at(i)) };
+        let text = v.get(i);
         out.clear();
         if encode_text(text, charset, &mut out) {
             b.push_grow(ctx.pool, &out);

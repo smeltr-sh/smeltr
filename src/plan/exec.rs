@@ -1254,7 +1254,7 @@ fn fold_var(
     keep: &impl Fn(usize) -> bool,
     pool: &mut BufferPool,
 ) -> Column {
-    let sv = seed_col.var().unwrap();
+    let sv = seed_col.sealed_rows().unwrap();
     let mv = mapped.var().unwrap();
     let var_type = if matches!(mapped.data_type(), DataType::Bytes) {
         VarType::Bytes
@@ -1264,16 +1264,16 @@ fn fold_var(
     let mut b = StrBuilder::new(pool, var_type, rows);
     for row in 0..rows {
         let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
-        if !sv.validity.is_valid(row) {
+        if !sv.rows.validity.is_valid(row) {
             b.push_null();
             continue;
         }
         if !(start..end).any(keep) {
-            b.push_grow(pool, sv.get(row));
+            b.push_row_grow(pool, &sv, row);
             continue;
         }
         let mut valid = true;
-        let mut buf: Vec<u8> = sv.get(row).to_vec();
+        let mut buf: Vec<u8> = sv.rows.get(row).to_vec();
         for i in (start..end).filter(|&i| keep(i)) {
             if !mv.validity.is_valid(i) {
                 valid = false;
