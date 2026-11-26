@@ -541,6 +541,7 @@ mod tests {
     use super::*;
     use crate::core::buffer::BufferPool;
     use crate::core::column::{Column, StrBuilder, VarType};
+    use crate::core::id::{SlotId, Slots};
     use crate::format::tag::Tag;
     use crate::plan::tree::{self, Node};
 
@@ -857,17 +858,15 @@ mod tests {
         show_internal: bool,
     ) -> RecordView<'a> {
         let mut tree = tree::Object::default();
-        let mut cols: Vec<&'a Column> = Vec::new();
+        let mut cols: Slots<&'a Column> = Slots::new();
         for (name, col) in fields {
-            tree.put(name, Node::Leaf(cols.len()));
-            cols.push(col);
+            tree.put(name, Node::Leaf(cols.push(col)));
         }
         if let Some((at, col)) = unclaimed {
             if tree.object(at).is_none() {
                 tree.put(at, Node::Object(tree::Object::default()));
             }
-            tree.object_mut(at).unwrap().unclaimed = Some(cols.len());
-            cols.push(col);
+            tree.object_mut(at).unwrap().unclaimed = Some(cols.push(col));
         }
         if show_internal {
             RecordView::new_with_internal(&tree, move |s| cols[s])
@@ -954,7 +953,7 @@ mod tests {
         let mut pool = BufferPool::new();
         let rest = objects(&mut pool, &[&[("id", 5), ("k", 1)]]);
         let tree = tree::Object {
-            unclaimed: Some(0),
+            unclaimed: Some(SlotId::new(0)),
             removed: vec!["id".into()],
             ..Default::default()
         };
