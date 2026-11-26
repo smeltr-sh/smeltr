@@ -3,7 +3,7 @@
 
 use crate::core::buffer::BufferPool;
 use crate::core::error::{ErrorSink, Exception, ExceptionKind};
-use crate::core::id::{FunctionId, SlotId};
+use crate::core::id::{ById, FunctionId, PatternId, SlotId};
 use crate::core::tally::FieldTally;
 use crate::core::time::DateTime;
 
@@ -13,6 +13,9 @@ use crate::core::time::DateTime;
 pub struct CompiledPattern {
     pub regex: regex::Regex,
 }
+
+/// No patterns: what a context holds until `plan::exec` sets the plan's or a route sets its own.
+static NO_PATTERNS: ById<PatternId, CompiledPattern> = ById::new();
 
 /// A kernel takes the context and its input columns and returns the column it produced, allocating its output from
 /// the pool `Ctx` carries. `&mut` because a kernel producing `Str` grows its data buffer from that pool, and because
@@ -33,7 +36,7 @@ pub struct Ctx<'a> {
     pub loop_spent: std::time::Duration,
     /// Regex literals for whatever is executing, indexed by `PatternId`. Set by `plan::exec::run_scoped` from the plan,
     /// and by `plan::topology::route_masks` from each route's own table.
-    pub patterns: &'a [CompiledPattern],
+    pub patterns: &'a ById<PatternId, CompiledPattern>,
     /// `errors.len()` when this `Ctx` was made, so `Op::Unroll` can remap only this batch's exceptions when it
     /// renumbers rows — never an earlier route's, which live in an unrelated row space. Set here rather than at the
     /// start of the run so an exception the caller records for the same batch before running it (ingest's decode
@@ -87,7 +90,7 @@ impl<'a> Ctx<'a> {
             field: None,
             loop_owner: None,
             loop_spent: std::time::Duration::ZERO,
-            patterns: &[],
+            patterns: &NO_PATTERNS,
             pipeline_error_start,
             rows: 0,
             now,

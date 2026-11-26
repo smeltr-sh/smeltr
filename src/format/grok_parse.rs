@@ -117,7 +117,7 @@ mod tests {
                         .collect(),
                 },
             ))],
-            step_ids: vec!["p".into()],
+            step_ids: vec!["p".into()].into(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces,

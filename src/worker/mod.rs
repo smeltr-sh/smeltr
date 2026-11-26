@@ -1397,7 +1397,7 @@ fn deploy(
                     .pipelines
                     .iter()
                     .find(|p| p.id == i)
-                    .map(|p| p.step_ids.clone())
+                    .map(|p| p.step_ids.to_vec())
                     .unwrap_or_default()
             })
             .collect(),
@@ -5712,9 +5712,9 @@ mod tests {
             deliver: vec![CompiledDeliverRule {
                 when: None,
                 to,
-                compiled_patterns: Vec::new(),
+                compiled_patterns: Default::default(),
             }],
-            compiled_patterns: Vec::new(),
+            compiled_patterns: Default::default(),
             on_exception: Default::default(),
         };
         let mut topology = CompiledTopology {
