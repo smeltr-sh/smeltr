@@ -1217,8 +1217,8 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
 
     let (stalled, delivered_stalled) = run(1, &[0, 1], &[1]);
     assert!(
-        stalled[1] + 1 >= both[1],
-        "the first stalled, the second keeps its share: {stalled:?} after {both:?}"
+        stalled[1] >= batches / 2,
+        "the first stalled, the second keeps its share: {stalled:?} of {batches}"
     );
     assert!(
         6 * delivered_stalled[1] >= delivered[1],
