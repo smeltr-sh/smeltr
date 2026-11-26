@@ -1,5 +1,5 @@
-//! `Source` and `Destination`: the boundary the runtime is built against (design doc, Runtime stages: "Sources,
-//! destinations, routes"). `kafka`, `logs`, `http` (with `elastic`, `splunk` and `http_post` its protocols) and
+//! `Source` and `Destination`: the boundary the runtime is built against (design doc, Runtime stages: Source,
+//! Destination). `kafka`, `logs`, `http` (with `elastic`, `splunk` and `http_post` its protocols) and
 //! `objects` (on the file destination, `files`) are the live implementations; `fake` serves every test that needs no
 //! broker.
 
