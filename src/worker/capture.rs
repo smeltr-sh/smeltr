@@ -22,10 +22,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::core::batch::{Batch, SLOT_LIVE};
+use crate::core::batch::Batch;
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
-use crate::core::column::{Column, DataType};
+use crate::core::column::DataType;
 use crate::core::ctx::Ctx;
 use crate::core::error::ErrorSink;
 use crate::expr::eval::eval;
@@ -90,16 +90,11 @@ impl Filter {
         let mut pool = BufferPool::new();
         let mut errors = ErrorSink::new();
 
-        let layout: Vec<DataType> = ingest_fields(&self.meta).into_iter().map(|(_, t)| t).collect();
-        let mut batch = Batch::new(&layout, rows, 0);
-
-        let mut live = Column::alloc(&mut pool, &DataType::Bool, rows);
-        bits::fill_valid(live.bool_mut().unwrap().values, rows);
-        batch.put(SLOT_LIVE, live, &mut pool);
-
-        // A filter keeps or leaves a record whole; what ingest notes is the pipeline's to note.
-        self.meta
-            .ingest(&mut batch, records, text, Some(&self.source), |_| true, &mut pool);
+        // A filter keeps or leaves a record whole; what decoding notes is the pipeline's to note.
+        let batch = self
+            .meta
+            .decode(records, Some(text), Some(&self.source), &mut pool)
+            .batch;
 
         let mut keep = vec![false; rows];
         {
@@ -1497,8 +1492,8 @@ fn drive<S: crate::io::Source + ?Sized>(
         }
         // The decode ingest would have done, with this source's own encoding: a captured record is text, however it
         // was captured.
-        let decoded = crate::runtime::decode_records(&records, meta);
-        let text: Vec<&str> = decoded.text.iter().map(AsRef::as_ref).collect();
+        let mut pool = BufferPool::new();
+        let decoded = meta.decode(&records, None::<&[&str]>, Some(&cold.config.id), &mut pool);
         // Labeled by the source's own name rather than a positional id, which `Subjects::resolve` leaves as it is:
         // the source may be in no deployment.
         metrics.incr(
@@ -1506,7 +1501,8 @@ fn drive<S: crate::io::Source + ?Sized>(
             &[("source", &cold.config.id)],
             records.len() as u64,
         );
-        cold.offer(&records, &text);
+        cold.offer(&records, &decoded.raw(meta));
+        decoded.batch.reclaim(&mut pool);
     }
 }
 
