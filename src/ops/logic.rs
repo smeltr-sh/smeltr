@@ -254,6 +254,12 @@ fn meet(ins: &[&Column]) -> DataType {
     ty
 }
 
+/// A constant `take_varlen` writes in each row it wins. Text is pushed as text, so the column need not check it again.
+enum Constant<'a> {
+    Text(&'a str),
+    Bytes(&'a [u8]),
+}
+
 /// A varlen column cannot be patched in place, so text is a rebuild. The reserve is what every source holds, read
 /// off its offsets, rather than a pass over the rows to find each winner's length first.
 fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, len: usize) -> Column {
@@ -263,23 +269,24 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
         _ => VarType::Str,
     };
     // A source's rows are copied as they are; a constant's text is pushed in each row it wins.
-    let readers: Vec<Option<Side<'_, SealedRows<'_>, &[u8]>>> = ins
+    let readers: Vec<Option<Side<'_, SealedRows<'_>, Constant<'_>>>> = ins
         .iter()
         .map(|c| match (c.sealed_rows(), c.constant_value()) {
             (Ok(_), _) if (var_type == VarType::Variant) != (c.data_type() == DataType::Variant) => None,
             (Ok(r), _) => {
-                let validity = r.validity;
+                let validity = r.rows.validity;
                 Some(Side::Rows(r, validity))
             }
-            (Err(_), Some(Scalar::Str(s))) if var_type != VarType::Variant => Some(Side::One(s.as_bytes())),
-            (Err(_), Some(Scalar::Bytes(b))) if var_type != VarType::Variant => Some(Side::One(b.as_slice())),
+            (Err(_), Some(Scalar::Str(s))) if var_type != VarType::Variant => Some(Side::One(Constant::Text(s))),
+            (Err(_), Some(Scalar::Bytes(b))) if var_type != VarType::Variant => Some(Side::One(Constant::Bytes(b))),
             (Err(_), _) => None,
         })
         .collect();
     let total: usize = (readers.iter().flatten())
         .map(|r| match r {
-            Side::Rows(r, _) => r.total_bytes(),
-            Side::One(s) => s.len() * len,
+            Side::Rows(r, _) => r.rows.total_bytes(),
+            Side::One(Constant::Text(s)) => s.len() * len,
+            Side::One(Constant::Bytes(s)) => s.len() * len,
         })
         .sum();
     let mut b = StrBuilder::new(ctx.pool, var_type, len);
@@ -305,7 +312,8 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
                 .expect("a source holds this row");
             match readers[k].as_ref().expect("held") {
                 Side::Rows(r, _) => b.push_row(r, w * 64 + bit),
-                Side::One(s) => b.push(s),
+                Side::One(Constant::Text(s)) => b.push_text(s),
+                Side::One(Constant::Bytes(s)) => b.push(s),
             }
         }
     }

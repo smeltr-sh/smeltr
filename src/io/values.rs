@@ -494,7 +494,8 @@ fn rest_of(object: Encoded, claimed: impl Fn(&str) -> bool) -> Value {
     variant::end(&mut rest, open, count);
     match count {
         0 => Value::Null,
-        _ => Value::Json(EncodedBuf::check(rest)),
+        // SAFETY: each key is a `&str` and each member an `Encoded` value, so every string and key in `rest` is UTF-8.
+        _ => Value::Json(unsafe { EncodedBuf::unchecked(rest) }),
     }
 }
 

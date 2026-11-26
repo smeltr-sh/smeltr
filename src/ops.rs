@@ -162,7 +162,7 @@ pub(crate) mod helpers {
     }
 
     use crate::core::bits;
-    use crate::core::column::{Column, DataType, Fixed, FixedMut, Scalar, Validity, VarLen};
+    use crate::core::column::{Column, DataType, Fixed, FixedMut, Scalar, StrRows, Validity, VarLen};
     use crate::core::ctx::Ctx;
 
     /// One kernel operand as the loop reads it: a row of the column, or the one value a constant column holds for
@@ -276,6 +276,17 @@ pub(crate) mod helpers {
         }
     }
 
+    impl<'a> Side<'a, StrRows<'a>, &'a str> {
+        /// Row `i`'s text.
+        #[inline]
+        pub fn get(&self, i: usize) -> &'a str {
+            match self {
+                Side::Rows(r, _) => r.get(i),
+                Side::One(s) => s,
+            }
+        }
+    }
+
     impl Side<'_, VarLen<'_>, &[u8]> {
         /// The bytes `len` rows hold: what a builder reserves. A constant holds its length in every row.
         pub fn total_bytes(&self, len: usize) -> usize {
@@ -357,6 +368,16 @@ pub(crate) mod helpers {
                     _ => None,
                 },
             )
+        }
+        pub fn str(c: &Column) -> Option<Side<'_, StrRows<'_>, &str>> {
+            match (c.str(), c.constant_value()) {
+                (Ok(r), _) => {
+                    let validity = r.rows().validity;
+                    Some(Side::Rows(r, validity))
+                }
+                (Err(_), Some(Scalar::Str(s))) => Some(Side::One(s)),
+                (Err(_), _) => None,
+            }
         }
         pub fn var(c: &Column) -> Option<Side<'_, VarLen<'_>, &[u8]>> {
             match (c.var(), c.constant_value()) {

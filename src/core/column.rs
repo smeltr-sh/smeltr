@@ -198,6 +198,12 @@ impl<'a> StrRows<'a> {
         // that each row starts on a character boundary, so each row is UTF-8 too.
         unsafe { std::str::from_utf8_unchecked(self.0.get(row)) }
     }
+
+    /// The rows as bytes, with their validity.
+    #[inline]
+    pub fn rows(&self) -> &VarLen<'a> {
+        &self.0
+    }
 }
 
 /// A variant column's rows. Their strings and keys were checked as UTF-8 once, when the column was sealed
@@ -223,25 +229,7 @@ impl<'a> VariantRows<'a> {
 #[derive(Debug)]
 pub(crate) struct SealedRows<'a> {
     var_type: VarType,
-    rows: VarLen<'a>,
-    pub validity: &'a Validity,
-}
-
-impl<'a> SealedRows<'a> {
-    #[inline]
-    pub fn get(&self, row: usize) -> &'a [u8] {
-        self.rows.get(row)
-    }
-
-    #[inline]
-    pub fn row_len(&self, row: usize) -> usize {
-        self.rows.row_len(row)
-    }
-
-    /// Total bytes across all rows.
-    pub fn total_bytes(&self) -> usize {
-        self.rows.total_bytes()
-    }
+    pub rows: VarLen<'a>,
 }
 
 #[derive(Debug)]
@@ -691,7 +679,6 @@ impl Column {
         match &self.storage {
             Storage::VarLen { var_type, .. } => self.varlen().map(|rows| SealedRows {
                 var_type: *var_type,
-                validity: rows.validity,
                 rows,
             }),
             _ => Err(self.wrong("Str, Bytes or Variant")),
@@ -985,12 +972,12 @@ impl Column {
 
             Storage::VarLen { var_type, .. } => {
                 let v = self.sealed_rows().expect("VarLen storage matched sealed_rows()");
-                let total: usize = indices.iter().map(|&r| v.row_len(r as usize)).sum();
+                let total: usize = indices.iter().map(|&r| v.rows.row_len(r as usize)).sum();
                 let mut b = StrBuilder::new(pool, *var_type, n);
                 b.reserve(pool, total);
                 for &r in indices {
                     let r = r as usize;
-                    if v.validity.is_valid(r) {
+                    if v.rows.validity.is_valid(r) {
                         b.push_row(&v, r);
                     } else {
                         b.push_null();
