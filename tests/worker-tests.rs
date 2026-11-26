@@ -357,6 +357,23 @@ fn deploy_to_group(data_dir: &std::path::Path, group_id: &str, file: &smeltr::co
     }
 }
 
+/// Whether a worker of the leader at `base` reports running `commit`.
+fn runs(agent: &ureq::Agent, base: &str, commit: &str) -> bool {
+    let Some(health) = agent
+        .get(format!("{base}/api/health"))
+        .call()
+        .ok()
+        .and_then(|mut resp| resp.body_mut().read_json::<serde_json::Value>().ok())
+    else {
+        return false;
+    };
+    health["threads"].as_array().is_some_and(|threads| {
+        threads
+            .iter()
+            .any(|t| t["commit"].as_str() == Some(commit) && t["supervising"]["phase"].as_str() == Some("running"))
+    })
+}
+
 fn drain_at_least(source: &mut KafkaSource, want: usize, overall_budget: Duration) -> Vec<smeltr::io::SourceRecord> {
     let deadline = Instant::now() + overall_budget;
     let mut out = Vec::new();
@@ -410,10 +427,9 @@ fn standalone_leader_runs_its_own_embedded_worker() {
         .expect("spawn smeltr --standalone");
 
     let ca_path = data_dir.join("tls").join("ca.pem");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ca_path.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_until("the leader to create its authority", Duration::from_secs(10), || {
+        ca_path.exists()
+    });
     let ca_pem = std::fs::read(&ca_path).expect("leader created its authority in time");
     let base = format!("https://127.0.0.1:{port}");
     let agent = admin_agent(&ca_pem);
@@ -426,20 +442,19 @@ fn standalone_leader_runs_its_own_embedded_worker() {
     // the TLS files, opens the store and spawns the embedded worker, and only then binds the port -- so there is a
     // window where the file the loop above waits for is there and a connection is still refused. The sibling
     // standalone test polls for the same reason.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline && agent.get(format!("{base}/api/health")).call().is_err() {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // Any answer will do: an operator route refuses a client with no session, and refusing it is answering.
+    wait_until("the leader to answer", Duration::from_secs(20), || {
+        matches!(
+            agent.get(format!("{base}/api/health")).call(),
+            Ok(_) | Err(ureq::Error::StatusCode(_))
+        )
+    });
 
     let input_topic = unique("standalone-in");
     let output_topic = unique("standalone-out");
     let kafka_group = unique("standalone-group");
     let bundle = passthrough_bundle(&brokers, &input_topic, &output_topic, &kafka_group);
     deploy_to_group(&data_dir, group_id, &bundle);
-
-    // Give the embedded worker a moment to pick up the new commit and
-    // redeploy before producing.
-    std::thread::sleep(Duration::from_secs(4));
 
     let mut dest = KafkaDestination::new(
         &KafkaDestinationConfig {
@@ -483,7 +498,9 @@ fn standalone_leader_runs_its_own_embedded_worker() {
         &Default::default(),
     )
     .unwrap();
-    let records = drain_at_least(&mut verify_source, 1, Duration::from_secs(20));
+    // The worker reads from the earliest offset, so the record waits for it to pick up the new commit, and this
+    // wait covers that too.
+    let records = drain_at_least(&mut verify_source, 1, Duration::from_secs(30));
 
     let _ = leader.kill();
     let output = leader.wait_with_output();
@@ -570,7 +587,6 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
     // credential + git clone under `state_dir` -- proving the round trip
     // works at all before we ever pull the leader out from under it.
     let mut worker = spawn_worker(Some(enroll_code));
-    std::thread::sleep(Duration::from_secs(5));
 
     let mut dest = KafkaDestination::new(
         &KafkaDestinationConfig {
@@ -614,7 +630,9 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
         &Default::default(),
     )
     .unwrap();
-    let first_records = drain_at_least(&mut verify_source, 1, Duration::from_secs(20));
+    // The worker reads from the earliest offset, so the record waits for it to enroll and deploy, and this wait
+    // covers that too.
+    let first_records = drain_at_least(&mut verify_source, 1, Duration::from_secs(30));
     assert_eq!(
         first_records.len(),
         1,
@@ -644,7 +662,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
     // holds the bundle it ran a moment ago, which is exactly the state
     // that must not be enough to start on.
     let mut worker = spawn_worker(None);
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(A_FEW_BEATS);
 
     hand(&mut dest, &[OutgoingRecord::new(b"hello-after-leader-is-gone")]);
     dest.flush().unwrap();
@@ -700,7 +718,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
     let output_topic = unique("revoke-test-out");
     let kafka_group = unique("revoke-test-group");
     let bundle = passthrough_bundle(&brokers, &input_topic, &output_topic, &kafka_group);
-    deploy_to_group(&data_dir, group_id, &bundle);
+    let deployed = deploy_to_group(&data_dir, group_id, &bundle);
 
     let code: serde_json::Value = agent
         .post(format!("{base}/api/enrollment-codes"))
@@ -732,7 +750,9 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
         .spawn()
         .expect("spawn smeltr in its worker role");
 
-    std::thread::sleep(Duration::from_secs(5));
+    wait_until("the worker to run the deployed commit", Duration::from_secs(30), || {
+        runs(&agent, &base, &deployed)
+    });
 
     // The worker persists its own generated id under `state_dir` on its
     // very first run -- the same id it enrolled and now heartbeats with,
@@ -751,10 +771,9 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
         .unwrap();
     assert_eq!(revoked["ok"], true, "{revoked:?}");
 
-    // Long enough for several heartbeat intervals (500ms) to elapse and
-    // fail with 401 -- exactly the same "unreachable" path the worker's
-    // own offline handling takes, per its own doc.
-    std::thread::sleep(Duration::from_secs(2));
+    // Long enough for several heartbeats to fail with 401, which takes the same "unreachable" path as the worker's
+    // own offline handling.
+    std::thread::sleep(A_FEW_BEATS);
 
     let mut dest = KafkaDestination::new(
         &KafkaDestinationConfig {

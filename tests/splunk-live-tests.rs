@@ -8,10 +8,11 @@
 //! Point it at `SPLUNK_TEST_HEC` and the rest of `tests/live/mod.rs`'s `Splunk`. Under `SMELTR_LIVE_TESTS=required`
 //! a missing one fails rather than skips.
 
+use crate::harness::wait_for;
 use crate::live;
 use smeltr::core::id::DestId;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use std::borrow::Cow;
 
@@ -80,18 +81,18 @@ fn deliver(d: &mut dyn Destination, rows: Vec<OwnedRecord>) -> Result<Vec<Reject
     if dispatched == Dispatched::Complete {
         return Ok(refused);
     }
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        if let Some(c) = d.poll_completions()?.into_iter().find(|c| c.batch == 1) {
-            if let Some(undelivered) = c.undelivered {
-                return Err(undelivered.error);
-            }
-            refused.extend(c.rejections);
-            return Ok(refused);
+    let done = wait_for("the batch to finish", Duration::from_secs(90), || {
+        match d.poll_completions() {
+            Ok(done) => done.into_iter().find(|c| c.batch == 1).map(Ok),
+            Err(e) => Some(Err(e)),
         }
-        assert!(Instant::now() < deadline, "no completion");
-        std::thread::sleep(Duration::from_millis(20));
+    })
+    .unwrap_or_else(|late| panic!("{late}"))?;
+    if let Some(undelivered) = done.undelivered {
+        return Err(undelivered.error);
     }
+    refused.extend(done.rejections);
+    Ok(refused)
 }
 
 fn row(value: &str) -> OwnedRecord {
@@ -102,8 +103,8 @@ fn row(value: &str) -> OwnedRecord {
     }
 }
 
-/// The events Splunk holds for `run`: each one's `n` and the time it is filed under, in epoch seconds. Asked until
-/// `expect` are there or a minute passes, since an event is searchable a moment after it is indexed.
+/// The events Splunk holds for `run`: each one's `n` and the time it is filed under, in epoch seconds. It asks until
+/// `expect` are there, for up to a minute, since an event is searchable a moment after it is indexed.
 fn landed(s: &live::Splunk, run: &str, expect: usize) -> Vec<(String, f64)> {
     let agent = ureq::Agent::new_with_defaults();
     let (user, password) = s.auth.split_once(':').expect("user:password");
@@ -111,37 +112,43 @@ fn landed(s: &live::Splunk, run: &str, expect: usize) -> Vec<(String, f64)> {
         "Basic {}",
         BytesForm::Base64.text(format!("{user}:{password}").as_bytes())
     );
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let body = agent
-            .post(format!("{}/services/search/jobs/export", s.api))
-            .header("Authorization", &auth)
-            .send_form([
-                (
-                    "search",
-                    format!("search index=main run={run} | table n _time").as_str(),
-                ),
-                ("output_mode", "json"),
-                ("earliest_time", "0"),
-                ("time_format", "%s.%6N"),
-            ])
-            .expect("searching Splunk")
-            .body_mut()
-            .read_to_string()
-            .unwrap();
-        let found: Vec<(String, f64)> = body
-            .lines()
-            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .filter_map(|v| {
-                let r = v.get("result")?;
-                Some((r["n"].as_str()?.to_string(), r["_time"].as_str()?.parse().ok()?))
-            })
-            .collect();
-        if found.len() >= expect || Instant::now() > deadline {
-            return found;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
+    let mut last = Vec::new();
+    wait_for(
+        &format!("{expect} events of run {run} to be searchable"),
+        Duration::from_secs(60),
+        || {
+            let body = agent
+                .post(format!("{}/services/search/jobs/export", s.api))
+                .header("Authorization", &auth)
+                .send_form([
+                    (
+                        "search",
+                        format!("search index=main run={run} | table n _time").as_str(),
+                    ),
+                    ("output_mode", "json"),
+                    ("earliest_time", "0"),
+                    ("time_format", "%s.%6N"),
+                ])
+                .expect("searching Splunk")
+                .body_mut()
+                .read_to_string()
+                .unwrap();
+            let found: Vec<(String, f64)> = body
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter_map(|v| {
+                    let r = v.get("result")?;
+                    Some((r["n"].as_str()?.to_string(), r["_time"].as_str()?.parse().ok()?))
+                })
+                .collect();
+            if found.len() >= expect {
+                return Some(found);
+            }
+            last = found;
+            None
+        },
+    )
+    .unwrap_or_else(|late| panic!("{late}: found {last:?}"))
 }
 
 fn event(run: &str, n: usize) -> String {

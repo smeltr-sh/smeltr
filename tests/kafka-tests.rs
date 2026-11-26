@@ -34,6 +34,7 @@ fn kafka_metrics() -> smeltr::metrics::MetricsHandle {
     smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "test")
 }
 
+use crate::harness::wait_for;
 use crate::live;
 
 fn live_brokers(test_name: &str) -> Option<String> {
@@ -71,6 +72,9 @@ fn dest_for(brokers: &str, topic: &str) -> KafkaDestination {
     )
     .unwrap()
 }
+
+/// Long enough for the clock to move on, so a time taken between two writes falls strictly between them.
+const CLOCK_MOVES: Duration = Duration::from_millis(50);
 
 /// Nothing listens here: port 1 is reserved, never a real service.
 const UNREACHABLE: &str = "127.0.0.1:1";
@@ -735,15 +739,11 @@ fn live_lag_reports_the_read_positions_distance_from_the_watermark() {
 
     // Lag is measured on a thread of its own, once at start -- before the group assigned anything, so empty -- and
     // then every `LAG_SAMPLE_INTERVAL`. The first sample with the partition in it comes from the second round.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let samples = loop {
+    let samples = wait_for("the source to report lag", Duration::from_secs(20), || {
         let samples = source.lag();
-        if !samples.is_empty() {
-            break samples;
-        }
-        assert!(Instant::now() < deadline, "no lag sample within 20s");
-        std::thread::sleep(Duration::from_millis(200));
-    };
+        (!samples.is_empty()).then_some(samples)
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
     assert_eq!(samples.len(), 1, "one assigned partition, one sample");
     let sample = &samples[0];
     assert_eq!(sample.partition.topic.as_ref(), topic);
@@ -1578,10 +1578,8 @@ fn assert_read(records: &[smeltr::io::SourceRecord], topic: &str, from: i64, to:
     }
 }
 
-/// Lets the client fill the source's inbox before the case under test.
-fn let_the_inbox_fill() {
-    std::thread::sleep(Duration::from_secs(2));
-}
+/// Long enough for the client to fill the source's inbox.
+const INBOX_FILLS: Duration = Duration::from_secs(2);
 
 /// Headers asked for mid-read reach every record not read yet, across several partitions, each record exactly once:
 /// those already in the inbox are fetched again with theirs.
@@ -1601,7 +1599,7 @@ fn live_headers_asked_for_mid_read_reach_every_record_not_read_yet() {
     .unwrap();
 
     let before = read_exactly(&mut source, 60, 60);
-    let_the_inbox_fill();
+    std::thread::sleep(INBOX_FILLS);
     source.keep_headers(true);
     let after = read_exactly(&mut source, 900 - 60, 100);
 
@@ -1637,7 +1635,7 @@ fn live_headers_asked_for_with_a_full_inbox_reach_every_record_not_read_yet() {
     .unwrap();
 
     let before = read_exactly(&mut source, 10, 10);
-    let_the_inbox_fill();
+    std::thread::sleep(INBOX_FILLS);
     source.keep_headers(true);
     let after = read_exactly(&mut source, 2990, 500);
 
@@ -1661,10 +1659,10 @@ fn live_headers_asked_for_while_blocked_reach_every_record_read_once_released() 
     .unwrap();
 
     let before = read_exactly(&mut source, 10, 10);
-    let_the_inbox_fill();
+    std::thread::sleep(INBOX_FILLS);
     source.block().unwrap();
     source.keep_headers(true);
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(INBOX_FILLS);
     source.release().unwrap();
     let after = read_exactly(&mut source, 490, 100);
 
@@ -1687,13 +1685,13 @@ fn live_headers_turned_on_off_and_on_again_follow_each_switch() {
     .unwrap();
 
     let first = read_exactly(&mut source, 10, 10);
-    let_the_inbox_fill();
+    std::thread::sleep(INBOX_FILLS);
     source.keep_headers(true);
     let second = read_exactly(&mut source, 90, 90);
     source.keep_headers(false);
     // Read without headers, from what the inbox already held with them.
     let third = read_exactly(&mut source, 100, 100);
-    let_the_inbox_fill();
+    std::thread::sleep(INBOX_FILLS);
     source.keep_headers(true);
     let fourth = read_exactly(&mut source, 200, 100);
 
@@ -1781,7 +1779,7 @@ fn live_headers_asked_for_by_one_source_on_a_shared_client_leave_the_other_alone
 
     let first_before = read_exactly(&mut first, 10, 10);
     let second_before = read_exactly(&mut second, 10, 10);
-    let_the_inbox_fill();
+    std::thread::sleep(INBOX_FILLS);
     first.keep_headers(true);
     let first_after = read_exactly(&mut first, 290, 100);
     let second_after = read_exactly(&mut second, 290, 100);
@@ -2098,12 +2096,12 @@ fn live_a_start_changed_to_a_time_rereads_from_there_once() {
         ],
     );
     dest.flush().unwrap();
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(CLOCK_MOVES);
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(CLOCK_MOVES);
     hand(&mut dest, &[OutgoingRecord::new(b"d"), OutgoingRecord::new(b"e")]);
     dest.flush().unwrap();
 
@@ -2232,7 +2230,7 @@ fn live_an_event_hubs_start_moved_to_a_time_skips_what_came_before() {
     let before = format!("{run}-before");
     hand(&mut dest, &[OutgoingRecord::new(before.as_bytes())]);
     dest.flush().unwrap();
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(CLOCK_MOVES);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap();

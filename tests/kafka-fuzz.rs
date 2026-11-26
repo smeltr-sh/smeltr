@@ -1101,6 +1101,10 @@ const HUB_PARTITIONS: i32 = 2;
 /// How long a hub seed waits for the records it sent.
 const HUB_DRAIN: Duration = Duration::from_secs(60);
 
+/// Long enough that the hub stamps the records sent before the stop and those sent after it with times clearly on
+/// their own sides of the stop.
+const HUB_CLOCK_MOVES: Duration = Duration::from_millis(1_100);
+
 const HUB_FETCHES: &[Option<&str>] = &[None, Some("4 MiB"), Some("8MB"), Some("64MiB")];
 const HUB_ENCODINGS: &[&str] = &["auto", "utf-8", "latin1", "utf-16le", "none"];
 
@@ -1334,12 +1338,12 @@ fn hub_execute(plan: &HubPlan, namespace: &str) -> Result<BTreeSet<&'static str>
         send(p, 0..cut[p as usize])?;
     }
     let stop_at = plan.stop.map(|_| {
-        std::thread::sleep(Duration::from_millis(1_100));
+        std::thread::sleep(HUB_CLOCK_MOVES);
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-        std::thread::sleep(Duration::from_millis(1_100));
+        std::thread::sleep(HUB_CLOCK_MOVES);
         at
     });
     for p in 0..HUB_PARTITIONS {
