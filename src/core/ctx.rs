@@ -90,7 +90,7 @@ impl<'a> Ctx<'a> {
         Ctx {
             pool,
             errors,
-            function: 0,
+            function: FunctionId::new(0),
             field: None,
             loop_owner: None,
             loop_spent: std::time::Duration::ZERO,

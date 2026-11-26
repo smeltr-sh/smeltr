@@ -134,10 +134,10 @@ mod tests {
     #[test]
     fn a_tally_keeps_each_parse_apart() {
         let mut tally = FieldTally::new();
-        tally.parsed(7, 3);
+        tally.parsed(FunctionId::new(7), 3);
         tally.saw(seen("order_id"));
         tally.saw(seen("total"));
-        tally.parsed(7, 3);
+        tally.parsed(FunctionId::new(7), 3);
         tally.saw(seen("payload.city"));
 
         let parses = tally.parses();

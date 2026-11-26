@@ -5,6 +5,7 @@
 use smeltr::core::batch::Batch;
 use smeltr::core::column::DataType;
 use smeltr::core::error::ExceptionKind;
+use smeltr::core::id::FunctionId;
 use smeltr::plan::config::{DeclaredField, FunctionConfig, FunctionKind, ParserKind, Step};
 
 use crate::harness;
@@ -1021,7 +1022,7 @@ fn a_field_assigned_under_a_guard_keeps_its_value() {
             code(0, &parse),
             code(3, &format!("out: {ty} = null;")),
             Step::If {
-                id: 2,
+                id: FunctionId::new(2),
                 cond: "n > 1".into(),
                 then: vec![code(1, &format!("out = {field};"))],
                 else_: vec![],
@@ -1043,7 +1044,7 @@ fn a_guard_that_excludes_a_row_still_leaves_the_field_unset() {
         code(0, &json("s: str; n: i64;")),
         code(3, "out: str = null;"),
         Step::If {
-            id: 2,
+            id: FunctionId::new(2),
             cond: "n < 0".into(),
             then: vec![code(1, "out = s;")],
             else_: vec![],
@@ -1065,7 +1066,7 @@ fn a_guarded_dynamic_parser_parses_the_rows_it_selects() {
         code(0, &json("kind: str;")),
         code(1, "amt = 0;"),
         Step::If {
-            id: 3,
+            id: FunctionId::new(3),
             cond: "kind == \"traffic\"".into(),
             then: vec![code(2, &json(""))],
             else_: vec![],
@@ -1091,7 +1092,7 @@ fn a_guarded_assignment_blends_row_by_row() {
         code(0, &json("s: str; n: i64;")),
         code(1, "out = \"seed\";"),
         Step::If {
-            id: 3,
+            id: FunctionId::new(3),
             cond: "n > 5".into(),
             then: vec![code(2, "out = s;")],
             else_: vec![],
@@ -1304,7 +1305,7 @@ fn a_parser_declaring_a_name_and_a_path_under_it_is_a_compile_error() {
     let e = compile_err(vec![func(0, parser)]);
     assert!(
         e.iter()
-            .any(|x| x.function == Some(0) && x.message.contains("`a` is already")),
+            .any(|x| x.function == Some(FunctionId::new(0)) && x.message.contains("`a` is already")),
         "{e:?}"
     );
 }
@@ -1524,7 +1525,9 @@ fn a_filtered_rename_keeps_an_undeclared_source_on_the_rows_it_skips() {
     let rename = FunctionKind::Rename {
         pairs: vec![("addr".into(), "server_addr".into())],
     };
-    let rows = run_after_parse(Step::Function(FunctionConfig::new(1, rename).with_filter(SERVER)));
+    let rows = run_after_parse(Step::Function(
+        FunctionConfig::new(FunctionId::new(1), rename).with_filter(SERVER),
+    ));
     assert_eq!(rows[0]["addr"], "10.0.0.1");
     assert_eq!(rows[0].get("server_addr"), None);
     assert_eq!(rows[1].get("addr"), None);
@@ -1536,7 +1539,9 @@ fn a_filtered_eval_keeps_an_undeclared_target_on_the_rows_it_skips() {
     let eval = FunctionKind::Eval {
         assignments: vec![("addr".into(), r#""x""#.into())],
     };
-    let rows = run_after_parse(Step::Function(FunctionConfig::new(1, eval).with_filter(SERVER)));
+    let rows = run_after_parse(Step::Function(
+        FunctionConfig::new(FunctionId::new(1), eval).with_filter(SERVER),
+    ));
     assert_eq!(rows[0]["addr"], "10.0.0.1");
     assert_eq!(rows[1]["addr"], "x");
 }

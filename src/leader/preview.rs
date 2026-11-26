@@ -1023,7 +1023,7 @@ fn parsed_fields(plan: &Plan) -> BTreeMap<String, Vec<config_file::FieldDto>> {
             ..
         } = &i.op
             && matches!(kind, plan::config::ParserKind::Grok(_))
-            && let Some(step) = plan.step_ids.get(i.function as usize)
+            && let Some(step) = plan.step_ids.get(i.function.index())
         {
             let field = |o: &plan::compile::Output| config_file::FieldDto {
                 name: o.name.clone(),
@@ -1292,7 +1292,7 @@ fn differs(was: &Column, now: &Column) -> Option<Vec<bool>> {
 /// step named by the step of the pipeline it is in: a called pipeline's steps by the call (`calls_of`).
 fn attribute(calls: &HashMap<String, String>, plan: &Plan, touched: Touched<'_>, rows: &mut [(RowOut, bool)]) {
     let step = |f: FunctionId| {
-        let id = plan.step_ids.get(f as usize)?;
+        let id = plan.step_ids.get(f.index())?;
         Some(calls.get(id).unwrap_or(id).clone())
     };
     let claimed: HashSet<String> = plan.tree.leaves().into_iter().map(|(name, _)| name).collect();
