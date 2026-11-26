@@ -21,6 +21,7 @@ use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind, Read};
 use crate::core::id::{ById, DestId, Id, SlotId, SourceId};
+use crate::core::time::DateTime;
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
 use crate::handoff::{Acks, BlockCause, Handed, Handoff, Ready, Report, Reports, Taken};
@@ -596,7 +597,7 @@ struct Attempt {
     end: usize,
     resume_from: usize,
     /// What `now()` reads, once the range has first run: a split keeps it, so every route a record takes agrees.
-    now_micros: Option<i64>,
+    now: Option<DateTime>,
 }
 
 /// `records` cut into ranges in order, each closed by the record that takes it to `bytes`, so none is empty and a
@@ -1550,7 +1551,7 @@ impl Transform {
                 start,
                 end,
                 resume_from: 0,
-                now_micros: None,
+                now: None,
             })
             .collect();
         // Every record counts its stream key once, whichever routes take it.
@@ -1564,9 +1565,7 @@ impl Transform {
         let mut diverted = 0usize;
         let mut refusal = None;
         while let Some(mut attempt) = pending.pop() {
-            attempt
-                .now_micros
-                .get_or_insert_with(crate::core::ctx::wall_clock_micros);
+            attempt.now.get_or_insert_with(DateTime::now);
             let Refused { resume_from, over } = match self.run_attempt(lane, records, &attempt, id_fields, out)? {
                 None => continue,
                 Some(refused) => refused,
@@ -1587,13 +1586,13 @@ impl Transform {
                 start: mid,
                 end: attempt.end,
                 resume_from,
-                now_micros: attempt.now_micros,
+                now: attempt.now,
             });
             pending.push(Attempt {
                 start: attempt.start,
                 end: mid,
                 resume_from,
-                now_micros: attempt.now_micros,
+                now: attempt.now,
             });
         }
         if let Some(over) = refusal {
@@ -1674,11 +1673,11 @@ impl Transform {
         }
 
         // Routing, every route's pipeline and every delivery rule read the same `now()`, the one a split carries over.
-        let now_micros = attempt.now_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros);
+        let now = attempt.now.unwrap_or_else(DateTime::now);
         let routed = buffer::catch_over_budget(|| {
             let mut ingest = seed_ingest_batch(pool, slice, &raw, &lane.meta, lane.source_name.as_deref());
             let masks = {
-                let mut ctx = Ctx::at(pool, &mut errors, now_micros);
+                let mut ctx = Ctx::at(pool, &mut errors, now);
                 route_masks(&self.topology.routes, lane.source_id, &mut ingest, &mut ctx)
             };
             ingest.reclaim(pool);
@@ -1784,7 +1783,7 @@ impl Transform {
                         raw: &raw,
                         meta: &lane.meta,
                         source: lane.source_name.as_deref(),
-                        now_micros,
+                        now,
                         tally: tally.as_mut(),
                         senders: (!counted.is_empty()).then_some(Senders {
                             tally: &mut out.outcomes.senders,
@@ -2995,8 +2994,8 @@ struct Ingest<'a> {
     meta: &'a SourceMeta,
     /// The source's name in the deployment, what `__source.name` reads.
     source: Option<&'a str>,
-    /// What `now()` reads for every row and every route of these records. See [`Ctx::now_micros`].
-    now_micros: i64,
+    /// What `now()` reads for every row and every route of these records. See [`Ctx::now`].
+    now: DateTime,
     /// Where each Parser tallies the fields it produces, for the one batch an interval describes to the leader
     /// (`streams::Streams::due`). `None` for every other batch.
     tally: Option<&'a mut crate::core::tally::FieldTally>,
@@ -3195,7 +3194,7 @@ fn run_and_serialize(
     egress: Egress<'_>,
 ) -> Serialized {
     let route = egress.route;
-    let now_micros = ingest.now_micros;
+    let now = ingest.now;
     let on_exception = &route.on_exception;
     let err_start = errors.len();
     let mut batch = run_plan(plan, &mut ingest, mask, pool, errors, metrics, &egress);
@@ -3228,7 +3227,7 @@ fn run_and_serialize(
     let rule_masks: Vec<Option<Column>> = (route.deliver.iter())
         .map(|rule| {
             rule.when.as_ref().map(|ir| {
-                let mut ctx = Ctx::at(pool, errors, now_micros);
+                let mut ctx = Ctx::at(pool, errors, now);
                 ctx.patterns = &rule.compiled_patterns;
                 crate::expr::eval::eval(ir, &batch, &mut ctx)
             })
@@ -3378,7 +3377,7 @@ fn run_and_serialize(
         let chunk = Arc::new(Chunk::cut(
             schema,
             &[(&tagged, &tagged_rows), (&plain, &plain_rows)],
-            now_micros,
+            now.as_micros(),
             pool,
         ));
         for (place, &(at, _)) in on_tagged.into_iter().chain(on_plain).enumerate() {
@@ -3396,7 +3395,7 @@ fn run_and_serialize(
         &batch,
         &placed,
         |row, doc| tag_or_not(&tagged, &plain, &marked, row).write_row(row, doc),
-        now_micros,
+        now,
     );
 
     for m in rule_masks.into_iter().flatten() {
@@ -3445,7 +3444,7 @@ fn run_plan(
         |i: usize| watched || plan.reads_meta[i] || egress.id_fields.iter().any(|(_, field)| field == fields[i].0);
     let noted = meta.ingest(&mut batch, records, &raw.text, ingest.source, wanted, pool);
 
-    let mut ctx = Ctx::at(pool, errors, ingest.now_micros);
+    let mut ctx = Ctx::at(pool, errors, ingest.now);
     ctx.fields = ingest.tally.take();
     // Ingest's repairs, inside this route's window so a repaired row is marked wherever it goes and an `Unroll`
     // remaps it with the rest.
@@ -3589,7 +3588,7 @@ fn copy_for_captures(
     batch: &Batch,
     rows: &Placed,
     write: impl Fn(usize, &mut Vec<u8>),
-    now_micros: i64,
+    now: DateTime,
 ) -> Vec<Vec<(Vec<crate::heartbeat::CaptureColumn>, crate::heartbeat::CapturedRow)>> {
     if taps.is_empty() {
         return Vec::new();
@@ -3601,7 +3600,7 @@ fn copy_for_captures(
     taps.iter()
         .map(|tap| {
             let keep = tap.filter.as_ref().map(|f| {
-                let mut ctx = Ctx::at(&mut pool, &mut errors, now_micros);
+                let mut ctx = Ctx::at(&mut pool, &mut errors, now);
                 ctx.patterns = &f.patterns;
                 crate::expr::eval::eval(&f.ir, batch, &mut ctx)
             });
@@ -3760,7 +3759,7 @@ pub fn preview_routes(
         records,
         texts: &texts,
     };
-    preview_routes_at(topology, &sample, budget, crate::core::ctx::wall_clock_micros())
+    preview_routes_at(topology, &sample, budget, DateTime::now())
 }
 
 /// Records as if they had arrived through `source`, and each one's `_raw`, one per record, as a sample holds it
@@ -3781,7 +3780,7 @@ pub struct Sample<'a> {
 /// is free to break. Routing is unaffected: eligibility is per row, so a record's masks do not depend on what it
 /// shares a batch with.
 ///
-/// `now_micros` is read once for the whole call and given to every record and every route, as a live worker gives each
+/// `now` is read once for the whole call and given to every record and every route, as a live worker gives each
 /// record one: `now()` and a reference-less `parseTime` put the clock into the output, so a run can be
 /// repeated to the same answer only against the instant it was given, and a condition on time cannot answer
 /// differently part way down a sample.
@@ -3794,7 +3793,7 @@ pub fn preview_routes_at(
     topology: &CompiledTopology,
     sample: &Sample,
     budget: MemoryBudget,
-    now_micros: i64,
+    now: DateTime,
 ) -> Vec<PreviewedRow> {
     let Sample { source, records, texts } = *sample;
     let (source_name, source) = (source.name.as_str(), source.id);
@@ -3830,7 +3829,7 @@ pub fn preview_routes_at(
             let masks = buffer::catch_over_budget(|| {
                 let mut ingest = seed_ingest_batch(&mut pool, slice, &raw, &meta, Some(source_name));
                 let masks = {
-                    let mut ctx = Ctx::at(&mut pool, &mut errors, now_micros);
+                    let mut ctx = Ctx::at(&mut pool, &mut errors, now);
                     route_masks(&topology.routes, source, &mut ingest, &mut ctx)
                 };
                 ingest.reclaim(&mut pool);
@@ -3871,7 +3870,7 @@ pub fn preview_routes_at(
                             raw: &raw,
                             meta: &meta,
                             source: Some(source_name),
-                            now_micros,
+                            now,
                             tally: None,
                             senders: None,
                         },
@@ -4214,7 +4213,7 @@ mod tests {
             texts: &texts,
         };
 
-        let pinned = 1_700_000_000_000_000i64;
+        let pinned = DateTime::from_micros(1_700_000_000_000_000);
         let run = || preview_routes_at(&compiled, &sample, preview_memory_budget(), pinned);
         let doc = |rows: Vec<PreviewedRow>| -> String {
             let row = rows.into_iter().next().expect("one record in, one row out");

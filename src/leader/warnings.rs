@@ -471,10 +471,7 @@ const LAG_WARN_BEHIND: Duration = Duration::from_secs(60);
 const WORKER_LOG_WINDOW_MS: i64 = crate::logs::WARNING_FADES_AFTER.as_millis() as i64;
 
 pub fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    crate::core::time::DateTime::now().as_millis()
 }
 
 pub(super) fn label<'a>(labels: &'a [(String, String)], key: &str) -> Option<&'a str> {

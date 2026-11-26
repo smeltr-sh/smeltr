@@ -5,6 +5,7 @@ use crate::core::buffer::BufferPool;
 use crate::core::error::{ErrorSink, Exception, ExceptionKind};
 use crate::core::id::{ById, FunctionId, PatternId, SlotId};
 use crate::core::tally::FieldTally;
+use crate::core::time::DateTime;
 
 /// One regex literal, compiled once at plan-compile time. Whether a replacement takes the first match or every one
 /// is the function called -- `replaceFirst` or `replaceAll` -- not a flag on the pattern.
@@ -47,7 +48,7 @@ pub struct Ctx<'a> {
     /// What `now()` reads. The records being run build several `Ctx`s, so it is read once and passed to [`Ctx::at`] by
     /// all of them: two routes over one record must not disagree, or a yearless timestamp could infer two different
     /// years.
-    pub now_micros: i64,
+    pub now: DateTime,
     /// Where each parser records the fields it produced: for a preview proposing a declaration from a sample, and for
     /// the one batch per interval a deployment describes to its leader (`streams`). `None` for every other batch: a
     /// worker parses every batch and must not pay to describe each.
@@ -72,23 +73,15 @@ pub struct OpenRegion {
     pub mark: usize,
 }
 
-/// Epoch microseconds now. The one place the process reads the wall clock for `now()`.
-pub fn wall_clock_micros() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
-}
-
 impl<'a> Ctx<'a> {
     /// A `Ctx` reading the clock now. For one batch evaluated in several of them, read the instant once and use
     /// [`Ctx::at`].
     pub fn new(pool: &'a mut BufferPool, errors: &'a mut ErrorSink) -> Self {
-        Ctx::at(pool, errors, wall_clock_micros())
+        Ctx::at(pool, errors, DateTime::now())
     }
 
-    /// A `Ctx` whose `now()` is `now_micros`.
-    pub fn at(pool: &'a mut BufferPool, errors: &'a mut ErrorSink, now_micros: i64) -> Self {
+    /// A `Ctx` whose `now()` is `now`.
+    pub fn at(pool: &'a mut BufferPool, errors: &'a mut ErrorSink, now: DateTime) -> Self {
         let pipeline_error_start = errors.len();
         Ctx {
             pool,
@@ -100,7 +93,7 @@ impl<'a> Ctx<'a> {
             patterns: &NO_PATTERNS,
             pipeline_error_start,
             rows: 0,
-            now_micros,
+            now,
             fields: None,
             regions: Vec::new(),
             leaving: Vec::new(),
