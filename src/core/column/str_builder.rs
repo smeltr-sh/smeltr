@@ -122,13 +122,13 @@ impl StrBuilder {
     #[inline]
     pub(crate) fn push_row(&mut self, from: &SealedRows, row: usize) {
         self.unchecked |= from.var_type != self.var_type;
-        self.put(from.get(row));
+        self.put(from.rows.get(row));
     }
 
     /// `push_grow` of row `row` of `from`, as `push_row`.
     pub(crate) fn push_row_grow(&mut self, pool: &mut BufferPool, from: &SealedRows, row: usize) {
         self.unchecked |= from.var_type != self.var_type;
-        self.put_parts_grow(pool, &[from.get(row)]);
+        self.put_parts_grow(pool, &[from.rows.get(row)]);
     }
 
     #[inline]
