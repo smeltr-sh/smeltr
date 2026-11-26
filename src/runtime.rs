@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::commit::{CommitTracker, WaitsOn};
-use crate::core::batch::{Batch, SLOT_LIVE, SLOT_RAW};
+use crate::core::batch::{Batch, SLOT_RAW};
 use crate::core::bits;
 use crate::core::buffer::{self, BufferPool, MemoryBudget};
 use crate::core::column::{Column, DataType};
@@ -37,7 +37,7 @@ use crate::plan::compile::Plan;
 use crate::plan::config::{Answer, Payload};
 use crate::plan::exec;
 use crate::plan::output::{RaisedIn, answer_rows, tag_column, tag_or_not};
-use crate::plan::topology::{CompiledRoute, CompiledTopology, Placement, SourceMeta, route_masks};
+use crate::plan::topology::{CompiledRoute, CompiledTopology, Decoded, Placement, SourceMeta, route_masks};
 
 /// The block reason for a destination that stopped taking records. The cause is quoted: a missing topic, an unreachable
 /// broker and a full queue are three different fixes.
@@ -316,30 +316,6 @@ struct Salvage {
     left: Vec<DestId>,
 }
 
-/// Decode every record's `__source.bytes` with the source's encoding into its `_raw`; a row, which has none, has no
-/// text. One pass per batch:
-/// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
-pub(crate) fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta) -> RawText<'a> {
-    let encoding = meta.encoding();
-    let mut text = Vec::with_capacity(records.len());
-    let mut notes = Vec::new();
-    for (row, read) in meta.read_bytes_each(records).enumerate() {
-        let Some(bytes) = read else {
-            text.push(Cow::Borrowed(""));
-            continue;
-        };
-        let decoded = encoding.decode(bytes);
-        if decoded.replaced {
-            notes.push((row as u32, ExceptionKind::InvalidUtf8));
-        }
-        if let Some(guess) = decoded.guessed {
-            notes.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
-        }
-        text.push(decoded.text);
-    }
-    RawText { text, notes }
-}
-
 /// One source's side of transform: the facts every batch of its records is run against, and what is parked waiting to
 /// be re-run. Shared, so more than one transform thread can serve the same source; the exclusive half -- the egress
 /// handles a batch's rows are handed to -- stays on [`Transform`].
@@ -454,9 +430,10 @@ impl Lane {
         }
         let records: Vec<SourceRecord> = held.blocking.iter().map(|(i, _)| held.records[*i].clone()).collect();
         let why: Vec<String> = held.blocking.iter().map(|(_, why)| why.clone()).collect();
-        let raw = decode_records(&records, &self.meta);
-        let text: Vec<&str> = raw.text.iter().map(|t| t.as_ref()).collect();
-        captures.tap_held(name, &mut held.shown, &records, &text, &why);
+        let mut pool = BufferPool::new();
+        let decoded = self.meta.decode(&records, None::<&[&str]>, Some(name), &mut pool);
+        captures.tap_held(name, &mut held.shown, &records, &decoded.raw(&self.meta), &why);
+        decoded.batch.reclaim(&mut pool);
     }
 
     /// Kept until the config changes, with `blocking`, the records that blocked and why, for a capture of the source
@@ -1661,7 +1638,24 @@ impl Transform {
         let mut errors = ErrorSink::new();
         let began = std::time::Instant::now();
 
-        let raw = decode_records(slice, &lane.meta);
+        // Routing, every route's pipeline and every delivery rule read the same `now()`, the one a split carries over.
+        let now = attempt.now.unwrap_or_else(DateTime::now);
+        let routed = buffer::catch_over_budget(|| {
+            let mut decoded = lane
+                .meta
+                .decode(slice, None::<&[&str]>, lane.source_name.as_deref(), pool);
+            let masks = {
+                let mut ctx = Ctx::at(pool, &mut errors, now);
+                route_masks(&self.topology.routes, lane.source_id, &mut decoded.batch, &mut ctx)
+            };
+            (decoded, masks)
+        });
+        let (mut decoded, masks) = match routed {
+            Ok(routed) => routed,
+            Err(over) => {
+                return Ok(Some(self.abandon(lane, began, attempt.resume_from, over)));
+            }
+        };
 
         // A capture sees what this batch is about to be run over: after decode, before any pipeline, so what it
         // keeps is the record as it arrived. A worker nobody is debugging answers `watching` from one atomic load
@@ -1669,26 +1663,8 @@ impl Transform {
         if let (Some(captures), Some(name)) = (&self.captures, &lane.source_name)
             && captures.watching(name)
         {
-            let text: Vec<&str> = raw.text.iter().map(|t| t.as_ref()).collect();
-            captures.tap(name, slice, &text);
+            captures.tap(name, slice, &decoded.raw(&lane.meta));
         }
-
-        // Routing, every route's pipeline and every delivery rule read the same `now()`, the one a split carries over.
-        let now = attempt.now.unwrap_or_else(DateTime::now);
-        let routed = buffer::catch_over_budget(|| {
-            let mut seeded = seed_ingest_batch(pool, slice, &raw, &lane.meta, lane.source_name.as_deref());
-            let masks = {
-                let mut ctx = Ctx::at(pool, &mut errors, now);
-                route_masks(&self.topology.routes, lane.source_id, &mut seeded.batch, &mut ctx)
-            };
-            (seeded, masks)
-        });
-        let (mut seeded, masks) = match routed {
-            Ok(routed) => routed,
-            Err(over) => {
-                return Ok(Some(self.abandon(lane, began, attempt.resume_from, over)));
-            }
-        };
         let ran = 'routes: {
             // Which rows a route took: the union of every mask, since routing leaves `SLOT_LIVE` as it came. Over every
             // route, including the ones a resumed attempt skips -- those matched on the attempt that was refused.
@@ -1781,9 +1757,8 @@ impl Transform {
                         plan,
                         Ingest {
                             records: slice,
-                            raw: &raw,
                             meta: &lane.meta,
-                            seeded: &mut seeded,
+                            decoded: &mut decoded,
                             last,
                             now,
                             tally: tally.as_mut(),
@@ -1863,10 +1838,10 @@ impl Transform {
                 out.outcomes.drop_rows(DROPPED_UNMATCHED, no_rule_dropped);
             }
             // Past the loop, so a refusal above returns first and the retry that resumes it places these instead: once.
-            self.place_unmatched(lane, slice, &raw.text, &taken, out);
+            self.place_unmatched(lane, slice, &taken, out);
             Ok(None)
         };
-        seeded.batch.reclaim(pool);
+        decoded.batch.reclaim(pool);
         ran
     }
 
@@ -1955,14 +1930,7 @@ impl Transform {
     /// delivers to, or dropped (design doc, Exception taxonomy). Counted either way, because a source silently matching
     /// nothing is what this exists to make visible. Block never gets here: `run_attempt` stops the batch before any
     /// pipeline runs. `text` is the batch's decoded text, for a `record` payload.
-    fn place_unmatched(
-        &self,
-        lane: &Lane,
-        slice: &[SourceRecord],
-        text: &[Cow<'_, str>],
-        taken: &[u64],
-        out: &mut Output,
-    ) {
+    fn place_unmatched(&self, lane: &Lane, slice: &[SourceRecord], taken: &[u64], out: &mut Output) {
         let unmatched = (slice.len() - bits::popcount(taken)) as u64;
         if unmatched == 0 {
             return;
@@ -1979,7 +1947,7 @@ impl Transform {
             .enumerate()
             .filter(|(i, _)| !bits::get_row(taken, *i))
             .collect();
-        self.place_delivered(out, targets, &left, lane, Some(text), DROPPED_UNMATCHED);
+        self.place_delivered(out, targets, &left, lane, DROPPED_UNMATCHED);
     }
 
     /// Put every row in `docs`, which route `route` made, in `out`, once for each destination its set names, in that
@@ -2127,7 +2095,7 @@ impl Transform {
             Answer::Deliver(targets) => {
                 out.outcomes.over_budget += records.len() as u64;
                 let records: Vec<_> = records.iter().enumerate().collect();
-                self.place_delivered(out, targets, &records, lane, None, DROPPED_UNPROCESSABLE);
+                self.place_delivered(out, targets, &records, lane, DROPPED_UNPROCESSABLE);
                 Ok(())
             }
             Answer::Drop => {
@@ -2205,7 +2173,7 @@ impl Transform {
                 }
                 let mut out = Output::default();
                 let these: Vec<_> = turn.records.iter().enumerate().collect();
-                self.place_delivered(&mut out, &targets, &these, &lane, None, DROPPED_UNPROCESSABLE);
+                self.place_delivered(&mut out, &targets, &these, &lane, DROPPED_UNPROCESSABLE);
                 drop(these);
                 turn.unprocessable = true;
                 let processed = Processed {
@@ -2260,15 +2228,13 @@ impl Transform {
         targets: &[DestId],
         records: &[(usize, &SourceRecord)],
         lane: &Lane,
-        text: Option<&[Cow<'_, str>]>,
         dropped: &'static str,
     ) {
         let text: Vec<Cow<'_, str>> = records
             .iter()
-            .map(|&(i, r)| match (text, lane.meta.read_bytes(r)) {
-                (Some(text), _) => Cow::Borrowed(text[i].as_ref()),
-                (None, Some(bytes)) => lane.meta.encoding().decode(bytes).text,
-                (None, None) => Cow::Borrowed(""),
+            .map(|&(_, r)| match lane.meta.read_bytes(r) {
+                Some(bytes) => lane.meta.encoding().decode(bytes).text,
+                None => Cow::Borrowed(""),
             })
             .collect();
         // The record no pipeline ran on, `{_raw: str}`, as columns: cut once, for every target that reads them. Only a
@@ -2995,11 +2961,10 @@ impl SerializedRow {
 /// processed at.
 struct Ingest<'a> {
     records: &'a [SourceRecord],
-    raw: &'a RawText<'a>,
     meta: &'a SourceMeta,
     /// The records' columns, as routing read them.
-    seeded: &'a mut Seeded,
-    /// Whether no later route reads `seeded`, so this one takes its columns.
+    decoded: &'a mut Decoded,
+    /// Whether no later route reads `decoded`, so this one takes its columns.
     last: bool,
     /// What `now()` reads for every row and every route of these records. See [`Ctx::now`].
     now: DateTime,
@@ -3016,14 +2981,6 @@ struct Senders<'a> {
     tally: &'a mut crate::streams::SenderTally,
     fields: &'a [crate::streams::Counted],
     first: usize,
-}
-
-/// A batch's records as text, decoded once per attempt.
-pub(crate) struct RawText<'a> {
-    pub(crate) text: Vec<Cow<'a, str>>,
-    /// What a decode had to do, per row. Replayed into every route's exception window, so a repaired or guessed-at
-    /// row is marked wherever it is delivered.
-    notes: Vec<(u32, ExceptionKind)>,
 }
 
 /// A record in the form `payload` names, for a row no pipeline made: what it read as it arrived, the document a
@@ -3433,7 +3390,7 @@ fn run_plan(
     metrics: &MetricsHandle,
     egress: &Egress<'_>,
 ) -> Batch {
-    let (records, raw, meta) = (ingest.records, ingest.raw, ingest.meta);
+    let (records, meta) = (ingest.records, ingest.meta);
     let rows = records.len();
     let mut batch = Batch::new(&plan.delivery_layout(), rows, 0);
     let mut origin = Column::alloc(pool, &DataType::I64, rows);
@@ -3449,13 +3406,13 @@ fn run_plan(
     let watched = !egress.taps.is_empty();
     let wanted =
         |i: usize| watched || plan.reads_meta[i] || egress.id_fields.iter().any(|(_, field)| field == fields[i].0);
-    let noted = ingest.seeded.give(&mut batch, meta, wanted, ingest.last, pool);
+    let noted = ingest.decoded.give(&mut batch, meta, wanted, ingest.last, pool);
 
     let mut ctx = Ctx::at(pool, errors, ingest.now);
     ctx.fields = ingest.tally.take();
     // Ingest's repairs, inside this route's window so a repaired row is marked wherever it goes and an `Unroll`
     // remaps it with the rest.
-    for (row, kind) in &raw.notes {
+    for (row, kind) in &ingest.decoded.repairs {
         let raw = ctx.errors.raise(*row as usize, None, Some(SLOT_RAW), kind.clone());
         raw.read = vec![Read::new(Some((SLOT_RAW, String::new())), None)];
     }
@@ -3657,70 +3614,6 @@ fn read_text(batch: &Batch, slot: SlotId, row: usize) -> Option<String> {
     }
 }
 
-/// The columns of a batch's records, built once: routing reads them, then each route's batch takes its own.
-struct Seeded {
-    /// The prefix column `__live`, primed all-true, a column for each field of the record, and every `__source` field
-    /// the source declares.
-    batch: Batch,
-    /// What `SourceMeta::ingest` noted while building them.
-    noted: Vec<(u32, SlotId, ExceptionKind, Option<String>)>,
-}
-
-impl Seeded {
-    /// Puts the record's fields and each `__source` field `wanted` names into `batch`, a route's. They are copied, or
-    /// moved when `last` says no later route reads them. Returns what was noted against the slots it put.
-    fn give(
-        &mut self,
-        batch: &mut Batch,
-        meta: &SourceMeta,
-        wanted: impl Fn(usize) -> bool,
-        last: bool,
-        pool: &mut BufferPool,
-    ) -> Vec<(u32, SlotId, ExceptionKind, Option<String>)> {
-        let record = (0..meta.record_len()).map(|field| SlotId::at(crate::core::batch::PREFIX_SLOTS + field));
-        let source = (0..meta.source_fields().len())
-            .filter(|field| wanted(*field))
-            .map(|field| meta.source_slot(field));
-        let slots: Vec<SlotId> = record.chain(source).collect();
-        for &slot in &slots {
-            let column = if last {
-                self.batch.take_dead(slot)
-            } else {
-                self.batch.peek(slot).deep_copy(pool)
-            };
-            batch.put(slot, column, pool);
-        }
-        let put = |note: &&(u32, SlotId, ExceptionKind, Option<String>)| slots.contains(&note.1);
-        self.noted.iter().filter(put).cloned().collect()
-    }
-}
-
-/// `records` as [`Seeded`] columns, for route evaluation.
-fn seed_ingest_batch(
-    pool: &mut BufferPool,
-    records: &[SourceRecord],
-    raw: &RawText<'_>,
-    meta: &SourceMeta,
-    source: Option<&str>,
-) -> Seeded {
-    let rows = records.len();
-    let layout: Vec<DataType> = crate::plan::compile::ingest_fields(meta)
-        .into_iter()
-        .map(|(_, t)| t)
-        .collect();
-    let mut batch = Batch::new(&layout, rows, 0);
-
-    let mut live = Column::alloc(pool, &DataType::Bool, rows);
-    bits::fill_valid(live.bool_mut().unwrap().values, rows);
-    batch.put(SLOT_LIVE, live, pool);
-
-    // Every declared field, not just what one plan reads: a route condition may test any of them before a pipeline is
-    // chosen.
-    let noted = meta.ingest(&mut batch, records, &raw.text, source, |_| true, pool);
-
-    Seeded { batch, noted }
-}
-
 // -- route preview ------------------------------------------------------
 //
 // The leader answers "where would these records go" by running the same three steps a transform thread runs --
@@ -3854,10 +3747,6 @@ pub fn preview_routes_at(
     let mut rows: Vec<PreviewedRow> = (0..records.len())
         .map(|row| {
             let slice = &records[row..row + 1];
-            let raw = RawText {
-                text: vec![Cow::Borrowed(texts[row].as_str())],
-                notes: Vec::new(),
-            };
             let mut entry = PreviewedRow {
                 row,
                 matched: Vec::new(),
@@ -3871,14 +3760,14 @@ pub fn preview_routes_at(
             let mut errors = ErrorSink::new();
 
             let masks = buffer::catch_over_budget(|| {
-                let mut seeded = seed_ingest_batch(&mut pool, slice, &raw, &meta, Some(source_name));
+                let mut decoded = meta.decode(slice, Some(&texts[row..row + 1]), Some(source_name), &mut pool);
                 let masks = {
                     let mut ctx = Ctx::at(&mut pool, &mut errors, now);
-                    route_masks(&topology.routes, source, &mut seeded.batch, &mut ctx)
+                    route_masks(&topology.routes, source, &mut decoded.batch, &mut ctx)
                 };
-                (seeded, masks)
+                (decoded, masks)
             });
-            let (mut seeded, masks) = match masks {
+            let (mut decoded, masks) = match masks {
                 Ok(routed) => routed,
                 Err(over) => {
                     entry.refused = Some(over.to_string());
@@ -3910,9 +3799,8 @@ pub fn preview_routes_at(
                         plan,
                         Ingest {
                             records: slice,
-                            raw: &raw,
                             meta: &meta,
-                            seeded: &mut seeded,
+                            decoded: &mut decoded,
                             last: false,
                             now,
                             tally: None,
@@ -3938,7 +3826,7 @@ pub fn preview_routes_at(
                         for (_, unrun) in masks {
                             unrun.reclaim(&mut pool);
                         }
-                        seeded.batch.reclaim(&mut pool);
+                        decoded.batch.reclaim(&mut pool);
                         return entry;
                     }
                 };
@@ -3988,7 +3876,7 @@ pub fn preview_routes_at(
                     for (_, unrun) in masks {
                         unrun.reclaim(&mut pool);
                     }
-                    seeded.batch.reclaim(&mut pool);
+                    decoded.batch.reclaim(&mut pool);
                     return entry;
                 }
                 let sets = docs.sets;
@@ -4018,7 +3906,7 @@ pub fn preview_routes_at(
                 blocker.get_or_insert(row);
                 entry.refused = Some("no route matched it, and Unmatched is answered with block".into());
             }
-            seeded.batch.reclaim(&mut pool);
+            decoded.batch.reclaim(&mut pool);
             entry
         })
         .collect();

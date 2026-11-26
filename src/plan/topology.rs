@@ -1074,6 +1074,106 @@ impl SourceMeta {
     }
 }
 
+/// What decoding could not take as it came: the row, the slot, the kind of exception, and the value as read.
+pub type Noted = (u32, crate::core::id::SlotId, ExceptionKind, Option<String>);
+
+/// A batch's records as columns, decoded once. Routing reads them, each route's batch takes its own, and whatever
+/// shows a record as it arrived reads it here.
+pub struct Decoded {
+    /// The prefix column `__live`, primed all-true, a column for each field of the record, and every `__source` field
+    /// the source declares.
+    pub batch: Batch,
+    /// What `SourceMeta::decode` noted while building them.
+    pub noted: Vec<Noted>,
+    /// What decoding a payload's text repaired or guessed, by row.
+    pub repairs: Vec<(u32, ExceptionKind)>,
+}
+
+impl SourceMeta {
+    /// `records` as columns. Each payload is decoded with the source's encoding into `_raw`, unless `text` already
+    /// holds it decoded, as a sample's does. `source` is what `__source.name` reads.
+    pub fn decode<T: AsRef<str>>(
+        &self,
+        records: &[crate::io::SourceRecord],
+        text: Option<&[T]>,
+        source: Option<&str>,
+        pool: &mut crate::core::buffer::BufferPool,
+    ) -> Decoded {
+        let rows = records.len();
+        let layout: Vec<DataType> = ingest_fields(self).into_iter().map(|(_, t)| t).collect();
+        let mut batch = Batch::new(&layout, rows, 0);
+        let mut live = Column::alloc(pool, &DataType::Bool, rows);
+        crate::core::bits::fill_valid(live.bool_mut().expect("a Bool column").values, rows);
+        batch.put(SLOT_LIVE, live, pool);
+
+        let mut repairs = Vec::new();
+        // Every declared field, not just what one plan reads: a route condition may test any of them before a
+        // pipeline is chosen.
+        let noted = match text {
+            Some(text) => self.ingest(&mut batch, records, text, source, |_| true, pool),
+            None => {
+                let mut text = Vec::with_capacity(rows);
+                for (row, read) in self.read_bytes_each(records).enumerate() {
+                    let decoded = self.encoding.decode(read.unwrap_or_default());
+                    if decoded.replaced {
+                        repairs.push((row as u32, ExceptionKind::InvalidUtf8));
+                    }
+                    if let Some(guess) = decoded.guessed {
+                        repairs.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
+                    }
+                    text.push(decoded.text);
+                }
+                self.ingest(&mut batch, records, &text, source, |_| true, pool)
+            }
+        };
+        Decoded { batch, noted, repairs }
+    }
+}
+
+impl Decoded {
+    /// Puts the record's fields and each `__source` field `wanted` names into `batch`, a route's. They are copied, or
+    /// moved when `last` says nothing reads them here again. Returns what was noted against the slots it put.
+    pub fn give(
+        &mut self,
+        batch: &mut Batch,
+        meta: &SourceMeta,
+        wanted: impl Fn(usize) -> bool,
+        last: bool,
+        pool: &mut crate::core::buffer::BufferPool,
+    ) -> Vec<Noted> {
+        let record =
+            (0..meta.record_len()).map(|field| crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field));
+        let source = (0..meta.source.len())
+            .filter(|field| wanted(*field))
+            .map(|field| meta.source_slot(field));
+        let slots: Vec<crate::core::id::SlotId> = record.chain(source).collect();
+        for &slot in &slots {
+            let column = if last {
+                self.batch.take_dead(slot)
+            } else {
+                self.batch.peek(slot).deep_copy(pool)
+            };
+            batch.put(slot, column, pool);
+        }
+        let put = |note: &&Noted| slots.contains(&note.1);
+        self.noted.iter().filter(put).cloned().collect()
+    }
+
+    /// Each record's `_raw`, or no text for a record that has none.
+    pub fn raw(&self, meta: &SourceMeta) -> Vec<&str> {
+        let rows = self.batch.rows();
+        if !meta.decodes() {
+            return vec![""; rows];
+        }
+        let text = self
+            .batch
+            .peek(crate::core::batch::SLOT_RAW)
+            .str()
+            .expect("`_raw` is a Str column");
+        (0..rows).map(|row| text.get(row)).collect()
+    }
+}
+
 impl SourceMeta {
     /// `record`'s payload as the source read it, before any decoding: its `__source.bytes`. `None` for a source
     /// that declares none.
