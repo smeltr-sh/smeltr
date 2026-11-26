@@ -108,11 +108,11 @@ docker compose logs</code
   </p>
   <pre><code
       >sha256sum smeltr-extras.zip
-unzip smeltr-extras.zip smeltr-image.tar.gz
-docker load --input smeltr-image.tar.gz
+unzip smeltr-extras.zip smeltr-image-linux.tar.gz
+docker load --input smeltr-image-linux.tar.gz
 docker image inspect smeltr:{version} --format '&#123;&#123;.Id&#125;&#125; user=&#123;&#123;.Config.User&#125;&#125;'</code
     ></pre>
-  <p>On an Arm64 host, use <code>smeltr-image-arm64.tar.gz</code> in both commands.</p>
+  <p>On an Arm64 host, use <code>smeltr-image-linux-arm64.tar.gz</code> in both commands.</p>
 
   <h2 id="run">Run the container</h2>
   <p>The image runs as UID/GID 1000. Prepare persistent host directories before starting it:</p>
