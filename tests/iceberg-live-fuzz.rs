@@ -540,7 +540,7 @@ fn run(catalog: &str, s3: &str, seed: u64, case: &Case) -> Seen {
         let records = smeltr::plan::topology::Records::from([(None, harness::record(&plan))]);
         let d = smeltr::io::build_destination(
             &DestinationKind::Iceberg(config.clone()),
-            DestId(0),
+            DestId::new(0),
             "d",
             metrics.clone(),
             &secrets,

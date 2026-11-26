@@ -4,11 +4,13 @@
 //! batches in flight, and never block the thread that produced them -- a transform stalled on reporting an
 //! acknowledgment would hold up the commit it reports.
 
+use crate::sync::{Condvar, Mutex};
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::commit::WaitsOn;
 use crate::core::id::DestId;
 use crate::io::{BatchId, IoError, SourceRecord};
 
@@ -26,8 +28,8 @@ pub struct Handed {
 
 /// What transform tells the reader about a batch it was given.
 pub enum Report {
-    /// `dest` has finished with `batch`. What it refused was answered for before this was sent.
-    Acked { batch: BatchId, dest: DestId },
+    /// `by` has finished with `batch`. What a destination refused was answered for before this was sent.
+    Acked { batch: BatchId, by: WaitsOn },
     /// `batch` waits on `dest` again: rows another destination refused were sealed there under the same batch.
     /// Sent before the refusing destination's `Acked`, on the same channel, so the batch is never left waiting on
     /// nothing while the DLQ still has them.
@@ -103,28 +105,28 @@ impl Ready {
 
     /// Say a batch is available. Wakes one waiter: one batch is one thread's work.
     pub fn signal(&self) {
-        *self.tick.lock().unwrap() += 1;
+        *self.tick.lock() += 1;
         self.arrived.notify_one();
     }
 
     /// Wakes every waiter, for a change they all have to see -- a close.
     pub fn signal_all(&self) {
-        *self.tick.lock().unwrap() += 1;
+        *self.tick.lock() += 1;
         self.arrived.notify_all();
     }
 
     /// Read before scanning, so a batch that arrives during the scan is not waited past.
     pub fn seen(&self) -> u64 {
-        *self.tick.lock().unwrap()
+        *self.tick.lock()
     }
 
     /// Wait until something has been signaled since `seen`, or `timeout` elapses.
     pub fn wait_past(&self, seen: u64, timeout: Duration) {
-        let tick = self.tick.lock().unwrap();
+        let tick = self.tick.lock();
         if *tick != seen {
             return;
         }
-        let _ = self.arrived.wait_timeout(tick, timeout).unwrap();
+        let _ = self.arrived.wait_timeout(tick, timeout);
     }
 }
 
@@ -185,7 +187,7 @@ impl Handoff {
     pub fn push(&self, batch: Handed, timeout: Duration) -> Result<(), Unsent> {
         let bytes: usize = batch.records.iter().map(SourceRecord::size).sum();
         let deadline = Instant::now() + timeout;
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         while !st.closed && st.bytes + bytes > self.capacity && st.bytes > 0 {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -194,7 +196,7 @@ impl Handoff {
                     error: IoError::transient(format!("transform did not take a batch within {timeout:?}")),
                 });
             }
-            let (guard, _) = self.room.wait_timeout(st, left).unwrap();
+            let (guard, _) = self.room.wait_timeout(st, left);
             st = guard;
         }
         if st.closed {
@@ -214,7 +216,7 @@ impl Handoff {
     /// Take the oldest batch, waiting up to `timeout` for one.
     pub fn pop(&self, timeout: Duration) -> Taken {
         let deadline = Instant::now() + timeout;
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         loop {
             if st.closed && st.queued.is_empty() {
                 return Taken::Closed;
@@ -229,14 +231,14 @@ impl Handoff {
             if left.is_zero() {
                 return Taken::Idle;
             }
-            let (guard, _) = self.work.wait_timeout(st, left).unwrap();
+            let (guard, _) = self.work.wait_timeout(st, left);
             st = guard;
         }
     }
 
     /// A waiting reader fails; transform drains what is queued, then ends.
     pub fn close(&self) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         st.closed = true;
         self.room.notify_all();
         self.work.notify_all();
@@ -245,12 +247,12 @@ impl Handoff {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.state.lock().unwrap().queued.is_empty()
+        self.state.lock().queued.is_empty()
     }
 
     /// Bytes of raw records it holds now, as its capacity counts them.
     pub fn bytes(&self) -> usize {
-        self.state.lock().unwrap().bytes
+        self.state.lock().bytes
     }
 }
 
@@ -419,19 +421,12 @@ mod tests {
         tx.send(Report::Block(BlockCause::Held, "stop".into()));
         tx.send(Report::Acked {
             batch: 4,
-            dest: DestId(1),
+            by: WaitsOn::Destination(DestId::new(1)),
         });
         let got = rx.drain();
         assert_eq!(got.len(), 2);
         assert!(matches!(&got[0], Report::Block(_, w) if w == "stop"));
-        assert!(matches!(
-            got[1],
-            Report::Acked {
-                batch: 4,
-                dest: DestId(1),
-                ..
-            }
-        ));
+        assert!(matches!(got[1], Report::Acked { batch: 4, by } if by == WaitsOn::Destination(DestId::new(1))));
     }
 
     #[test]

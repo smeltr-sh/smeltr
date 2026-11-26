@@ -650,7 +650,7 @@ fn run(s3: &str, seed: u64, case: &Case) -> Seen {
     let build = || {
         smeltr::io::build_destination(
             &DestinationKind::Delta(config.clone()),
-            DestId(0),
+            DestId::new(0),
             "d",
             metrics.clone(),
             &secrets,

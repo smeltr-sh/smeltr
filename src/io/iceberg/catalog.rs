@@ -667,9 +667,10 @@ fn moved_base(from: &str, to: &str) -> Result<String, IoError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::sync::Mutex;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use super::*;
     use crate::io::iceberg::metadata::{NestedField, PartitionField, Primitive, StructTag, Transform, Type};
@@ -723,7 +724,7 @@ mod tests {
                     .map_or(0, |(_, v)| v.parse().unwrap());
                 let mut content = vec![0; length];
                 reader.read_exact(&mut content).unwrap();
-                log.lock().unwrap().push(Request {
+                log.lock().push(Request {
                     line: line.trim_end().to_string(),
                     headers,
                     body: String::from_utf8(content).unwrap(),
@@ -784,7 +785,7 @@ mod tests {
     }
 
     fn lines(seen: &Arc<Mutex<Vec<Request>>>) -> Vec<String> {
-        seen.lock().unwrap().iter().map(|r| r.line.clone()).collect()
+        seen.lock().iter().map(|r| r.line.clone()).collect()
     }
 
     fn client_credentials(expires_in: u64) -> (Auth, (u16, String), (u16, String)) {
@@ -812,7 +813,7 @@ mod tests {
                 "GET /v1/wh/1/namespaces/a%1Fb%20c/tables/logs%20x HTTP/1.1",
             ]
         );
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert!(seen.iter().all(|r| r.header("authorization") == Some("Bearer tok")));
         assert_eq!(
             seen[1].header("x-iceberg-access-delegation"),
@@ -825,7 +826,7 @@ mod tests {
 
     impl Signer for Fixed {
         fn sign(&self, method: &str, url: &str, body: &[u8]) -> Result<Vec<(String, String)>, String> {
-            self.0.lock().unwrap().push((method.into(), url.into(), body.to_vec()));
+            self.0.lock().push((method.into(), url.into(), body.to_vec()));
             Ok(vec![
                 ("Authorization".into(), "AWS4-HMAC-SHA256 signed".into()),
                 ("x-amz-date".into(), "20261011T000000Z".into()),
@@ -839,12 +840,12 @@ mod tests {
         let signer = Arc::new(Fixed(Mutex::new(Vec::new())));
         let mut catalog = catalog(&url, None, Auth::Signed(signer.clone()));
         catalog.load_table(&ns(), "logs").unwrap().unwrap();
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         for request in seen.iter() {
             assert_eq!(request.header("authorization"), Some("AWS4-HMAC-SHA256 signed"));
             assert_eq!(request.header("x-amz-date"), Some("20261011T000000Z"));
         }
-        let asked = signer.0.lock().unwrap();
+        let asked = signer.0.lock();
         assert_eq!(asked.len(), 2, "one signature per call");
         assert_eq!(asked[1].0, "GET");
         assert_eq!(asked[1].1, format!("{url}/v1/namespaces/a%1Fb%20c/tables/logs"));
@@ -898,7 +899,7 @@ mod tests {
         catalog.credentials(&ns(), "logs").unwrap().unwrap();
         catalog.load_table(&ns(), "logs").unwrap().unwrap();
         catalog.credentials(&ns(), "logs").unwrap().unwrap();
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         let sent: Vec<_> = seen.iter().map(|r| r.header("authorization").unwrap()).collect();
         assert_eq!(
             sent,
@@ -930,7 +931,7 @@ mod tests {
                 "GET /v1/namespaces/a%1Fb%20c/tables/logs HTTP/1.1",
             ]
         );
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(
             seen[0].body, "grant_type=client_credentials&client_id=app&client_secret=s3cr%26t",
             "no scope is sent unless one is given"
@@ -1043,7 +1044,7 @@ mod tests {
             loaded.metadata_location.as_deref(),
             Some("s3://bucket/wh/logs/metadata/1.json")
         );
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen[1].line, "POST /v1/namespaces/a%1Fb%20c/tables HTTP/1.1");
         assert_eq!(
             seen[1].header("x-iceberg-access-delegation"),
@@ -1132,7 +1133,7 @@ mod tests {
     fn a_commit_is_sent_as_the_spec_shapes_it() {
         let (result, seen) = commit(table());
         assert_eq!(result.unwrap().metadata_location, "s3://bucket/wh/logs/metadata/1.json");
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen[1].line, "POST /v1/p/namespaces/a%1Fb%20c/tables/logs HTTP/1.1");
         assert_eq!(seen[1].header("content-type"), Some("application/json"));
         assert_eq!(

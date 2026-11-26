@@ -487,8 +487,9 @@ impl Provider for Cloudflare {
 mod tests {
     use super::*;
     use crate::fuzz::{Coverage, Rng, run};
+    use crate::sync::Mutex;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     /// How a stand-in Cloudflare fails, when it does.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -565,7 +566,7 @@ mod tests {
                     "/zones",
                     get(
                         |State(held): State<Shared>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>| async move {
-                            let held = held.lock().unwrap();
+                            let held = held.lock();
                             if let Err(e) = authorized(&held, &headers) {
                                 return e;
                             }
@@ -587,7 +588,7 @@ mod tests {
                          headers: HeaderMap,
                          Path(zone): Path<String>,
                          Query(q): Query<HashMap<String, String>>| async move {
-                            let held = held.lock().unwrap();
+                            let held = held.lock();
                             if let Err(e) = authorized(&held, &headers) {
                                 return e;
                             }
@@ -604,7 +605,7 @@ mod tests {
                     )
                     .post(
                         |State(held): State<Shared>, headers: HeaderMap, Path(zone): Path<String>, body: String| async move {
-                            let mut held = held.lock().unwrap();
+                            let mut held = held.lock();
                             if let Err(e) = authorized(&held, &headers) {
                                 return e;
                             }
@@ -633,7 +634,7 @@ mod tests {
                     "/zones/:zone/dns_records/:id",
                     delete(
                         |State(held): State<Shared>, headers: HeaderMap, Path((zone, id)): Path<(String, String)>| async move {
-                            let mut held = held.lock().unwrap();
+                            let mut held = held.lock();
                             if let Err(e) = authorized(&held, &headers) {
                                 return e;
                             }
@@ -662,7 +663,6 @@ mod tests {
             let mut held: Vec<_> = self
                 .held
                 .lock()
-                .unwrap()
                 .records
                 .values()
                 .map(|(_, n, c)| (n.clone(), c.clone()))
@@ -683,7 +683,7 @@ mod tests {
     #[async_trait]
     impl Nameservers for FakeNameservers {
         async fn all_answer(&self, record: &Record) -> Result<bool, String> {
-            let mut asked = self.asked.lock().unwrap();
+            let mut asked = self.asked.lock();
             *asked += 1;
             let Some(lag) = self.lag else {
                 return Err("ns1.test: timed out".to_string());
@@ -694,7 +694,6 @@ mod tests {
             Ok(self
                 .held
                 .lock()
-                .unwrap()
                 .records
                 .values()
                 .any(|(_, n, c)| *n == record.name && *c == record.value))
@@ -806,7 +805,7 @@ mod tests {
                     break;
                 }
                 // Each record went to the zone that holds its name, as the name it is asked at.
-                let added = cloudflare.held.lock().unwrap().added.clone();
+                let added = cloudflare.held.lock().added.clone();
                 for (name, value) in &proved {
                     if !added.contains(&(record_name(name), value.clone())) {
                         return Err(format!("{name} was proved by no record {added:?}"));
@@ -852,7 +851,7 @@ mod tests {
                 .unwrap();
             let again = publishing(&cloudflare, TOKEN, Some(0));
             again.dns("www.example.com", "the-value").await.unwrap();
-            assert_eq!(cloudflare.held.lock().unwrap().added.len(), 1, "added once");
+            assert_eq!(cloudflare.held.lock().added.len(), 1, "added once");
             again.done().await;
             assert_eq!(cloudflare.records(), [], "removed with the order that took it");
         });

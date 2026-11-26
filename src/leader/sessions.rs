@@ -16,8 +16,8 @@
 //! using; absolute expiry ends one somebody is, and always wins. Times for an operator to read are wall-clock and
 //! live in the audit, not here.
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::auth;
@@ -265,7 +265,7 @@ impl Sessions {
             csrf: auth::generate_secret(),
             must_change,
         };
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         let lifetimes = held.lifetimes;
         held.entries.retain(|_, entry| !entry.expired(now, lifetimes));
 
@@ -305,7 +305,7 @@ impl Sessions {
     /// session that resolves here is not yet a principal.
     pub fn resolve(&self, token: &str, now: Instant) -> Result<Session, Refused> {
         let digest = auth::hash_secret(token);
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         let lifetimes = held.lifetimes;
         match held.entries.get(&digest) {
             None => Err(Refused::Unknown),
@@ -323,7 +323,7 @@ impl Sessions {
     /// Answers whether the session is still live, so a caller need not resolve it first.
     pub fn touch(&self, token: &str, now: Instant) -> bool {
         let digest = auth::hash_secret(token);
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         let lifetimes = held.lifetimes;
         let Some(entry) = held.entries.get_mut(&digest) else {
             return false;
@@ -342,12 +342,7 @@ impl Sessions {
     /// error to report.
     pub fn remove(&self, token: &str) -> bool {
         let digest = auth::hash_secret(token);
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entries
-            .remove(&digest)
-            .is_some()
+        self.0.lock().entries.remove(&digest).is_some()
     }
 
     /// End every session one account holds, and answer how many.
@@ -355,7 +350,7 @@ impl Sessions {
     /// Belt to the account generation's braces: the generation is what makes a revocation hold against a session
     /// this process never saw, and this is what frees the memory of the ones it did.
     pub fn remove_all_for(&self, user_id: &str) -> usize {
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         let before = held.entries.len();
         held.entries.retain(|_, entry| entry.session.user_id != user_id);
         before - held.entries.len()
@@ -367,7 +362,7 @@ impl Sessions {
         let _pass =
             tracing::trace_span!(target: "accounts", "a background pass", task = "drop expired sign-in sessions")
                 .entered();
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         let lifetimes = held.lifetimes;
         let before = held.entries.len();
         held.entries.retain(|_, entry| !entry.expired(now, lifetimes));
@@ -375,18 +370,18 @@ impl Sessions {
     }
 
     pub fn len(&self) -> usize {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).entries.len()
+        self.0.lock().entries.len()
     }
 
     /// The deadlines in force.
     pub fn lifetimes(&self) -> Lifetimes {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).lifetimes
+        self.0.lock().lifetimes
     }
 
     /// Replace them. Live sessions are measured against the new values on their next request, so shortening a
     /// timeout ends the sessions it should already have ended rather than waiting for the old deadline.
     pub fn set_lifetimes(&self, lifetimes: Lifetimes) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).lifetimes = lifetimes;
+        self.0.lock().lifetimes = lifetimes;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -397,7 +392,7 @@ impl Sessions {
     /// comes one interval after sign-in. False when there is no live session to attach it to.
     pub fn give_grant(&self, token: &str, grant: Grant, now: Instant) -> bool {
         let digest = auth::hash_secret(token);
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         let lifetimes = held.lifetimes;
         let Some(entry) = held.entries.get_mut(&digest) else {
             return false;
@@ -417,7 +412,7 @@ impl Sessions {
     /// Every grant on a live session last refreshed at least `every` ago, marked in flight as it is handed out so
     /// an overlapping round does not refresh it a second time.
     pub fn due_grants(&self, now: Instant, every: Duration) -> Vec<Due> {
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         let lifetimes = held.lifetimes;
         let mut due = Vec::new();
         for (digest, entry) in held.entries.iter_mut() {
@@ -463,23 +458,18 @@ impl Sessions {
 
     /// Stop refreshing this session and leave it signed in, for when the provider's settings changed under it.
     pub fn drop_grant(&self, key: &SessionKey) {
-        if let Some(entry) = self.0.lock().unwrap_or_else(|e| e.into_inner()).entries.get_mut(&key.0) {
+        if let Some(entry) = self.0.lock().entries.get_mut(&key.0) {
             entry.grant = None;
         }
     }
 
     /// End the session `key` names, for when the provider refused its grant. Whether there was one to end.
     pub fn end(&self, key: &SessionKey) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entries
-            .remove(&key.0)
-            .is_some()
+        self.0.lock().entries.remove(&key.0).is_some()
     }
 
     fn with_grant(&self, key: &SessionKey, f: impl FnOnce(&mut Held)) {
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.0.lock();
         if let Some(g) = held.entries.get_mut(&key.0).and_then(|e| e.grant.as_mut()) {
             f(g);
         }
@@ -509,7 +499,7 @@ mod tests {
         let s = Sessions::default();
         let now = Instant::now();
         let token = issued(&s, "u_1", now);
-        let held = s.0.lock().unwrap();
+        let held = s.0.lock();
         assert_eq!(held.entries.len(), 1);
         assert!(
             held.entries.contains_key(&auth::hash_secret(&token)),

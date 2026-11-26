@@ -148,8 +148,8 @@ export const TASKS: Task[] = [
     steps: [
       { on: PIPELINE, at: guide('samples') },
       { on: PIPELINE, at: guide('lock-test') },
-      { on: '#/build/tests/lock', at: guide('lock-name') },
-      { on: '#/build/tests/lock', at: guide('lock') },
+      { on: PIPELINE, at: guide('lock-name') },
+      { on: PIPELINE, at: guide('lock') },
     ],
     done: (w) => w.branch !== MAIN && w.tests.some((t) => !w.mainTests.includes(t)),
   },

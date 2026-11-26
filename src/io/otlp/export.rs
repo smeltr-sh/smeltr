@@ -20,8 +20,9 @@
 //! What an answer means is the HTTP destination's (`http_post::answered`). A 2xx whose `partialSuccess` names items
 //! the service refused lands every row, and counts those as unwritten.
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use prost::Message as _;
 
@@ -73,7 +74,7 @@ impl Otlp {
     /// What a row of `resource` and `scope` came under: the last row's where it is the same, so the rows of one
     /// resource and scope share it.
     fn scoped(&self, resource: Resource, scope: InstrumentationScope) -> Arc<Scoped> {
-        let mut last = self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = self.last.lock();
         if let Some(held) = &last.scoped
             && held.resource == resource
             && held.scope == scope
@@ -92,7 +93,7 @@ impl Otlp {
 
     /// `metric`, which holds no points: the last row's where it is the same.
     fn family(&self, metric: Metric) -> Arc<Family> {
-        let mut last = self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = self.last.lock();
         if let Some(held) = &last.metric
             && held.metric == metric
         {
@@ -593,7 +594,7 @@ mod tests {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let otlp = protocol(Signal::Traces).with_unwritten(Unwritten::new(
             crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"),
-            DestId(7),
+            DestId::new(7),
             "otlp",
         ));
         let items = admitted(

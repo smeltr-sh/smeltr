@@ -2,10 +2,11 @@
 //! answer means, and a store taking what it sends.
 
 use smeltr::core::id::DestId;
+use smeltr::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use prost::Message;
@@ -176,7 +177,7 @@ struct ScriptedTransport {
 
 impl Transport for ScriptedTransport {
     fn post(&mut self, _path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        self.sent.lock().unwrap().push(body.to_vec());
+        self.sent.lock().push(body.to_vec());
         let status = self.answers.pop_front().expect("the script ran out");
         Ok(Response {
             status,
@@ -229,7 +230,7 @@ fn a_refused_request_is_split_to_the_sample_at_fault() {
             "{}",
             refused[0].reason
         );
-        assert_eq!(sent.lock().unwrap().len(), 5, "{status}");
+        assert_eq!(sent.lock().len(), 5, "{status}");
     }
 }
 
@@ -240,11 +241,11 @@ fn a_store_asking_to_wait_gets_the_request_again() {
     let (d, sent) = scripted(&[503, 429, 204]);
     let mut d = d.with_metrics(
         smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"),
-        DestId(4),
+        DestId::new(4),
     );
     let rows = vec![sample("x", "a", 1.0, "2026-10-11T18:00:00.000000Z")];
     assert!(deliver(&mut d, rows).unwrap().is_empty());
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 3);
     assert_eq!(sent[0], sent[2]);
     let throttled = registry
@@ -272,7 +273,7 @@ fn a_batch_spanning_requests_goes_oldest_first() {
         sample("x", "a", 1.0, "2026-10-11T18:00:01.000000Z"),
     ];
     let refused = deliver(&mut d, rows).unwrap();
-    let values: Vec<f64> = (sent.lock().unwrap().iter())
+    let values: Vec<f64> = (sent.lock().iter())
         .flat_map(|body| decoded(body).timeseries)
         .flat_map(|series| series.samples)
         .map(|sample| sample.value)
@@ -299,7 +300,7 @@ fn a_row_that_is_no_sample_is_refused_and_the_rest_are_sent() {
     assert_eq!(refused.len(), 1);
     assert_eq!(refused[0].doc, 0);
     assert!(refused[0].reason.contains("value"), "{}", refused[0].reason);
-    let request = decoded(&sent.lock().unwrap()[0]);
+    let request = decoded(&sent.lock()[0]);
     assert_eq!(request.timeseries.len(), 1);
     assert_eq!(request.timeseries[0].samples[0].value, 2.0);
 }
@@ -348,7 +349,7 @@ fn a_histogram_row_is_sent_as_a_native_or_a_classic_histogram() {
         )),
     ];
     assert!(deliver(&mut d, rows).unwrap().is_empty());
-    let request = decoded(&sent.lock().unwrap()[0]);
+    let request = decoded(&sent.lock()[0]);
     assert_eq!(request.timeseries.len(), 2 + 6 + 4);
     let a = &request.timeseries[0].histograms[0];
     assert_eq!(
@@ -430,7 +431,7 @@ fn a_series_mixing_samples_and_histograms_goes_oldest_first() {
         s("2026-10-11T18:00:01Z"),
     ];
     assert!(deliver(&mut d, rows).unwrap().is_empty());
-    let request = decoded(&sent.lock().unwrap()[0]);
+    let request = decoded(&sent.lock()[0]);
     let t0 = 1_791_741_600_000;
     let entries: Vec<(Vec<i64>, Vec<i64>)> = (request.timeseries.iter())
         .map(|s| {
@@ -493,7 +494,7 @@ fn a_histogram_prometheus_does_not_store_is_refused() {
         assert_eq!(*doc, at, "{reason}");
         assert!(reason.contains(why), "{reason}");
     }
-    let request = decoded(&sent.lock().unwrap()[0]);
+    let request = decoded(&sent.lock()[0]);
     assert_eq!(request.timeseries[0].histograms.len(), 1);
     assert_eq!(
         request.timeseries[0].histograms[0].reset_hint,
@@ -529,7 +530,7 @@ fn a_row_s_exemplars_are_sent_as_its_series_exemplars() {
         )),
     ];
     assert!(deliver(&mut d, rows).unwrap().is_empty());
-    let request = decoded(&sent.lock().unwrap()[0]);
+    let request = decoded(&sent.lock()[0]);
     assert_eq!(request.timeseries.len(), 3);
     let a = &request.timeseries[0];
     assert_eq!(a.samples.len(), 1);
@@ -580,7 +581,7 @@ fn an_exemplar_prometheus_would_not_store_is_left_out() {
         e(r#"[{"value":1,"traceId":7,"filteredAttributes":{"tags":[1]}}]"#),
     ];
     assert!(deliver(&mut d, rows).unwrap().is_empty());
-    let request = decoded(&sent.lock().unwrap()[0]);
+    let request = decoded(&sent.lock()[0]);
     let series = &request.timeseries[0];
     assert_eq!(series.samples.len(), 4);
     assert_eq!(series.exemplars.len(), 1);
@@ -611,7 +612,7 @@ fn each_family_s_metadata_is_sent_once() {
     assert_eq!(refused.len(), 1);
     assert_eq!(refused[0].doc, 3);
     assert!(refused[0].reason.contains("\"table\""), "{}", refused[0].reason);
-    let request = decoded(&sent.lock().unwrap()[0]);
+    let request = decoded(&sent.lock()[0]);
     // The metadata row goes first in the batch, so its metadata is the family's.
     assert_eq!(
         request.metadata,

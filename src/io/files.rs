@@ -30,11 +30,12 @@
 //! began. The commit happens when the interval has passed since the last one, when the bytes held since the last one
 //! reach [`commit_at`] of the egress budget, or when `flush` asks.
 
+use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -427,40 +428,38 @@ impl FileDestination {
         let finishing = Arc::new(AtomicBool::new(false));
         let told = finishing.clone();
         let subject = subject.to_string();
-        let thread = std::thread::Builder::new()
-            .name(format!("{name}-file-writer"))
-            .spawn(move || {
-                let shared = Shared {
-                    name,
-                    subject,
-                    config,
-                    store,
-                    runtime,
-                    committer: Mutex::new(committer),
-                    open_files: AtomicUsize::new(0),
-                    started: AtomicUsize::new(0),
-                    fault: Mutex::new(None),
-                    open_bytes: measured,
-                };
-                let mut writer = Writer {
-                    shared: Arc::new(shared),
-                    encoders: Vec::new(),
-                    home: HashMap::new(),
-                    closed: Vec::new(),
-                    pending: Vec::new(),
-                    held: 0,
-                    next_commit: Instant::now(),
-                    reset_said: crate::logs::Repeat::new(),
-                    seen: 0,
-                    ended: None,
-                    finishing: told,
-                    cpu: (Instant::now(), crate::resources::own_cpu_time()),
-                    core_free: false,
-                };
-                writer.next_commit += writer.shared.config.commit_interval;
-                writer.run(inbox, reports);
-            })
-            .expect("a thread for the table writer");
+        let thread = crate::sync::spawn(format!("{name}-file-writer"), move || {
+            let shared = Shared {
+                name,
+                subject,
+                config,
+                store,
+                runtime,
+                committer: Mutex::new(committer),
+                open_files: AtomicUsize::new(0),
+                started: AtomicUsize::new(0),
+                fault: Mutex::new(None),
+                open_bytes: measured,
+            };
+            let mut writer = Writer {
+                shared: Arc::new(shared),
+                encoders: Vec::new(),
+                home: HashMap::new(),
+                closed: Vec::new(),
+                pending: Vec::new(),
+                held: 0,
+                next_commit: Instant::now(),
+                reset_said: crate::logs::Repeat::new(),
+                seen: 0,
+                ended: None,
+                finishing: told,
+                cpu: (Instant::now(), crate::resources::own_cpu_time()),
+                core_free: false,
+            };
+            writer.next_commit += writer.shared.config.commit_interval;
+            writer.run(inbox, reports);
+        })
+        .expect("a thread for the table writer");
         FileDestination {
             format,
             partitioner,
@@ -745,7 +744,7 @@ impl Writer {
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => break,
             };
-            let fault = self.shared.fault.lock().unwrap().take();
+            let fault = self.shared.fault.lock().take();
             if let Some(why) = failed.or(fault) {
                 let e = self.fail(why);
                 if reports.send(Err(e)).is_err() {
@@ -853,9 +852,7 @@ impl Writer {
             broken: false,
             measured: 0,
         };
-        let thread = std::thread::Builder::new()
-            .name(format!("{}-file-encoder", self.shared.name))
-            .spawn(move || encoder.run(inbox))
+        let thread = crate::sync::spawn(format!("{}-file-encoder", self.shared.name), move || encoder.run(inbox))
             .map_err(|e| format!("starting an encoder: {e}"))?;
         self.encoders.push(Lane { orders, queued, thread });
         self.shared.started.fetch_add(1, Ordering::Relaxed);
@@ -924,7 +921,7 @@ impl Writer {
         // Whether a failure other than a conflict was logged: the table stays unwritten while it is tried again.
         let mut warned = false;
         loop {
-            let committed = self.shared.committer.lock().unwrap().commit(&self.closed);
+            let committed = self.shared.committer.lock().commit(&self.closed);
             let error = match committed {
                 Ok(()) => {
                     tracing::info!(
@@ -1014,7 +1011,7 @@ impl Writer {
         }
         self.delete_closed();
         // A fault an encoder met before it was aborted is this failure's.
-        self.shared.fault.lock().unwrap().take();
+        self.shared.fault.lock().take();
         self.ended = Some(self.seen);
         self.pending.clear();
         self.held = 0;
@@ -1087,7 +1084,7 @@ impl Encoder {
                     {
                         self.broken = true;
                         self.open.clear();
-                        self.shared.fault.lock().unwrap().get_or_insert(why);
+                        self.shared.fault.lock().get_or_insert(why);
                     }
                     let bytes = rows.iter().map(FileRow::bytes).sum();
                     self.queued.fetch_sub(bytes, Ordering::Relaxed);
@@ -1095,7 +1092,7 @@ impl Encoder {
                 Some(Order::Close(reply)) => {
                     let closed = match self.broken {
                         // The writer has not seen the fault yet, or it would have aborted this encoder first.
-                        true => Err((self.shared.fault.lock().unwrap().take())
+                        true => Err((self.shared.fault.lock().take())
                             .unwrap_or_else(|| "a file could not be written".to_string())),
                         false => {
                             let open = std::mem::take(&mut self.open).into_values().collect();
@@ -1198,7 +1195,7 @@ impl Encoder {
 
     fn open_file(&mut self, partition: Partition) -> Result<OpenFile, String> {
         let shared = &self.shared;
-        let path = (shared.committer.lock().unwrap()).file_path(&partition, &super::objects::object_id());
+        let path = (shared.committer.lock()).file_path(&partition, &super::objects::object_id());
         let upload = Upload::new(
             shared.store.clone(),
             shared.runtime.clone(),

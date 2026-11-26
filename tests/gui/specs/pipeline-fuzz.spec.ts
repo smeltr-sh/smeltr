@@ -10,6 +10,7 @@
 // runs `n`; `SMELTR_PIPELINE_MOVES=n` makes each seed's journey `n` moves long. `pipeline-fuzz-coverage.spec.ts` checks
 // that the seeds made every move.
 import { test, expect, settled } from '../fleet';
+import { pasted } from '../samples';
 import { Rng, seeds } from '../fuzz';
 import { THEMES, VIEWPORTS } from '../gui-fuzz';
 import {
@@ -54,7 +55,7 @@ for (const seed of seeds(PIPELINE_SEEDS)) {
     await api.put(`/api/areas/shared/samples/${encodeURIComponent(SAMPLE)}${ON}`, {
       id: SAMPLE,
       name: SAMPLE,
-      records: RAWS.map((_raw) => ({ _raw })),
+      ...pasted(RAWS.map((_raw) => ({ _raw }))),
     });
     await api.put(`/api/areas/shared/pipelines/${PIPELINE}${ON}`, {
       id: PIPELINE,

@@ -72,7 +72,7 @@ pub mod trust;
 pub mod values;
 pub mod vended;
 
-pub use stored::{MISTYPED_FIELDS, RecordObject, SourceFields, raw_object, take_mistyped, unclaimed_of, value_at};
+pub use stored::{Cells, RecordObject, SourceFields, raw_object, unclaimed_of, value_at};
 
 /// Opens `kind` as a live source. `secrets` is what this worker can obtain a credential from; one it cannot is an
 /// error here, never a connection that silently fails to authenticate. A metrics source labels its subjects by the
@@ -224,7 +224,7 @@ struct Home {
 }
 
 thread_local! {
-    static HOME: Arc<std::sync::Mutex<Home>> = Arc::new(std::sync::Mutex::new(Home {
+    static HOME: Arc<crate::sync::Mutex<Home>> = Arc::new(crate::sync::Mutex::new(Home {
         pool: crate::core::buffer::BufferPool::new(),
         rows: 0,
         bytes: 0,
@@ -234,7 +234,7 @@ thread_local! {
 /// Builds one poll's records of a byte source: each record's bytes go into the chunk the poll's records share, copied
 /// once from wherever the source read them.
 pub struct RecordChunkBuilder {
-    home: Arc<std::sync::Mutex<Home>>,
+    home: Arc<crate::sync::Mutex<Home>>,
     raw: crate::core::column::StrBuilder,
     at: Vec<ReadAt>,
     /// Each record's time as its source stamped it, in microseconds since the epoch.
@@ -246,7 +246,7 @@ impl Default for RecordChunkBuilder {
     fn default() -> Self {
         let home = HOME.with(Arc::clone);
         let (raw, rows) = {
-            let mut h = home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut h = home.lock();
             let (rows, bytes) = (h.rows, h.bytes);
             let raw = crate::core::column::StrBuilder::growing_with(
                 &mut h.pool,
@@ -297,7 +297,7 @@ impl RecordChunkBuilder {
         if self.raw.fits(raw.len()) {
             self.raw.push(raw);
         } else {
-            let mut home = self.home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut home = self.home.lock();
             self.raw.push_grow(&mut home.pool, raw);
         }
         self.size += raw.len() + headers_size(&headers);
@@ -351,7 +351,7 @@ impl RecordChunkBuilder {
 
     fn split(self) -> (RecordChunk, Vec<ReadAt>) {
         let column = {
-            let mut home = self.home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut home = self.home.lock();
             let bytes = self.size - self.at.iter().map(|at| headers_size(&at.3)).sum::<usize>();
             (home.rows, home.bytes) = (self.at.len(), bytes);
             let column = self.raw.finish_growing(&mut home.pool);
@@ -419,7 +419,7 @@ pub struct RecordChunk {
     /// source spelled it, by row ascending.
     failed: Vec<(u32, usize, String)>,
     /// Where its buffers go back to: the reader thread's that built it, if one did.
-    home: Option<Arc<std::sync::Mutex<Home>>>,
+    home: Option<Arc<crate::sync::Mutex<Home>>>,
     /// What every record of it is filed under (`hec::Filed`), where its source files them under one value. A record's
     /// own `headers` are `None` then.
     filed: Option<Arc<hec::Filed>>,
@@ -592,7 +592,7 @@ impl Drop for RecordChunk {
     fn drop(&mut self) {
         match &self.home {
             Some(home) => {
-                let mut home = home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut home = home.lock();
                 for column in self.columns.drain(..) {
                     column.reclaim(&mut home.pool);
                 }
@@ -1335,9 +1335,10 @@ pub mod fake {
         BatchCompletion, BatchId, CommitMap, Destination, Dispatched, IoError, OwnedRecord, Payload, Rejection, Source,
         SourceRecord, TopicPartition, Undelivered,
     };
+    use crate::sync::Mutex;
     use std::borrow::Cow;
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[derive(Default)]
@@ -1372,31 +1373,31 @@ pub mod fake {
 
         /// Every `commit` call so far, in order.
         pub fn committed(&self) -> Vec<CommitMap> {
-            self.0.lock().unwrap().committed.clone()
+            self.0.lock().committed.clone()
         }
 
         pub fn is_blocked(&self) -> bool {
-            self.0.lock().unwrap().blocked
+            self.0.lock().blocked
         }
 
         /// Move `partition` to another member of the group, as a rebalance does.
         pub fn revoke(&self, partition: TopicPartition) {
-            self.0.lock().unwrap().revoked.push(partition);
+            self.0.lock().revoked.push(partition);
         }
 
         /// How many times the reader kept this source's membership in place of polling it.
         pub fn membership_kept(&self) -> usize {
-            self.0.lock().unwrap().membership_kept
+            self.0.lock().membership_kept
         }
 
         /// Make the next `n` `commit` calls fail.
         pub fn fail_commits(&self, n: usize) {
-            self.0.lock().unwrap().fail_commits = n;
+            self.0.lock().fail_commits = n;
         }
 
         /// Put records back for the next poll.
         pub fn requeue(&self, records: impl IntoIterator<Item = SourceRecord>) {
-            self.0.lock().unwrap().pending.extend(records);
+            self.0.lock().pending.extend(records);
         }
     }
 
@@ -1407,7 +1408,7 @@ pub mod fake {
             max_bytes: usize,
             _timeout: Duration,
         ) -> Result<Vec<SourceRecord>, IoError> {
-            let mut s = self.0.lock().unwrap();
+            let mut s = self.0.lock();
             let mut out = Vec::new();
             // A blocked source keeps getting polled and hands back nothing, as a paused Kafka consumer does.
             if s.blocked {
@@ -1428,26 +1429,26 @@ pub mod fake {
         }
 
         fn block(&mut self) -> Result<(), IoError> {
-            self.0.lock().unwrap().blocked = true;
+            self.0.lock().blocked = true;
             Ok(())
         }
 
         fn keep_membership(&mut self, _timeout: Duration) -> Result<(), IoError> {
-            self.0.lock().unwrap().membership_kept += 1;
+            self.0.lock().membership_kept += 1;
             Ok(())
         }
 
         fn take_revoked(&mut self) -> Vec<TopicPartition> {
-            std::mem::take(&mut self.0.lock().unwrap().revoked)
+            std::mem::take(&mut self.0.lock().revoked)
         }
 
         fn release(&mut self) -> Result<(), IoError> {
-            self.0.lock().unwrap().blocked = false;
+            self.0.lock().blocked = false;
             Ok(())
         }
 
         fn commit(&mut self, offsets: &CommitMap) -> Result<(), IoError> {
-            let mut s = self.0.lock().unwrap();
+            let mut s = self.0.lock();
             if s.fail_commits > 0 {
                 s.fail_commits -= 1;
                 return Err(IoError::transient("commit refused".to_string()));
@@ -1505,16 +1506,16 @@ pub mod fake {
 
         /// Batches handed over and not yet acknowledged.
         pub fn outstanding(&self) -> Vec<BatchId> {
-            self.0.lock().unwrap().dispatched.clone()
+            self.0.lock().dispatched.clone()
         }
 
         pub fn sent(&self) -> usize {
-            self.0.lock().unwrap().sent
+            self.0.lock().sent
         }
 
         /// Every batch `deliver` took, in order, with the row values it carried.
         pub fn units(&self) -> Vec<(BatchId, Vec<Vec<u8>>)> {
-            self.0.lock().unwrap().units.clone()
+            self.0.lock().units.clone()
         }
 
         /// Acknowledge `batch`, in any order.
@@ -1524,7 +1525,7 @@ pub mod fake {
 
         /// Acknowledge `batch`, reporting documents it refused.
         pub fn complete_with(&self, batch: BatchId, mut rejections: Vec<Rejection>) {
-            let mut st = self.0.lock().unwrap();
+            let mut st = self.0.lock();
             st.dispatched.retain(|b| *b != batch);
             // Each refusal gets its document back from the latest unit taken under `batch`, as egress does.
             if let Some((_, rows)) = st.records.iter().rev().find(|(b, _)| *b == batch) {
@@ -1544,7 +1545,7 @@ pub mod fake {
 
         /// Answer `batch` with `rows` of it undelivered, for `why`, and `rejections` refused: the rest landed.
         pub fn fail_rows(&self, batch: BatchId, rows: Vec<usize>, rejections: Vec<Rejection>, why: &str) {
-            let mut st = self.0.lock().unwrap();
+            let mut st = self.0.lock();
             st.dispatched.retain(|b| *b != batch);
             st.ready.push(BatchCompletion {
                 batch,
@@ -1559,22 +1560,22 @@ pub mod fake {
 
         /// Every batch `deliver` took, in order, with the rows it carried whole.
         pub fn records(&self) -> Vec<(BatchId, Vec<OwnedRecord>)> {
-            self.0.lock().unwrap().records.clone()
+            self.0.lock().records.clone()
         }
 
         /// Make the next `poll_completions` report a delivery failure.
         pub fn fail_next_poll(&self, msg: &str) {
-            self.0.lock().unwrap().fail_next_poll = Some(msg.to_string());
+            self.0.lock().fail_next_poll = Some(msg.to_string());
         }
 
         /// Make the next `deliver` fail, as a full producer queue does.
         pub fn fail_next_deliver(&self, msg: &str) {
-            self.0.lock().unwrap().fail_next_deliver = Some(msg.to_string());
+            self.0.lock().fail_next_deliver = Some(msg.to_string());
         }
 
         /// What `connection_error` answers from now on, as a client that loses and regains its brokers does.
         pub fn set_connection_error(&self, error: Option<&str>) {
-            self.0.lock().unwrap().connection_error = error.map(str::to_string);
+            self.0.lock().connection_error = error.map(str::to_string);
         }
     }
 
@@ -1584,7 +1585,7 @@ pub mod fake {
             batch: BatchId,
             rows: Cow<'_, [OwnedRecord]>,
         ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
-            let mut st = self.0.lock().unwrap();
+            let mut st = self.0.lock();
             st.sent += rows.len();
             if let Some(msg) = st.fail_next_deliver.take() {
                 return Err(IoError::transient(msg));
@@ -1596,7 +1597,7 @@ pub mod fake {
         }
 
         fn flush(&mut self) -> Result<(), IoError> {
-            let mut st = self.0.lock().unwrap();
+            let mut st = self.0.lock();
             let pending = std::mem::take(&mut st.dispatched);
             st.ready.extend(pending.into_iter().map(|batch| BatchCompletion {
                 batch,
@@ -1613,7 +1614,7 @@ pub mod fake {
         }
 
         fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-            let mut st = self.0.lock().unwrap();
+            let mut st = self.0.lock();
             if let Some(msg) = st.fail_next_poll.take() {
                 // What was outstanding is forgotten, as the Kafka
                 // destination's tracker does on a delivery failure.
@@ -1625,7 +1626,7 @@ pub mod fake {
         }
 
         fn connection_error(&self) -> Option<String> {
-            self.0.lock().unwrap().connection_error.clone()
+            self.0.lock().connection_error.clone()
         }
     }
 
@@ -1640,16 +1641,16 @@ pub mod fake {
 
         /// Every row taken so far, in order.
         pub fn sent(&self) -> Vec<SentRecord> {
-            self.0.lock().unwrap().sent.clone()
+            self.0.lock().sent.clone()
         }
 
         pub fn flushes(&self) -> usize {
-            self.0.lock().unwrap().flushes
+            self.0.lock().flushes
         }
 
         /// Make the next `n` rows handed over fail transiently. A batch with any of them fails whole.
         pub fn fail_next_sends(&self, n: usize) {
-            self.0.lock().unwrap().fail_sends = n;
+            self.0.lock().fail_sends = n;
         }
 
         /// A destination whose every hand-over fails.
@@ -1661,14 +1662,14 @@ pub mod fake {
 
         /// Make the next `n` rows handed over be refused.
         pub fn reject_next_sends(&self, n: usize) {
-            let mut st = self.0.lock().unwrap();
+            let mut st = self.0.lock();
             st.fail_sends = n;
             st.reject = true;
         }
 
         /// Refuse these positions of the next batch once it is flushed, as a batched acknowledgment does.
         pub fn reject_on_flush(&self, docs: &[usize]) {
-            self.0.lock().unwrap().flush_rejections = docs
+            self.0.lock().flush_rejections = docs
                 .iter()
                 .map(|&doc| Rejection {
                     doc,
@@ -1680,7 +1681,7 @@ pub mod fake {
 
         /// Make the next `n` `flush` calls fail: accepted, never drained.
         pub fn fail_next_flushes(&self, n: usize) {
-            self.0.lock().unwrap().fail_flushes = n;
+            self.0.lock().fail_flushes = n;
         }
 
         /// A destination that takes records and never acknowledges them.
@@ -1700,7 +1701,7 @@ pub mod fake {
             let mut rejections = Vec::new();
             let mut failed = None;
             {
-                let mut st = self.0.lock().unwrap();
+                let mut st = self.0.lock();
                 for (i, row) in rows.iter().enumerate() {
                     if let Some(why) = &row.unfit {
                         rejections.push(Rejection::of(&rows, i, why.as_str()));
@@ -1730,7 +1731,7 @@ pub mod fake {
                 return Err(e);
             }
             self.flush()?;
-            for mut r in std::mem::take(&mut self.0.lock().unwrap().flush_rejections) {
+            for mut r in std::mem::take(&mut self.0.lock().flush_rejections) {
                 r.record = rows.get(r.doc).cloned();
                 rejections.push(r);
             }
@@ -1738,7 +1739,7 @@ pub mod fake {
         }
 
         fn flush(&mut self) -> Result<(), IoError> {
-            let mut st = self.0.lock().unwrap();
+            let mut st = self.0.lock();
             if st.fail_flushes > 0 {
                 st.fail_flushes = st.fail_flushes.saturating_sub(1);
                 return Err(IoError::transient(

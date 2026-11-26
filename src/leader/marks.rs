@@ -251,7 +251,7 @@ fn below(
 }
 
 /// Held while the marks are read, changed and written, so two marks made at once are both kept.
-static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static CHANGING: crate::sync::Mutex<()> = crate::sync::Mutex::new(());
 
 /// One source an editor marks, or one of its senders, by the route that marks it.
 struct Marking {
@@ -280,7 +280,7 @@ impl Marking {
     ) -> Envelope {
         let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
         let written = super::blocking(move || -> Result<(), Refusal> {
-            let _changing = CHANGING.lock().unwrap_or_else(|e| e.into_inner());
+            let _changing = CHANGING.lock();
             let now_ms = warnings::now_millis();
             let mut marks = Marks::read(&state.store);
             change(&mut marks, &self, &actor, now_ms)?;

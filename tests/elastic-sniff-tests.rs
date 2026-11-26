@@ -1,9 +1,10 @@
 //! Sniffing (`io::elastic_nodes`): an Elasticsearch destination that learns the cluster's nodes from its `url`,
 //! against a cluster of fake nodes in this process.
 
+use smeltr::sync::Mutex;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::harness::receiver::free_loopback;
@@ -45,7 +46,7 @@ fn fake(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> Fake {
             reader.read_exact(&mut vec![0; length]).unwrap();
             let line = line.trim().to_string();
             let (status, body) = answer(&line);
-            kept.lock().unwrap().push(line);
+            kept.lock().push(line);
             let _ = write!(
                 conn,
                 "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -108,12 +109,7 @@ fn post(transport: &mut Sniffing) -> Result<u16, String> {
 }
 
 fn bulks(fake: &Fake) -> usize {
-    fake.seen
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|l| l.contains("/_bulk"))
-        .count()
+    fake.seen.lock().iter().filter(|l| l.contains("/_bulk")).count()
 }
 
 /// Bulk requests go to the nodes the cluster names, in turn, and the seed takes none.
