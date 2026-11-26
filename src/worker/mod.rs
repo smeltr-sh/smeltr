@@ -1413,7 +1413,7 @@ fn deploy(
         subjects: subjects.clone(),
         held: held.clone(),
         receivers: receiver_pool.clone(),
-        kafka: Arc::default(),
+        kafka: Arc::new(crate::io::kafka::Clients::for_threads(thread_limit)),
     };
     let depth = lane_depth(thread_limit, system.topology.sources.len());
     let mut readers = Vec::new();

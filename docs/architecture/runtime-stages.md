@@ -51,10 +51,15 @@ cut every batch that small.
 
 A source whose protocol divides its shards among a group's members joins the
 group through a client the worker shares with every source of the same
-group and connection. The worker pays for one connection, one membership
-and one fetch queue however many sources read through it, and hands each
-record to its own source's inbox, where its reader takes it. A full inbox and
-a blocked source pause only that source's shards. The shared client keeps
+group and connection. The client joins as several members, one for every few
+of the worker's threads, because one member fetches and routes on one thread
+and that thread caps what the worker reads. The group splits the shards
+between them, and each member hands a record to its own source's inbox, where
+its reader takes it. The worker pays for those members, their connections and
+one fetch queue split between them however many sources read through it, and
+the group rebalances among every member of every worker. A full inbox and a
+blocked source pause only that source's shards, each through the member that
+owns it, and a commit goes through the member that owns its shard. The shared client keeps
 the membership on its own, so a reader that stops reading for the group's
 poll interval has its source taken out of the subscription, and its shards
 go to members that read. Two sources reading one shard in one group would
@@ -67,10 +72,14 @@ outright is still refused when another source reads it.
 
 ```mermaid
 flowchart LR
-  B[(brokers)] --> C[shared client]
-  C -->|by topic| I1[inbox] --> R1[reader 1]
-  C -->|by topic| I2[inbox] --> R2[reader 2]
-  R1 & R2 -->|commit| C
+  B[(brokers)] --> M1[member 1] & M2[member 2]
+  subgraph C[shared client]
+    M1
+    M2
+  end
+  M1 & M2 -->|by topic| I1[inbox] --> R1[reader 1]
+  M1 & M2 -->|by topic| I2[inbox] --> R2[reader 2]
+  R1 & R2 -->|commit, through the shard's member| C
 ```
 
 A source whose input has no protocol to divide it, such as a bucket read by
