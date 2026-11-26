@@ -12,7 +12,7 @@ use crate::core::batch::{Batch, SLOT_LIVE};
 use crate::core::column::{Column, DataType, Scalar};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
-use crate::core::id::{DestId, SourceId};
+use crate::core::id::{DestId, Id, SourceId};
 use crate::core::variant::EncodedBuf;
 use crate::expr::ast::Span;
 use crate::expr::eval::eval;
@@ -3030,7 +3030,7 @@ pub struct CompiledDeliverRule {
     pub to: Vec<DestId>,
     /// Regex literals in `when`, compiled once. Evaluation points `Ctx::patterns` at this, exactly as `route_masks`
     /// does for `cond`.
-    pub compiled_patterns: Vec<crate::core::ctx::CompiledPattern>,
+    pub compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
 }
 
 /// One delivery rule: an optional condition over the pipeline's *output*, and the destinations a matching row goes to.
@@ -3330,7 +3330,7 @@ pub struct CompiledRoute {
     /// `Plan::compiled_patterns`. A route condition resolves against its own disjoint `ResourceBuilder` (see this
     /// struct's doc), so it cannot share a target pipeline's `compiled_patterns`; `route_masks` points `Ctx::patterns`
     /// at this before evaluating `cond`, the same way `plan::exec::run` points it at `Plan::compiled_patterns`.
-    pub compiled_patterns: Vec<crate::core::ctx::CompiledPattern>,
+    pub compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
     /// `RouteConfig::on_exception`.
     pub on_exception: OnException,
 }
@@ -3760,7 +3760,7 @@ fn compile_deliver_rule(
         return Ok(CompiledDeliverRule {
             when: None,
             to: rule.to.clone(),
-            compiled_patterns: Vec::new(),
+            compiled_patterns: Default::default(),
         });
     };
     let (ir, compiled_patterns) = output_condition(src, "condition", plan, tag_field, meta)?;
@@ -3783,7 +3783,10 @@ pub(crate) fn output_symbols(plan: &Plan, tag_field: &str, meta: &SourceMeta) ->
 }
 
 /// A condition over a finished batch, and the patterns `Ctx::patterns` is pointed at to evaluate it.
-pub type OutputCondition = (Ir, Vec<crate::core::ctx::CompiledPattern>);
+pub type OutputCondition = (
+    Ir,
+    crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
+);
 
 /// Compile `src`, called `what` in an error, as a condition over `plan`'s finished batch: what a `deliver` rule reads,
 /// and what a filter at a destination reads. Evaluated with `Ctx::patterns` pointed at the patterns it returns.
@@ -4853,7 +4856,7 @@ mod tests {
             id: 7,
             name: "p".into(),
             body: Vec::new(),
-            step_ids: Vec::new(),
+            step_ids: Default::default(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces: Vec::new(),
@@ -4910,9 +4913,9 @@ mod tests {
             deliver: vec![CompiledDeliverRule {
                 when: None,
                 to,
-                compiled_patterns: Vec::new(),
+                compiled_patterns: Default::default(),
             }],
-            compiled_patterns: Vec::new(),
+            compiled_patterns: Default::default(),
             on_exception: Default::default(),
         };
 
