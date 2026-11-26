@@ -1304,7 +1304,7 @@ mod tests {
         )
         .unwrap();
         let table = std::sync::Arc::new(Table::Row(t));
-        let out_slot: SlotId = raw_layout().len();
+        let out_slot: SlotId = SlotId::at(raw_layout().len());
         run_on(
             &table,
             Best,
@@ -1337,7 +1337,7 @@ mod tests {
         )
         .unwrap();
         let table = std::sync::Arc::new(Table::Row(t));
-        let out_slot: SlotId = raw_layout().len();
+        let out_slot: SlotId = SlotId::at(raw_layout().len());
 
         let mut b = Column::alloc(&mut pool, &DataType::Bool, 1);
         bits::set_row(b.bool_mut().unwrap().values, 0, true);
@@ -1387,7 +1387,7 @@ mod tests {
         )
         .unwrap();
         let table = std::sync::Arc::new(Table::Row(t));
-        let out_slot: SlotId = raw_layout().len();
+        let out_slot: SlotId = SlotId::at(raw_layout().len());
         run_on(&table, All, &[("zone", out_slot, None)], &mut batch, &mut pool);
         let col = batch.peek(out_slot);
         assert_eq!(col.data_type(), DataType::Array(Box::new(DataType::Str)));
@@ -1430,7 +1430,7 @@ mod tests {
             seed_str_slot(&mut pool, &mut batch, SLOT_RAW, &[Some("10.1.2.3"), Some("172.16.0.1")]);
             let t = RowTable::build(vec!["net".into(), "zone".into()], rows.clone(), "net", MatchKind::Cidr).unwrap();
             let table = std::sync::Arc::new(Table::Row(t));
-            let out_slot: SlotId = raw_layout().len();
+            let out_slot: SlotId = SlotId::at(raw_layout().len());
             run_on(&table, multiplicity, &[("zone", out_slot, None)], &mut batch, &mut pool);
             let col = batch.peek(out_slot);
             let got: Vec<String> = if multiplicity == Multiplicity::All {
@@ -1472,7 +1472,7 @@ mod tests {
         )
         .unwrap();
         let table = std::sync::Arc::new(Table::Row(t));
-        let out_slot: SlotId = raw_layout().len();
+        let out_slot: SlotId = SlotId::at(raw_layout().len());
         run_on(&table, All, &[("zone", out_slot, None)], &mut batch, &mut pool);
         let col = batch.peek(out_slot);
         assert_eq!(list_row(col, 0), ["wide", "site", "any6"]);
@@ -1503,7 +1503,7 @@ mod tests {
         )
         .unwrap();
         let table = std::sync::Arc::new(Table::Row(t));
-        let out_slot: SlotId = raw_layout().len();
+        let out_slot: SlotId = SlotId::at(raw_layout().len());
         run_on(
             &table,
             Best,
@@ -1534,7 +1534,7 @@ mod tests {
         )
         .unwrap();
         let table = std::sync::Arc::new(Table::Row(t));
-        let out_slot: SlotId = raw_layout().len();
+        let out_slot: SlotId = SlotId::at(raw_layout().len());
         run_on(&table, Best, &[("agent", out_slot, None)], &mut batch, &mut pool);
         assert_eq!(batch.peek(out_slot).var().unwrap().get(0), b"Chrome Mobile");
         batch.reclaim(&mut pool);
@@ -1554,8 +1554,8 @@ mod tests {
         )))
         .unwrap();
         let table = std::sync::Arc::new(Table::Mmdb(m));
-        let country_slot: SlotId = raw_layout().len();
-        let city_slot = country_slot + 1;
+        let country_slot: SlotId = SlotId::at(raw_layout().len());
+        let city_slot = SlotId::at(country_slot.index() + 1);
         run_on(
             &table,
             Multiplicity::Best,

@@ -1182,7 +1182,7 @@ fn touched<'p>(plan: &'p Plan, batch: &Batch) -> Touched<'p> {
                 Origin::Function(f) => Some(f),
                 _ => None,
             };
-            (2 * o.slot + 1, o.name.as_str(), o.slot, step)
+            (2 * o.slot.index() + 1, o.name.as_str(), o.slot, step)
         })
         .chain(
             plan.aliases
