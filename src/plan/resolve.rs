@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::core::column::DataType;
-use crate::core::id::{FunctionId, PatternId, SlotId};
+use crate::core::id::{ById, FunctionId, Id, PatternId, SlotId, Slots};
 use crate::expr::ast::{Expr, ExprKind, PatternSrc, Site, Span, Value};
 use crate::expr::inline::PRELUDE_FUNCTIONS;
 use crate::expr::ir::{Ir, IrKind, Layer};
@@ -47,7 +47,7 @@ pub enum Origin {
 /// Interned compile-time constants.
 #[derive(Clone, Default, Debug)]
 pub struct ResourceBuilder {
-    pub patterns: Vec<PatternSrc>,
+    pub patterns: ById<PatternId, PatternSrc>,
 }
 
 impl ResourceBuilder {
@@ -56,11 +56,8 @@ impl ResourceBuilder {
     /// The grammar guarantees every regex is a compile-time constant, which is what makes this possible — a pattern
     /// built from a runtime value could not be compiled once and shared across every batch.
     pub fn intern(&mut self, p: &PatternSrc) -> PatternId {
-        if let Some(i) = self.patterns.iter().position(|q| q == p) {
-            return i;
-        }
-        self.patterns.push(p.clone());
-        self.patterns.len() - 1
+        let held = self.patterns.entries().find(|(_, q)| *q == p).map(|(id, _)| id);
+        held.unwrap_or_else(|| self.patterns.push(p.clone()))
     }
 }
 
@@ -69,8 +66,8 @@ impl ResourceBuilder {
 #[derive(Clone)]
 pub struct SymbolTable {
     root: Object,
-    pub layout: Vec<DataType>,
-    pub origins: Vec<SlotOrigin>,
+    pub layout: Slots<DataType>,
+    pub origins: Slots<SlotOrigin>,
     pub warnings: Vec<CompileError>,
     /// The slots bound to a local, rather than to the record's field.
     pub local_slots: HashSet<SlotId>,
@@ -134,7 +131,7 @@ impl SymbolTable {
             if let Place::Leaf(name) = place
                 && root.get(name).is_none()
             {
-                root.put(name, Node::Leaf(i));
+                root.put(name, Node::Leaf(SlotId::at(i)));
             }
         }
         let under = root.clone();
@@ -146,14 +143,14 @@ impl SymbolTable {
             laid: laid.iter().map(|(name, slot)| (name.to_string(), *slot)).collect(),
             under,
             reads_only: true,
-            layout: layout.to_vec(),
+            layout: layout.iter().cloned().collect(),
             // Origins are logs only (`logs`'s slot listing); a `when` never binds, so nothing here is ever read
             // back.
             origins: layout
                 .iter()
                 .enumerate()
                 .map(|(slot, ty)| SlotOrigin {
-                    slot,
+                    slot: SlotId::at(slot),
                     name: String::new(),
                     ty: ty.clone(),
                     origin: Origin::Ingest,
@@ -173,8 +170,8 @@ impl SymbolTable {
     pub fn new(ingest: &[(Place, DataType)]) -> SymbolTable {
         let mut t = SymbolTable {
             root: Object::default(),
-            layout: Vec::new(),
-            origins: Vec::new(),
+            layout: Slots::new(),
+            origins: Slots::new(),
             warnings: Vec::new(),
             local_slots: HashSet::new(),
             deleted_slots: HashSet::new(),
@@ -188,8 +185,7 @@ impl SymbolTable {
             reads_only: false,
         };
         for (place, ty) in ingest {
-            let slot = t.layout.len();
-            t.layout.push(ty.clone());
+            let slot = t.layout.push(ty.clone());
             match place {
                 Place::Unclaimed(object) => t.set_unclaimed(object, Some(slot)),
                 Place::Leaf(name) => {
@@ -417,6 +413,11 @@ impl SymbolTable {
         self.layout.len()
     }
 
+    /// The slot the next allocation takes.
+    pub fn next_slot(&self) -> SlotId {
+        self.layout.next_id()
+    }
+
     /// Every slot the tree names right now, by its place. What `rebound_since` compares against.
     pub fn bindings(&self) -> HashMap<Place, SlotId> {
         self.root.places().into_iter().collect()
@@ -437,7 +438,9 @@ impl SymbolTable {
             .filter(|&(_, slot)| slot >= first && assigned(&self.origins[slot]))
             .map(|(place, slot)| {
                 let name = place.to_string();
-                let first_bound = self.origins[first..]
+                let first_bound = self
+                    .origins
+                    .from_id(first)
                     .iter()
                     .find(|o| o.name == name && assigned(o))
                     .map_or(slot, |o| o.slot);
@@ -533,8 +536,7 @@ impl SymbolTable {
     /// A fresh slot of type `ty`, named `name` in provenance and bound to nothing: what an instruction writes before
     /// a write binds it.
     pub fn alloc(&mut self, name: String, ty: DataType, origin: Origin) -> SlotId {
-        let slot = self.layout.len();
-        self.layout.push(ty.clone());
+        let slot = self.layout.push(ty.clone());
         self.origins.push(SlotOrigin { slot, name, ty, origin });
         slot
     }
@@ -2225,7 +2227,7 @@ mod tests {
     fn with_fields(fields: &[(&str, DataType)]) -> SymbolTable {
         let mut t = table();
         for (n, ty) in fields {
-            t.bind(n, ty.clone(), Origin::Function(0));
+            t.bind(n, ty.clone(), Origin::Function(FunctionId::new(0)));
         }
         t
     }
@@ -2244,9 +2246,9 @@ mod tests {
             let col = rows_of(&mut pool, ty);
             batch.put(t.lookup(name).unwrap(), col, &mut pool);
         }
-        let patterns = [CompiledPattern {
+        let patterns = ById::from(vec![CompiledPattern {
             regex: regex::Regex::new("x").unwrap(),
-        }];
+        }]);
         let mut errors = ErrorSink::new();
         let out = {
             let mut ctx = Ctx::new(&mut pool, &mut errors);
@@ -2295,8 +2297,8 @@ mod tests {
     fn bind_allocates_a_fresh_slot_each_time() {
         // SSA. `x = x + 1` must not reuse x's slot.
         let mut t = table();
-        let first = t.bind("x", DataType::I64, Origin::Function(0));
-        let second = t.bind("x", DataType::I64, Origin::Function(1));
+        let first = t.bind("x", DataType::I64, Origin::Function(FunctionId::new(0)));
+        let second = t.bind("x", DataType::I64, Origin::Function(FunctionId::new(1)));
         assert_ne!(first, second);
         assert_eq!(t.lookup("x"), Some(second), "the name follows the new slot");
     }
@@ -2346,8 +2348,8 @@ mod tests {
     #[test]
     fn binding_a_scalar_over_an_object_replaces_it() {
         let mut t = with_fields(&[("source.ip", DataType::Str), ("source.port", DataType::I64)]);
-        t.bind_unclaimed("source", Origin::Function(0));
-        let slot = t.bind("source", DataType::Str, Origin::Function(1));
+        t.bind_unclaimed("source", Origin::Function(FunctionId::new(0)));
+        let slot = t.bind("source", DataType::Str, Origin::Function(FunctionId::new(1)));
         assert_eq!(t.node("source"), Some(&Node::Leaf(slot)));
         let under: Vec<Place> = t
             .root()
@@ -2366,7 +2368,7 @@ mod tests {
         // either.
         let mut t = with_fields(&[("source.ip", DataType::Str)]);
         let before = t.warnings.len();
-        t.bind("source.port", DataType::I64, Origin::Function(0));
+        t.bind("source.port", DataType::I64, Origin::Function(FunctionId::new(0)));
         assert_eq!(t.warnings.len(), before, "siblings aren't a conflict");
     }
 
@@ -2376,7 +2378,7 @@ mod tests {
         // binding a DIFFERENT, dot-nested name is flagged.
         let mut t = with_fields(&[("x", DataType::I64)]);
         let before = t.warnings.len();
-        t.bind("x", DataType::I64, Origin::Function(1));
+        t.bind("x", DataType::I64, Origin::Function(FunctionId::new(1)));
         assert_eq!(t.warnings.len(), before);
     }
 
@@ -2386,7 +2388,7 @@ mod tests {
         // test.
         let mut t = with_fields(&[("source", DataType::Str)]);
         let before = t.warnings.len();
-        t.bind("sourceX", DataType::Str, Origin::Function(0));
+        t.bind("sourceX", DataType::Str, Origin::Function(FunctionId::new(0)));
         assert_eq!(t.warnings.len(), before);
     }
 
@@ -2466,10 +2468,10 @@ mod tests {
             None,
             "not even by the name provenance shows"
         );
-        t.bind("b", DataType::I64, Origin::Function(0));
+        t.bind("b", DataType::I64, Origin::Function(FunctionId::new(0)));
         // The runtime reads a slot's provenance at the slot's index.
         assert_eq!(t.origins.len(), t.slot_count());
-        assert!(t.origins.iter().enumerate().all(|(i, o)| o.slot == i));
+        assert!(t.origins.entries().all(|(slot, o)| o.slot == slot));
         assert_eq!(t.origins[s].origin, Origin::Guard);
     }
 
@@ -2502,7 +2504,7 @@ mod tests {
         // Under the null propagation every other operator gets, `x != null` would be null on every row and guard
         // nothing. `d` is a variant. Row 1 of each field is its null.
         let mut t = with_fields(&[("s", DataType::Str)]);
-        t.bind("d", DataType::Variant, Origin::Function(0));
+        t.bind("d", DataType::Variant, Origin::Function(FunctionId::new(0)));
         let fields = [("s", DataType::Str), ("d", DataType::I64)];
         let is_null = [Some(false), Some(true), Some(false), Some(false)];
         let not_null = [Some(true), Some(false), Some(true), Some(true)];
@@ -2524,7 +2526,7 @@ mod tests {
     #[test]
     fn a_variant_is_refused_by_an_operator_and_read_by_a_nullness_test() {
         let mut t = table();
-        t.bind("kind", DataType::Variant, Origin::Function(0));
+        t.bind("kind", DataType::Variant, Origin::Function(FunctionId::new(0)));
         let e = lower("kind == \"a\"", &mut t).unwrap_err();
         assert!(e.message.contains("`kind` is a variant"), "{}", e.message);
         assert!(e.message.contains("`kind: type = kind;`"), "{}", e.message);

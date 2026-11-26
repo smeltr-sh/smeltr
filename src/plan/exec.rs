@@ -9,14 +9,14 @@ use crate::core::buffer::{self, BufferPool, Scratch};
 use crate::core::column::{Column, DataType, StrBuilder, Validity, VarType};
 use crate::core::ctx::{Ctx, OpenRegion};
 use crate::core::error::{ExceptionKind, Read};
-use crate::core::id::{FunctionId, SlotId};
+use crate::core::id::{FunctionId, SlotId, Slots};
 use crate::expr::ast::Region;
 use crate::expr::eval::{eval, eval_for_slot};
 use crate::format::{csv_parse, grok_parse, json_parse, kv_parse, spread};
 use crate::lookup;
 use crate::metrics::MetricsHandle;
-use crate::ops::arrayops::{Piece, build_from_pieces};
 use crate::ops::convert::{self, parse_bool};
+use crate::ops::pieces::{Piece, build_from_pieces};
 use crate::plan::compile::{ArrayFold, Call, Instr, Loop, Op, Output, Plan, TryStep};
 use crate::plan::config::{ParserKind, TimeSource};
 
@@ -99,7 +99,7 @@ pub fn run_scoped<'a>(
 }
 
 /// Run one instruction on `batch`: the pipeline's, or a loop's wave.
-fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ctx, scope: MetricsScope) {
+fn run_instr(layout: &Slots<DataType>, instr: &Instr, batch: &mut Batch, ctx: &mut Ctx, scope: MetricsScope) {
     ctx.function = instr.function;
     ctx.field = Some(instr.out);
     if let Some(dead) = instr.reuse {
@@ -502,12 +502,13 @@ fn record_error_metrics(
     errors: &crate::core::error::ErrorSink,
     err_start: usize,
 ) {
-    let mut counts: std::collections::HashMap<(FunctionId, &'static str), u64> = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<(Option<FunctionId>, &'static str), u64> =
+        std::collections::HashMap::new();
     for a in &errors.entries()[err_start..] {
         *counts.entry((a.function, a.kind.label())).or_insert(0) += 1;
     }
     for ((function, kind), count) in counts {
-        let function_label = function.to_string();
+        let function_label = function.map_or_else(|| crate::core::error::INGEST_LABEL.to_string(), |f| f.to_string());
         metrics.incr(
             "smeltr_rows_errored_total",
             &[
@@ -527,7 +528,14 @@ fn record_error_metrics(
 /// which belongs to the `Code` block (`Ctx::loop_owner`), and marks each row it stops.
 ///
 /// With metrics, records `smeltr_rows_in_total` (batch width) and `smeltr_rows_out_total` (rows the guard let through).
-fn run_loop(layout: &[DataType], spec: &Loop, batch: &mut Batch, ctx: &mut Ctx, taken: &[bool], scope: MetricsScope) {
+fn run_loop(
+    layout: &Slots<DataType>,
+    spec: &Loop,
+    batch: &mut Batch,
+    ctx: &mut Ctx,
+    taken: &[bool],
+    scope: MetricsScope,
+) {
     let rows = batch.rows();
     // `run_wave` overwrites `ctx.function` per nested instruction.
     let function = ctx.function;
@@ -637,7 +645,7 @@ fn run_loop(layout: &[DataType], spec: &Loop, batch: &mut Batch, ctx: &mut Ctx, 
         for &i in &stalled {
             ctx.errors.raise(
                 active[i as usize] as usize,
-                function,
+                Some(function),
                 None,
                 ExceptionKind::LoopBudgetExceeded { trips },
             );
@@ -753,7 +761,7 @@ fn record_exits(
 /// Run a loop body against a wave. What the body marks is keyed to the wave's rows, and `active` maps each back to
 /// the row of the batch the loop runs over. Returns, in those rows, the rows that leave a region around the loop.
 fn run_wave(
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     body: &[Instr],
     wave: &mut Batch,
     active: &[u32],
@@ -788,7 +796,7 @@ fn run_wave(
 ///
 /// Returns the batch, each row's span in it, and each pseudo-row's row.
 fn explode_array(
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     batch: &Batch,
     array: SlotId,
     element_slot: SlotId,
@@ -846,7 +854,7 @@ fn run_unroll(
     clear: &[SlotId],
     out: SlotId,
     batch: &mut Batch,
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     ctx: &mut Ctx,
 ) {
     let rows = batch.rows();
@@ -918,7 +926,7 @@ fn run_unroll(
 /// `Op::ArrayFold`: the body runs once over the exploded batch, then each fold folds each row's span of the elements
 /// its write ran on. A masked-out row has no elements, and keeps its seeds.
 fn run_array_fold(
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     spec: &ArrayFold,
     batch: &mut Batch,
     ctx: &mut Ctx,
@@ -1253,7 +1261,7 @@ fn fold_var(
     keep: &impl Fn(usize) -> bool,
     pool: &mut BufferPool,
 ) -> Column {
-    let sv = seed_col.var().unwrap();
+    let sv = seed_col.sealed_rows().unwrap();
     let mv = mapped.var().unwrap();
     let var_type = if matches!(mapped.data_type(), DataType::Bytes) {
         VarType::Bytes
@@ -1263,16 +1271,16 @@ fn fold_var(
     let mut b = StrBuilder::new(pool, var_type, rows);
     for row in 0..rows {
         let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
-        if !sv.validity.is_valid(row) {
+        if !sv.rows.validity.is_valid(row) {
             b.push_null();
             continue;
         }
         if !(start..end).any(keep) {
-            b.push_grow(pool, sv.get(row));
+            b.push_row_grow(pool, &sv, row);
             continue;
         }
         let mut valid = true;
-        let mut buf: Vec<u8> = sv.get(row).to_vec();
+        let mut buf: Vec<u8> = sv.rows.get(row).to_vec();
         for i in (start..end).filter(|&i| keep(i)) {
             if !mv.validity.is_valid(i) {
                 valid = false;

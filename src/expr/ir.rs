@@ -328,9 +328,10 @@ fn splice(op: BinOp, child: Ir, out: &mut Vec<Ir>) {
 mod tests {
     use super::*;
     use crate::core::column::DataType::*;
+    use crate::core::id::Id;
 
-    fn field(slot: SlotId, ty: DataType) -> Ir {
-        Ir::new(ty, Span::default(), IrKind::Field(slot))
+    fn field(slot: usize, ty: DataType) -> Ir {
+        Ir::new(ty, Span::default(), IrKind::Field(SlotId::at(slot)))
     }
 
     fn bin(op: BinOp, ty: DataType, l: Ir, r: Ir) -> Ir {

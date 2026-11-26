@@ -149,8 +149,8 @@ handoff: need-docker
 
 # A release, from a commit with nothing uncommitted, so its version names a commit anyone can check out:
 # the handoff tarball (binary, license, notices) as `smeltr-linux.tar.gz`, the image built from it as
-# `smeltr-image.tar.gz`, and SHA256SUMS over both. An arm64 machine names them `smeltr-linux-arm64.tar.gz` and
-# `smeltr-image-arm64.tar.gz`. Any branch builds one; the release workflow holds a published
+# `smeltr-image-linux.tar.gz`, and SHA256SUMS over both. An arm64 machine names them `smeltr-linux-arm64.tar.gz` and
+# `smeltr-image-linux-arm64.tar.gz`. Any branch builds one; the release workflow holds a published
 # release to `main`. On Windows, `smeltr-windows.zip` of the binary, the license and the notices, and SHA256SUMS
 # over it. The file names carry no version, so a link to the newest release's file never changes; the release
 # they are attached to, the binary and the image's tags carry it. On a commit tagged `v1.2.0` the image is
@@ -166,9 +166,9 @@ dist: need-docker committed handoff
       && case $(uname -m) in x86_64) a= ;; aarch64) a=-arm64 ;; *) echo "no release for $(uname -m)" >&2; exit 1 ;; esac \
       && mv "smeltr-$v.tar.gz" "smeltr-linux$a.tar.gz" \
       && docker build --build-arg VERSION="$n" -t smeltr:latest -t "smeltr:$(echo "$n" | tr + -)" handoff \
-      && docker save -o "smeltr-image$a.tar" smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
-      && gzip -f "smeltr-image$a.tar" \
-      && sha256sum "smeltr-linux$a.tar.gz" "smeltr-image$a.tar.gz" | tee SHA256SUMS
+      && docker save -o "smeltr-image-linux$a.tar" smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
+      && gzip -f "smeltr-image-linux$a.tar" \
+      && sha256sum "smeltr-linux$a.tar.gz" "smeltr-image-linux$a.tar.gz" | tee SHA256SUMS
 
 # DISA's GPOS SRG (Chainguard's profile for Wolfi), scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
@@ -176,24 +176,32 @@ dist: need-docker committed handoff
 stig image="smeltr:latest": need-docker
     docker build --build-arg IMAGE={{image}} --output type=local,dest=stig - < tools/stig.Dockerfile
 
-# Known vulnerabilities in an image's OS packages and in the binary's crates, which `cargo auditable` records in it:
-# `cves/report.txt`, and `cves/report.json` for tools. A report, not a gate.
+# Known vulnerabilities in an image's OS packages and its binary's crates, or in the crates of the executables in a
+# folder: `cves/report.txt`, and `cves/report.json` for tools. A report, not a gate.
 [unix]
-cves image="smeltr:latest": need-docker
-    mkdir -p cves && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/cves:/out" \
-      aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      image --scanners vuln --format json --output /out/report.json {{image}}
+cves target="smeltr:latest": (trivy target "cves" "--scanners vuln --format json --output /out/report.json")
     docker run --rm -v "$PWD/cves:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       convert --scanners vuln --format table --output /out/report.txt /out/report.json
 
-# An image's packages and the binary's crates as a CycloneDX SBOM: `sbom/sbom.cdx.json`. The release attests it on
-# the pushed image.
+# A CycloneDX SBOM, `sbom/sbom.cdx.json`, of an image (its packages and its binary's crates) or of a folder (the
+# crates of the executables in it). The recipe fails if the SBOM lists no crates: its binary carries no record from
+# `cargo auditable`. The release attests an image's SBOM on the pushed image.
 [unix]
-sbom image="smeltr:latest": need-docker
-    mkdir -p sbom && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/sbom:/out" \
-      aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      image --format cyclonedx --output /out/sbom.cdx.json {{image}}
+sbom target="smeltr:latest": (trivy target "sbom" "--format cyclonedx --output /out/sbom.cdx.json")
+    grep -q '"pkg:cargo/' sbom/sbom.cdx.json \
+      || { echo "sbom/sbom.cdx.json lists no crates: {{target}} carries no record from cargo auditable; build it with \`cargo auditable build\`" >&2; exit 1; }
+
+# Trivy on an image, or on a folder (it reads only the files there marked executable), writing into `out/`.
+[private]
+[unix]
+trivy target out +args: need-docker
+    mkdir -p {{out}} && if [ -d '{{target}}' ]; then \
+        kind=rootfs scan=/scan mount="$(realpath '{{target}}'):/scan:ro"; \
+      else kind=image scan='{{target}}' mount=/var/run/docker.sock:/var/run/docker.sock; fi \
+      && docker run --rm -v "$mount" -v "$PWD/{{out}}:/out" \
+        aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+        "$kind" {{args}} "$scan"
 
 # The integration tests, run in an image's own root, so code that needs something the image lacks fails here and
 # not at a site. They are built in the image's builder (`Dockerfile`'s `tests` stage), so they link the glibc the

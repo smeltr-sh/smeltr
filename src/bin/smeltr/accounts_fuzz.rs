@@ -278,10 +278,8 @@ impl Model {
 }
 
 fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
+    let since_epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    smeltr::core::time::millis(since_epoch.unwrap())
 }
 
 /// How a request says who sends it.

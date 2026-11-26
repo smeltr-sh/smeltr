@@ -37,7 +37,7 @@ use arrow_schema::{DataType as Arrow, Fields, Schema as ArrowSchema, SchemaRef};
 
 use self::registry::{Registry, Unread};
 use crate::core::column::DataType;
-use crate::core::variant;
+use crate::core::variant::{self, Encoded};
 use crate::io::values::{self, Value};
 use crate::io::{IoError, RecordChunk, SourceRecord};
 use crate::plan::topology::{AvroRead, HeldSecrets, SchemaRegistry, Tls};
@@ -354,7 +354,7 @@ impl AvroReader {
         variant::end(&mut out, open, count);
         Ok(match count {
             0 => Value::Null,
-            _ => values::from_variant(&out),
+            _ => values::from_variant(Encoded::check(&out)),
         })
     }
 }
@@ -430,7 +430,7 @@ fn to_value(value: &Avro, schema: &Schema, names: &NamesRef<'_>) -> Value {
         Avro::Record(_) | Avro::Map(_) | Avro::Duration(_) => {
             let mut out = Vec::new();
             put(value, schema, names, &mut out);
-            values::from_variant(&out)
+            values::from_variant(Encoded::check(&out))
         }
         Avro::Null => Value::Null,
         Avro::Boolean(b) => Value::Bool(*b),

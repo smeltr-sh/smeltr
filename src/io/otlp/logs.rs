@@ -310,7 +310,7 @@ mod tests {
         };
         assert!(
             matches!(
-                variant::read(variant::member(attributes, "whole").unwrap()),
+                variant::read(variant::member(variant::Encoded::check(attributes), "whole").unwrap()),
                 variant::Value::F64(2.0)
             ),
             "a whole double stays a double"
@@ -456,7 +456,7 @@ mod tests {
             panic!("a body is a variant")
         };
         assert_eq!(shown(body), json!({"list": ["a", null, 1.0, {"deep": []}], "dup": 2}));
-        let keys: Vec<&str> = match variant::read(body) {
+        let keys: Vec<&str> = match variant::read(variant::Encoded::check(body)) {
             variant::Value::Object(entries) => entries.map(|(k, _)| k).collect(),
             _ => unreachable!(),
         };

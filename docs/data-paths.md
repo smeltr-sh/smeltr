@@ -1,6 +1,6 @@
 # Data paths
 
-Every path a record takes through a worker, from the poll to the commit. Four stages carry it: the reader, one per source, which polls and tracks; the transform pool, which routes, runs pipelines and serializes; egress, one thread per destination behind a bounded queue; and the commit tracker, on the reader, which commits the oldest run of batches every destination has acknowledged. Eight things can happen to a record on the way, and each one commits differently.
+Every path a record takes through a worker, from the poll to the commit. Five stages carry it ([runtime stages](architecture/runtime-stages.md)): the source, which receives; its reader, which tracks each batch and commits the oldest run of batches every destination has acknowledged; the transform pool, which decodes, routes, runs pipelines and serializes; egress, one thread per destination behind a bounded queue; and the destination, which sends. Eight things can happen to a record on the way, and each one commits differently.
 
 | path | where the rows go | what they carry | the commit waits for |
 |---|---|---|---|

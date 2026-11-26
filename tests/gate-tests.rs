@@ -1263,16 +1263,12 @@ fn a_person_sets_what_their_agent_may_use() {
 
 /// The conversation `id` once its turn has ended.
 fn turn_ended(leader: &Leader, op: &Operator, id: &str) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
+    crate::harness::wait_for("the agent's turn to end", std::time::Duration::from_secs(30), || {
         let (status, body) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}"));
         assert_eq!(status, 200, "{body}");
-        if body["conversation"]["running"] == false {
-            return body["conversation"].clone();
-        }
-        assert!(std::time::Instant::now() < deadline, "the turn did not end: {body}");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+        (body["conversation"]["running"] == false).then(|| body["conversation"].clone())
+    })
+    .unwrap_or_else(|late| panic!("{late}"))
 }
 
 /// A person's agent calls the API through the gate as them, held to what they let it use, and its conversation
@@ -3442,6 +3438,9 @@ fn a_deployer_approves_any_change_their_own_too() {
 /// Refreshes each OIDC session at the provider this often, so the tests below wait seconds rather than minutes.
 const QUICK_REFRESH: (&str, &str) = ("SMELTR_OIDC_REFRESH_INTERVAL_MS", "200");
 
+/// Long enough for a leader to have refreshed a session several times at [`QUICK_REFRESH`].
+const SEVERAL_REFRESHES: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Waits for `holds` to come true, a refresh or two at [`QUICK_REFRESH`].
 fn eventually(what: &str, holds: impl FnMut() -> bool) {
     crate::harness::wait_until(what, std::time::Duration::from_secs(15), holds);
@@ -3480,7 +3479,7 @@ fn a_refused_refresh_ends_the_session() {
     let (leader, _op, provider) = with_west_roles_and("oidc-refresh-refused", &[QUICK_REFRESH]);
     let dana_now = provider_account(&leader, &provider, &["smeltr-west-view"]);
     // Refreshed at least once first, so the token spent is one the leader was handed on a refresh.
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    std::thread::sleep(SEVERAL_REFRESHES);
     assert!(signed_in(&leader, &dana_now.session));
 
     provider.withdraws_grants();
@@ -3496,7 +3495,7 @@ fn losing_every_group_a_role_names_ends_the_session() {
     let mut fewer = dana(&["smeltr-west-view"]);
     fewer.groups.retain(|g| g != SIGN_IN_GROUP);
     provider.becomes(fewer);
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    std::thread::sleep(SEVERAL_REFRESHES);
     assert!(
         signed_in(&leader, &dana_now.session),
         "a role's group was still held and the session ended"
@@ -3713,7 +3712,7 @@ fn live_keycloak_refreshes_and_ends_sessions() {
         }
     };
     let first = session(keycloak_sign_in(&leader, "cleo"));
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    std::thread::sleep(SEVERAL_REFRESHES);
     assert!(
         signed_in(&leader, &first),
         "a refresh through Keycloak ended the session"

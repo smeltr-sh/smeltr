@@ -144,7 +144,7 @@ fn traced(rng: &mut Rng, delivering: bool) -> (Event, SystemTime) {
 
 fn millis(at: SystemTime) -> i64 {
     at.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .map(crate::core::time::millis)
         .unwrap_or_default()
 }
 

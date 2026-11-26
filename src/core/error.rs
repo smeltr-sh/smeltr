@@ -136,15 +136,14 @@ impl ExceptionKind {
     }
 }
 
-/// Stamped on an exception from ingest, which no pipeline function can hold: decoding a record happens before any
-/// function runs. Visible as the `function` label of `smeltr_rows_errored_total`.
-pub const INGEST_FUNCTION: FunctionId = u32::MAX;
+/// The `function` label of `smeltr_rows_errored_total` for an exception from ingest, which no step raised.
+pub const INGEST_LABEL: &str = "ingest";
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Exception {
     pub row: u32,
-    /// Which pipeline function produced this.
-    pub function: FunctionId,
+    /// The step that raised it. `None` when ingest did: decoding a record happens before any step runs.
+    pub function: Option<FunctionId>,
     /// The slot it is about, where it is about one.
     pub field: Option<SlotId>,
     pub kind: ExceptionKind,
@@ -278,7 +277,7 @@ impl ErrorSink {
     pub fn raise(
         &mut self,
         row: usize,
-        function: FunctionId,
+        function: Option<FunctionId>,
         field: Option<SlotId>,
         kind: ExceptionKind,
     ) -> &mut Exception {
@@ -309,7 +308,7 @@ impl ErrorSink {
     pub fn raise_range(
         &mut self,
         rows: Range<usize>,
-        function: FunctionId,
+        function: Option<FunctionId>,
         field: Option<SlotId>,
         kind: ExceptionKind,
     ) {
@@ -391,10 +390,10 @@ mod tests {
     #[test]
     fn raise_records_row_and_function() {
         let mut s = ErrorSink::new();
-        s.raise(5, 2, None, ExceptionKind::DivideByZero);
+        s.raise(5, Some(FunctionId::new(2)), None, ExceptionKind::DivideByZero);
         assert_eq!(s.len(), 1);
         assert_eq!(s.entries()[0].row, 5);
-        assert_eq!(s.entries()[0].function, 2);
+        assert_eq!(s.entries()[0].function, Some(FunctionId::new(2)));
     }
 
     #[test]
@@ -418,15 +417,16 @@ mod tests {
 
     /// `kind` on row 0 writing slot 9, which read `read`, in a message naming slots 1 `a`, 2 `b` and 9 `out`.
     fn message(kind: ExceptionKind, call: &'static str, read: Vec<Read>) -> String {
-        let names = HashMap::from([(1, "a".to_string()), (2, "b".to_string()), (9, "out".to_string())]);
+        let names =
+            HashMap::from([(1, "a"), (2, "b"), (9, "out")].map(|(slot, name)| (SlotId::new(slot), name.to_string())));
         let mut s = ErrorSink::new();
-        s.raise(0, 0, Some(9), kind);
+        s.raise(0, Some(FunctionId::new(0)), Some(SlotId::new(9)), kind);
         s.fill_from(0, call, |_| read.clone());
         s.entries()[0].message(&names)
     }
 
-    fn field(slot: SlotId, value: &str) -> Read {
-        Read::new(Some((slot, String::new())), Some(value.to_string()))
+    fn field(slot: u32, value: &str) -> Read {
+        Read::new(Some((SlotId::new(slot), String::new())), Some(value.to_string()))
     }
 
     #[test]
@@ -450,13 +450,13 @@ mod tests {
         );
         assert_eq!(refused, "\"many\", which could not convert to i64 in out");
         // A bracketed key joins its slot with no dot; a read with neither name nor value is `a value`.
-        let bracketed = Read::new(Some((1, "[\"a.b\"]".into())), Some("\"x\"".into()));
+        let bracketed = Read::new(Some((SlotId::new(1), "[\"a.b\"]".into())), Some("\"x\"".into()));
         let parse = ExceptionKind::UnparsableField { to: DataType::I64 };
         assert_eq!(
             message(parse, "", vec![bracketed]),
             "a[\"a.b\"] is \"x\", which could not parse as i64 in out"
         );
-        let unnamed = Read::new(Some((7, String::new())), None);
+        let unnamed = Read::new(Some((SlotId::new(7), String::new())), None);
         assert_eq!(
             message(ExceptionKind::InvalidUtf8, "", vec![unnamed]),
             "a value held bytes that are not UTF-8, replaced with U+FFFD"
@@ -468,17 +468,22 @@ mod tests {
     #[test]
     fn error_rows_excludes_note_only_rows_and_dedups() {
         let mut s = ErrorSink::new();
-        s.raise(1, 0, None, ExceptionKind::InvalidUtf8);
-        s.raise(9, 0, None, ExceptionKind::DivideByZero);
-        s.raise(3, 0, None, ExceptionKind::DivideByZero);
-        s.raise(9, 1, None, ExceptionKind::DivideByZero);
+        s.raise(1, Some(FunctionId::new(0)), None, ExceptionKind::InvalidUtf8);
+        s.raise(9, Some(FunctionId::new(0)), None, ExceptionKind::DivideByZero);
+        s.raise(3, Some(FunctionId::new(0)), None, ExceptionKind::DivideByZero);
+        s.raise(9, Some(FunctionId::new(1)), None, ExceptionKind::DivideByZero);
         assert_eq!(s.error_rows(), vec![3, 9]);
     }
 
     #[test]
     fn raise_range_covers_every_row() {
         let mut s = ErrorSink::new();
-        s.raise_range(0..4, 7, None, ExceptionKind::GuessedEncoding { encoding: "utf-8" });
+        s.raise_range(
+            0..4,
+            Some(FunctionId::new(7)),
+            None,
+            ExceptionKind::GuessedEncoding { encoding: "utf-8" },
+        );
         let rows: Vec<u32> = s.entries().iter().map(|a| a.row).collect();
         assert_eq!(rows, vec![0, 1, 2, 3]);
     }
@@ -486,25 +491,32 @@ mod tests {
     #[test]
     fn retract_from_leaves_entries_before_the_mark_alone() {
         let mut s = ErrorSink::new();
-        s.raise(0, 1, None, ExceptionKind::DivideByZero);
-        s.raise(1, 1, None, ExceptionKind::DivideByZero);
+        s.raise(0, Some(FunctionId::new(1)), None, ExceptionKind::DivideByZero);
+        s.raise(1, Some(FunctionId::new(1)), None, ExceptionKind::DivideByZero);
         let mark = s.len();
-        s.raise(0, 2, None, ExceptionKind::DivideByZero);
-        s.raise(1, 2, None, ExceptionKind::DivideByZero);
+        s.raise(0, Some(FunctionId::new(2)), None, ExceptionKind::DivideByZero);
+        s.raise(1, Some(FunctionId::new(2)), None, ExceptionKind::DivideByZero);
         s.retract_from(mark, |row| row == 1);
-        let kept: Vec<(u32, FunctionId)> = s.entries().iter().map(|a| (a.row, a.function)).collect();
-        assert_eq!(kept, vec![(0, 1), (1, 1), (1, 2)]);
+        let kept: Vec<(u32, FunctionId)> = s.entries().iter().map(|a| (a.row, a.function.unwrap())).collect();
+        assert_eq!(
+            kept,
+            vec![
+                (0, FunctionId::new(1)),
+                (1, FunctionId::new(1)),
+                (1, FunctionId::new(2))
+            ]
+        );
     }
 
     #[test]
     fn retract_range_leaves_entries_past_the_end_alone() {
         let mut s = ErrorSink::new();
-        s.raise(0, 1, None, ExceptionKind::DivideByZero);
-        s.raise(1, 1, None, ExceptionKind::DivideByZero);
-        s.raise(0, 2, None, ExceptionKind::DivideByZero);
+        s.raise(0, Some(FunctionId::new(1)), None, ExceptionKind::DivideByZero);
+        s.raise(1, Some(FunctionId::new(1)), None, ExceptionKind::DivideByZero);
+        s.raise(0, Some(FunctionId::new(2)), None, ExceptionKind::DivideByZero);
         s.retract_range(0, 2, |row| row == 1);
-        let kept: Vec<(u32, FunctionId)> = s.entries().iter().map(|a| (a.row, a.function)).collect();
-        assert_eq!(kept, vec![(1, 1), (0, 2)]);
+        let kept: Vec<(u32, FunctionId)> = s.entries().iter().map(|a| (a.row, a.function.unwrap())).collect();
+        assert_eq!(kept, vec![(1, FunctionId::new(1)), (0, FunctionId::new(2))]);
     }
 
     // The preview dedups a row's exceptions on `message`. A payload the text drops would fold two facts into one.
@@ -529,9 +541,9 @@ mod tests {
     #[test]
     fn remap_rows_from_touches_only_the_tail() {
         let mut s = ErrorSink::new();
-        s.raise(0, 0, None, ExceptionKind::DivideByZero); // an earlier route's
-        s.raise(1, 1, None, ExceptionKind::DivideByZero);
-        s.raise(2, 1, None, ExceptionKind::DivideByZero);
+        s.raise(0, Some(FunctionId::new(0)), None, ExceptionKind::DivideByZero); // an earlier route's
+        s.raise(1, Some(FunctionId::new(1)), None, ExceptionKind::DivideByZero);
+        s.raise(2, Some(FunctionId::new(1)), None, ExceptionKind::DivideByZero);
         s.remap_rows_from(1, |r| if r == 1 { vec![10, 11] } else { vec![] });
         let rows: Vec<u32> = s.entries().iter().map(|a| a.row).collect();
         assert_eq!(rows, vec![0, 10, 11]);

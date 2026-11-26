@@ -17,6 +17,7 @@ use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{HeldSecrets, PrometheusDestinationConfig, RemoteWriteVersion};
 
 use crate::harness::receiver::free_loopback;
+use crate::harness::wait_until;
 use crate::live;
 
 mod wire {
@@ -815,11 +816,9 @@ fn prometheus_stores_what_the_destination_sends() {
     assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
     let _prometheus = Container(name);
     let base = format!("http://{web}");
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while ureq::get(&format!("{base}/-/ready")).call().is_err() {
-        assert!(std::time::Instant::now() < deadline, "Prometheus never became ready");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    wait_until("Prometheus to be ready", Duration::from_secs(60), || {
+        ureq::get(&format!("{base}/-/ready")).call().is_ok()
+    });
 
     let c = config(&format!("{base}/api/v1/write"));
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();

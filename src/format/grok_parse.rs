@@ -82,6 +82,7 @@ mod tests {
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
     use crate::core::error::ExceptionKind;
+    use crate::core::id::FunctionId;
     use crate::plan::compile::{Call, Op, Plan, compile};
     use crate::plan::config::{
         DeclaredField, FunctionConfig, FunctionKind, GrokConfig, ParserKind, PipelineConfig, Step,
@@ -101,7 +102,7 @@ mod tests {
             id: 0,
             name: "test".into(),
             body: vec![Step::Function(FunctionConfig::new(
-                0,
+                FunctionId::new(0),
                 FunctionKind::Parser {
                     input: "_raw".into(),
                     into: tree::ROOT.to_string(),
@@ -116,7 +117,7 @@ mod tests {
                         .collect(),
                 },
             ))],
-            step_ids: vec!["p".into()],
+            step_ids: vec!["p".into()].into(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces,

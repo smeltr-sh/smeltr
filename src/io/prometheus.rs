@@ -1530,7 +1530,7 @@ mod tests {
         let Some(Cell::Variant(value)) = &row.0[field::VALUE] else {
             panic!("a sample's value is a variant")
         };
-        match variant::read(value) {
+        match variant::read(variant::Encoded::check(value)) {
             variant::Value::F64(value) => value,
             other => panic!("a sample's value is a double, not {other:?}"),
         }
@@ -1541,7 +1541,7 @@ mod tests {
         let Some(Cell::Variant(attributes)) = &row.0[field::ATTRIBUTES] else {
             panic!("attributes are a variant")
         };
-        let variant::Value::Object(entries) = variant::read(attributes) else {
+        let variant::Value::Object(entries) = variant::read(variant::Encoded::check(attributes)) else {
             panic!("attributes are an object")
         };
         entries
@@ -1896,7 +1896,7 @@ mod tests {
     }
 
     fn doubles(value: &[u8]) -> Vec<f64> {
-        let variant::Value::Array(items) = variant::read(value) else {
+        let variant::Value::Array(items) = variant::read(variant::Encoded::check(value)) else {
             panic!("an array")
         };
         items
@@ -2343,10 +2343,10 @@ mod tests {
             assert_eq!(row.0[field::EXEMPLARS], None);
             return None;
         };
-        let variant::Value::Array(items) = variant::read(v) else {
+        let variant::Value::Array(items) = variant::read(variant::Encoded::check(v)) else {
             panic!("exemplars are an array")
         };
-        let shown = |v: &[u8]| match variant::read(v) {
+        let shown = |v: variant::Encoded| match variant::read(v) {
             variant::Value::Str(s) => s.to_string(),
             variant::Value::F64(f) => f.to_string(),
             variant::Value::DateTime(t) => format!("@{t}"),
@@ -2732,7 +2732,7 @@ mod tests {
         let Some(Cell::Variant(exemplars)) = &rows[0].0[field::EXEMPLARS] else {
             panic!("the sample carries its exemplars")
         };
-        let variant::Value::Array(mut items) = variant::read(exemplars) else {
+        let variant::Value::Array(mut items) = variant::read(variant::Encoded::check(exemplars)) else {
             panic!("exemplars are an array")
         };
         let variant::Value::Object(fields) = variant::read(items.next().unwrap()) else {

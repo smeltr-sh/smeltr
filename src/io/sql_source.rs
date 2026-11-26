@@ -119,7 +119,7 @@ impl Verdict {
 }
 
 /// The text at `key` in the plan node `node`.
-pub(super) fn text_at<'p>(node: &'p [u8], key: &str) -> Option<&'p str> {
+pub(super) fn text_at<'p>(node: variant::Encoded<'p>, key: &str) -> Option<&'p str> {
     match variant::read(variant::member(node, key)?) {
         variant::Value::Str(s) => Some(s),
         _ => None,

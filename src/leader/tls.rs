@@ -19,6 +19,7 @@
 //!
 //! The authority is written once and kept; losing `ca-key.pem` means a new authority and a visit to every worker.
 
+use crate::core::time::millis;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1120,7 +1121,7 @@ pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_
     // nothing left to cut over to. `SMELTR_LEADER_CA_VALIDITY` goes down to a day, so a fortnight's wait is a
     // reachable way to ask for both.
     // Short of either expiry rather than up to it, by [`CUTOVER_MARGIN`].
-    let margin = CUTOVER_MARGIN.as_millis() as i64;
+    let margin = millis(CUTOVER_MARGIN);
     let deadline_millis = deadline_millis
         .min(outgoing.not_after_millis - margin)
         .min(incoming.not_after_millis - margin)
@@ -1194,7 +1195,7 @@ fn switch_deadline(
     incoming_root: &Described,
     now_ms: i64,
 ) -> Result<i64, String> {
-    let margin = CUTOVER_MARGIN.as_millis() as i64;
+    let margin = millis(CUTOVER_MARGIN);
     let served = describe(served, "the certificate")?;
     let incoming = describe(incoming_chain, "the incoming certificate")?;
     Ok((served.not_after_millis - margin)
@@ -1215,7 +1216,7 @@ fn latest_deadline_held(dir: &Path, state: &Rotation) -> Result<i64, String> {
     let incoming = describe(state.incoming_pem.as_bytes(), "the incoming authority")?;
     match state.installs {
         Installs::NextKey => {
-            let margin = CUTOVER_MARGIN.as_millis() as i64;
+            let margin = millis(CUTOVER_MARGIN);
             let outgoing = signing_root(&materials.ca_pem, &materials.served)?;
             Ok((outgoing.not_after_millis - margin).min(incoming.not_after_millis - margin))
         }
@@ -1634,7 +1635,7 @@ fn socket_agrees(dir: &Path) -> Result<(), String> {
 /// past its end, refused by the leader's own verify and by every client after it.
 fn still_signs(state: &Rotation, now_ms: i64) -> Result<(), String> {
     let incoming = describe(state.incoming_pem.as_bytes(), "the incoming authority")?;
-    if incoming.not_after_millis - CUTOVER_MARGIN.as_millis() as i64 <= now_ms {
+    if incoming.not_after_millis - millis(CUTOVER_MARGIN) <= now_ms {
         return Err(
             "the authority this leader is rotating to has too little life left to sign a certificate that would \
              serve, so cutting over to it would leave this leader unable to issue one at all. Abandon the \
@@ -4023,7 +4024,7 @@ pub(crate) mod tests {
         let served_until = describe(&what_is_served(&dir), "the certificate")
             .unwrap()
             .not_after_millis;
-        assert_eq!(state.deadline_millis, served_until - CUTOVER_MARGIN.as_millis() as i64);
+        assert_eq!(state.deadline_millis, served_until - millis(CUTOVER_MARGIN));
 
         let behind = vec![vec![state.outgoing.clone()]];
         assert!(!cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), NOW).unwrap());

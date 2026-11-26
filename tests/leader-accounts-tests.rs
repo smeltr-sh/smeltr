@@ -4,12 +4,20 @@
 //! a password printed to a console rather than raised as an event, a flag that acts once per start. None of it is
 //! observable from inside one process.
 
+use crate::harness;
 use crate::harness::receiver::free_loopback;
 use smeltr::sync::Mutex;
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// How long a leader may take to start or to stop; long enough for a cold start, which creates a git repository and
+/// hashes an Argon2 password.
+const START_OR_STOP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Long enough for the reader thread to take the last of the pipe of a process that has exited.
+const PIPE_DRAINS: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// A directory no other test in this binary can name. A counter rather than the clock: these run in parallel and
 /// share a pid, and two leaders in one data directory is the thing under test rather than an accident to have.
@@ -57,48 +65,31 @@ impl Leader {
         taken
     }
 
-    /// Wait for `marker` to appear on stderr, or panic with everything that did. Long enough to cover a cold
-    /// start: the first run creates a git repository and hashes an Argon2 password.
+    /// Wait for `marker` to appear on stderr, or panic with everything stderr said.
     ///
     /// The listening line is logged just before the socket is bound, so it says the leader got that far rather
     /// than that it is reachable. Nothing here connects, so that is all these tests need.
     fn wait_for(&mut self, marker: &str) -> String {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
+        harness::wait_for(&format!("{marker:?} on stderr"), START_OR_STOP, || {
             let said = self.said();
             if said.contains(marker) {
-                return said;
+                return Some(said);
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "waited for {marker:?} and never saw it. stderr:\n{said}"
-            );
             self.port_was_taken();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+            None
+        })
+        .unwrap_or_else(|late| panic!("{late}. stderr:\n{}", self.said()))
     }
 
     /// Wait for the process to exit and return `(exit code, stderr)`.
     fn wait_for_exit(mut self) -> (i32, String) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            match self.child.try_wait().unwrap() {
-                Some(status) => {
-                    // The reader thread may still be draining the last of the pipe.
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    if std::time::Instant::now() < deadline && self.port_was_taken() {
-                        continue;
-                    }
-                    return (status.code().unwrap_or(-1), self.said());
-                }
-                None => assert!(
-                    std::time::Instant::now() < deadline,
-                    "the leader was still running. stderr:\n{}",
-                    self.said()
-                ),
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        let status = harness::wait_for("the leader to exit", START_OR_STOP, || {
+            let status = self.child.try_wait().unwrap()?;
+            std::thread::sleep(PIPE_DRAINS);
+            (!self.port_was_taken()).then_some(status)
+        })
+        .unwrap_or_else(|late| panic!("{late}. stderr:\n{}", self.said()));
+        (status.code().unwrap_or(-1), self.said())
     }
 }
 

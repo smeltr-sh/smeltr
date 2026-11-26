@@ -292,7 +292,7 @@ impl Streams {
     pub fn saw_parse(&self, source: &str, route: &str, plan: &Plan, tally: &FieldTally) {
         let mut shapes = Vec::new();
         for parse in tally.parses() {
-            let Some(step) = plan.step_ids.get(parse.function as usize) else {
+            let Some(step) = plan.step_ids.get(parse.function) else {
                 continue;
             };
             let mut shape = ParserShape {

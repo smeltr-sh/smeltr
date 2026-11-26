@@ -29,7 +29,11 @@ fn kafka_metrics() -> smeltr::metrics::MetricsHandle {
 }
 
 use crate::harness::receiver::{free_loopback, free_port};
+use crate::harness::{wait_for, wait_until};
 use crate::live;
+
+/// A few heartbeats: long enough for a worker to have acted on what its leader last told it.
+const A_FEW_BEATS: Duration = Duration::from_secs(5);
 
 fn live_brokers(test_name: &str) -> Option<String> {
     live::kafka(test_name)
@@ -81,27 +85,21 @@ fn operator_session(agent: &ureq::Agent, base: &str, console: &Arc<smeltr::sync:
     let _permit = StartPermit::acquire();
     // A minute, as `gate-tests` gives it. Thirty seconds is tight for an Argon2id bootstrap on a machine already
     // running the rest of the suite, and a leader that needs longer than a minute is telling you something.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let password = loop {
+    let within = Duration::from_secs(60);
+    let password = wait_for("the leader to print its one-time password", within, || {
         let said = console.lock().clone();
-        if let Some((_, rest)) = said.split_once("one-time password:") {
-            break rest.lines().next().unwrap().trim().to_string();
-        }
-        assert!(Instant::now() < deadline, "no password was printed:\n{said}");
-        std::thread::sleep(Duration::from_millis(100));
-    };
+        let (_, rest) = said.split_once("one-time password:")?;
+        Some(rest.lines().next().unwrap().trim().to_string())
+    })
+    .unwrap_or_else(|late| panic!("{late}:\n{}", console.lock()));
 
     // The password is printed before the socket is bound -- the console says the leader got that far, not that it
     // is reachable -- so the first request below would race it. A connection is the readiness signal, as it is in
     // `gate-tests`.
     let address = base.trim_start_matches("http://").trim_start_matches("https://");
-    while std::net::TcpStream::connect(address).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "the leader printed a password but never listened"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    wait_until("the leader to listen after printing its password", within, || {
+        std::net::TcpStream::connect(address).is_ok()
+    });
 
     let sign_in = |password: &str| -> (String, String) {
         let body = serde_json::json!({ "username": "admin", "password": password }).to_string();
@@ -249,7 +247,7 @@ fn install_crypto_provider() {
 /// against a listener still winding down.
 fn wait_until_port_refuses(port: u16, within: Duration) {
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
-    crate::harness::wait_until(
+    wait_until(
         &format!("port {port} to refuse connections, the leader having been shut down"),
         within,
         || std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err(),
@@ -359,6 +357,23 @@ fn deploy_to_group(data_dir: &std::path::Path, group_id: &str, file: &smeltr::co
     }
 }
 
+/// Whether a worker of the leader at `base` reports running `commit`.
+fn runs(agent: &ureq::Agent, base: &str, commit: &str) -> bool {
+    let Some(health) = agent
+        .get(format!("{base}/api/health"))
+        .call()
+        .ok()
+        .and_then(|mut resp| resp.body_mut().read_json::<serde_json::Value>().ok())
+    else {
+        return false;
+    };
+    health["threads"].as_array().is_some_and(|threads| {
+        threads
+            .iter()
+            .any(|t| t["commit"].as_str() == Some(commit) && t["supervising"]["phase"].as_str() == Some("running"))
+    })
+}
+
 fn drain_at_least(source: &mut KafkaSource, want: usize, overall_budget: Duration) -> Vec<smeltr::io::SourceRecord> {
     let deadline = Instant::now() + overall_budget;
     let mut out = Vec::new();
@@ -412,10 +427,9 @@ fn standalone_leader_runs_its_own_embedded_worker() {
         .expect("spawn smeltr --standalone");
 
     let ca_path = data_dir.join("tls").join("ca.pem");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ca_path.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_until("the leader to create its authority", Duration::from_secs(10), || {
+        ca_path.exists()
+    });
     let ca_pem = std::fs::read(&ca_path).expect("leader created its authority in time");
     let base = format!("https://127.0.0.1:{port}");
     let agent = admin_agent(&ca_pem);
@@ -428,20 +442,19 @@ fn standalone_leader_runs_its_own_embedded_worker() {
     // the TLS files, opens the store and spawns the embedded worker, and only then binds the port -- so there is a
     // window where the file the loop above waits for is there and a connection is still refused. The sibling
     // standalone test polls for the same reason.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline && agent.get(format!("{base}/api/health")).call().is_err() {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // Any answer will do: an operator route refuses a client with no session, and refusing it is answering.
+    wait_until("the leader to answer", Duration::from_secs(20), || {
+        matches!(
+            agent.get(format!("{base}/api/health")).call(),
+            Ok(_) | Err(ureq::Error::StatusCode(_))
+        )
+    });
 
     let input_topic = unique("standalone-in");
     let output_topic = unique("standalone-out");
     let kafka_group = unique("standalone-group");
     let bundle = passthrough_bundle(&brokers, &input_topic, &output_topic, &kafka_group);
     deploy_to_group(&data_dir, group_id, &bundle);
-
-    // Give the embedded worker a moment to pick up the new commit and
-    // redeploy before producing.
-    std::thread::sleep(Duration::from_secs(4));
 
     let mut dest = KafkaDestination::new(
         &KafkaDestinationConfig {
@@ -485,7 +498,9 @@ fn standalone_leader_runs_its_own_embedded_worker() {
         &Default::default(),
     )
     .unwrap();
-    let records = drain_at_least(&mut verify_source, 1, Duration::from_secs(20));
+    // The worker reads from the earliest offset, so the record waits for it to pick up the new commit, and this
+    // wait covers that too.
+    let records = drain_at_least(&mut verify_source, 1, Duration::from_secs(30));
 
     let _ = leader.kill();
     let output = leader.wait_with_output();
@@ -572,7 +587,6 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
     // credential + git clone under `state_dir` -- proving the round trip
     // works at all before we ever pull the leader out from under it.
     let mut worker = spawn_worker(Some(enroll_code));
-    std::thread::sleep(Duration::from_secs(5));
 
     let mut dest = KafkaDestination::new(
         &KafkaDestinationConfig {
@@ -616,7 +630,9 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
         &Default::default(),
     )
     .unwrap();
-    let first_records = drain_at_least(&mut verify_source, 1, Duration::from_secs(20));
+    // The worker reads from the earliest offset, so the record waits for it to enroll and deploy, and this wait
+    // covers that too.
+    let first_records = drain_at_least(&mut verify_source, 1, Duration::from_secs(30));
     assert_eq!(
         first_records.len(),
         1,
@@ -646,7 +662,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
     // holds the bundle it ran a moment ago, which is exactly the state
     // that must not be enough to start on.
     let mut worker = spawn_worker(None);
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(A_FEW_BEATS);
 
     hand(&mut dest, &[OutgoingRecord::new(b"hello-after-leader-is-gone")]);
     dest.flush().unwrap();
@@ -702,7 +718,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
     let output_topic = unique("revoke-test-out");
     let kafka_group = unique("revoke-test-group");
     let bundle = passthrough_bundle(&brokers, &input_topic, &output_topic, &kafka_group);
-    deploy_to_group(&data_dir, group_id, &bundle);
+    let deployed = deploy_to_group(&data_dir, group_id, &bundle);
 
     let code: serde_json::Value = agent
         .post(format!("{base}/api/enrollment-codes"))
@@ -734,7 +750,9 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
         .spawn()
         .expect("spawn smeltr in its worker role");
 
-    std::thread::sleep(Duration::from_secs(5));
+    wait_until("the worker to run the deployed commit", Duration::from_secs(30), || {
+        runs(&agent, &base, &deployed)
+    });
 
     // The worker persists its own generated id under `state_dir` on its
     // very first run -- the same id it enrolled and now heartbeats with,
@@ -753,10 +771,9 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
         .unwrap();
     assert_eq!(revoked["ok"], true, "{revoked:?}");
 
-    // Long enough for several heartbeat intervals (500ms) to elapse and
-    // fail with 401 -- exactly the same "unreachable" path the worker's
-    // own offline handling takes, per its own doc.
-    std::thread::sleep(Duration::from_secs(2));
+    // Long enough for several heartbeats to fail with 401, which takes the same "unreachable" path as the worker's
+    // own offline handling.
+    std::thread::sleep(A_FEW_BEATS);
 
     let mut dest = KafkaDestination::new(
         &KafkaDestinationConfig {
@@ -870,10 +887,9 @@ fn standalone_enrolls_its_own_worker() {
     });
 
     let ca_path = data_dir.join("tls").join("ca.pem");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !ca_path.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_until("the leader to create its authority", Duration::from_secs(20), || {
+        ca_path.exists()
+    });
     let ca_pem = std::fs::read(&ca_path).expect("leader created its authority in time");
     let agent = admin_agent(&ca_pem);
     let base = format!("https://127.0.0.1:{port}");
@@ -892,15 +908,13 @@ fn standalone_enrolls_its_own_worker() {
     };
     // Poll: the embedded worker's enrollment happens during startup, concurrently with the server beginning to
     // listen, so enrollment is the one signal to wait on.
-    let mut ready = None;
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        if read("/api/workers").is_some_and(|w| w["workers"].as_array().is_some_and(|w| !w.is_empty())) {
-            ready = read("/api/worker-groups?branch=main");
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    let ready = wait_for("the embedded worker to enroll", Duration::from_secs(20), || {
+        read("/api/workers")
+            .is_some_and(|w| w["workers"].as_array().is_some_and(|w| !w.is_empty()))
+            .then_some(())
+    })
+    .ok()
+    .and_then(|()| read("/api/worker-groups?branch=main"));
 
     let _ = leader.kill();
     let _ = leader.wait();
@@ -953,41 +967,38 @@ fn a_worker_discovers_main_and_reports_the_commit_it_deployed() {
     // The authority, not the certificate it signed: a leader reissues its certificate at every start, and what a
     // client is given out of band is what that certificate chains to.
     let ca_path = data_dir.join("tls").join("ca.pem");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !ca_path.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_until("the leader to create its authority", Duration::from_secs(20), || {
+        ca_path.exists()
+    });
     let ca_pem = std::fs::read(&ca_path).expect("leader generated its authority in time");
     let agent = admin_agent(&ca_pem);
     let base = format!("https://127.0.0.1:{port}");
     let session = operator_session(&agent, &base, &console);
 
-    let mut reported = None;
     let mut last_seen = serde_json::Value::Null;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        let read = |path: &str| -> Option<serde_json::Value> {
-            let mut resp = agent
-                .get(format!("{base}{path}"))
-                .header("cookie", &session)
-                .call()
-                .ok()?;
-            resp.body_mut().read_json::<serde_json::Value>().ok()
-        };
-        if let Some(parsed) = read("/api/health") {
+    let read = |path: &str| -> Option<serde_json::Value> {
+        let mut resp = agent
+            .get(format!("{base}{path}"))
+            .header("cookie", &session)
+            .call()
+            .ok()?;
+        resp.body_mut().read_json::<serde_json::Value>().ok()
+    };
+    let reported = wait_for(
+        "the worker to report the commit it deployed",
+        Duration::from_secs(30),
+        || {
+            let parsed = read("/api/health")?;
             last_seen = parsed.clone();
             let commit = parsed["threads"]
                 .as_array()
                 .and_then(|threads| threads.iter().find_map(|t| t["commit"].as_str()))
-                .map(str::to_string);
-            if let Some(commit) = commit {
-                let deployed = read("/api/main/history?limit=1").unwrap_or_default();
-                reported = Some((commit, deployed["deployed"].as_str().unwrap_or_default().to_string()));
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
+                .map(str::to_string)?;
+            let deployed = read("/api/main/history?limit=1").unwrap_or_default();
+            Some((commit, deployed["deployed"].as_str().unwrap_or_default().to_string()))
+        },
+    )
+    .ok();
 
     let _ = leader.kill();
     let _ = leader.wait();
@@ -1171,10 +1182,9 @@ impl Standalone {
         // The authority, not the certificate it signed: a leader reissues its certificate at every start, and what a
         // client is given out of band is what that certificate chains to.
         let ca_path = data_dir.join("tls").join("ca.pem");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while !ca_path.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        wait_until("the leader to create its authority", Duration::from_secs(20), || {
+            ca_path.exists()
+        });
         let ca_pem = std::fs::read(&ca_path).expect("leader generated its authority in time");
         let agent = admin_agent(&ca_pem);
         let base = format!("https://{}:{port}", reach.test);
@@ -1250,14 +1260,10 @@ impl Standalone {
 
     /// The incarnation its worker reports running, and the process running it, once both are there.
     fn running_runtime(&self, within: Duration) -> Option<(u64, u32)> {
-        let deadline = Instant::now() + within;
-        while Instant::now() < deadline {
-            if let (Some(n), Some(pid)) = (self.incarnation(), runtime_child_of(self.process.id())) {
-                return Some((n, pid));
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        None
+        wait_for("the worker to report a running runtime", within, || {
+            Some((self.incarnation()?, runtime_child_of(self.process.id())?))
+        })
+        .ok()
     }
 
     fn said(&self) -> String {
@@ -1290,17 +1296,13 @@ fn a_runtime_that_dies_is_replaced_without_restarting_the_worker_or_the_leader()
         // Killed outright: no drain, no acknowledgment, nothing the supervisor can ask for.
         kill_outright(doomed);
 
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while Instant::now() < deadline {
-            // The leader is in this process too, and it just answered.
-            if standalone.incarnation().is_some_and(|now| now > first) {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-        Err(format!(
-            "the worker never replaced the runtime it lost (still incarnation {first})"
-        ))
+        // The leader is in this process too, and it just answered.
+        wait_for(
+            "the worker to replace the runtime it lost",
+            Duration::from_secs(60),
+            || standalone.incarnation().is_some_and(|now| now > first).then_some(()),
+        )
+        .map_err(|late| format!("{late} (still incarnation {first})"))
     })();
     standalone.finish(outcome);
 }
@@ -1349,21 +1351,18 @@ fn a_commit_that_will_not_start_leaves_the_worker_on_what_it_ran_before() {
         };
         smeltr::leader::git::deploy_commit(&standalone.data_dir, &bad, &actor).map_err(|e| e.to_string())?;
 
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let restored = loop {
-            let worker = standalone.worker();
-            if let Some(w) = &worker
-                && w["commit"].as_str() == Some(good.as_str())
-                && w["supervising"]["incarnation"].as_u64().is_some_and(|n| n > first + 1)
-                && w["supervising"]["phase"].as_str() == Some("running")
-            {
-                break w.clone();
-            }
-            if Instant::now() > deadline {
-                return Err(format!("the worker never went back to {good}: {worker:#?}"));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        };
+        let restored = wait_for(
+            &format!("the worker to go back to commit {good}"),
+            Duration::from_secs(60),
+            || {
+                standalone.worker().filter(|w| {
+                    w["commit"].as_str() == Some(good.as_str())
+                        && w["supervising"]["incarnation"].as_u64().is_some_and(|n| n > first + 1)
+                        && w["supervising"]["phase"].as_str() == Some("running")
+                })
+            },
+        )
+        .map_err(|late| format!("{late}: {:#?}", standalone.worker()))?;
         let failure = restored["supervising"]["failure"].as_str().unwrap_or_default();
         if !failure.contains("ssl.ca.location") {
             return Err(format!("the worker should say why {bad} did not start: {restored:#}"));
@@ -1371,7 +1370,7 @@ fn a_commit_that_will_not_start_leaves_the_worker_on_what_it_ran_before() {
 
         // Not tried again on a timer: each try would stop the deployment that works.
         let settled = restored["supervising"]["incarnation"].as_u64();
-        std::thread::sleep(Duration::from_secs(5));
+        std::thread::sleep(A_FEW_BEATS);
         if standalone.incarnation() != settled {
             return Err(format!(
                 "the worker stopped what it went back to: now {:?}",
@@ -1401,16 +1400,9 @@ fn a_signaled_worker_stops_its_runtime_before_it_exits() {
         // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(standalone.process.id() as libc::pid_t, libc::SIGTERM) };
 
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let status = loop {
-            if let Some(status) = standalone.process.try_wait().map_err(|e| e.to_string())? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                return Err("the worker did not exit within a minute of SIGTERM".to_string());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let status = wait_for("the worker to exit on SIGTERM", Duration::from_secs(60), || {
+            standalone.process.try_wait().ok().flatten()
+        })?;
         // Asked with signal 0, which delivers nothing: a runtime still there -- an orphan draining alone, or one
         // nobody reaped -- answers it.
         // SAFETY: `kill` takes two numbers and reads no memory of this process's.
@@ -1443,20 +1435,17 @@ fn a_signaled_runtime_drains_and_is_replaced() {
         // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(runtime as libc::pid_t, libc::SIGTERM) };
 
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while Instant::now() < deadline {
-            if standalone.incarnation().is_some_and(|now| now > first) {
-                return if standalone.said().contains("processes stopping_on_signal") {
-                    Ok(())
-                } else {
-                    Err("the runtime ended on SIGTERM without draining".to_string())
-                };
-            }
-            std::thread::sleep(Duration::from_millis(250));
+        wait_for(
+            "the worker to replace the signaled runtime",
+            Duration::from_secs(60),
+            || standalone.incarnation().is_some_and(|now| now > first).then_some(()),
+        )
+        .map_err(|late| format!("{late} (still incarnation {first})"))?;
+        if standalone.said().contains("processes stopping_on_signal") {
+            Ok(())
+        } else {
+            Err("the runtime ended on SIGTERM without draining".to_string())
         }
-        Err(format!(
-            "the worker never replaced the runtime that was signaled (still incarnation {first})"
-        ))
     })();
     standalone.finish(outcome);
 }
@@ -1551,16 +1540,10 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
             &intake,
         )?;
 
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            if post(at, "standalone", "before") == Some(200) {
-                break;
-            }
-            if Instant::now() > deadline {
-                return Err(format!("the receiver never answered: {:#?}", standalone.worker()));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        wait_for("the receiver to answer", Duration::from_secs(60), || {
+            (post(at, "standalone", "before") == Some(200)).then_some(())
+        })
+        .map_err(|late| format!("{late}: {:#?}", standalone.worker()))?;
         if std::net::TcpListener::bind("[::1]:0").is_ok() {
             let elsewhere = std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), at.port());
             if let Some(status) = post(elsewhere, "standalone", "elsewhere") {
@@ -1574,9 +1557,9 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
             .running_runtime(Duration::from_secs(10))
             .ok_or("the worker reported no runtime")?;
         kill_outright(runtime);
-        while runtime_child_of(standalone.process.id()) == Some(runtime) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for("the killed runtime to be gone", Duration::from_secs(10), || {
+            (runtime_child_of(standalone.process.id()) != Some(runtime)).then_some(())
+        })?;
         // Sent with no runtime running: it connects, and waits.
         let answered = post(at, "standalone", "during");
         if answered != Some(200) {
@@ -1584,13 +1567,11 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
         }
         // The killed runtime was gone before the request was sent, so the one that answered is its replacement;
         // the leader hears of it on the worker's next beat.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !standalone.incarnation().is_some_and(|now| now > first) {
-            if Instant::now() > deadline {
-                return Err(format!("the worker never reported a runtime after incarnation {first}"));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        wait_for(
+            &format!("the worker to report a runtime after incarnation {first}"),
+            Duration::from_secs(30),
+            || standalone.incarnation().is_some_and(|now| now > first).then_some(()),
+        )?;
         let delivered = bodies.lock().join("\n");
         if !delivered.contains("before") || !delivered.contains("during") {
             return Err(format!("the destination took {delivered:?}"));
@@ -1672,19 +1653,12 @@ fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_ru
             )],
             &intake,
         )?;
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let serving = loop {
-            if let Some(w) = standalone.worker()
-                && w["supervising"]["phase"].as_str() == Some("running")
-                && w["supervising"]["incarnation"].as_u64().is_some_and(|n| n > empty)
-            {
-                break w["supervising"]["incarnation"].as_u64().ok_or("no incarnation")?;
-            }
-            if Instant::now() > deadline {
-                return Err(format!("the receiver never started: {:#?}", standalone.worker()));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        };
+        let serving = wait_for("the receiver to start", Duration::from_secs(60), || {
+            let w = standalone.worker()?;
+            let incarnation = w["supervising"]["incarnation"].as_u64()?;
+            (w["supervising"]["phase"].as_str() == Some("running") && incarnation > empty).then_some(incarnation)
+        })
+        .map_err(|late| format!("{late}: {:#?}", standalone.worker()))?;
 
         let refused = send(
             "PUT",
@@ -1700,8 +1674,7 @@ fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_ru
                 "a version the receiver could not serve should be refused: {refused}"
             ));
         }
-        // A few beats, for anything that would restart it.
-        std::thread::sleep(Duration::from_secs(5));
+        std::thread::sleep(A_FEW_BEATS);
         let worker = standalone.worker().ok_or("the worker stopped reporting")?;
         if worker["supervising"]["incarnation"].as_u64() != Some(serving)
             || worker["supervising"]["phase"].as_str() != Some("running")
@@ -1772,32 +1745,26 @@ fn a_worker_pulls_and_is_pushed_to(name: &str, reach: &Reach, pull: &str, sink: 
 
         for from in push {
             let at = std::net::SocketAddr::new(from.parse().unwrap(), port);
-            let deadline = Instant::now() + Duration::from_secs(60);
-            while post(at, "standalone", &format!("pushed over {from}\n")) != Some(200) {
-                if Instant::now() > deadline {
-                    return Err(format!(
-                        "the receiver never answered over {from}: {:#?}",
-                        standalone.worker()
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(250));
-            }
+            wait_for(
+                &format!("the receiver to answer over {from}"),
+                Duration::from_secs(60),
+                || (post(at, "standalone", &format!("pushed over {from}\n")) == Some(200)).then_some(()),
+            )
+            .map_err(|late| format!("{late}: {:#?}", standalone.worker()))?;
         }
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let delivered = bodies.lock().join("\n");
-            if delivered.contains("pulled")
-                && push
-                    .iter()
-                    .all(|from| delivered.contains(&format!("pushed over {from}")))
-            {
-                return Ok(());
-            }
-            if Instant::now() > deadline {
-                return Err(format!("the destination took {delivered:?}"));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        wait_for(
+            "the destination to take what was pulled and pushed",
+            Duration::from_secs(30),
+            || {
+                let delivered = bodies.lock().join("\n");
+                (delivered.contains("pulled")
+                    && push
+                        .iter()
+                        .all(|from| delivered.contains(&format!("pushed over {from}"))))
+                .then_some(())
+            },
+        )
+        .map_err(|late| format!("{late}: it took {:?}", bodies.lock().join("\n")))
     })();
     standalone.finish(outcome);
 }
@@ -1917,21 +1884,18 @@ fn a_standalone_worker_fetches_over_https_with_no_leader_role_in_its_own_process
             .map(str::to_string)
     };
 
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let mut commit = None;
-    while Instant::now() < deadline {
-        if let Some(seen) = reported() {
-            commit = Some(seen);
-            break;
-        }
-        if let Ok(Some(status)) = worker.try_wait() {
-            panic!(
-                "the worker process exited early with {status:?}.\nworker console:\n{}",
-                console.lock()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let commit = wait_for("the worker to report a commit", Duration::from_secs(45), || {
+        reported().or_else(|| {
+            if let Ok(Some(status)) = worker.try_wait() {
+                panic!(
+                    "the worker process exited early with {status:?}.\nworker console:\n{}",
+                    console.lock()
+                );
+            }
+            None
+        })
+    })
+    .ok();
 
     let last_health = agent
         .get(format!("{base}/api/health"))

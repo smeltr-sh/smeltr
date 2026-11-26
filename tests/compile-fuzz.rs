@@ -26,6 +26,7 @@ use smeltr::core::buffer::BufferPool;
 use smeltr::core::column::DataType;
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
+use smeltr::core::id::FunctionId;
 use smeltr::ops::stdfuncs::{Arg, Param, ROWS, StdFunc};
 use smeltr::ops::{BinOp, UnOp};
 use smeltr::plan::compile::{Plan, compile};
@@ -2023,7 +2024,7 @@ impl Writer<'_> {
     fn step(&mut self, form: &Form, stmts: &[S], id: &mut u32) -> Step {
         let this = *id;
         *id += 1;
-        let func = |kind| Step::Function(FunctionConfig::new(this, kind));
+        let func = |kind| Step::Function(FunctionConfig::new(FunctionId::new(this), kind));
         match (form, stmts) {
             (Form::Eval, _) => func(FunctionKind::Eval {
                 assignments: stmts
@@ -2140,7 +2141,7 @@ impl Writer<'_> {
                 let then = branch(then, then_s, id);
                 let else_ = branch(else_, else_s, id);
                 Step::If {
-                    id: this,
+                    id: FunctionId::new(this),
                     cond: self.expr(c),
                     then,
                     else_,

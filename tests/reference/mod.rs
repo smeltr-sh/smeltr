@@ -31,6 +31,7 @@ pub mod netscout;
 pub mod nginx;
 pub mod people;
 pub mod sentinel;
+pub mod suricata;
 pub mod telegraf;
 pub mod versa;
 

@@ -15,7 +15,8 @@ use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, PipelineConfig,
 use smeltr::plan::topology::{DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology_with};
 use smeltr::runtime::{DestinationTarget, Worker};
 
-fn code(id: FunctionId, body: &str) -> Step {
+fn code(id: u32, body: &str) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }))
 }
 
@@ -42,7 +43,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
             0,
             "level: str; class: str; type: str; message: str; Object.assign($, json(_raw));",
         )],
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),
@@ -125,7 +126,7 @@ fn a_route_can_select_logs_rows_by_their_topic() {
         id: 0,
         name: "select".into(),
         body: vec![code(0, "from_logs = __source.topic;")],
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),

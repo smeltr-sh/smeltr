@@ -285,7 +285,7 @@ fn a_declared_key_of_a_shared_source_variant_is_each_rows() {
     smeltr::core::variant::put_key(&mut resource, "service.name");
     smeltr::core::variant::put_str(&mut resource, "api");
     smeltr::core::variant::end(&mut resource, open, 1);
-    let shared = Column::constant(Scalar::Variant(resource), 2);
+    let shared = Column::constant(Scalar::Variant(smeltr::core::variant::EncodedBuf::check(resource)), 2);
     b.put(
         slot_of(SourceMeta::OTLP_LOGS, "__source.resource"),
         shared,
