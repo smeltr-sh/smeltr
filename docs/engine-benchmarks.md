@@ -60,8 +60,8 @@ its name, and its transports and settings in `tests/engines/mod.rs`.
   and NiFi cannot answer later, and smeltr and Vector answer on receipt unless told otherwise. A busy answer is
   retried after the time it names, or after a wait that doubles up to a second. Each engine posts what it makes to the
   harness's sink, which runs a thread for each of the harness's hyperthreads.
-- **Kafka** is the pull case. One Apache Kafka 4.4.0 broker serves every run, on the harness's cores, with its log on
-  tmpfs so the disk sets no limit. Before the first run the harness writes three runs' worth of records, spread evenly,
+- **Kafka** is the pull case. One Apache Kafka 4.4.0 broker, or a cluster of the number `ENGINE_BROKERS` names, serves
+  every run, on the harness's cores, with its log on tmpfs so the disk sets no limit. Before the first run the harness writes three runs' worth of records, spread evenly,
   to an input topic with a partition for each hyperthread the engine may have, and at least 16. Each run consumes it
   from the start under a group of its own and produces to a topic of its own, which the harness counts by its offsets.
   Each engine uses its own Kafka client, with a consumer thread for each hyperthread where it has them, the producer

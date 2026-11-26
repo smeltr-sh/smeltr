@@ -746,10 +746,11 @@ fn container(host: Option<&str>, run: &str, cpus: &[usize], gb: u64) -> Command 
     docker
 }
 
-/// The Kafka broker every Kafka row shares, on the harness's cores. Its log is in memory, so a row measures the
-/// engine, not the disk, and its CPU is reported beside each row's.
+/// The Kafka cluster every Kafka row shares, on the harness's cores: `ENGINE_BROKERS` brokers (1 unless set), the
+/// first also its controller. Their logs are in memory, so a row measures the engine, not the disk, and their CPU is
+/// reported beside each row's.
 struct Broker {
-    container: Container,
+    containers: Vec<Container>,
     brokers: String,
     runtime: tokio::runtime::Runtime,
 }
@@ -765,69 +766,106 @@ fn partitions() -> i32 {
 }
 
 impl Broker {
+    /// Starts the cluster, its brokers sharing `ENGINE_BROKER_MEMORY_GB` of memory, and returns once every broker
+    /// has joined it, so a topic's partitions spread over them all.
     fn start(run: &str, cpus: &[usize]) -> Broker {
-        let (port, controller) = (free_port(), free_port());
-        let gb = env_or("ENGINE_BROKER_MEMORY_GB", 8);
+        let count = env_or("ENGINE_BROKERS", 1usize).max(1);
+        let (ports, controller): (Vec<u16>, u16) = ((0..count).map(|_| free_port()).collect(), free_port());
+        let gb = (env_or("ENGINE_BROKER_MEMORY_GB", 8u64) / count as u64).max(3);
         let at = harness_address();
-        let mut docker = container(None, run, cpus, gb);
-        docker
-            .args([
-                "--tmpfs",
-                &format!("/var/lib/kafka/data:size={}g,uid=1000", gb.saturating_sub(2).max(1)),
-            ])
-            .args(["-e", "KAFKA_NODE_ID=1", "-e", "KAFKA_PROCESS_ROLES=broker,controller"])
-            .args([
-                "-e",
-                &format!("KAFKA_LISTENERS=PLAINTEXT://{at}:{port},CONTROLLER://127.0.0.1:{controller}"),
-            ])
-            .args(["-e", &format!("KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://{at}:{port}")])
-            .args([
-                "-e",
-                &format!("KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:{controller}"),
-            ])
-            .args(["-e", "KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER"])
-            .args([
-                "-e",
-                "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT",
-            ])
-            .args([
-                "-e",
-                "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1",
-                "-e",
-                "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0",
-            ])
-            .args([
-                "-e",
-                "KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1",
-                "-e",
-                "KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1",
-            ])
-            .args([
-                "-e",
-                "KAFKA_LOG_DIRS=/var/lib/kafka/data",
-                "-e",
-                "KAFKA_AUTO_CREATE_TOPICS_ENABLE=false",
-            ])
-            .args(["-e", &format!("KAFKA_NUM_PARTITIONS={}", partitions())])
-            // A deleted output topic frees its tmpfs at once rather than a minute later, by when the next run's
-            // output would fill it.
-            .args(["-e", "KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=0"])
-            .arg("apache/kafka:4.4.0");
+        let containers = ports
+            .iter()
+            .enumerate()
+            .map(|(i, port)| {
+                let (node, name) = (i + 1, format!("{run}-{}", i + 1));
+                let mut docker = container(None, &name, cpus, gb);
+                docker.args([
+                    "--tmpfs",
+                    &format!("/var/lib/kafka/data:size={}g,uid=1000", gb.saturating_sub(2).max(1)),
+                ]);
+                docker.args(["-e", &format!("KAFKA_NODE_ID={node}")]);
+                // The first broker is the controller too, which the others reach over the host's loopback.
+                if node == 1 {
+                    docker.args(["-e", "KAFKA_PROCESS_ROLES=broker,controller"]).args([
+                        "-e",
+                        &format!("KAFKA_LISTENERS=PLAINTEXT://{at}:{port},CONTROLLER://127.0.0.1:{controller}"),
+                    ]);
+                } else {
+                    docker
+                        .args(["-e", "KAFKA_PROCESS_ROLES=broker"])
+                        .args(["-e", &format!("KAFKA_LISTENERS=PLAINTEXT://{at}:{port}")]);
+                }
+                docker
+                    .args(["-e", &format!("KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://{at}:{port}")])
+                    .args([
+                        "-e",
+                        &format!("KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:{controller}"),
+                    ])
+                    .args(["-e", "KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER"])
+                    .args([
+                        "-e",
+                        "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT",
+                    ])
+                    .args([
+                        "-e",
+                        "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1",
+                        "-e",
+                        "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0",
+                    ])
+                    .args([
+                        "-e",
+                        "KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1",
+                        "-e",
+                        "KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1",
+                    ])
+                    .args([
+                        "-e",
+                        "KAFKA_LOG_DIRS=/var/lib/kafka/data",
+                        "-e",
+                        "KAFKA_AUTO_CREATE_TOPICS_ENABLE=false",
+                    ])
+                    .args(["-e", &format!("KAFKA_NUM_PARTITIONS={}", partitions())])
+                    // A deleted output topic frees its tmpfs at once rather than a minute later, by when the next
+                    // run's output would fill it.
+                    .args(["-e", "KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=0"])
+                    .arg("apache/kafka:4.4.0");
+                Container::run(docker, &name, None)
+            })
+            .collect();
         let broker = Broker {
-            container: Container::run(docker, run, None),
-            brokers: format!("{at}:{port}"),
+            containers,
+            brokers: ports.iter().map(|p| format!("{at}:{p}")).collect::<Vec<_>>().join(","),
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap(),
         };
         let deadline = Instant::now() + PATIENCE;
-        while std::net::TcpStream::connect((at.as_str(), port)).is_err() {
-            broker.container.check(run);
-            assert!(Instant::now() < deadline, "{run}: the broker never listened");
+        let joined = || {
+            broker
+                .admin()
+                .inner()
+                .fetch_metadata(None, Duration::from_secs(1))
+                .is_ok_and(|m| m.brokers().len() == count)
+        };
+        while !joined() {
+            broker.check(run);
+            assert!(Instant::now() < deadline, "{run}: not every broker joined");
             std::thread::sleep(Duration::from_millis(200));
         }
         broker
+    }
+
+    /// Panics with a broker's log once it has stopped.
+    fn check(&self, what: &str) {
+        for container in &self.containers {
+            container.check(what);
+        }
+    }
+
+    /// CPU seconds the brokers have used.
+    fn cpu(&self) -> f64 {
+        self.containers.iter().map(|c| c.usage().0).sum()
     }
 
     fn admin(&self) -> rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext> {
@@ -1830,7 +1868,7 @@ fn time(
         if polls % 200 == 0 {
             running.container.check(run);
             if let Some(b) = broker {
-                b.container.check("the broker");
+                b.check("the broker");
             }
         }
         std::thread::sleep(delivered.pause());
@@ -1851,7 +1889,7 @@ fn time(
     let peer = |b: Option<&Broker>| match (&ends.take, &ends.give) {
         (_, Give::Store(store)) => store.container.usage().0,
         (Take::Queue { .. }, _) => services.objects.as_ref().unwrap().container.usage().0,
-        _ => b.map_or(0.0, |b| b.container.usage().0),
+        _ => b.map_or(0.0, Broker::cpu),
     };
     let (at, docs, (cpu, _), b_cpu, idle_before) = (
         Instant::now(),
