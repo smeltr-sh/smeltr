@@ -1,12 +1,16 @@
-//! The consumer a deployment's Kafka sources share: one librdkafka client for every source whose client
-//! configuration is the same, polled on one thread, each record handed to the inbox of the source that reads its
-//! topic.
+//! The consumers a deployment's Kafka sources share: one client for every source whose client configuration is the
+//! same. The client joins its group as several consumers, each polled on a thread of its own, and each hands a
+//! record to the inbox of the source that reads its topic.
 //!
 //! ```text
-//!   client thread ──poll──► route by topic ──► inbox of source 1 ──► reader 1 (KafkaSource::poll_batch)
-//!                                         └──► inbox of source N ──► reader N
-//!   readers ──commit, place, pause──► the shared consumer
+//!   consumer 1 thread ──poll──► route by topic ──► inbox of source 1 ──► reader 1 (KafkaSource::poll_batch)
+//!   consumer M thread ──poll──┘               └──► inbox of source N ──► reader N
+//!   readers ──commit, place, pause──► the consumer that owns each partition
 //! ```
+//!
+//! One consumer's thread routes every record it fetches, which caps what it reads; the group splits the partitions
+//! between the consumers, so a worker reads as many partitions at once as it has consumers. Each partition records
+//! the consumer it was assigned to (`SlotState::owned`).
 //!
 //! One client has one `group.id`, so sources share a client only when they share a group, brokers, TLS,
 //! properties, `fetchBytes` and whether a fresh partition starts at the earliest or the latest record. Topics, the
@@ -64,27 +68,55 @@ const SAMPLER_TICK: Duration = Duration::from_secs(1);
 /// A partition the group handed over: its topic and its number.
 pub(super) type Assigned = (String, i32);
 
+/// The worker threads one consumer of a client is started for. One consumer's thread routes about a million records
+/// a second, which keeps about this many transform and egress threads busy.
+const THREADS_PER_CONSUMER: usize = 4;
+
+/// The most consumers one client joins its group as: each is a bit of `SlotState::refetch`.
+const MOST_CONSUMERS: usize = u64::BITS as usize;
+
 /// Every shared client of one deployment. A source attaches to the client its configuration names, which is built
 /// on the first attach and closed when its last source is dropped.
-#[derive(Default)]
 pub struct Clients {
     entries: Mutex<Vec<Entry>>,
     /// Numbers each source in the order it attached, so of two that may not both read a topic the later one is
     /// refused.
     attached: AtomicU64,
+    /// How many consumers each client joins its group as.
+    consumers: usize,
 }
 
 /// One client, as the registry knows it. `routes` outlives the client, so comparing two clients never keeps one
 /// alive.
 struct Entry {
     key: Vec<(String, String)>,
-    /// The static member it joined its group as.
-    instance: Option<String>,
+    /// The static members its consumers joined its group as, in member order.
+    instances: Vec<String>,
     client: Weak<Client>,
     routes: Routes,
 }
 
+/// Clients of one consumer each.
+impl Default for Clients {
+    fn default() -> Clients {
+        Clients::with_consumers(1)
+    }
+}
+
 impl Clients {
+    /// The clients of a worker of `threads` threads: each joins its group as enough consumers to keep them busy.
+    pub(crate) fn for_threads(threads: usize) -> Clients {
+        Clients::with_consumers(threads / THREADS_PER_CONSUMER)
+    }
+
+    pub(super) fn with_consumers(consumers: usize) -> Clients {
+        Clients {
+            entries: Mutex::new(Vec::new()),
+            attached: AtomicU64::new(0),
+            consumers: consumers.clamp(1, MOST_CONSUMERS),
+        }
+    }
+
     /// Attaches a source reading `config` to the client its configuration names, building that client if none is
     /// open. A source that would read a topic another source on the same cluster reads in the same group is
     /// attached refused: it reads nothing and says why (`Slot::refused`).
@@ -100,7 +132,7 @@ impl Clients {
                 )));
             }
         }
-        let client_config = client_config(config, secrets)?;
+        let client_config = client_config(config, secrets, self.consumers)?;
         let key: Vec<(String, String)> = client_config
             .config_map()
             .into_keys()
@@ -117,24 +149,26 @@ impl Clients {
         {
             Some(client) => client,
             None => {
-                let mut client_config = client_config;
-                let instance = config.member.as_ref().map(|member| {
-                    // The first place no open client of the group holds: two members under one id fence each other.
-                    let held: HashSet<&str> = entries
-                        .iter()
-                        .filter(|e| e.routes.0.group == config.group_id)
-                        .filter_map(|e| e.instance.as_deref())
-                        .collect();
-                    let id = (0..)
-                        .map(|n| instance_id(member, n))
-                        .find(|id| !held.contains(id.as_str()))
-                        .unwrap();
-                    client_config.set("group.instance.id", &id);
-                    id
-                });
-                let client = Client::start(&client_config, config, Arc::downgrade(self))?;
+                let instances: Vec<String> = match &config.member {
+                    Some(member) => {
+                        // The first places no open client of the group holds: two members under one id fence each
+                        // other.
+                        let held: HashSet<&str> = entries
+                            .iter()
+                            .filter(|e| e.routes.inner.group == config.group_id)
+                            .flat_map(|e| e.instances.iter().map(String::as_str))
+                            .collect();
+                        (0..)
+                            .map(|n| instance_id(member, n))
+                            .filter(|id| !held.contains(id.as_str()))
+                            .take(self.consumers)
+                            .collect()
+                    }
+                    None => Vec::new(),
+                };
+                let client = Client::start(&client_config, &instances, self.consumers, config, Arc::downgrade(self))?;
                 entries.push(Entry {
-                    instance,
+                    instances,
                     key,
                     client: Arc::downgrade(&client),
                     routes: client.routes.clone(),
@@ -143,7 +177,7 @@ impl Clients {
             }
         };
         client.routes.attach(&slot);
-        if let Some(cluster) = client.routes.0.cluster.get() {
+        if let Some(cluster) = client.routes.inner.cluster.get() {
             refuse_overlaps(&entries, &client.routes, cluster);
         }
         Ok((client, slot))
@@ -154,14 +188,14 @@ impl Clients {
     /// and only the cluster can say so.
     fn note_cluster(&self, routes: &Routes, cluster: String) {
         let entries = self.entries.lock();
-        let cluster = routes.0.cluster.get_or_init(|| cluster);
+        let cluster = routes.inner.cluster.get_or_init(|| cluster);
         refuse_overlaps(&entries, routes, cluster);
     }
 
     /// What `routes`' patterns must skip because a source on another client reads it (`read_elsewhere`). Nothing
     /// until the client knows its cluster: `note_cluster` settles what was matched before then.
     fn read_elsewhere(&self, routes: &Routes) -> HashSet<Arc<str>> {
-        let Some(cluster) = routes.0.cluster.get() else {
+        let Some(cluster) = routes.inner.cluster.get() else {
             return HashSet::new();
         };
         read_elsewhere(&self.entries.lock(), routes, cluster)
@@ -173,10 +207,10 @@ impl Clients {
 fn refuse_overlaps(entries: &[Entry], routes: &Routes, cluster: &str) {
     for other in entries {
         let theirs = &other.routes;
-        if Arc::ptr_eq(&theirs.0, &routes.0)
+        if Arc::ptr_eq(&theirs.inner, &routes.inner)
             || other.client.strong_count() == 0
-            || theirs.0.group != routes.0.group
-            || theirs.0.cluster.get().map(String::as_str) != Some(cluster)
+            || theirs.inner.group != routes.inner.group
+            || theirs.inner.cluster.get().map(String::as_str) != Some(cluster)
         {
             continue;
         }
@@ -211,7 +245,7 @@ fn refuse_overlaps(entries: &[Entry], routes: &Routes, cluster: &str) {
                              whose brokers {:?} name the same cluster, so the group would split its partitions between \
                              them and each would see part of it. Read it from one source, or give one of them its own \
                              group",
-                            routes.0.group, earlier_routes.0.brokers
+                            routes.inner.group, earlier_routes.inner.brokers
                         ),
                     );
                 }
@@ -226,10 +260,10 @@ fn read_elsewhere(entries: &[Entry], routes: &Routes, cluster: &str) -> HashSet<
     entries
         .iter()
         .filter(|e| {
-            !Arc::ptr_eq(&e.routes.0, &routes.0)
+            !Arc::ptr_eq(&e.routes.inner, &routes.inner)
                 && e.client.strong_count() > 0
-                && e.routes.0.group == routes.0.group
-                && e.routes.0.cluster.get().map(String::as_str) == Some(cluster)
+                && e.routes.inner.group == routes.inner.group
+                && e.routes.inner.cluster.get().map(String::as_str) == Some(cluster)
         })
         .flat_map(|e| e.routes.slots())
         .filter(|s| s.lock().refused.is_none())
@@ -237,9 +271,9 @@ fn read_elsewhere(entries: &[Entry], routes: &Routes, cluster: &str) -> HashSet<
         .collect()
 }
 
-/// The static member a worker's client joins its group as: the worker, and the client's place among this deployment's
-/// clients of the group. Sources attach in the order the bundle lists them, so a redeploy that keeps the group's clients
-/// gives each the id it had. Kafka takes ASCII letters, digits, `.`, `_` and `-`, up to 249 of them.
+/// The static member a worker's consumer joins its group as: the worker, and the consumer's place among this
+/// deployment's consumers of the group. Sources attach in the order the bundle lists them, so a redeploy that keeps the
+/// group's clients and the worker's threads gives each the id it had. Kafka takes ASCII letters, digits, `.`, `_` and `-`, up to 249 of them.
 fn instance_id(member: &str, place: usize) -> String {
     let suffix = format!("-{place}");
     member
@@ -257,8 +291,9 @@ fn instance_id(member: &str, place: usize) -> String {
 }
 
 /// The configuration every source reading `config` through one client shares: what makes two sources' clients the
-/// same client.
-fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<ClientConfig, IoError> {
+/// same client. Each of its `consumers` fetches its share of `fetchBytes`, so together they hold what one would.
+fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets, consumers: usize) -> Result<ClientConfig, IoError> {
+    let fetch_bytes = (config.fetch_bytes / consumers).max(1);
     let mut client_config = ClientConfig::new();
     client_config
         .set("bootstrap.servers", &config.brokers)
@@ -267,7 +302,7 @@ fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<Cl
         // stages).
         .set("enable.auto.commit", "false")
         // The client's queue, before its records are routed to each source's inbox.
-        .set("queued.max.messages.kbytes", (config.fetch_bytes / 1024).to_string())
+        .set("queued.max.messages.kbytes", (fetch_bytes / 1024).max(1).to_string())
         // librdkafka's default waits a second to fetch again once that queue is full, which idles a source whose
         // transform drains it in less: Kafka passthrough on one core went from 181k to 306k rows a second.
         .set("fetch.queue.backoff.ms", "10")
@@ -276,16 +311,13 @@ fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<Cl
         // to the broker brings back follows from `fetchBytes` and nothing else. The queue bound above is where
         // fetching stops, not where the memory does: a fetch already asked for from each broker still lands, so
         // the client may hold the queue plus half of it per broker.
-        .set("fetch.max.bytes", fetch_request_bytes(config.fetch_bytes).to_string())
-        .set(
-            "fetch.message.max.bytes",
-            fetch_request_bytes(config.fetch_bytes).to_string(),
-        )
+        .set("fetch.max.bytes", fetch_request_bytes(fetch_bytes).to_string())
+        .set("fetch.message.max.bytes", fetch_request_bytes(fetch_bytes).to_string())
         // librdkafka refuses a fetch cap within 512 bytes of what it will receive in one message, and leaves
         // that at 100 MB. Raised only when the fetch needs it, so a small `fetchBytes` changes nothing.
         .set(
             "receive.message.max.bytes",
-            receive_message_bytes(config.fetch_bytes).to_string(),
+            receive_message_bytes(fetch_bytes).to_string(),
         )
         .set("max.poll.interval.ms", MAX_POLL_INTERVAL.as_millis().to_string())
         // librdkafka's default assignors are eager: every rebalance revokes every partition from every member. A
@@ -317,46 +349,76 @@ fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<Cl
     Ok(client_config)
 }
 
-/// One shared consumer, its thread, and its lag sampler. Dropped with its last source: the thread is joined, then
-/// the consumer leaves its group.
+/// One shared client: its consumers, a thread polling each, and its lag sampler. Every consumer subscribes to every
+/// topic of its sources, so the group splits their partitions between them, and each routes into the same inboxes.
+/// Dropped with its last source: the threads are joined, then the consumers leave their group.
 pub(super) struct Client {
-    pub(super) consumer: Arc<BaseConsumer<Routes>>,
     pub(super) routes: Routes,
+    consumers: Vec<Arc<BaseConsumer<Routes>>>,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
     sampler: Option<Sampler>,
     /// The Kerberos ticket the consumer signs in with, renewed while this lives. Last, so it outlives the consumer.
     _ticket: Option<super::kerberos::Held>,
 }
 
 impl Client {
+    /// Starts `consumers` consumers, the static members `instances` names when it names any.
     fn start(
         client_config: &ClientConfig,
+        instances: &[String],
+        consumers: usize,
         config: &KafkaSourceConfig,
         clients: Weak<Clients>,
     ) -> Result<Arc<Client>, IoError> {
-        let routes = Routes(Arc::new(RoutesInner {
+        let inner = Arc::new(RoutesInner {
             group: config.group_id.clone(),
             brokers: config.brokers.clone(),
+            changed: Mutex::new(vec![None; consumers]),
             ..RoutesInner::default()
-        }));
+        });
         let ticket = super::kerberos::hold(client_config)?;
-        let consumer: Arc<BaseConsumer<Routes>> = Arc::new(client_config.create_with_context(routes.clone())?);
-        let stop = Arc::new(AtomicBool::new(false));
-        let sampler = Sampler::start(Arc::clone(&consumer), routes.clone(), clients.clone());
-        let thread = {
-            let (consumer, routes, stop) = (Arc::clone(&consumer), routes.clone(), Arc::clone(&stop));
-            crate::sync::spawn("kafka-client", move || run(&consumer, &routes, &stop, &clients))
-                .map_err(|e| IoError::transient(format!("could not start the Kafka client's thread: {e}")))?
-        };
-        Ok(Arc::new(Client {
-            consumer,
+        let mut members = Vec::with_capacity(consumers);
+        for member in 0..consumers {
+            let mut member_config = client_config.clone();
+            if let Some(id) = instances.get(member) {
+                member_config.set("group.instance.id", id);
+            }
+            let routes = Routes {
+                inner: Arc::clone(&inner),
+                member,
+            };
+            members.push(Arc::new(member_config.create_with_context(routes)?));
+        }
+        // Before any consumer polls: a pause from its first rebalance goes through these.
+        let _ = inner.consumers.set(members.iter().map(Arc::downgrade).collect());
+        let routes = Routes { inner, member: 0 };
+        let mut client = Client {
+            sampler: Some(Sampler::start(members.clone(), routes.clone(), clients.clone())),
             routes,
-            stop,
-            thread: Some(thread),
-            sampler: Some(sampler),
+            consumers: members,
+            stop: Arc::new(AtomicBool::new(false)),
+            threads: Vec::new(),
             _ticket: ticket,
-        }))
+        };
+        for (member, consumer) in client.consumers.iter().enumerate() {
+            let (consumer, stop, clients) = (Arc::clone(consumer), Arc::clone(&client.stop), clients.clone());
+            let routes = Routes {
+                inner: Arc::clone(&client.routes.inner),
+                member,
+            };
+            let thread = crate::sync::spawn(format!("kafka-client-{member}"), move || {
+                run(&consumer, &routes, &stop, &clients)
+            })
+            .map_err(|e| IoError::transient(format!("could not start the Kafka client's thread: {e}")))?;
+            client.threads.push(thread);
+        }
+        Ok(Arc::new(client))
+    }
+
+    /// The consumer that runs group-wide calls: committed offsets, offsets for times, watermarks.
+    pub(super) fn consumer(&self) -> &BaseConsumer<Routes> {
+        &self.consumers[0]
     }
 
     /// Takes `slot` off this client: its topics leave the subscription, and nothing more is routed to it.
@@ -368,10 +430,10 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
+        for t in self.threads.drain(..) {
             let _ = t.join();
         }
-        // The sampler shares the consumer, so it goes before the consumer closes.
+        // The sampler shares the consumers, so it goes before they close.
         self.sampler.take();
     }
 }
@@ -418,7 +480,7 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 // assignment, clears from `Routes::post_rebalance`.
                 routes.clear_error();
                 // A source listed twice is woken twice, which costs nothing.
-                unwoken.extend(routes.route(consumer, &msg));
+                unwoken.extend(routes.route(&msg));
                 record = true;
             }
             // The client instance is unusable: every source on it says so on its next poll.
@@ -448,6 +510,8 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
 
 /// A record taken off the client's queue and not yet read by its source.
 pub(super) struct Pending {
+    /// The consumer that fetched it.
+    pub(super) member: usize,
     pub(super) raw: Vec<u8>,
     pub(super) offset: i64,
     pub(super) partition: i32,
@@ -502,11 +566,11 @@ pub(super) struct SlotState {
     pub(super) keeping: bool,
     /// Whether the client copies each record's headers.
     pub(super) keep_headers: bool,
-    /// Headers were asked for while the inbox held records copied without them. The client fetches those again
-    /// (`Slot::refetch`), and the reader takes nothing until it has.
-    pub(super) refetch: bool,
-    /// Every partition of this source's topics the group has assigned to this client.
-    pub(super) owned: HashSet<(String, i32)>,
+    /// Headers were asked for while the inbox held records copied without them: the consumers, one bit each, still to
+    /// fetch theirs again (`Slot::refetch`). The reader takes nothing until all have.
+    pub(super) refetch: u64,
+    /// Every partition of this source's topics the group has assigned to this client, and the consumer it went to.
+    pub(super) owned: HashMap<(String, i32), usize>,
     /// Partitions at their stop. A partition leaves when the group takes it away or hands it over again.
     pub(super) exhausted: HashSet<(String, i32)>,
     /// Partitions assigned but not yet placed at `start`. A record from one is dropped: it is not where the
@@ -564,8 +628,8 @@ impl Slot {
                 blocked: false,
                 keeping: false,
                 keep_headers: false,
-                refetch: false,
-                owned: HashSet::new(),
+                refetch: 0,
+                owned: HashMap::new(),
                 exhausted: HashSet::new(),
                 unplaced: HashSet::new(),
                 revoked: Vec::new(),
@@ -624,33 +688,36 @@ impl Slot {
     /// Pauses every partition this source owns that it should not be fetching, and resumes the rest: all of them
     /// while it is blocked, keeping its membership, full or refused; otherwise those at their stop or waiting to be
     /// placed.
-    pub(super) fn sync(&self, consumer: &BaseConsumer<Routes>, state: &SlotState) -> Result<(), IoError> {
+    /// Each partition is paused and resumed through the consumer it was assigned to.
+    pub(super) fn sync(&self, routes: &Routes, state: &SlotState) -> Result<(), IoError> {
         let hold_all = state.blocked || state.keeping || state.full || state.refused.is_some();
-        let (mut paused, mut running) = (TopicPartitionList::new(), TopicPartitionList::new());
-        for key in &state.owned {
-            if hold_all || state.exhausted.contains(key) || state.unplaced.contains(key) {
-                paused.add_partition(&key.0, key.1);
-            } else {
-                running.add_partition(&key.0, key.1);
+        for (member, consumer) in routes.consumers().iter().enumerate() {
+            let (mut paused, mut running) = (TopicPartitionList::new(), TopicPartitionList::new());
+            for (key, _) in state.owned.iter().filter(|(_, m)| **m == member) {
+                if hold_all || state.exhausted.contains(key) || state.unplaced.contains(key) {
+                    paused.add_partition(&key.0, key.1);
+                } else {
+                    running.add_partition(&key.0, key.1);
+                }
             }
-        }
-        if paused.count() > 0 {
-            consumer.pause(&paused)?;
-        }
-        if running.count() > 0 {
-            consumer.resume(&running)?;
+            if paused.count() > 0 {
+                consumer.pause(&paused)?;
+            }
+            if running.count() > 0 {
+                consumer.resume(&running)?;
+            }
         }
         Ok(())
     }
 
     /// The oldest record in the inbox, taken out. Draining a full inbox to half its cap lets its partitions fetch
     /// again.
-    pub(super) fn take(&self, consumer: &BaseConsumer<Routes>, state: &mut SlotState) -> Option<Pending> {
+    pub(super) fn take(&self, routes: &Routes, state: &mut SlotState) -> Option<Pending> {
         let p = state.inbox.pop_front()?;
         state.bytes -= p.size();
         if state.full && state.bytes <= self.cap / 2 {
             state.full = false;
-            if let Err(e) = self.sync(consumer, state) {
+            if let Err(e) = self.sync(routes, state) {
                 tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
             }
         }
@@ -661,12 +728,15 @@ impl Slot {
     /// fetches them again, now with what `keep_headers` asks of them. Runs on the client thread between polls, so no
     /// record taken off the queue before the seek is still on its way to the inbox; librdkafka discards those still
     /// queued. A partition not placed yet or at its stop is left as it is: what it holds is dropped when read. So is
-    /// one whose seek fails, its records read as they were copied.
-    fn refetch(&self, consumer: &BaseConsumer<Routes>, state: &mut SlotState) {
+    /// one whose seek fails, its records read as they were copied. Only the partitions `routes`' consumer owns.
+    fn refetch(&self, routes: &Routes, consumer: &BaseConsumer<Routes>, state: &mut SlotState) {
         let mut oldest: HashMap<(Arc<str>, i32), i64> = HashMap::new();
         for r in &state.inbox {
             let key = (r.topic.to_string(), r.partition);
-            if state.owned.contains(&key) && !state.unplaced.contains(&key) && !state.exhausted.contains(&key) {
+            if state.owned.get(&key) == Some(&routes.member)
+                && !state.unplaced.contains(&key)
+                && !state.exhausted.contains(&key)
+            {
                 let at = oldest.entry((Arc::clone(&r.topic), r.partition)).or_insert(r.offset);
                 *at = (*at).min(r.offset);
             }
@@ -699,7 +769,7 @@ impl Slot {
         state.bytes = state.inbox.iter().map(Pending::size).sum();
         if state.full && state.bytes <= self.cap / 2 {
             state.full = false;
-            if let Err(e) = self.sync(consumer, state) {
+            if let Err(e) = self.sync(routes, state) {
                 tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
             }
         }
@@ -716,7 +786,11 @@ impl Slot {
 /// The client's context: routes what librdkafka reports back to the sources it concerns. Every callback here runs
 /// from `poll`, on the client thread, or from the consumer's close.
 #[derive(Clone, Default)]
-pub(super) struct Routes(Arc<RoutesInner>);
+pub(super) struct Routes {
+    inner: Arc<RoutesInner>,
+    /// Which of the client's consumers this context is: what its callbacks were handed by.
+    member: usize,
+}
 
 #[derive(Default)]
 struct RoutesInner {
@@ -726,51 +800,66 @@ struct RoutesInner {
     slots: Mutex<Vec<Arc<Slot>>>,
     /// The source reading each topic. A refused source has none.
     by_topic: Mutex<HashMap<String, Arc<Slot>>>,
-    /// Since when the subscription has waited to be sent.
-    changed: Mutex<Option<Instant>>,
+    /// The client's consumers, one per member it joins its group as, in member order. Set once, as the client starts.
+    consumers: OnceLock<Vec<Weak<BaseConsumer<Routes>>>>,
+    /// Since when each consumer's subscription has waited to be sent: every consumer subscribes to the same topics.
+    changed: Mutex<Vec<Option<Instant>>>,
     /// The client's most recent global error, until a fetch or an assignment proves it reachable (E4).
     last_error: Mutex<Option<String>>,
     /// Signing in refused, said once per change and on the interval: librdkafka asks again every few seconds.
     sign_in: Mutex<crate::logs::Relog>,
     /// The cluster the client is connected to, once it knows.
     cluster: OnceLock<String>,
-    /// Some source waits for its inbox to be fetched again (`SlotState::refetch`).
-    refetch: AtomicBool,
+    /// The consumers some source waits on to fetch its inbox again (`SlotState::refetch`), one bit per member.
+    refetch: AtomicU64,
 }
 
 impl Routes {
     fn slots(&self) -> Vec<Arc<Slot>> {
-        self.0.slots.lock().clone()
+        self.inner.slots.lock().clone()
     }
 
     fn slot_for(&self, topic: &str) -> Option<Arc<Slot>> {
-        self.0.by_topic.lock().get(topic).cloned()
+        self.inner.by_topic.lock().get(topic).cloned()
     }
 
-    /// Marks the subscription to be sent once changes settle.
+    /// Marks every consumer's subscription to be sent once changes settle.
     pub(super) fn changed(&self) {
-        *self.0.changed.lock() = Some(Instant::now());
+        let now = Some(Instant::now());
+        self.inner.changed.lock().iter_mut().for_each(|c| *c = now);
+    }
+
+    /// The client's consumers, in member order. Empty once the client is gone.
+    pub(super) fn consumers(&self) -> Vec<Arc<BaseConsumer<Routes>>> {
+        (self.inner.consumers.get().into_iter().flatten())
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    /// The consumer `member` joined the group as.
+    pub(super) fn consumer(&self, member: usize) -> Option<Arc<BaseConsumer<Routes>>> {
+        self.inner.consumers.get()?.get(member)?.upgrade()
     }
 
     /// The consumer group this client is in, for its lines.
     pub(super) fn group(&self) -> &str {
-        &self.0.group
+        &self.inner.group
     }
 
     /// What `KafkaSource::connection_error` reads of the client.
     pub(super) fn last_error(&self) -> Option<String> {
-        self.0.last_error.lock().clone()
+        self.inner.last_error.lock().clone()
     }
 
     /// Recovery. Called on a fetched record and a completed assignment: either proves the brokers reachable.
     fn clear_error(&self) {
-        *self.0.last_error.lock() = None;
+        *self.inner.last_error.lock() = None;
     }
 
     fn attach(&self, slot: &Arc<Slot>) {
-        self.0.slots.lock().push(Arc::clone(slot));
+        self.inner.slots.lock().push(Arc::clone(slot));
         let taken = {
-            let mut by_topic = self.0.by_topic.lock();
+            let mut by_topic = self.inner.by_topic.lock();
             match slot.topics.iter().find(|t| by_topic.contains_key(t.as_ref())) {
                 Some(topic) => Some(topic.clone()),
                 None => {
@@ -788,7 +877,7 @@ impl Routes {
                     "topic {topic:?} is already read in consumer group {:?} by another source on this worker, so the \
                      group would split its partitions between them and each would see part of it. Read it from one \
                      source, or give one of them its own group",
-                    self.0.group
+                    self.inner.group
                 ),
             ),
             None => self.changed(),
@@ -796,8 +885,8 @@ impl Routes {
     }
 
     fn detach(&self, slot: &Arc<Slot>) {
-        self.0.slots.lock().retain(|s| !Arc::ptr_eq(s, slot));
-        self.0.by_topic.lock().retain(|_, s| !Arc::ptr_eq(s, slot));
+        self.inner.slots.lock().retain(|s| !Arc::ptr_eq(s, slot));
+        self.inner.by_topic.lock().retain(|_, s| !Arc::ptr_eq(s, slot));
         self.changed();
     }
 
@@ -814,12 +903,13 @@ impl Routes {
             state.bytes = 0;
             // The group's revoke finds no route to this source once it is refused, so it gives its partitions up here.
             let owned = std::mem::take(&mut state.owned);
+            let owned = owned.into_keys();
             state.exhausted.clear();
             state.unplaced.clear();
             state.tags.clear();
             state.revoked.extend(owned);
         }
-        self.0.by_topic.lock().retain(|_, s| !Arc::ptr_eq(s, slot));
+        self.inner.by_topic.lock().retain(|_, s| !Arc::ptr_eq(s, slot));
         slot.arrived.notify_all();
         self.changed();
     }
@@ -834,7 +924,7 @@ impl Routes {
     /// Whether `slot` is attached and not refused. Asked under the `by_topic` lock before a route to it is added:
     /// `detach` and `refuse` take its routes out after they change these, so a route added once they have would stay.
     fn routable(&self, slot: &Arc<Slot>) -> bool {
-        slot.lock().refused.is_none() && self.0.slots.lock().iter().any(|s| Arc::ptr_eq(s, slot))
+        slot.lock().refused.is_none() && self.inner.slots.lock().iter().any(|s| Arc::ptr_eq(s, slot))
     }
 
     /// Whether any source on this client names a topic pattern.
@@ -864,7 +954,7 @@ impl Routes {
                 gone
             };
             if !gone.is_empty() {
-                let mut by_topic = self.0.by_topic.lock();
+                let mut by_topic = self.inner.by_topic.lock();
                 for topic in &gone {
                     tracing::info!(name: "topic_gone", target: "sources", topic = %topic, "a topic a Kafka source's pattern matched is gone");
                     if by_topic.get(topic.as_ref()).is_some_and(|s| Arc::ptr_eq(s, &slot)) {
@@ -883,7 +973,7 @@ impl Routes {
                     continue;
                 }
                 {
-                    let mut by_topic = self.0.by_topic.lock();
+                    let mut by_topic = self.inner.by_topic.lock();
                     match by_topic.get(topic.as_str()) {
                         Some(owner) if Arc::ptr_eq(owner, &slot) => continue,
                         Some(_) => {
@@ -920,7 +1010,7 @@ impl Routes {
                 tracing::warn!(
                     name: "topic_skipped", target: "sources",
                     topic = %topic,
-                    group = %self.0.group,
+                    group = %self.inner.group,
                     "a Kafka source's pattern matches a topic another source on this worker reads in its consumer group, \
                      so the source leaves it to that one"
                 );
@@ -931,7 +1021,7 @@ impl Routes {
             state.matched.len() != before
         };
         if held {
-            let mut by_topic = self.0.by_topic.lock();
+            let mut by_topic = self.inner.by_topic.lock();
             if by_topic.get(topic).is_some_and(|s| Arc::ptr_eq(s, slot)) {
                 by_topic.remove(topic);
             }
@@ -940,20 +1030,29 @@ impl Routes {
         }
     }
 
-    /// Asks the client thread to fetch again what a source's inbox holds (`SlotState::refetch`).
-    pub(super) fn request_refetch(&self) {
-        self.0.refetch.store(true, Ordering::Release);
+    /// One bit for each of the client's consumers.
+    pub(super) fn every_member(&self) -> u64 {
+        let members = self.inner.consumers.get().map_or(1, Vec::len);
+        u64::MAX >> (u64::BITS as usize - members)
     }
 
-    /// Fetches again the inbox of every source that asked, and wakes its reader.
+    /// Asks every client thread to fetch again what a source's inbox holds of its partitions (`SlotState::refetch`).
+    pub(super) fn request_refetch(&self) {
+        self.inner.refetch.store(self.every_member(), Ordering::Release);
+    }
+
+    /// Fetches again what the inbox of every source that asked holds of this consumer's partitions, and wakes its
+    /// reader. Each consumer seeks its own, on its own thread, so no record of theirs is on its way to the inbox.
     fn refetch_if_due(&self, consumer: &BaseConsumer<Routes>) {
-        if !self.0.refetch.swap(false, Ordering::Acquire) {
+        let bit = 1 << self.member;
+        if self.inner.refetch.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
             return;
         }
         for slot in self.slots() {
             let mut state = slot.lock();
-            if std::mem::take(&mut state.refetch) {
-                slot.refetch(consumer, &mut state);
+            if state.refetch & bit != 0 {
+                state.refetch &= !bit;
+                slot.refetch(self, consumer, &mut state);
                 drop(state);
                 slot.arrived.notify_all();
             }
@@ -964,7 +1063,10 @@ impl Routes {
     /// whose reader stopped reading.
     fn resubscribe_if_due(&self, consumer: &BaseConsumer<Routes>) {
         {
-            let mut changed = self.0.changed.lock();
+            let mut changed = self.inner.changed.lock();
+            let Some(changed) = changed.get_mut(self.member) else {
+                return;
+            };
             match *changed {
                 Some(at) if at.elapsed() >= SUBSCRIBE_SETTLE => *changed = None,
                 _ => return,
@@ -1017,12 +1119,13 @@ impl Routes {
 
     /// Hands `msg` to the inbox of the source reading its topic. A full inbox pauses that source's partitions.
     /// Answers the source when its reader needs waking ([`BatchWait::arrived`]), for the caller to wake.
-    fn route(&self, consumer: &BaseConsumer<Routes>, msg: &impl Message) -> Option<Arc<Slot>> {
+    fn route(&self, msg: &impl Message) -> Option<Arc<Slot>> {
         // Read once: each read of a message's topic measures and checks the name again.
         let topic = msg.topic();
         let slot = self.slot_for(topic)?;
         let mut state = slot.lock();
         let record = Pending {
+            member: self.member,
             raw: msg.payload().unwrap_or(&[]).to_vec(),
             offset: msg.offset(),
             partition: msg.partition(),
@@ -1037,7 +1140,7 @@ impl Routes {
         let wake = state.wait.arrived(first, before, after);
         if !state.full && state.bytes >= slot.cap {
             state.full = true;
-            if let Err(e) = slot.sync(consumer, &state) {
+            if let Err(e) = slot.sync(self, &state) {
                 tracing::warn!(name: "pause", target: "sources", error = %e, "could not pause a full source");
             }
         }
@@ -1121,12 +1224,12 @@ impl ClientContext for Routes {
         // librdkafka asks again on its own schedule, so a refusal stalls the client until one is answered.
         match super::entra::token(config) {
             Ok(token) => {
-                self.0.sign_in.lock().clear();
+                self.inner.sign_in.lock().clear();
                 tracing::debug!(name: "token_refreshed", target: "sources", group = %self.group(), principal = %token.principal_name, "signed in to Kafka as the pod's workload identity");
                 Ok(token)
             }
             Err(e) => {
-                if let Some(error) = self.0.sign_in.lock().fail_due(e.to_string()) {
+                if let Some(error) = self.inner.sign_in.lock().fail_due(e.to_string()) {
                     tracing::warn!(name: "sign_in_failed", target: "sources", group = %self.group(), error, "a source could not sign in to Kafka as the pod's workload identity, so it cannot connect until a sign-in works");
                 }
                 Err(e)
@@ -1137,7 +1240,7 @@ impl ClientContext for Routes {
     /// The most recent global error wins: a DNS failure that later becomes a connection refusal should read as the
     /// latter, not stay frozen on the first symptom seen.
     fn error(&self, error: KafkaError, reason: &str) {
-        *self.0.last_error.lock() = Some(format!("{error}: {reason}"));
+        *self.inner.last_error.lock() = Some(format!("{error}: {reason}"));
     }
 }
 
@@ -1198,14 +1301,14 @@ impl ConsumerContext for Routes {
                 } else {
                     state.tags.insert(key.clone(), tag);
                 }
-                state.owned.insert(key);
+                state.owned.insert(key, self.member);
             }
             if !touched.iter().any(|s| Arc::ptr_eq(s, &slot)) {
                 touched.push(slot);
             }
         }
         for slot in touched {
-            if let Err(e) = slot.sync(base_consumer, &slot.lock()) {
+            if let Err(e) = slot.sync(self, &slot.lock()) {
                 tracing::warn!(name: "placement_failed", target: "sources", error = %e, "a source could not hold the partitions it was assigned; they are placed again on a later poll");
             }
             slot.arrived.notify_all();
@@ -1234,7 +1337,7 @@ impl ConsumerContext for Routes {
     /// partitions it lost, drops what its inbox holds of them, and is told. A record held from a revoked partition is
     /// its new owner's to read, and were the partition to come back, the record would belong to an ownership that
     /// has ended.
-    fn pre_rebalance(&self, consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+    fn pre_rebalance(&self, _consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         let Rebalance::Revoke(tpl) = rebalance else {
             return;
         };
@@ -1244,25 +1347,32 @@ impl ConsumerContext for Routes {
             };
             let key = (e.topic().to_string(), e.partition());
             let mut state = slot.lock();
-            state.owned.remove(&key);
-            state.exhausted.remove(&key);
-            state.unplaced.remove(&key);
-            state.tags.remove(&key);
             let before = state.inbox.len();
             state
                 .inbox
-                .retain(|r| !(r.partition == key.1 && r.topic.as_ref() == key.0.as_str()));
+                .retain(|r| !(r.member == self.member && r.partition == key.1 && r.topic.as_ref() == key.0.as_str()));
+            // A lost assignment can be told after the group has handed the partition to another of the client's
+            // consumers, whose ownership goes on.
+            let mine = state.owned.get(&key) == Some(&self.member);
+            if mine {
+                state.owned.remove(&key);
+                state.exhausted.remove(&key);
+                state.unplaced.remove(&key);
+                state.tags.remove(&key);
+            }
             if state.inbox.len() != before {
                 state.bytes = state.inbox.iter().map(Pending::size).sum();
                 // Drained by the revoke rather than by its reader, which may now have nothing to take.
                 if state.full && state.bytes <= slot.cap / 2 {
                     state.full = false;
-                    if let Err(e) = slot.sync(consumer, &state) {
+                    if let Err(e) = slot.sync(self, &state) {
                         tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
                     }
                 }
             }
-            state.revoked.push(key);
+            if mine {
+                state.revoked.push(key);
+            }
             drop(state);
             slot.arrived.notify_all();
         }
@@ -1469,7 +1579,7 @@ struct Sampler {
 }
 
 impl Sampler {
-    fn start(consumer: Arc<BaseConsumer<Routes>>, routes: Routes, clients: Weak<Clients>) -> Sampler {
+    fn start(consumers: Vec<Arc<BaseConsumer<Routes>>>, routes: Routes, clients: Weak<Clients>) -> Sampler {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let thread = {
             let stop = Arc::clone(&stop);
@@ -1487,7 +1597,7 @@ impl Sampler {
                         && (routes.awaits_listing() || listed.get().is_none_or(|at| at.elapsed() >= TOPIC_LIST_EVERY))
                     {
                         listed.set(Some(Instant::now()));
-                        list_topics(&consumer, &routes, &clients);
+                        list_topics(&consumers[0], &routes, &clients);
                     }
                 };
                 loop {
@@ -1495,7 +1605,7 @@ impl Sampler {
                     list_if_due();
                     if sampled.is_none_or(|at| at.elapsed() >= LAG_SAMPLE_INTERVAL) {
                         sampled = Some(Instant::now());
-                        measure_lag(&consumer, &routes, &stopped, &list_if_due, &mut unmeasured);
+                        measure_lag(&consumers, &routes, &stopped, &list_if_due, &mut unmeasured);
                     }
                     let (flag, wake) = &*stop;
                     let guard = flag.lock();
@@ -1534,7 +1644,7 @@ fn list_topics(consumer: &BaseConsumer<Routes>, routes: &Routes, clients: &Weak<
     let clients = clients.upgrade();
     let elsewhere = clients.as_ref().map(|c| c.read_elsewhere(routes)).unwrap_or_default();
     if routes.match_topics(&listed, &elsewhere)
-        && let Some(cluster) = routes.0.cluster.get()
+        && let Some(cluster) = routes.inner.cluster.get()
         && let Some(clients) = clients
     {
         clients.note_cluster(routes, cluster.clone());
@@ -1554,10 +1664,10 @@ impl Drop for Sampler {
     }
 }
 
-/// A partition and the offset this consumer reads next on it.
+/// A partition and the offset the client reads next on it.
 type Position = (String, i32, i64);
 
-/// Every assigned partition's lag against the offset this consumer reads next: how far reading is behind, whatever
+/// Every assigned partition's lag against the offset the consumer it is assigned to reads next: how far reading is behind, whatever
 /// the destinations still hold. A blocked or rebalancing source still has a position and a broker to ask, so this
 /// reports through both -- exactly when lag is worth seeing grow. Each source's lag is handed to it as soon as its own
 /// partitions are measured, so a slow broker behind one source does not hold back the others. Nothing is handed over
@@ -1566,7 +1676,7 @@ type Position = (String, i32, i64);
 /// Each failure is said at trace; while they go on, `unmeasured` says the latest at debug every
 /// [`crate::logs::RELOG_EVERY`].
 fn measure_lag(
-    consumer: &BaseConsumer<Routes>,
+    consumers: &[Arc<BaseConsumer<Routes>>],
     routes: &Routes,
     stopped: &dyn Fn() -> bool,
     between: &dyn Fn(),
@@ -1574,19 +1684,22 @@ fn measure_lag(
 ) {
     // Each failure is said at trace, and at debug when it starts and every RELOG_EVERY while it goes on.
     let mut failed = |why: String| unmeasured.fail_due(why).is_some();
-    // Each assigned partition's read position, which the client keeps, so no broker call.
-    let positions = match consumer.position() {
-        Ok(positions) => positions,
-        Err(e) => {
-            let due = failed(format!("the consumer's positions could not be fetched: {e}"));
-            crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), error = %e, "the consumer's positions could not be fetched, so lag is not measured this round");
-            return;
+    // Each assigned partition's read position, which each consumer keeps, so no broker call.
+    let mut positions = Vec::with_capacity(consumers.len());
+    for consumer in consumers {
+        match consumer.position() {
+            Ok(held) => positions.push(held),
+            Err(e) => {
+                let due = failed(format!("the consumer's positions could not be fetched: {e}"));
+                crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), error = %e, "the consumer's positions could not be fetched, so lag is not measured this round");
+                return;
+            }
         }
-    };
+    }
 
     // Each source's partitions, with the offset read next on each.
     let mut by_slot: Vec<(Arc<Slot>, Vec<Position>)> = Vec::new();
-    for elem in positions.elements() {
+    for elem in positions.iter().flat_map(TopicPartitionList::elements) {
         // Nothing read yet on this partition: nothing to measure it against.
         let Offset::Offset(position) = elem.offset() else {
             continue;
@@ -1611,7 +1724,7 @@ fn measure_lag(
             }
             between();
             // No batched form of this call exists in librdkafka -- one round trip per partition.
-            let (_, high) = match consumer.fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) {
+            let (_, high) = match consumers[0].fetch_watermarks(&topic, partition, LAG_QUERY_TIMEOUT) {
                 Ok(marks) => marks,
                 Err(e) => {
                     any_failed = true;
@@ -1756,8 +1869,6 @@ mod tests {
         let routes = Routes::default();
         let slot = Arc::new(Slot::new(&config(&["a"]), 0));
         routes.attach(&slot);
-        // Never polled: routing pauses a source through it only once its inbox is full.
-        let consumer: BaseConsumer<Routes> = ClientConfig::new().create_with_context(routes.clone()).unwrap();
         let record = |offset, bytes| {
             let payload = Some(vec![b'x'; bytes]);
             rdkafka::message::OwnedMessage::new(
@@ -1771,15 +1882,15 @@ mod tests {
             )
         };
 
-        assert!(routes.route(&consumer, &record(0, 100)).is_some(), "the first record");
+        assert!(routes.route(&record(0, 100)).is_some(), "the first record");
         assert!(
-            routes.route(&consumer, &record(1, 100)).is_none(),
+            routes.route(&record(1, 100)).is_none(),
             "one more, short of a batch's worth"
         );
         assert!(slot.lock().wait_left() > Duration::ZERO, "the reader waits for more");
         let worth = crate::worker::LEAST_BATCH_BYTES;
         assert!(
-            routes.route(&consumer, &record(2, worth)).is_some(),
+            routes.route(&record(2, worth)).is_some(),
             "the record that makes a batch's worth"
         );
         assert_eq!(slot.lock().wait_left(), Duration::ZERO, "the reader takes it at once");
@@ -1795,7 +1906,7 @@ mod tests {
         {
             let mut state = slot.lock();
             for p in 0..2 {
-                state.owned.insert(("a".to_string(), p));
+                state.owned.insert(("a".to_string(), p), 0);
             }
             state.exhausted.insert(("a".to_string(), 0));
             state.unplaced.insert(("a".to_string(), 1));
@@ -2002,10 +2113,10 @@ mod tests {
     fn a_zone_is_the_rack() {
         let mut zoned = config(&["a"]);
         zoned.rack = Some("eu-west-1a".to_string());
-        let built = client_config(&zoned, &Default::default()).unwrap();
+        let built = client_config(&zoned, &Default::default(), 1).unwrap();
         assert_eq!(built.get("client.rack"), Some("eu-west-1a"));
         assert_eq!(
-            client_config(&config(&["a"]), &Default::default())
+            client_config(&config(&["a"]), &Default::default(), 1)
                 .unwrap()
                 .get("client.rack"),
             None
@@ -2039,7 +2150,7 @@ mod tests {
             entries
                 .iter()
                 .filter(|e| e.client.strong_count() > 0)
-                .map(|e| (e.routes.0.group.clone(), e.instance.clone()))
+                .map(|e| (e.routes.inner.group.clone(), e.instances.first().cloned()))
                 .collect()
         };
         let joined = |group: &str, id: &str| (group.to_string(), Some(id.to_string()));

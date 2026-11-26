@@ -241,11 +241,12 @@ address and logs a warning. Sniffing costs a periodic lookup of the cluster, a
 credential with the `monitor` cluster privilege, and a route from every worker
 to every node. Every receiver a worker runs listens on its listen address, every
 address of the host unless the worker names one, so a bundle names a receiver's
-port and never an address. A Kafka consumer also joins its group as a static
-member under the worker's id, so a redeploy that rejoins within the session
-timeout keeps its partitions and moves none of the group's. The cost is a worker
-that leaves for good, or comes back under a new id: what it read waits out the
-session timeout before the group hands it on.
+port and never an address. Each Kafka consumer also joins its group as a static
+member under the worker's id and its place among the worker's consumers, so a
+redeploy that rejoins within the session timeout keeps its partitions and moves
+none of the group's. The cost is a worker that leaves for good, comes back under
+a new id, or comes back with fewer threads and so fewer consumers: what the
+missing members read waits out the session timeout before the group hands it on.
 
 ## A connector names a certificate
 

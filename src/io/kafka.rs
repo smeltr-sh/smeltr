@@ -402,15 +402,19 @@ fn headers_of(msg: &impl Message, keep: bool) -> Option<Vec<(String, Vec<u8>)>> 
     })
 }
 
-/// The part of `offsets` whose partitions are in `owned`, and how many were left out. A cooperative rebalance moves
-/// a partition away while batches read from it are still in flight, and the broker takes a commit for any partition
-/// from a current member: committing one this consumer no longer owns would move its new owner's offset back. The
-/// reader forgets a revoked partition once `take_revoked` reports it; this covers a revoke it has not heard of yet.
-fn owned_only(offsets: &CommitMap, owned: &HashSet<(String, i32)>) -> (Vec<(TopicPartition, i64)>, usize) {
+/// The part of `offsets` whose partitions are in `owned`, each with the consumer it is assigned to, and how many
+/// were left out. A cooperative rebalance moves a partition away while batches read from it are still in flight, and
+/// the broker takes a commit for any partition from a current member: committing one this client no longer owns
+/// would move its new owner's offset back. The reader forgets a revoked partition once `take_revoked` reports it;
+/// this covers a revoke it has not heard of yet.
+fn owned_only(
+    offsets: &CommitMap,
+    owned: &HashMap<(String, i32), usize>,
+) -> (Vec<(TopicPartition, i64, usize)>, usize) {
     let mut kept = Vec::with_capacity(offsets.len());
     for (tp, &offset) in offsets {
-        if owned.contains(&(tp.topic.to_string(), tp.partition)) {
-            kept.push((tp.clone(), offset));
+        if let Some(&member) = owned.get(&(tp.topic.to_string(), tp.partition)) {
+            kept.push((tp.clone(), offset, member));
         }
     }
     let dropped = offsets.len() - kept.len();
@@ -453,7 +457,7 @@ impl KafkaSource {
     }
 
     fn consumer(&self) -> &BaseConsumer<client::Routes> {
-        &self.client.consumer
+        self.client.consumer()
     }
 
     /// The reader is reading. A source whose reader had stopped goes back into the subscription.
@@ -492,16 +496,19 @@ impl KafkaSource {
     /// the broker at most every `PLACE_RETRY_EVERY`, and never under the slot's lock; until it answers they stay
     /// paused.
     fn place_held(&mut self) -> Result<(), IoError> {
-        let held: Vec<((String, i32), client::Placing)> = {
+        let (held, owners) = {
             let state = self.slot.lock();
             if state.unplaced.is_empty() || Instant::now() < self.place_retry_at {
                 return Ok(());
             }
-            state
-                .unplaced
-                .iter()
+            let held: Vec<((String, i32), client::Placing)> = (state.unplaced.iter())
                 .map(|k| (k.clone(), self.slot.placing()))
-                .collect()
+                .collect();
+            // Each is sought through the consumer it is assigned to.
+            let owners: HashMap<(String, i32), usize> = (state.unplaced.iter())
+                .filter_map(|k| Some((k.clone(), *state.owned.get(k)?)))
+                .collect();
+            (held, owners)
         };
         self.place_retry_at = Instant::now() + PLACE_RETRY_EVERY;
         let resolved = match client::resolve_starts(self.consumer(), &held) {
@@ -515,21 +522,26 @@ impl KafkaSource {
                 return Ok(());
             }
         };
-        // One seek for them all, so one timeout bounds the poll however many partitions are held.
+        // One seek for each consumer they are assigned to, so one timeout per consumer bounds the poll however many
+        // partitions are held.
         let mut placed = Vec::new();
-        let mut seeks = TopicPartitionList::new();
+        let mut seeks: HashMap<usize, TopicPartitionList> = HashMap::new();
         let mut tags = HashMap::new();
         for ((topic, partition), off, tag) in resolved {
-            tags.insert((topic.clone(), partition), tag);
+            let key = (topic, partition);
+            tags.insert(key.clone(), tag);
             if matches!(off, Offset::Invalid) {
                 // Nothing to seek to: the partition starts where the client puts it.
-                placed.push((topic, partition));
-            } else {
-                seeks.add_partition_offset(&topic, partition, off)?;
+                placed.push(key);
+            } else if let Some(&member) = owners.get(&key) {
+                (seeks.entry(member).or_default()).add_partition_offset(&key.0, key.1, off)?;
             }
         }
-        if seeks.count() > 0 {
-            match self.consumer().seek_partitions(seeks, PLACE_TIMEOUT) {
+        for (member, seeks) in seeks {
+            let Some(consumer) = self.client.routes.consumer(member) else {
+                continue;
+            };
+            match consumer.seek_partitions(seeks, PLACE_TIMEOUT) {
                 Ok(sought) => {
                     for e in sought.elements() {
                         if e.error().is_err() {
@@ -560,14 +572,14 @@ impl KafkaSource {
             let tag = tags.get(&key).cloned().unwrap_or_default();
             state.tags.insert(key, tag);
         }
-        self.slot.sync(self.consumer(), &state)
+        self.slot.sync(&self.client.routes, &state)
     }
 
     /// Marks a partition exhausted and pauses it so librdkafka stops fetching from it. Idempotent.
     fn mark_exhausted(&self, state: &mut client::SlotState, topic: &str, partition: i32) -> Result<(), IoError> {
         if state.exhausted.insert((topic.to_string(), partition)) {
             tracing::info!(name: "partition_at_stop", target: "sources", group = %self.client.routes.group(), topic, partition, "a partition reached the stop time set for the source, so it is no longer fetched");
-            self.slot.sync(self.consumer(), state)?;
+            self.slot.sync(&self.client.routes, state)?;
         }
         Ok(())
     }
@@ -594,13 +606,13 @@ impl KafkaSource {
         Ok(at_stop)
     }
 
-    /// Hands `tpl` to librdkafka with the consumer's own queue as the reply queue, so the broker's answer comes back
-    /// through the client thread's `poll` as an offset-commit event, which the client hands to
+    /// Hands `tpl` to librdkafka through `consumer`, with that consumer's own queue as the reply queue, so the broker's
+    /// answer comes back through its thread's `poll` as an offset-commit event, which the client hands to
     /// `Routes::commit_callback`. The client's own asynchronous commit mode names no reply queue, and librdkafka
     /// then posts the answer only to a legacy callback the client never registers: nobody would hear it.
-    fn commit_async(&self, tpl: &TopicPartitionList) -> Result<(), KafkaError> {
-        let rk = self.consumer().client().native_ptr();
-        // SAFETY: `rk` is the live client `self.client` owns, and `tpl` outlives the call, which copies the list
+    fn commit_async(consumer: &BaseConsumer<client::Routes>, tpl: &TopicPartitionList) -> Result<(), KafkaError> {
+        let rk = consumer.client().native_ptr();
+        // SAFETY: `rk` is the live client `consumer` holds, and `tpl` outlives the call, which copies the list
         // before it returns. The queue handle is one more reference to the consumer queue, taken and released here;
         // the answer goes to the queue itself, which lives as long as the consumer.
         let err = unsafe {
@@ -693,7 +705,7 @@ impl Source for KafkaSource {
             return false;
         }
         let state = self.slot.lock();
-        state.inbox.is_empty() && !state.owned.is_empty() && state.owned.iter().all(|k| state.exhausted.contains(k))
+        state.inbox.is_empty() && !state.owned.is_empty() && state.owned.keys().all(|k| state.exhausted.contains(k))
     }
 
     /// Its inbox: what the client routed here and the reader has not taken.
@@ -703,7 +715,7 @@ impl Source for KafkaSource {
 
     /// Every partition this source owns.
     fn assigned_partitions(&self) -> Vec<(String, i32)> {
-        self.slot.lock().owned.iter().cloned().collect()
+        self.slot.lock().owned.keys().cloned().collect()
     }
 
     fn poll_batch(
@@ -720,7 +732,7 @@ impl Source for KafkaSource {
             let mut state = self.slot.lock();
             if state.keeping {
                 state.keeping = false;
-                self.slot.sync(self.consumer(), &state)?;
+                self.slot.sync(&self.client.routes, &state)?;
             }
         }
         self.place_held()?;
@@ -748,7 +760,7 @@ impl Source for KafkaSource {
                 }
             }
             // The first always goes out, however large, as a fresh one would; the rest only while they fit.
-            while !state.refetch && taken.len() < max_rows {
+            while state.refetch == 0 && taken.len() < max_rows {
                 let Some(len) = state.inbox.front().map(client::Pending::size) else {
                     break;
                 };
@@ -762,7 +774,7 @@ impl Source for KafkaSource {
                 if !state.unplaced.is_empty() && state.unplaced.contains(&(topic.to_string(), partition))
                     || self.past_stop(&mut state, &topic, partition, timestamp)?
                 {
-                    slot.take(self.consumer(), &mut state);
+                    slot.take(&self.client.routes, &mut state);
                     continue;
                 }
                 // The registry is asked before the record leaves the inbox, so a registry that does not answer
@@ -778,7 +790,7 @@ impl Source for KafkaSource {
                         Err(e) => return Err(e),
                     }
                 }
-                taken.push(slot.take(self.consumer(), &mut state).expect("a front"));
+                taken.push(slot.take(&self.client.routes, &mut state).expect("a front"));
                 taken_bytes += len;
             }
             // Records in hand go out: the inbox held a batch's worth, or its oldest waited its time.
@@ -812,7 +824,7 @@ impl Source for KafkaSource {
     fn block(&mut self) -> Result<(), IoError> {
         let mut state = self.slot.lock();
         state.blocked = true;
-        self.slot.sync(self.consumer(), &state)
+        self.slot.sync(&self.client.routes, &state)
     }
 
     /// Records already in the inbox when headers are first asked for were copied without them: the client fetches
@@ -820,7 +832,7 @@ impl Source for KafkaSource {
     fn keep_headers(&mut self, keep: bool) {
         let mut state = self.slot.lock();
         if keep && !state.keep_headers && !state.inbox.is_empty() {
-            state.refetch = true;
+            state.refetch = self.client.routes.every_member();
             self.client.routes.request_refetch();
         }
         state.keep_headers = keep;
@@ -829,7 +841,7 @@ impl Source for KafkaSource {
     fn release(&mut self) -> Result<(), IoError> {
         let mut state = self.slot.lock();
         state.blocked = false;
-        self.slot.sync(self.consumer(), &state)
+        self.slot.sync(&self.client.routes, &state)
     }
 
     /// Pauses every partition this source owns until the next `poll_batch`. The client thread serves the group's
@@ -841,7 +853,7 @@ impl Source for KafkaSource {
             let mut state = self.slot.lock();
             if !state.keeping {
                 state.keeping = true;
-                self.slot.sync(self.consumer(), &state)?;
+                self.slot.sync(&self.client.routes, &state)?;
             }
         }
         if !timeout.is_zero() {
@@ -900,8 +912,10 @@ impl Source for KafkaSource {
             if dropped > 0 {
                 self.note_stale_commits(dropped as u64, "partitions no longer assigned to this consumer");
             }
-            let mut tpl = TopicPartitionList::new();
-            for (tp, offset) in &kept {
+            // Each through the consumer its partitions are assigned to, whose generation the broker checks it against.
+            let mut by_member: HashMap<usize, TopicPartitionList> = HashMap::new();
+            for (tp, offset, member) in &kept {
+                let tpl = by_member.entry(*member).or_default();
                 // Kafka commits the next offset to read; `CommitMap` holds the last processed one.
                 tpl.add_partition_offset(&tp.topic, tp.partition, Offset::Offset(offset + 1))?;
                 // The tag travels with every commit: the next owner reads from it which `start` the offset descends
@@ -914,11 +928,15 @@ impl Source for KafkaSource {
             }
             // `Ok` here means handed over, not landed; only the callback's answer counts as landed. Nothing left to
             // commit sends nothing: an empty list is an error to the client.
-            if !kept.is_empty()
-                && let Err(e) = self.commit_async(&tpl)
-                && let Some(e) = self.settle_commit(Err(e))
-            {
-                refused = Some(e);
+            for (member, tpl) in by_member {
+                let Some(consumer) = self.client.routes.consumer(member) else {
+                    continue;
+                };
+                if let Err(e) = Self::commit_async(&consumer, &tpl)
+                    && let Some(e) = self.settle_commit(Err(e))
+                {
+                    refused = Some(e);
+                }
             }
         }
         match refused {
@@ -1664,11 +1682,17 @@ mod tests {
         let offsets: CommitMap = [(tp("a", 0), 10), (tp("a", 1), 20), (tp("b", 0), 30)]
             .into_iter()
             .collect();
-        let owned: HashSet<(String, i32)> = [("a".to_string(), 1), ("b".to_string(), 0)].into_iter().collect();
+        let owned: HashMap<(String, i32), usize> = [(("a".to_string(), 1), 0), (("b".to_string(), 0), 1)]
+            .into_iter()
+            .collect();
 
         let (mut kept, dropped) = owned_only(&offsets, &owned);
         kept.sort_by(|x, y| (x.0.topic.as_ref(), x.0.partition).cmp(&(y.0.topic.as_ref(), y.0.partition)));
-        assert_eq!(kept, vec![(tp("a", 1), 20), (tp("b", 0), 30)]);
+        assert_eq!(
+            kept,
+            vec![(tp("a", 1), 20, 0), (tp("b", 0), 30, 1)],
+            "each with the consumer it is assigned to"
+        );
         assert_eq!(dropped, 1, "a/0 moved away");
     }
 
@@ -1984,6 +2008,74 @@ mod tests {
         drain_until_exhausted(&mut [&mut first, &mut second], &mut read);
         assert_eq!(offsets_of(&read, topic, 0), vec![0, 1, 2, 3]);
         assert_eq!(offsets_of(&read, topic, 1), vec![0, 1, 2, 3]);
+    }
+
+    /// A client of two consumers splits a source's partitions between them: each partition is read once, in order,
+    /// and each commit lands through the consumer that owns its partition.
+    #[test]
+    fn a_client_of_two_consumers_reads_each_partition_once_and_commits_through_its_owner() {
+        let topic = "two-consumers";
+        let mock = rdkafka::mocking::MockCluster::new(1).unwrap();
+        mock.create_topic(topic, 2, 1).unwrap();
+        produce_range(&mock, topic, 0);
+        produce_range(&mock, topic, 1);
+
+        let mut config = range_config(&mock, &[topic], "two-consumers-group");
+        // As in `two_members_of_one_group_share_a_range_without_duplicates`: two members joining at once.
+        config
+            .props
+            .literal
+            .push(("session.timeout.ms".to_string(), "6000".to_string()));
+        let clients = Arc::new(Clients::with_consumers(2));
+        let mut source = KafkaSource::open(&config, &Default::default(), &clients).unwrap();
+        // Held until each consumer owns a partition, so neither reads what the group is about to hand the other.
+        source.block().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let owners: HashSet<usize> = source.slot.lock().owned.values().copied().collect();
+            if owners.len() == 2 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the group never split the partitions between the consumers"
+            );
+            assert!(
+                source
+                    .poll_batch(10, 1 << 20, Duration::from_millis(100))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        source.release().unwrap();
+
+        let mut read = Vec::new();
+        drain_until_exhausted(&mut [&mut source], &mut read);
+        assert_eq!(offsets_of(&read, topic, 0), vec![0, 1, 2, 3]);
+        assert_eq!(offsets_of(&read, topic, 1), vec![0, 1, 2, 3]);
+
+        let offsets: CommitMap = (0..2).map(|p| (TopicPartition::new(Arc::from(topic), p), 3)).collect();
+        source.commit(&offsets).expect("handed to the client");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while source.slot.lock().commit_results.len() < 2 {
+            assert!(Instant::now() < deadline, "the broker never answered both commits");
+            let _ = source.poll_batch(10, 1 << 20, Duration::from_millis(100));
+        }
+        assert_eq!(
+            source.slot.lock().commit_results,
+            vec![Ok(()), Ok(())],
+            "one commit per consumer"
+        );
+        let mut both = TopicPartitionList::new();
+        both.add_partition(topic, 0);
+        both.add_partition(topic, 1);
+        let committed = source
+            .consumer()
+            .committed_offsets(both, Duration::from_secs(10))
+            .unwrap();
+        for e in committed.elements() {
+            assert_eq!(e.offset(), Offset::Offset(4), "partition {}", e.partition());
+        }
     }
 
     /// A partition the broker cannot place when it is handed over waits, paused, and is placed at `start` on a later
@@ -2649,7 +2741,7 @@ mod tests {
         };
         let mut source = KafkaSource::new(&config, &Default::default()).unwrap();
         let _ = source.poll_batch(10, 1_000_000, Duration::from_millis(300));
-        let consumer = Arc::downgrade(&source.client.consumer);
+        let consumer = Arc::downgrade(&source.client.routes.consumers()[0]);
 
         let started = Instant::now();
         drop(source);
@@ -2813,8 +2905,8 @@ mod tests {
         assert_eq!(source.slot.lock().commit_results, vec![Ok(())]);
         let committed = source
             .client
-            .consumer
-            .committed_offsets(source.client.consumer.assignment().unwrap(), Duration::from_secs(10))
+            .consumer()
+            .committed_offsets(source.client.consumer().assignment().unwrap(), Duration::from_secs(10))
             .unwrap();
         assert_eq!(
             committed.elements()[0].offset(),

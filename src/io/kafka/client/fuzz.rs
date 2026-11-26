@@ -112,6 +112,8 @@ const CONFIG_OPTIONS: &[&str] = &[
     "fetchBytes u64::MAX",
     "fetchBytes as text",
     "fetchBytes negative",
+    "consumers one",
+    "consumers most",
     "encoding set",
     "encoding unknown",
     "property allowed",
@@ -216,6 +218,17 @@ fn fetch_bytes(rng: &mut Rng, cov: &mut Coverage) -> (Option<Value>, Option<usiz
     cov.reach(name);
     let valid = bytes.is_some_and(|b| (min..=max).contains(&b));
     (json, bytes, valid)
+}
+
+/// How many consumers a client splits its fetch between: one, or the most a client starts.
+fn consumers(rng: &mut Rng, cov: &mut Coverage) -> usize {
+    if rng.chance(2) {
+        cov.reach("consumers one");
+        1
+    } else {
+        cov.reach("consumers most");
+        MOST_CONSUMERS
+    }
 }
 
 fn encoding(rng: &mut Rng, cov: &mut Coverage, json: &mut Value) -> (Encoding, bool) {
@@ -488,7 +501,7 @@ fn check_config(seed: u64, cov: &mut Coverage) -> Result<(), String> {
                 fetch_bytes,
                 ..g.expect.clone()
             };
-            let _ = client_config(&config, &Default::default());
+            let _ = client_config(&config, &Default::default(), consumers(&mut rng, cov));
             let _ = Slot::new(&config, 0);
         }
     }
@@ -565,7 +578,7 @@ fn check_config(seed: u64, cov: &mut Coverage) -> Result<(), String> {
             return Err(format!("{:?} loads as\n{k:?}\nnot\n{e:?}\n{}", g.id, shown()));
         }
         if k.service == KafkaService::Kafka
-            && let Err(e) = client_config(k, &Default::default())
+            && let Err(e) = client_config(k, &Default::default(), consumers(&mut rng, cov))
         {
             return Err(format!("{:?} loads and its client cannot be configured: {e}", g.id));
         }
@@ -573,7 +586,7 @@ fn check_config(seed: u64, cov: &mut Coverage) -> Result<(), String> {
         let node = match world
             .nodes
             .iter()
-            .position(|n| n.routes.0.group == k.group_id && n.routes.0.brokers == k.brokers)
+            .position(|n| n.routes.inner.group == k.group_id && n.routes.inner.brokers == k.brokers)
         {
             Some(n) => n,
             None => world.add_bare_node(&k.group_id, &k.brokers, "c1"),
@@ -710,11 +723,14 @@ impl World {
     }
 
     fn add_bare_node(&mut self, group: &str, brokers: &str, cluster: &'static str) -> usize {
-        let routes = Routes(Arc::new(RoutesInner {
-            group: group.to_string(),
-            brokers: brokers.to_string(),
-            ..RoutesInner::default()
-        }));
+        let routes = Routes {
+            inner: Arc::new(RoutesInner {
+                group: group.to_string(),
+                brokers: brokers.to_string(),
+                ..RoutesInner::default()
+            }),
+            member: 0,
+        };
         self.nodes.push(Node {
             routes,
             client: None,
@@ -762,13 +778,13 @@ impl World {
     }
 
     fn known(&self, n: usize) -> Option<&str> {
-        self.nodes[n].routes.0.cluster.get().map(String::as_str)
+        self.nodes[n].routes.inner.cluster.get().map(String::as_str)
     }
 
     /// Whether a source on `a` and one on `b` may not both read a topic, as far as the clients know.
     fn peers(&self, a: usize, b: usize) -> bool {
         a == b
-            || (self.nodes[a].routes.0.group == self.nodes[b].routes.0.group
+            || (self.nodes[a].routes.inner.group == self.nodes[b].routes.inner.group
                 && self.known(a).is_some()
                 && self.known(a) == self.known(b))
     }
@@ -792,7 +808,7 @@ impl World {
     }
 
     fn by_topic(&self, n: usize) -> HashMap<String, Arc<Slot>> {
-        self.nodes[n].routes.0.by_topic.lock().clone()
+        self.nodes[n].routes.inner.by_topic.lock().clone()
     }
 
     /// Attaches a source on `topics` through node `n`, and checks it is refused exactly when it names a topic its own
@@ -821,7 +837,7 @@ impl World {
                 Err(e) => return Err(format!("attaching {topics:?} failed: {e}")),
                 Ok(_) if uncompiled => return Err(format!("{topics:?} attached with a pattern that does not compile")),
                 Ok((client, slot)) => {
-                    if !Arc::ptr_eq(&client.routes.0, &routes.0) {
+                    if !Arc::ptr_eq(&client.routes.inner, &routes.inner) {
                         return Err("it attached to another client than its configuration names".to_string());
                     }
                     if self.sources.iter().any(|s| s.node == n) {
@@ -907,7 +923,7 @@ impl World {
             Some(clients) => {
                 let elsewhere = clients.read_elsewhere(routes);
                 let found = routes.match_topics(&listed, &elsewhere);
-                if found && let Some(cluster) = routes.0.cluster.get() {
+                if found && let Some(cluster) = routes.inner.cluster.get() {
                     clients.note_cluster(routes, cluster.clone());
                 }
                 found
