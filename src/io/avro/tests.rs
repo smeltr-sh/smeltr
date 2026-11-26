@@ -57,7 +57,7 @@ fn written(id: u32, schema: &Schema, value: Avro) -> Vec<u8> {
 fn rows(meta: &SourceMeta, records: &[SourceRecord]) -> Vec<serde_json::Value> {
     records
         .iter()
-        .map(|r| serde_json::from_slice(&meta.record_json(r, "")).unwrap())
+        .map(|r| serde_json::from_slice(&meta.record_json(r)).unwrap())
         .collect()
 }
 

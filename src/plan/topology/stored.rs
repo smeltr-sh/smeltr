@@ -4,16 +4,19 @@
 use super::*;
 
 impl SourceMeta {
-    /// `record` as its record object: `{"_raw": text}`, `{}` for a source that decodes none, or a row's fields. A
-    /// null field is left out, as a document leaves it out.
-    pub fn record_object(&self, record: &crate::io::SourceRecord, text: &str) -> crate::io::RecordObject {
-        if self.decodes() {
-            crate::io::raw_object(text)
-        } else if self.reads_bytes() {
-            crate::io::RecordObject::new()
-        } else {
-            serde_json::from_slice(&self.record_json(record, text)).expect("a serialized row is a JSON object")
-        }
+    /// `record` as its record object, decoded on its own: for a sample, which reads a record or two. A null field is
+    /// left out, as a document leaves it out.
+    pub fn record_object(&self, record: &crate::io::SourceRecord) -> crate::io::RecordObject {
+        serde_json::from_slice(&self.record_json(record)).expect("a serialized row is a JSON object")
+    }
+
+    /// `record` as the document a pipeline with no steps would write for it, decoded on its own.
+    pub fn record_json(&self, record: &crate::io::SourceRecord) -> Vec<u8> {
+        let mut pool = crate::core::buffer::BufferPool::new();
+        let decoded = self.decode(std::slice::from_ref(record), None::<&[&str]>, None, &mut pool);
+        let json = decoded.record_json(self, 0);
+        decoded.batch.reclaim(&mut pool);
+        json
     }
 
     /// The rows of `table`, a capture's, as this meta's source would have read them: each field of its record from
@@ -88,28 +91,40 @@ impl SourceMeta {
     pub fn objects(&self, records: &[crate::io::SourceRecord], source: Option<&str>) -> Vec<crate::io::SourceFields> {
         let mut pool = crate::core::buffer::BufferPool::new();
         let mut repaired = Vec::new();
-        let stored: Vec<usize> = (0..self.source.len()).collect();
-        let columns: Vec<Column> = stored
-            .iter()
-            .map(|&i| self.column(i, records, source, &mut pool, &mut repaired))
+        let columns: Vec<Column> = (0..self.source.len())
+            .map(|field| self.column(field, records, source, &mut pool, &mut repaired))
             .collect();
-        let named = stored
-            .iter()
-            .map(|&i| &self.source[i])
-            .zip(&columns)
-            .map(|((name, _), column)| {
-                let name = name
-                    .strip_prefix("__source.")
-                    .expect("a source field is under `__source`");
-                (name, column)
-            });
-        let serializer = crate::format::record::RecordView::from_named(named);
-        let objects = (0..records.len())
-            .map(|row| serde_json::from_slice(&serializer.row(row)).expect("a serialized row is a JSON object"))
-            .collect();
+        let objects = self.source_objects(columns.iter(), records.len());
         for column in columns {
             column.reclaim(&mut pool);
         }
         objects
+    }
+
+    /// Builds the `__source` objects of `rows` rows from `columns`, one for each `__source` field in the order this
+    /// kind declares them.
+    fn source_objects<'a>(
+        &self,
+        columns: impl Iterator<Item = &'a Column>,
+        rows: usize,
+    ) -> Vec<crate::io::SourceFields> {
+        let named = self.source.iter().zip(columns).map(|((name, _), column)| {
+            let name = name
+                .strip_prefix("__source.")
+                .expect("a source field is under `__source`");
+            (name, column)
+        });
+        let serializer = crate::format::record::RecordView::from_named(named);
+        (0..rows)
+            .map(|row| serde_json::from_slice(&serializer.row(row)).expect("a serialized row is a JSON object"))
+            .collect()
+    }
+}
+
+impl Decoded {
+    /// Each row's `__source` object, as `SourceMeta::objects` gives it.
+    pub fn source_objects(&self, meta: &SourceMeta) -> Vec<crate::io::SourceFields> {
+        let columns = (0..meta.source.len()).map(|field| self.batch.peek(meta.source_slot(field)));
+        meta.source_objects(columns, self.batch.rows())
     }
 }

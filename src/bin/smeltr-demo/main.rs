@@ -502,8 +502,10 @@ async fn capture_filter(State(service): State<Service>, Json(body): Json<Capture
                 Ok(read) => read,
                 Err(e) => return Envelope::refused(Refusal::invalid(e)),
             };
-            let texts: Vec<&str> = read.texts.iter().map(String::as_str).collect();
-            let kept = filter.keeps(&read.records, &texts);
+            let mut pool = smeltr::core::buffer::BufferPool::new();
+            let decoded = meta.decode(&read.records, Some(&read.texts), Some(&source.id), &mut pool);
+            let kept = filter.keeps(&decoded);
+            decoded.batch.reclaim(&mut pool);
             Envelope::ok(Kept {
                 kept: kept.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| i).collect(),
             })

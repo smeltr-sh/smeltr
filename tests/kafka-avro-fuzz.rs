@@ -763,7 +763,7 @@ fn seed(
                 for r in records {
                     commit.insert(TopicPartition::new(Arc::clone(&r.topic), r.partition), r.offset);
                     if let Service::EventHubs(_) = service {
-                        let row: Value = serde_json::from_slice(&meta.record_json(&r, "")).unwrap_or_default();
+                        let row: Value = serde_json::from_slice(&meta.record_json(&r)).unwrap_or_default();
                         if r.chunk.unread(r.row).is_some() || !row["id"].as_i64().is_some_and(mine) {
                             continue;
                         }
@@ -784,7 +784,7 @@ fn seed(
     let mut got: BTreeMap<i64, Value> = BTreeMap::new();
     let mut unread_got = Vec::new();
     for r in &read {
-        let row: Value = serde_json::from_slice(&meta.record_json(r, "")).map_err(|e| e.to_string())?;
+        let row: Value = serde_json::from_slice(&meta.record_json(r)).map_err(|e| e.to_string())?;
         if let Some(why) = r.chunk.unread(r.row) {
             unread_got.push(why.to_string());
             if row != json!({}) {

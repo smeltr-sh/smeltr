@@ -1148,7 +1148,8 @@ impl Decoded {
             .map(|field| meta.source_slot(field));
         let slots: Vec<crate::core::id::SlotId> = record.chain(source).collect();
         for &slot in &slots {
-            let column = if last {
+            // A bytes column stays, for a destination that writes it as the source read it.
+            let column = if last && self.batch.peek(slot).data_type() != DataType::Bytes {
                 self.batch.take_dead(slot)
             } else {
                 self.batch.peek(slot).deep_copy(pool)
@@ -1157,6 +1158,44 @@ impl Decoded {
         }
         let put = |note: &&Noted| slots.contains(&note.1);
         self.noted.iter().filter(put).cloned().collect()
+    }
+
+    /// The record's fields, as columns under the names `meta` declares for them.
+    fn record<'a>(&'a self, meta: &'a SourceMeta) -> crate::format::record::RecordView<'a> {
+        crate::format::record::RecordView::from_places(meta.record.iter().enumerate().map(|(field, (entry, _))| {
+            let slot = crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field);
+            (entry.place(), self.batch.peek(slot))
+        }))
+    }
+
+    /// Row `row` as the document a pipeline with no steps would write for it.
+    pub fn record_json(&self, meta: &SourceMeta, row: usize) -> Vec<u8> {
+        self.record(meta).row(row)
+    }
+
+    /// Row `row` as its record object. A null field is left out, as a document leaves it out.
+    pub fn record_object(&self, meta: &SourceMeta, row: usize) -> crate::io::RecordObject {
+        serde_json::from_slice(&self.record_json(meta, row)).expect("a serialized row is a JSON object")
+    }
+
+    /// The text of row `row`'s field `field`, as a destination writing one field's text takes it. `None` for a
+    /// field the record does not have, or a null.
+    pub fn record_text(&self, meta: &SourceMeta, row: usize, field: &str) -> Option<Vec<u8>> {
+        self.record(meta).text(field, row).map(String::into_bytes)
+    }
+
+    /// What a destination writing `field`'s bytes takes of row `row`: its `__source.bytes`, or a `bytes` field of its
+    /// record. `None` for a null, or for a field the record does not have (loading refuses a destination that names
+    /// one, `check_bytes_fields`).
+    pub fn field_bytes(&self, meta: &SourceMeta, row: usize, field: &str) -> Option<Vec<u8>> {
+        let slot = if field == SOURCE_BYTES {
+            meta.source_slot(meta.source.iter().position(|(name, _)| *name == SOURCE_BYTES)?)
+        } else {
+            let bytes = |(entry, t): &(Entry, DataType)| entry.field() == Some(field) && *t == DataType::Bytes;
+            crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + meta.record.iter().position(bytes)?)
+        };
+        let column = self.batch.peek(slot);
+        (column.is_valid(row)).then(|| column.varlen().expect("a bytes column").get(row).to_vec())
     }
 
     /// Each record's `_raw`, or no text for a record that has none.
@@ -1200,62 +1239,6 @@ impl SourceMeta {
                 .and_then(|(_, v)| v.as_ref())
                 .map(|v| v.get(record.row as usize))
         })
-    }
-
-    /// What a destination writing `field`'s bytes takes of `record`: its `__source.bytes`, or a `bytes` field of its
-    /// record. `None` for a null, or a field it does not have, which loading refuses (`check_bytes_fields`).
-    pub fn field_bytes(&self, record: &crate::io::SourceRecord, field: &str) -> Option<Vec<u8>> {
-        if field == SOURCE_BYTES {
-            return self.read_bytes(record).map(<[u8]>::to_vec);
-        }
-        if self.reads_bytes() {
-            return None;
-        }
-        let at = self
-            .record
-            .iter()
-            .position(|(entry, t)| entry.field() == Some(field) && *t == DataType::Bytes)?;
-        let column = record.chunk.column(at);
-        let row = record.row as usize;
-        (column.is_valid(row)).then(|| column.varlen().expect("a bytes column").get(row).to_vec())
-    }
-
-    /// `record` as the document a pipeline with no steps would write for it: its decoded `text` as `_raw`, nothing
-    /// for a source that decodes none, or a row's fields.
-    pub fn record_json(&self, record: &crate::io::SourceRecord, text: &str) -> Vec<u8> {
-        if self.decodes() {
-            let mut json = br#"{"_raw":"#.to_vec();
-            crate::format::json::write_json_string(text.as_bytes(), &mut json);
-            json.push(b'}');
-            json
-        } else if self.reads_bytes() {
-            b"{}".to_vec()
-        } else {
-            self.row_view(&record.chunk).row(record.row as usize)
-        }
-    }
-
-    /// The text of `record`'s field `field`, as a destination writing one field's text takes it: its decoded `text`
-    /// for `_raw`, or a row's field. `None` for a field the record does not have, or a null.
-    pub fn record_text(&self, record: &crate::io::SourceRecord, text: &str, field: &str) -> Option<Vec<u8>> {
-        if self.reads_bytes() {
-            (self.decodes() && field == "_raw").then(|| text.as_bytes().to_vec())
-        } else {
-            self.row_view(&record.chunk)
-                .text(field, record.row as usize)
-                .map(String::into_bytes)
-        }
-    }
-
-    /// A view of `chunk`'s columns under the names this meta declares for them.
-    fn row_view<'a>(&'a self, chunk: &'a crate::io::RecordChunk) -> crate::format::record::RecordView<'a> {
-        assert!(!self.reads_bytes(), "a row's columns are its record's fields");
-        crate::format::record::RecordView::from_places(
-            self.record
-                .iter()
-                .enumerate()
-                .map(|(i, (entry, _))| (entry.place(), chunk.column(i))),
-        )
     }
 }
 
@@ -4121,17 +4104,26 @@ mod tests {
             topic: std::sync::Arc::from("t"),
             headers: None,
         };
+        let mut pool = crate::core::buffer::BufferPool::new();
+        let one = std::slice::from_ref(&record);
+        let decoded = SourceMeta::KAFKA.decode(one, None::<&[&str]>, None, &mut pool);
         assert_eq!(SourceMeta::KAFKA.read_bytes(&record), Some(&read[..]));
-        assert_eq!(SourceMeta::KAFKA.field_bytes(&record, SOURCE_BYTES), Some(read.clone()));
-        assert_eq!(SourceMeta::KAFKA.field_bytes(&record, "_raw"), None);
+        assert_eq!(
+            decoded.field_bytes(&SourceMeta::KAFKA, 0, SOURCE_BYTES),
+            Some(read.clone())
+        );
+        assert_eq!(decoded.field_bytes(&SourceMeta::KAFKA, 0, "_raw"), None);
+        decoded.batch.reclaim(&mut pool);
 
         let typed = SourceMeta::KAFKA
             .declaring(vec![("payload".into(), DataType::Bytes)])
             .unwrap();
         assert_eq!(typed.read_bytes(&record), None);
         assert_eq!(typed.field_type(SOURCE_BYTES), None);
-        assert_eq!(typed.field_bytes(&record, SOURCE_BYTES), None);
-        assert_eq!(typed.field_bytes(&record, "payload"), Some(read));
+        let decoded = typed.decode(one, None::<&[&str]>, None, &mut pool);
+        assert_eq!(decoded.field_bytes(&typed, 0, SOURCE_BYTES), None);
+        assert_eq!(decoded.field_bytes(&typed, 0, "payload"), Some(read));
+        decoded.batch.reclaim(&mut pool);
     }
 
     /// A pipeline reads `__source.bytes` as a `bytes` column of each payload as read, invalid UTF-8 included, beside
@@ -4213,9 +4205,11 @@ mod tests {
         assert_eq!(batch.get(meta.source_slot(at)).varlen().unwrap().get(0), &read[..]);
         batch.reclaim(&mut pool);
 
-        assert_eq!(meta.record_json(&records[0], ""), b"{}");
-        assert_eq!(meta.record_text(&records[0], "", "_raw"), None);
-        assert_eq!(meta.field_bytes(&records[0], SOURCE_BYTES), Some(read));
+        assert_eq!(meta.record_json(&records[0]), b"{}");
+        let decoded = meta.decode(&records, None::<&[&str]>, None, &mut pool);
+        assert_eq!(decoded.record_text(&meta, 0, "_raw"), None);
+        assert_eq!(decoded.field_bytes(&meta, 0, SOURCE_BYTES), Some(read));
+        decoded.batch.reclaim(&mut pool);
     }
 
     /// The GUI reads a table as records by the same rule (`gui-frontend/src/capture.ts`): both read these cases.
@@ -4232,9 +4226,12 @@ mod tests {
         for case in cases {
             let meta = SourceMeta::of_columns(&case.table.columns).unwrap();
             let read = crate::leader::preview::read_sample(&meta, &case.table).unwrap();
-            let records: Vec<_> = (read.records.iter().zip(&read.texts))
-                .map(|(record, text)| meta.record_object(record, text))
+            let mut pool = crate::core::buffer::BufferPool::new();
+            let decoded = meta.decode(&read.records, Some(&read.texts), None, &mut pool);
+            let records: Vec<_> = (0..read.records.len())
+                .map(|row| decoded.record_object(&meta, row))
                 .collect();
+            decoded.batch.reclaim(&mut pool);
             assert_eq!(records, case.records, "{}", case.name);
         }
     }
@@ -4255,7 +4252,7 @@ mod tests {
         for meta in [SourceMeta::KAFKA, SourceMeta::KAFKA.with_encoding(Encoding::None)] {
             let fields = meta.objects(&records, None);
             assert_eq!(fields[0]["bytes"], serde_json::json!("Y2Fm6Q=="));
-            let record = meta.record_object(&records[0], "caf\u{fffd}");
+            let record = meta.record_object(&records[0]);
             let back = meta.read_table(&pasted_from(&[(&record, &fields[0])])).unwrap();
             assert_eq!(meta.read_bytes(&back[0]), Some(&read[..]));
         }
@@ -4296,12 +4293,12 @@ mod tests {
         let chunk = &records[1].chunk;
         assert_eq!(chunk.failed(), &[(1, 0, "true".to_string())]);
         assert_eq!(
-            meta.record_object(&records[0], ""),
+            meta.record_object(&records[0]),
             object(serde_json::json!({"id": 1, "at": "2026-10-10T00:00:00.000000Z"}))
         );
         let records = meta.read_table(&pasted_from(&[(&raw, &fields)])).unwrap();
         assert!(
-            meta.record_object(&records[0], "").is_empty(),
+            meta.record_object(&records[0]).is_empty(),
             "a key its record does not declare is left out"
         );
 
@@ -4337,14 +4334,14 @@ mod tests {
         let stored = object(serde_json::json!({"user": {"name": "ann"}, "labels": {"a.b": 2}}));
         let records = nested.read_table(&pasted_from(&[(&stored, &fields)])).unwrap();
         assert_eq!(
-            nested.record_object(&records[0], ""),
+            nested.record_object(&records[0]),
             stored,
             "a path's value is where its path names"
         );
         let extra = object(serde_json::json!({"user": {"name": "ann", "age": 3}}));
         let records = nested.read_table(&pasted_from(&[(&extra, &fields)])).unwrap();
         assert_eq!(
-            nested.record_object(&records[0], ""),
+            nested.record_object(&records[0]),
             object(serde_json::json!({"user": {"name": "ann"}})),
             "a key its record does not declare is left out"
         );
@@ -4388,7 +4385,7 @@ mod tests {
             .read_table(&pasted_from(&[(&good, &fields), (&bad, &fields)]))
             .unwrap();
         assert_eq!(
-            meta.record_object(&records[0], ""),
+            meta.record_object(&records[0]),
             object(
                 serde_json::json!({"tags": [1, 2], "who": {"name": "ann", "at": "2026-10-10T00:00:00.000000Z", "took": 1500}})
             )
@@ -4398,7 +4395,7 @@ mod tests {
             &[(1, 0, r#"[1,"x"]"#.to_string()), (1, 2, r#""never""#.to_string())]
         );
         assert_eq!(
-            meta.record_object(&records[1], ""),
+            meta.record_object(&records[1]),
             object(serde_json::json!({"who": {"name": "bo"}})),
             "a refused element nulls its array, and a refused member only itself"
         );
@@ -4409,7 +4406,7 @@ mod tests {
         let blobs = object(serde_json::json!({"blobs": ["3q0="]}));
         let read = bytes.read_table(&pasted_from(&[(&blobs, &fields)])).unwrap();
         assert_eq!(
-            bytes.record_object(&read[0], ""),
+            bytes.record_object(&read[0]),
             blobs,
             "stored bytes are base64, and read back as bytes"
         );
@@ -4455,20 +4452,17 @@ mod tests {
         let read = meta.read_table(&pasted_from(&[(&stored, &fields)])).unwrap();
         assert_eq!(read[0].chunk.failed(), []);
         assert_eq!(
-            meta.record_object(&read[0], ""),
+            meta.record_object(&read[0]),
             stored,
             "each leaf and each other key reads back"
         );
         let null = object_of(serde_json::json!({"destination": null, "labels": null}));
         let read = meta.read_table(&pasted_from(&[(&null, &fields)])).unwrap();
-        assert!(
-            meta.record_object(&read[0], "").is_empty(),
-            "a null object holds no field"
-        );
+        assert!(meta.record_object(&read[0]).is_empty(), "a null object holds no field");
         let extra = object_of(serde_json::json!({"destination": {"ip": "8.8.8.8", "mac": "aa"}}));
         let read = meta.read_table(&pasted_from(&[(&extra, &fields)])).unwrap();
         assert_eq!(
-            meta.record_object(&read[0], ""),
+            meta.record_object(&read[0]),
             object_of(serde_json::json!({"destination": {"ip": "8.8.8.8"}})),
             "a closed object holds only its fields"
         );

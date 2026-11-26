@@ -413,7 +413,7 @@ impl Run<'_> {
             return Err(format!("{} records past max_rows {max_rows}", records.len()));
         }
         for r in &records {
-            let object = self.meta.record_object(r, "");
+            let object = self.meta.record_object(r);
             let at = |f: &str| object[f].as_i64().unwrap_or_else(|| panic!("{f} in {object:?}"));
             self.delivered.push((at("id"), at("ver")));
         }
