@@ -8,7 +8,7 @@ use smeltr::core::buffer::BufferPool;
 use smeltr::core::column::{Column, DataType, Scalar, StrBuilder, Validity, VarType};
 use smeltr::core::ctx::{CompiledPattern, Ctx};
 use smeltr::core::error::{ErrorSink, ExceptionKind};
-use smeltr::core::id::SlotId;
+use smeltr::core::id::{Id, SlotId};
 use smeltr::ops::stdfuncs::{regex_replace, regex_test};
 use smeltr::ops::{
     BinOp, OpKernel, UnOp, arith, arrayops, cmp, convert, datetime, logic, netops, strops, table, timeparse,

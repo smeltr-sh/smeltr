@@ -60,7 +60,7 @@ fn transform_with(
         id: 0,
         name: "normalize".into(),
         body: vec![code(0, body)],
-        step_ids: vec!["parse".to_string()],
+        step_ids: vec!["parse".to_string()].into(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),

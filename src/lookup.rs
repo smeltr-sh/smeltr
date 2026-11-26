@@ -1102,6 +1102,7 @@ mod tests {
     use super::*;
     use crate::core::batch::{SLOT_RAW, raw_layout};
     use crate::core::column::{StrBuilder as SB, VarType as VT};
+    use crate::core::id::Id;
     use Multiplicity::{All, Best};
 
     fn seed_str_slot(pool: &mut BufferPool, batch: &mut Batch, slot: SlotId, values: &[Option<&str>]) {
