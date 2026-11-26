@@ -148,6 +148,9 @@ struct Path {
     slot: Option<Duration>,
     retry: Duration,
     fail_every: Option<u64>,
+    /// A refusal comes back to egress as a failed batch, to be sent again as a new one, instead of the destination
+    /// retrying it and reporting it throttled once it lands.
+    refusal_fails: bool,
 }
 
 impl Path {
@@ -160,6 +163,7 @@ impl Path {
             slot: None,
             retry: Duration::from_millis(50),
             fail_every: None,
+            refusal_fails: false,
         }
     }
 
@@ -313,7 +317,12 @@ impl<M: Model> Sim<M> {
     fn send(&mut self, i: usize) {
         let now = self.now;
         let t = self.secs(now);
-        let out_total: u64 = self.flows.iter().map(|f| f.held).sum();
+        // What the destination holds: a batch it refused, or one that failed, holds none of its room.
+        let out_total: u64 = self
+            .flows
+            .iter()
+            .map(|f| (f.out.iter().filter(|o| !o.failed).count() + f.waiting.len()) as u64 * BATCH as u64)
+            .sum();
         let over_limit = Path::at(&self.path.limit, t).is_some_and(|l| out_total + BATCH as u64 > l);
         let failed = self.path.fail_every.is_some_and(|n| (self.sent * 7919 + 13) % n == 0);
         self.sent += 1;
@@ -335,6 +344,18 @@ impl<M: Model> Sim<M> {
             // A refused batch is answered at once, then sent again after the wait the destination names.
             if over_limit {
                 f.refused.push(now);
+                if self.path.refusal_fails {
+                    let at = now + self.path.rtt;
+                    f.out.push(Out {
+                        at,
+                        seen: at,
+                        token,
+                        sent_at: now,
+                        throttled: false,
+                        failed: true,
+                    });
+                    return;
+                }
             }
             f.waiting.push(Waiting {
                 enters: if over_limit {
@@ -376,6 +397,18 @@ impl<M: Model> Sim<M> {
             let half = self.path.rtt / 2;
             if self.path.buffer.is_some_and(|b| queued > b) {
                 self.flows[i].refused.push(w.enters);
+                if self.path.refusal_fails {
+                    let at = w.enters + half;
+                    self.flows[i].out.push(Out {
+                        at,
+                        seen: at,
+                        token: w.token,
+                        sent_at: w.sent_at,
+                        throttled: false,
+                        failed: true,
+                    });
+                    continue;
+                }
                 self.flows[i].waiting.push(Waiting {
                     enters: w.enters + self.path.rtt + self.path.retry,
                     throttled: true,
@@ -899,5 +932,260 @@ fn trace_a_shallow_buffer() {
             mib(p.inflight as f64),
             p.min_rtt,
         );
+    }
+}
+
+/// Prints the segment-reading model's state for flow 0 every `step` seconds from `from` to `to`.
+fn trace(name: &str, path: Path, flows: usize, from: f64, to: f64, step: f64) {
+    println!("## {name}");
+    let mut s = Sim::new(
+        path,
+        (0..flows)
+            .map(|i| {
+                (
+                    New(Pacing::seeded(BATCH, CEILING, Instant::now(), 7 + i as u64)),
+                    Source::Backlogged,
+                )
+            })
+            .collect(),
+    );
+    s.run_to(from);
+    let mut t = from;
+    while t < to {
+        let before = s.refused(0.0, t);
+        t += step;
+        s.run_to(t);
+        let p = &s.flows[0].model.0;
+        let shares: Vec<String> = (0..flows)
+            .map(|i| format!("{:.0}", mib(s.throughput(Some(i), t - step, t))))
+            .collect();
+        println!(
+            "t {t:>5.2} {:<14} thru {:>11} refused {:>3}  max_bw {:>5.0} bw_lo {:>6.0} bw {:>5.0} | in_hi {:>6.1} in_lo {:>6.1} cwnd {:>5.1} inflight {:>5.1} MiB | rtt {:>5.1} ms cycle {} loss_rounds? {}",
+            format!("{:?}", p.state),
+            shares.join("/"),
+            s.refused(0.0, t) - before,
+            mib(p.max_bw),
+            mib(p.bw_shortterm),
+            mib(p.bw),
+            mib(p.inflight_longterm),
+            mib(p.inflight_shortterm),
+            mib(p.cwnd),
+            mib(p.inflight as f64),
+            p.min_rtt.map_or(0.0, |d| d.as_secs_f64() * 1e3),
+            p.cycle_count,
+            p.loss_events_in_round,
+        );
+    }
+}
+
+#[test]
+#[ignore = "traces for a person to read: cargo nextest run --lib egress::pacing::compare --run-ignored only --no-capture"]
+fn trace_the_losses() {
+    trace(
+        "1 in 50 batches fails",
+        Path {
+            fail_every: Some(50),
+            ..Path::new(GIB, 20)
+        },
+        1,
+        0.0,
+        8.0,
+        0.25,
+    );
+    trace(
+        "limit 16 -> 6 at 30 s -> 16 at 60 s",
+        Path {
+            limit: vec![
+                (0.0, Some(16 * BATCH as u64)),
+                (30.0, Some(6 * BATCH as u64)),
+                (60.0, Some(16 * BATCH as u64)),
+            ],
+            ..Path::new(GIB, 20)
+        },
+        1,
+        55.0,
+        80.0,
+        0.5,
+    );
+    trace(
+        "shallow buffer 2 batches",
+        Path {
+            buffer: Some(2.0 * BATCH as f64),
+            ..Path::new(GIB, 20)
+        },
+        1,
+        5.0,
+        12.0,
+        0.25,
+    );
+    trace(
+        "4 flows, limit 16",
+        Path {
+            limit: vec![(0.0, Some(16 * BATCH as u64))],
+            ..Path::new(GIB, 20)
+        },
+        4,
+        0.0,
+        30.0,
+        1.0,
+    );
+}
+
+/// Runs each scenario that refuses batches twice: once as destinations report a refusal now, throttled when the
+/// retried batch lands; once with the refusal coming back as a failed batch at once, sent again as a new one.
+#[test]
+#[ignore = "a comparison for a person to read: cargo nextest run --lib egress::pacing::compare --run-ignored only --no-capture"]
+fn refusals_reported_late_or_at_once() {
+    let limit = |steps: &[(f64, u64)]| {
+        steps
+            .iter()
+            .map(|(t, n)| (*t, Some(n * BATCH as u64)))
+            .collect::<Vec<_>>()
+    };
+    let cases: Vec<(&str, Path, usize, f64, f64, f64)> = vec![
+        (
+            "limit 3",
+            Path {
+                limit: limit(&[(0.0, 3)]),
+                ..Path::new(GIB, 20)
+            },
+            1,
+            60.0,
+            10.0,
+            60.0,
+        ),
+        (
+            "limit 8",
+            Path {
+                limit: limit(&[(0.0, 8)]),
+                ..Path::new(GIB, 20)
+            },
+            1,
+            60.0,
+            10.0,
+            60.0,
+        ),
+        (
+            "shallow buffer 2 batches",
+            Path {
+                buffer: Some(2.0 * BATCH as f64),
+                ..Path::new(GIB, 20)
+            },
+            1,
+            60.0,
+            10.0,
+            60.0,
+        ),
+        (
+            "limit 16 -> 6 -> 16, after",
+            Path {
+                limit: limit(&[(0.0, 16), (30.0, 6), (60.0, 16)]),
+                ..Path::new(GIB, 20)
+            },
+            1,
+            90.0,
+            75.0,
+            90.0,
+        ),
+        (
+            "limit 16 -> 6 -> 16, during",
+            Path {
+                limit: limit(&[(0.0, 16), (30.0, 6), (60.0, 16)]),
+                ..Path::new(GIB, 20)
+            },
+            1,
+            90.0,
+            35.0,
+            60.0,
+        ),
+        (
+            "4 flows, limit 16",
+            Path {
+                limit: limit(&[(0.0, 16)]),
+                ..Path::new(GIB, 20)
+            },
+            4,
+            60.0,
+            10.0,
+            60.0,
+        ),
+    ];
+    for (name, path, flows, until, from, to) in cases {
+        for fails in [false, true] {
+            let path = Path {
+                refusal_fails: fails,
+                ..path.clone()
+            };
+            let mut new = Sim::new(
+                path.clone(),
+                (0..flows)
+                    .map(|i| {
+                        (
+                            New(Pacing::seeded(BATCH, CEILING, Instant::now(), 7 + i as u64)),
+                            Source::Backlogged,
+                        )
+                    })
+                    .collect(),
+            );
+            let mut old = Sim::new(path, (0..flows).map(|_| (old_model(), Source::Backlogged)).collect());
+            new.run_to(until);
+            old.run_to(until);
+            let per_min = |n: usize| n as f64 * 60.0 / (to - from);
+            println!(
+                "{name:<28} {:<8} bbr {:>5.0} MiB/s refused/min {:>5.0} fair {:.2} p99 {:>4.0} ms | main {:>5.0} MiB/s refused/min {:>5.0} fair {:.2} p99 {:>4.0} ms",
+                if fails { "at once" } else { "late" },
+                mib(new.throughput(None, from, to)),
+                per_min(new.refused(from, to)),
+                new.fairness(from, to),
+                new.latency(from, to).1,
+                mib(old.throughput(None, from, to)),
+                per_min(old.refused(from, to)),
+                old.fairness(from, to),
+                old.latency(from, to).1,
+            );
+        }
+    }
+}
+
+/// Prints, each round trip, how the segment-reading model probes after a destination's limit comes back from 6
+/// batches to 16.
+#[test]
+#[ignore = "a trace for a person to read: cargo nextest run --lib egress::pacing::compare --run-ignored only --no-capture"]
+fn trace_a_limit_coming_back() {
+    let path = Path {
+        limit: vec![
+            (0.0, Some(16 * BATCH as u64)),
+            (30.0, Some(6 * BATCH as u64)),
+            (60.0, Some(16 * BATCH as u64)),
+        ],
+        ..Path::new(GIB, 20)
+    };
+    let mut s = Sim::new(path, vec![(new_model(), Source::Backlogged)]);
+    s.run_to(62.0);
+    let mut t = 62.0;
+    let mut last = None;
+    while t < 66.0 {
+        t += 0.006;
+        s.run_to(t);
+        let p = &s.flows[0].model.0;
+        let line = format!(
+            "{:<14} in_hi {:>8.3} cwnd {:>7.3} inflight {:>5.1} MiB  limited {} full_bw_count {} now {} up_rounds {} per_inc {:>9.0} B acked {:>9.0} B too_high {} check_loss {}",
+            format!("{:?}", p.state),
+            mib(p.inflight_longterm),
+            mib(p.cwnd),
+            mib(p.inflight as f64),
+            p.is_cwnd_limited(),
+            p.full_bw_count,
+            p.full_bw_now,
+            p.bw_probe_up_rounds,
+            p.probe_up_acked_per_inc,
+            p.bw_probe_up_acked,
+            p.prev_probe_too_high,
+            p.check_probe_loss,
+        );
+        if last.as_ref() != Some(&line) {
+            println!("t {t:>6.3} {line}");
+            last = Some(line);
+        }
     }
 }
