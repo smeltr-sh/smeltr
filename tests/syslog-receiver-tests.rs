@@ -940,3 +940,105 @@ fn a_real_syslog_client_sends_over_udp() {
         "{records:?}"
     );
 }
+
+/// A measurement, not a check: how many datagrams a second one UDP receiver takes from `SENDERS` threads (4) sending
+/// as fast as they can for `SECS` seconds (5), what it drops and the kernel drops, and how busy each receiver thread
+/// is. Run with `--cargo-profile optimized --run-ignored only`.
+#[test]
+#[ignore]
+fn udp_intake_rate() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let env = |name: &str, default: u64| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+    let (senders, secs) = (env("SENDERS", 4), env("SECS", 5));
+    let at = free_loopback();
+    let mut source = udp_receiver(at, &["127.0.0.1"], 1 << 16);
+    let line: &[u8] = b"<13>Oct 11 22:14:15 web-1 app[123]: GET /index.html 200 1234 \"Mozilla/5.0 (X11; Linux x86_64)\" request_id=abcdef0123456789 user=alice latency_ms=12";
+    let stop = Arc::new(AtomicBool::new(false));
+    let sent = Arc::new(AtomicU64::new(0));
+    let rcvbuf_errors = || -> u64 {
+        let snmp = std::fs::read_to_string("/proc/net/snmp").unwrap_or_default();
+        let mut udp = snmp.lines().filter(|l| l.starts_with("Udp:"));
+        let (Some(names), Some(values)) = (udp.next(), udp.next()) else {
+            return 0;
+        };
+        let at = names.split_whitespace().position(|n| n == "RcvbufErrors");
+        at.and_then(|i| values.split_whitespace().nth(i)?.parse().ok())
+            .unwrap_or(0)
+    };
+    // Each smeltr-receiver thread's CPU ticks, by thread id.
+    let ticks = || -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        for t in std::fs::read_dir("/proc/self/task").unwrap().flatten() {
+            let Ok(stat) = std::fs::read_to_string(t.path().join("stat")) else {
+                continue;
+            };
+            let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
+                continue;
+            };
+            let name = &stat[open + 1..close];
+            let rest: Vec<&str> = stat[close + 2..].split_whitespace().collect();
+            let busy = rest[11].parse::<u64>().unwrap_or(0) + rest[12].parse::<u64>().unwrap_or(0);
+            out.push((format!("{name}@{}", t.file_name().to_string_lossy()), busy));
+        }
+        out
+    };
+    let threads: Vec<_> = (0..senders)
+        .map(|_| {
+            let (stop, sent) = (Arc::clone(&stop), Arc::clone(&sent));
+            std::thread::spawn(move || {
+                let socket = datagram_sender(at);
+                let mut n = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    if socket.send(line).is_ok() {
+                        n += 1;
+                    }
+                }
+                sent.fetch_add(n, Ordering::Relaxed);
+            })
+        })
+        .collect();
+    // Warm up, then measure.
+    let warm = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < warm {
+        let records = source.poll_batch(10_000, 4 << 20, Duration::from_millis(50)).unwrap();
+        commit(&mut source, &records);
+    }
+    source.take_dropped();
+    let (kernel_before, ticks_before, started) = (rcvbuf_errors(), ticks(), Instant::now());
+    let mut received = 0u64;
+    while started.elapsed() < Duration::from_secs(secs) {
+        let records = source.poll_batch(10_000, 4 << 20, Duration::from_millis(50)).unwrap();
+        received += records.len() as u64;
+        commit(&mut source, &records);
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let (kernel, ticks_after, dropped) = (rcvbuf_errors() - kernel_before, ticks(), source.take_dropped());
+    stop.store(true, Ordering::Relaxed);
+    for t in threads {
+        t.join().unwrap();
+    }
+    let hz = 100.0;
+    let mut busy: Vec<(f64, String)> = ticks_after
+        .iter()
+        .filter_map(|(name, after)| {
+            let before = ticks_before.iter().find(|(n, _)| n == name).map_or(0, |(_, b)| *b);
+            let share = (after - before) as f64 / hz / elapsed * 100.0;
+            (share >= 5.0).then(|| (share, name.clone()))
+        })
+        .collect();
+    busy.sort_by(|a, b| b.0.total_cmp(&a.0));
+    println!(
+        "UDP intake, {senders} senders: received {:.0}/s, receiver dropped {:.0}/s, kernel dropped {:.0}/s (sent ~{:.0}/s over the whole run)",
+        received as f64 / elapsed,
+        dropped as f64 / elapsed,
+        kernel as f64 / elapsed,
+        sent.load(Ordering::Relaxed) as f64 / (elapsed + 1.0),
+    );
+    println!(
+        "busy: {}",
+        busy.iter()
+            .map(|(s, n)| format!("{s:.0}%:{n}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+}
