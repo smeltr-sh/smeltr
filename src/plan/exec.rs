@@ -15,8 +15,8 @@ use crate::expr::eval::{eval, eval_for_slot};
 use crate::format::{csv_parse, grok_parse, json_parse, kv_parse, spread};
 use crate::lookup;
 use crate::metrics::MetricsHandle;
-use crate::ops::arrayops::{Piece, build_from_pieces};
 use crate::ops::convert::{self, parse_bool};
+use crate::ops::pieces::{Piece, build_from_pieces};
 use crate::plan::compile::{ArrayFold, Call, Instr, Loop, Op, Output, Plan, TryStep};
 use crate::plan::config::{ParserKind, TimeSource};
 

@@ -3,8 +3,8 @@
 //! `&&`, `||` and `!` read null as false (design doc, Language), so none of them yields null. `??` takes the first non-null operand per row. None of these may use `short_circuit_empty`.
 //! Each reads a literal operand as one value.
 
-use super::arrayops::{self, Piece};
 use super::helpers::{self, One, Operand, Side, side};
+use super::pieces::{self, Piece};
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, Scalar, StrBuilder, VarType};
@@ -176,7 +176,7 @@ pub(crate) fn take(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataTy
                     start = row;
                 }
             }
-            arrayops::build(ctx.pool, ty, &pieces, len)
+            pieces::build(ctx.pool, ty, &pieces, len)
         }
         DataType::Struct(..) => {
             // An unbound struct has no fields to read, and the rows it wins are null.
