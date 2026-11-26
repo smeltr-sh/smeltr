@@ -59,7 +59,10 @@ its reader takes it. The worker pays for those members, their connections and
 one fetch queue split between them however many sources read through it, and
 the group rebalances among every member of every worker. A full inbox and a
 blocked source pause only that source's shards, each through the member that
-owns it, and a commit goes through the member that owns its shard. The shared client keeps
+owns it, and a commit goes through the member that owns its shard. The client
+fetches nothing until each of its members has been assigned and the group has
+then moved nothing for a while, so no shard is read by the member that joined
+first and again by the one the group moves it to. The shared client keeps
 the membership on its own, so a reader that stops reading for the group's
 poll interval has its source taken out of the subscription, and its shards
 go to members that read. Two sources reading one shard in one group would

@@ -65,6 +65,16 @@ const TOPIC_LIST_EVERY: Duration = Duration::from_secs(30);
 /// How often the sampler thread wakes to see what is due.
 const SAMPLER_TICK: Duration = Duration::from_secs(1);
 
+/// How long the group must leave a client of several consumers alone, once each has been assigned, before the client
+/// fetches (`Routes::release_if_joined`): Kafka's own default `group.initial.rebalance.delay.ms`. A consumer hears that
+/// the group is rebalancing on its next heartbeat, so one that joined first may be assigned every partition and read
+/// them for a heartbeat's interval before the group moves some to the others, which would read them again from the
+/// last commit.
+const JOIN_QUIET: Duration = Duration::from_secs(3);
+
+/// The longest a client of several consumers waits for them all to join before it fetches anyway.
+const JOIN_MOST: Duration = Duration::from_secs(30);
+
 /// A partition the group handed over: its topic and its number.
 pub(super) type Assigned = (String, i32);
 
@@ -105,7 +115,7 @@ impl Default for Clients {
 
 impl Clients {
     /// The clients of a worker of `threads` threads: each joins its group as enough consumers to keep them busy.
-    pub(crate) fn for_threads(threads: usize) -> Clients {
+    pub fn for_threads(threads: usize) -> Clients {
         Clients::with_consumers(threads / THREADS_PER_CONSUMER)
     }
 
@@ -375,6 +385,11 @@ impl Client {
             group: config.group_id.clone(),
             brokers: config.brokers.clone(),
             changed: Mutex::new(vec![None; consumers]),
+            joined: AtomicBool::new(consumers == 1),
+            joining: Mutex::new(Joining {
+                started: Some(Instant::now()),
+                ..Joining::default()
+            }),
             ..RoutesInner::default()
         });
         let ticket = super::kerberos::hold(client_config)?;
@@ -452,6 +467,7 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
     while !stop.load(Ordering::Relaxed) {
         routes.resubscribe_if_due(consumer);
         routes.refetch_if_due(consumer);
+        routes.release_if_joined();
         if stalls_checked.elapsed() >= STALL_CHECK_EVERY {
             stalls_checked = Instant::now();
             routes.note_stalls();
@@ -686,11 +702,11 @@ impl Slot {
     }
 
     /// Pauses every partition this source owns that it should not be fetching, and resumes the rest: all of them
-    /// while it is blocked, keeping its membership, full or refused; otherwise those at their stop or waiting to be
-    /// placed.
+    /// while the client's consumers are joining, or it is blocked, keeping its membership, full or refused; otherwise
+    /// those at their stop or waiting to be placed.
     /// Each partition is paused and resumed through the consumer it was assigned to.
     pub(super) fn sync(&self, routes: &Routes, state: &SlotState) -> Result<(), IoError> {
-        let hold_all = state.blocked || state.keeping || state.full || state.refused.is_some();
+        let hold_all = !routes.joined() || state.blocked || state.keeping || state.full || state.refused.is_some();
         for (member, consumer) in routes.consumers().iter().enumerate() {
             let (mut paused, mut running) = (TopicPartitionList::new(), TopicPartitionList::new());
             for (key, _) in state.owned.iter().filter(|(_, m)| **m == member) {
@@ -812,6 +828,22 @@ struct RoutesInner {
     cluster: OnceLock<String>,
     /// The consumers some source waits on to fetch its inbox again (`SlotState::refetch`), one bit per member.
     refetch: AtomicU64,
+    /// Whether the client fetches: from the start with one consumer, and with several once they have all joined
+    /// (`Routes::release_if_joined`).
+    joined: AtomicBool,
+    /// How the client's consumers are joining, until `joined`.
+    joining: Mutex<Joining>,
+}
+
+/// How a client of several consumers is joining its group.
+#[derive(Default)]
+struct Joining {
+    /// The consumers the group has assigned to, an empty assignment included, one bit each.
+    assigned: u64,
+    /// When the group last assigned or revoked for any of them.
+    changed: Option<Instant>,
+    /// When the client started.
+    started: Option<Instant>,
 }
 
 impl Routes {
@@ -1027,6 +1059,49 @@ impl Routes {
             }
             drop(by_topic);
             self.changed();
+        }
+    }
+
+    /// Whether the client fetches (`RoutesInner::joined`).
+    fn joined(&self) -> bool {
+        self.inner.joined.load(Ordering::Acquire)
+    }
+
+    /// Notes that the group assigned to this consumer (`assigned`), or revoked from it, while the client is joining.
+    fn note_joining(&self, assigned: bool) {
+        if self.joined() {
+            return;
+        }
+        let mut joining = self.inner.joining.lock();
+        if assigned {
+            joining.assigned |= 1 << self.member;
+        }
+        joining.changed = Some(Instant::now());
+    }
+
+    /// Lets a client of several consumers fetch once the group has assigned to each and then left them alone for
+    /// [`JOIN_QUIET`], or once it has waited [`JOIN_MOST`]. Until then no partition is read by one consumer that
+    /// the group is about to move to another.
+    fn release_if_joined(&self) {
+        if self.joined() {
+            return;
+        }
+        {
+            let joining = self.inner.joining.lock();
+            let settled =
+                joining.assigned == self.every_member() && joining.changed.is_some_and(|at| at.elapsed() >= JOIN_QUIET);
+            if !settled && joining.started.is_none_or(|at| at.elapsed() < JOIN_MOST) {
+                return;
+            }
+        }
+        if self.inner.joined.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        tracing::info!(name: "joined", target: "sources", group = %self.group(), "the client's consumers have joined their group, so its sources fetch");
+        for slot in self.slots() {
+            if let Err(e) = slot.sync(self, &slot.lock()) {
+                tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a source once its client joined");
+            }
         }
     }
 
@@ -1268,6 +1343,9 @@ impl ConsumerContext for Routes {
             tracing::warn!(name: "rebalance_failed", target: "sources", group = %self.group(), error = %KafkaError::Rebalance(err.into()), "a rebalance failed, so this client's partitions stay as they were");
             Rebalance::Error(KafkaError::Rebalance(err.into()))
         };
+        if assign || revoke {
+            self.note_joining(assign);
+        }
         self.pre_rebalance(base_consumer, &rebalance);
         let rk = base_consumer.client().native_ptr();
         let cooperative = matches!(base_consumer.rebalance_protocol(), RebalanceProtocol::Cooperative);
