@@ -17,6 +17,7 @@
 //! A revoked worker is never forgotten: revoking it is an operator saying it stays out, and a forgotten worker's
 //! credential is one it could enroll past with the enrollment code it still holds.
 
+use crate::core::time::millis;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -193,7 +194,7 @@ fn gone(
     forget_after: Duration,
     up_for: Duration,
 ) -> (Vec<String>, Vec<String>) {
-    let forget_after_ms = forget_after.as_millis() as i64;
+    let forget_after_ms = millis(forget_after);
     let up_ms = i64::try_from(up_for.as_millis()).unwrap_or(i64::MAX);
     let silent_too_long = |silent_ms: i64| silent_ms.min(up_ms) > forget_after_ms;
     let mut silent_for: HashMap<&str, i64> = HashMap::new();

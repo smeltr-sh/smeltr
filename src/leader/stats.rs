@@ -13,6 +13,7 @@
 //! decline it afterward. Every route sees every row, so the shares can sum past the rows polled. That is a fact
 //! about routing, not an error to reconcile, and a reader is told rather than shown a total that looks wrong.
 
+use crate::core::time::millis;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -329,7 +330,7 @@ pub fn build(
     let point_ms = chart_point_ms(window);
     let now_ms = super::warnings::now_millis();
     // From the start of the point the window begins in, so the chart's first point is read whole.
-    let since_ms = (now_ms - window.as_millis() as i64).div_euclid(point_ms) * point_ms;
+    let since_ms = (now_ms - millis(window)).div_euclid(point_ms) * point_ms;
     let totals = |metric: &str| match series_store {
         None => Vec::new(),
         Some(store) => totals_by_subject(store, metric, point_ms, since_ms),
@@ -343,7 +344,7 @@ pub fn build(
         group: group.to_string(),
         kind,
         id: id.to_string(),
-        window_millis: window.as_millis() as i64,
+        window_millis: millis(window),
         bucket_millis: point_ms,
         now_millis: now_ms,
         source: None,

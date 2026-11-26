@@ -60,6 +60,7 @@
 //! normal is learned again each hour, since it moves slowly, and each reading once per [`BUCKET`] against it, since
 //! nothing it reads changes in between.
 
+use crate::core::time::millis;
 use crate::sync::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -90,7 +91,7 @@ pub struct Width {
 
 impl Width {
     fn ms(self) -> i64 {
-        self.window.as_millis() as i64
+        millis(self.window)
     }
 
     fn buckets(self) -> i64 {
@@ -356,7 +357,7 @@ impl Reading {
             (Some(j), _) => {
                 let (per_second, band) = j.per_second();
                 Some(Reason::Width {
-                    window_millis: j.window.as_millis() as i64,
+                    window_millis: millis(j.window),
                     per_second,
                     low: band.low,
                     high: band.high,
@@ -478,7 +479,7 @@ impl Readings {
 
 /// The end of the window judged at `now_ms`: the last bucket every heartbeat sent before then has landed in.
 fn ended(now_ms: i64, heartbeat_interval: Duration) -> i64 {
-    BUCKET.align(now_ms - heartbeat_interval.as_millis() as i64)
+    BUCKET.align(now_ms - millis(heartbeat_interval))
 }
 
 /// A count of rows, rounded, with its thousands set apart as a reader writes them.
@@ -1632,7 +1633,7 @@ fn swung_over(
     learning: &Marks,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let width = BUCKET.bucket_ms();
-    let across = NEIGHBORHOOD.as_millis() as i64 / width;
+    let across = millis(NEIGHBORHOOD) / width;
     let first = BUCKET.align(since_ms);
     let oldest = first - USUAL_DAYS * DAY_MS - across * width;
     let warned = Warned::of(store, group, source, oldest, learning);
@@ -1738,7 +1739,7 @@ fn record_swings(store: &RegistryStore, ended_ms: i64, heartbeat_interval: Durat
     let swings: Vec<Swing> = fine
         .into_iter()
         .flat_map(|((group, source), slots)| {
-            swings_of(&slots, from, until, heartbeat_interval.as_millis() as i64)
+            swings_of(&slots, from, until, millis(heartbeat_interval))
                 .into_iter()
                 .map(move |(width_ms, bucket_ms, low, high)| Swing {
                     group: group.clone(),
@@ -1963,7 +1964,7 @@ mod tests {
     #[test]
     fn a_chart_at_a_width_draws_its_rate_against_its_range() {
         let store = store_with(7, |at| Some(if at >= END - 6 * FIVE { 80.0 } else { 100.0 }));
-        let half_hour = WINDOW.as_millis() as i64;
+        let half_hour = millis(WINDOW);
         let at = chart(
             &store,
             Subject::source("g", "s"),

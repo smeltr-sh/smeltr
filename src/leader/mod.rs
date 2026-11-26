@@ -74,6 +74,7 @@ pub mod updates;
 pub mod upload_pack;
 pub mod warnings;
 
+use crate::core::time::millis;
 use crate::sync::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1596,7 +1597,7 @@ async fn get_streams(
         stream_conditions(&data_dir, &mut stored.unmatched);
         // `recent` is what the `StreamUnrouted` warning names: the same rows, read by the same rule.
         let deployed = deployed_configs(&data_dir, &deployed_groups(&data_dir));
-        let since = warnings::now_millis() - series::DRIFT_WINDOW.as_millis() as i64;
+        let since = warnings::now_millis() - millis(series::DRIFT_WINDOW);
         let unrouted = store.unrouted_since(since, |group| deployed.get(group).cloned())?;
         for u in &mut stored.unmatched {
             let named = unrouted
@@ -5085,7 +5086,7 @@ mod warnings_endpoint_tests {
         // A leader up long enough to have heard the silence: one just started forgets nobody for it.
         state.registry =
             Arc::new(Registry::default().started_at(std::time::Instant::now() - 2 * forget::DEFAULT_FORGET_AFTER));
-        let long_ago = warnings::now_millis() - 2 * forget::DEFAULT_FORGET_AFTER.as_millis() as i64;
+        let long_ago = warnings::now_millis() - 2 * millis(forget::DEFAULT_FORGET_AFTER);
         run_store(state.store.clone(), move |s| {
             s.create_enrollment_code(&store::NewEnrollmentCode {
                 id: "j1".to_string(),

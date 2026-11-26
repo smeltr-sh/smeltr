@@ -1789,7 +1789,7 @@ mod tests {
                     // Said after the reader opened, which is all a reader is handed.
                     timestamp_ms: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as i64 + 1_000)
+                        .map(|d| crate::core::time::millis(d) + 1_000)
                         .unwrap_or_default(),
                     level: "info".into(),
                     class: Some("logs".into()),
