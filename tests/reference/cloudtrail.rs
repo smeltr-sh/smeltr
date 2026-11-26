@@ -593,7 +593,7 @@ fn check(rows: u64, docs: u64, kept: &[Value]) {
         assert_eq!(at("/aws/cloudtrail/eventID"), &e["eventID"]);
         assert_eq!(
             at("/aws/cloudtrail/requestParameters"),
-            &e["requestParameters"],
+            &as_written(&e["requestParameters"]),
             "{doc}"
         );
         assert_eq!(at("/aws/cloudtrail/readOnly"), &e["readOnly"]);
@@ -601,5 +601,25 @@ fn check(rows: u64, docs: u64, kept: &[Value]) {
             assert!(doc["aws"]["cloudtrail"].get(gone).is_none(), "{gone} moved: {doc}");
         }
         assert!(doc.get("Records").is_none() && doc.get("_raw").is_none(), "{doc}");
+    }
+}
+
+/// `v` as a document writes it: a null member is no member, and an object left with none is no value.
+fn as_written(v: &Value) -> Value {
+    match v {
+        Value::Object(members) => {
+            let kept: serde_json::Map<String, Value> = members
+                .iter()
+                .map(|(k, v)| (k.clone(), as_written(v)))
+                .filter(|(_, v)| !v.is_null())
+                .collect();
+            if kept.is_empty() {
+                Value::Null
+            } else {
+                Value::Object(kept)
+            }
+        }
+        Value::Array(items) => Value::Array(items.iter().map(as_written).collect()),
+        _ => v.clone(),
     }
 }
