@@ -54,8 +54,10 @@ group through a client the worker shares with every source of the same
 group and connection. The client joins as several members, one for every few
 of the worker's threads, because one member fetches and routes on one thread
 and that thread caps what the worker reads. The group splits the shards
-between them, and each member hands a record to its own source's inbox, where
-its reader takes it. The worker pays for those members, their connections and
+between them. Each member drains what it has fetched, up to a batch's rows,
+into one chunk and hands it to its source's inbox, so nothing is shared or
+locked per record; the source's reader takes the records from the inbox. The
+worker pays for those members, their connections and
 one fetch queue split between them however many sources read through it, and
 the group rebalances among every member of every worker. A full inbox and a
 blocked source pause only that source's shards, each through the member that
