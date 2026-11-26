@@ -1,4 +1,3 @@
-pub type SlotId = usize;
 pub type PatternId = usize;
 
 /// Makes `$name` a number of its own kind, so one kind of id cannot be passed for another.
@@ -49,3 +48,14 @@ id!(
     /// A step of a pipeline, by its number among that pipeline's steps.
     FunctionId
 );
+id!(
+    /// A slot: a column of a batch, by its number in the plan's layout.
+    SlotId
+);
+
+impl SlotId {
+    /// The slot at `index` of a layout.
+    pub fn at(index: usize) -> SlotId {
+        SlotId::try_from(index).expect("the slots of one plan fit a u32")
+    }
+}

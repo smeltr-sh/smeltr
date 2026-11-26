@@ -1496,7 +1496,7 @@ fn a_declared_bracketed_key_fills_from_the_record() {
         .tree
         .leaf(r#"labels["app.kubernetes.io/name"]"#)
         .expect("a declared leaf");
-    assert_eq!(plan.slot_layout[slot], DataType::Str);
+    assert_eq!(plan.slot_layout[slot.index()], DataType::Str);
     b.reclaim(&mut env.pool);
 }
 

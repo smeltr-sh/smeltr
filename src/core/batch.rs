@@ -13,7 +13,7 @@ use crate::core::column::{Column, DataType};
 ///
 /// The first `RESERVED_SLOTS` of them are reserved: the runtime reads each back after the run at its layout's type,
 /// so no step removes one or changes its type. A record's fields are not: a step may drop or replace any of them.
-pub const SLOT_LIVE: SlotId = 0; // Bool — row liveness, written by routing (`plan::topology::route_masks`) and by `Drop`
+pub const SLOT_LIVE: SlotId = SlotId::new(0); // Bool — row liveness, written by routing (`plan::topology::route_masks`) and by `Drop`
 pub const PREFIX_SLOTS: usize = 1;
 pub const RESERVED_SLOTS: usize = 1;
 
@@ -21,7 +21,7 @@ pub const RESERVED_SLOTS: usize = 1;
 ///
 /// `_raw` is `Str`, not `Bytes`: each record is decoded before routing, from the encoding its source declares
 /// (`format::encoding`), so everything downstream reads valid UTF-8 without revalidating or repairing.
-pub const SLOT_RAW: SlotId = PREFIX_SLOTS; // Str  — the unparsed message, decoded
+pub const SLOT_RAW: SlotId = SlotId::new(1); // Str  — the unparsed message, decoded
 pub const RAW_SLOTS: usize = PREFIX_SLOTS + 1;
 
 /// The prefix every plan's slot layout must begin with.
@@ -75,23 +75,23 @@ impl Batch {
     pub fn get(&self, slot: SlotId) -> &Column {
         #[cfg(debug_assertions)]
         debug_assert!(
-            self.bound[slot],
+            self.bound[slot.index()],
             "slot {slot} read before it was ever written — the compiler resolved a \
              read to a slot nothing produces"
         );
-        &self.slots[slot]
+        &self.slots[slot.index()]
     }
 
     /// Read without the bound check, for the serializer and for kernels that tolerate an unbound slot as null.
     #[inline]
     pub fn peek(&self, slot: SlotId) -> &Column {
-        &self.slots[slot]
+        &self.slots[slot.index()]
     }
 
     /// Write a bound column in place: a region's mask, whose bits clear as rows leave it.
     #[inline]
     pub fn get_mut(&mut self, slot: SlotId) -> &mut Column {
-        &mut self.slots[slot]
+        &mut self.slots[slot.index()]
     }
 
     /// Bind `col` to `slot`, reclaiming whatever was there. `col` must have exactly `rows` rows.
@@ -102,23 +102,23 @@ impl Batch {
             self.rows,
             "every column in a batch must have exactly `rows` rows"
         );
-        let old = std::mem::replace(&mut self.slots[slot], col);
+        let old = std::mem::replace(&mut self.slots[slot.index()], col);
         old.reclaim(pool);
         #[cfg(debug_assertions)]
         {
-            self.bound[slot] = true;
+            self.bound[slot.index()] = true;
         }
     }
 
     /// Move a column out, leaving `Empty` behind. Only legal once liveness has proven the slot dead.
     #[inline]
     pub fn take_dead(&mut self, slot: SlotId) -> Column {
-        let ty = self.slots[slot].data_type();
+        let ty = self.slots[slot.index()].data_type();
         #[cfg(debug_assertions)]
         {
-            self.bound[slot] = false;
+            self.bound[slot.index()] = false;
         }
-        std::mem::replace(&mut self.slots[slot], Column::empty(ty, self.rows))
+        std::mem::replace(&mut self.slots[slot.index()], Column::empty(ty, self.rows))
     }
 
     // -- cardinality ---------------------------------------------------------
@@ -152,9 +152,9 @@ mod tests {
     use super::*;
     use crate::core::column::Column;
 
-    const EXTRA_I64: SlotId = RAW_SLOTS;
-    const EXTRA_STR: SlotId = RAW_SLOTS + 1;
-    const EXTRA_I64_B: SlotId = RAW_SLOTS + 2;
+    const EXTRA_I64: SlotId = SlotId::new(2);
+    const EXTRA_STR: SlotId = SlotId::new(3);
+    const EXTRA_I64_B: SlotId = SlotId::new(4);
 
     fn layout() -> Vec<DataType> {
         let mut l = raw_layout();
@@ -170,13 +170,15 @@ mod tests {
         assert_eq!(prefix_layout().len(), PREFIX_SLOTS);
         assert_eq!(raw_layout().len(), RAW_SLOTS);
         assert_eq!(raw_layout()[..PREFIX_SLOTS], prefix_layout()[..]);
+        assert_eq!(SLOT_RAW.index(), PREFIX_SLOTS);
+        assert_eq!(EXTRA_I64.index(), RAW_SLOTS);
     }
 
     #[test]
     fn each_raw_index_names_its_own_declared_type() {
         let l = raw_layout();
-        assert_eq!(l[SLOT_LIVE], DataType::Bool);
-        assert_eq!(l[SLOT_RAW], DataType::Str);
+        assert_eq!(l[SLOT_LIVE.index()], DataType::Bool);
+        assert_eq!(l[SLOT_RAW.index()], DataType::Str);
     }
 
     #[test]
@@ -184,7 +186,7 @@ mod tests {
         let b = Batch::new(&layout(), 100, 0);
         assert_eq!(b.rows(), 100);
         assert_eq!(b.slot_count(), RAW_SLOTS + 3);
-        for s in 0..b.slot_count() {
+        for s in (0..b.slot_count()).map(SlotId::at) {
             assert!(b.peek(s).is_unbound());
             assert_eq!(b.peek(s).len(), 100);
         }

@@ -8,6 +8,7 @@ use smeltr::core::buffer::BufferPool;
 use smeltr::core::column::{Column, DataType, Scalar, StrBuilder, Validity, VarType};
 use smeltr::core::ctx::{CompiledPattern, Ctx};
 use smeltr::core::error::{ErrorSink, ExceptionKind};
+use smeltr::core::id::SlotId;
 use smeltr::ops::stdfuncs::{regex_replace, regex_test};
 use smeltr::ops::{
     BinOp, OpKernel, UnOp, arith, arrayops, cmp, convert, datetime, logic, netops, strops, table, timeparse,
@@ -1050,18 +1051,18 @@ fn coalesce_and_ternary_meet_a_struct_field_as_its_columns_hold_it() {
     let mut layout = raw_layout();
     layout.extend([ta.clone(), tb.clone(), DataType::Bool]);
     let mut batch = Batch::new(&layout, 2, 0);
-    batch.put(RAW_SLOTS, ca, &mut p);
-    batch.put(RAW_SLOTS + 1, cb, &mut p);
+    batch.put(SlotId::at(RAW_SLOTS), ca, &mut p);
+    batch.put(SlotId::at(RAW_SLOTS + 1), cb, &mut p);
     let cond = bool_col(&mut p, &[Some(false), Some(true)]);
-    batch.put(RAW_SLOTS + 2, cond, &mut p);
+    batch.put(SlotId::at(RAW_SLOTS + 2), cond, &mut p);
     let field = |slot, ty| Ir::new(ty, Span::default(), IrKind::Field(slot));
     let ir = Ir::new(
         ta.unify(&tb).unwrap(),
         Span::default(),
         IrKind::Ternary {
-            cond: Box::new(field(RAW_SLOTS + 2, DataType::Bool)),
-            then: Box::new(field(RAW_SLOTS, ta)),
-            else_: Box::new(field(RAW_SLOTS + 1, tb)),
+            cond: Box::new(field(SlotId::at(RAW_SLOTS + 2), DataType::Bool)),
+            then: Box::new(field(SlotId::at(RAW_SLOTS), ta)),
+            else_: Box::new(field(SlotId::at(RAW_SLOTS + 1), tb)),
         },
     );
     let mut errors = ErrorSink::new();

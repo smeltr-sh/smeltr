@@ -24,7 +24,7 @@ pub fn record_type(plan: &Plan, tag_field: &str) -> DataType {
 fn object_type(o: &Object, layout: &[DataType]) -> DataType {
     let fields = o.fields.iter().map(|(key, node)| {
         let ty = match node {
-            Node::Leaf(slot) => layout[*slot].clone(),
+            Node::Leaf(slot) => layout[slot.index()].clone(),
             Node::Object(o) => object_type(o, layout),
         };
         (key.clone(), ty)
@@ -59,7 +59,7 @@ pub fn writer(plan: &Plan, keys: &[String]) -> Option<FunctionId> {
     if let Some((.., f)) = copied {
         return Some(*f);
     }
-    match plan.provenance.get(slot)?.origin {
+    match plan.provenance.get(slot.index())?.origin {
         crate::plan::resolve::Origin::Function(f) => Some(f),
         _ => None,
     }

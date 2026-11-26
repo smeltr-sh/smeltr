@@ -4049,23 +4049,31 @@ mod tests {
             DataType::I64,
         ];
         let mut batch = Batch::new(&layout, 2, 0);
-        batch.put(2, Column::constant(Scalar::Str("events".into()), 2), &mut pool);
-        batch.put(3, Column::constant(Scalar::Bytes(b"raw".to_vec()), 2), &mut pool);
-        batch.put(4, Column::constant(Scalar::I64(7), 2), &mut pool);
+        batch.put(
+            SlotId::new(2),
+            Column::constant(Scalar::Str("events".into()), 2),
+            &mut pool,
+        );
+        batch.put(
+            SlotId::new(3),
+            Column::constant(Scalar::Bytes(b"raw".to_vec()), 2),
+            &mut pool,
+        );
+        batch.put(SlotId::new(4), Column::constant(Scalar::I64(7), 2), &mut pool);
         for row in 0..2 {
-            assert_eq!(read_text(&batch, 2, row).as_deref(), Some("events"));
+            assert_eq!(read_text(&batch, SlotId::new(2), row).as_deref(), Some("events"));
             assert_eq!(
-                read_text(&batch, 3, row).as_deref(),
+                read_text(&batch, SlotId::new(3), row).as_deref(),
                 Some("cmF3"),
                 "bytes read as their base64"
             );
-            assert_eq!(read_text(&batch, 4, row), None, "a number is not text");
+            assert_eq!(read_text(&batch, SlotId::new(4), row), None, "a number is not text");
         }
         batch.reclaim(&mut pool);
     }
 
     fn names() -> HashMap<SlotId, String> {
-        HashMap::from([(0, "status".to_string())])
+        HashMap::from([(SlotId::new(0), "status".to_string())])
     }
 
     fn raised(entries: &[Exception]) -> HashMap<u32, Vec<RowException>> {
@@ -4083,7 +4091,11 @@ mod tests {
     #[test]
     fn a_failure_is_listed_for_a_failure_and_a_note_alike() {
         let entries = vec![
-            ann(0, Some(0), ExceptionKind::UnparsableField { to: DataType::I64 }),
+            ann(
+                0,
+                Some(SlotId::new(0)),
+                ExceptionKind::UnparsableField { to: DataType::I64 },
+            ),
             ann(1, None, ExceptionKind::GuessedEncoding { encoding: "utf-8" }),
         ];
         let raised = raised(&entries);
@@ -4093,7 +4105,11 @@ mod tests {
 
     #[test]
     fn a_failure_names_its_step_and_its_field() {
-        let entries = vec![ann(0, Some(0), ExceptionKind::UnparsableField { to: DataType::I64 })];
+        let entries = vec![ann(
+            0,
+            Some(SlotId::new(0)),
+            ExceptionKind::UnparsableField { to: DataType::I64 },
+        )];
         assert_eq!(
             raised(&entries)[&0],
             vec![exception(
@@ -4105,7 +4121,7 @@ mod tests {
 
     #[test]
     fn a_failure_read_before_any_step_names_none() {
-        let mut read = ann(0, Some(0), ExceptionKind::InvalidUtf8);
+        let mut read = ann(0, Some(SlotId::new(0)), ExceptionKind::InvalidUtf8);
         read.function = crate::core::error::INGEST_FUNCTION;
         assert_eq!(raised(&[read])[&0][0].step, None);
     }
@@ -4115,7 +4131,7 @@ mod tests {
         let entries = vec![
             ann(0, None, ExceptionKind::DivideByZero),
             ann(0, None, ExceptionKind::DivideByZero),
-            ann(0, Some(0), ExceptionKind::Unparsable),
+            ann(0, Some(SlotId::new(0)), ExceptionKind::Unparsable),
         ];
         assert_eq!(
             raised(&entries)[&0],

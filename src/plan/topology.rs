@@ -905,12 +905,14 @@ impl SourceMeta {
 
     /// The slot `__source` field `field` occupies.
     pub fn source_slot(&self, field: usize) -> crate::core::id::SlotId {
-        crate::core::batch::PREFIX_SLOTS + self.record_len() + field
+        crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + self.record_len() + field)
     }
 
     /// The `__source` field at `slot`, if one is there.
     pub fn source_field_at(&self, slot: crate::core::id::SlotId) -> Option<usize> {
-        slot.checked_sub(self.source_slot(0)).filter(|i| *i < self.source.len())
+        slot.index()
+            .checked_sub(self.source_slot(0).index())
+            .filter(|i| *i < self.source.len())
     }
 
     /// Field `field` as a column over `records`, in record order, for records `source` read: its name in the
@@ -1027,8 +1029,9 @@ impl SourceMeta {
         } else if !self.reads_bytes() {
             let fields = &self.record;
             let (chunk, rows) = chunk_rows(records);
+            let slot_of = |field: usize| crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field);
             for (i, (_, ty)) in fields.iter().enumerate() {
-                let slot = crate::core::batch::PREFIX_SLOTS + i;
+                let slot = slot_of(i);
                 let column = match &chunk {
                     Some(chunk) => chunk.column(i).gather(pool, &rows),
                     None => Column::empty(ty.clone(), 0),
@@ -1040,7 +1043,7 @@ impl SourceMeta {
                     // A payload that did not read has no field of its own to blame, so its record's first holds it.
                     if let Some(why) = chunk.unread(row) {
                         let kind = ExceptionKind::Unparsable;
-                        noted.push((at as u32, crate::core::batch::PREFIX_SLOTS, kind, Some(why.to_string())));
+                        noted.push((at as u32, slot_of(0), kind, Some(why.to_string())));
                         continue;
                     }
                     let from = chunk.failed().partition_point(|(r, _, _)| *r < row);
@@ -1048,7 +1051,7 @@ impl SourceMeta {
                         let kind = ExceptionKind::UnparsableField {
                             to: fields[*field].1.clone(),
                         };
-                        let slot = crate::core::batch::PREFIX_SLOTS + field;
+                        let slot = slot_of(*field);
                         noted.push((at as u32, slot, kind, Some(value.clone())));
                     }
                 }
@@ -4990,7 +4993,7 @@ mod tests {
             .iter()
             .position(|f| f.0 == "__source.offset")
             .unwrap();
-        let slot_offset = RAW_SLOTS + offset_field;
+        let slot_offset = crate::core::id::SlotId::at(RAW_SLOTS + offset_field);
 
         let rows = docs.len();
         let mut layout = raw_layout();

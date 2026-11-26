@@ -418,15 +418,16 @@ mod tests {
 
     /// `kind` on row 0 writing slot 9, which read `read`, in a message naming slots 1 `a`, 2 `b` and 9 `out`.
     fn message(kind: ExceptionKind, call: &'static str, read: Vec<Read>) -> String {
-        let names = HashMap::from([(1, "a".to_string()), (2, "b".to_string()), (9, "out".to_string())]);
+        let names =
+            HashMap::from([(1, "a"), (2, "b"), (9, "out")].map(|(slot, name)| (SlotId::new(slot), name.to_string())));
         let mut s = ErrorSink::new();
-        s.raise(0, FunctionId::new(0), Some(9), kind);
+        s.raise(0, FunctionId::new(0), Some(SlotId::new(9)), kind);
         s.fill_from(0, call, |_| read.clone());
         s.entries()[0].message(&names)
     }
 
-    fn field(slot: SlotId, value: &str) -> Read {
-        Read::new(Some((slot, String::new())), Some(value.to_string()))
+    fn field(slot: u32, value: &str) -> Read {
+        Read::new(Some((SlotId::new(slot), String::new())), Some(value.to_string()))
     }
 
     #[test]
@@ -450,13 +451,13 @@ mod tests {
         );
         assert_eq!(refused, "\"many\", which could not convert to i64 in out");
         // A bracketed key joins its slot with no dot; a read with neither name nor value is `a value`.
-        let bracketed = Read::new(Some((1, "[\"a.b\"]".into())), Some("\"x\"".into()));
+        let bracketed = Read::new(Some((SlotId::new(1), "[\"a.b\"]".into())), Some("\"x\"".into()));
         let parse = ExceptionKind::UnparsableField { to: DataType::I64 };
         assert_eq!(
             message(parse, "", vec![bracketed]),
             "a[\"a.b\"] is \"x\", which could not parse as i64 in out"
         );
-        let unnamed = Read::new(Some((7, String::new())), None);
+        let unnamed = Read::new(Some((SlotId::new(7), String::new())), None);
         assert_eq!(
             message(ExceptionKind::InvalidUtf8, "", vec![unnamed]),
             "a value held bytes that are not UTF-8, replaced with U+FFFD"

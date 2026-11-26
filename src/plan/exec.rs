@@ -60,7 +60,11 @@ pub fn run_scoped<'a>(
 
     for instr in &plan.instrs {
         // A `Drop` step's instruction is the one whose output slot is named `__live`.
-        let redefines_live = metrics.is_some() && plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live");
+        let redefines_live = metrics.is_some()
+            && plan
+                .provenance
+                .get(instr.out.index())
+                .is_some_and(|o| o.name == "__live");
         let live_before = match (redefines_live, instr.live) {
             (true, Some(live)) => live_popcount(batch, live),
             _ => 0,
@@ -108,7 +112,11 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
     if let Some(written) = skipped(instr, batch) {
         // Every reader takes the prior on every row: a null of the slot's type is all it needs.
         for slot in written {
-            batch.put(slot, Column::empty(layout[slot].clone(), batch.rows()), ctx.pool);
+            batch.put(
+                slot,
+                Column::empty(layout[slot.index()].clone(), batch.rows()),
+                ctx.pool,
+            );
         }
         return;
     }

@@ -388,7 +388,7 @@ impl Plan {
     /// Each row's record, by its index in the batch the run began with. Written before the first step, so an
     /// `Unroll` carries it to every row it makes.
     pub fn origin_slot(&self) -> SlotId {
-        self.slot_layout.len() + 1
+        SlotId::at(self.slot_layout.len() + 1)
     }
 
     /// Each slot a field holds, by the name a row's exception cites. A copy shares its source's slot, so a slot may
@@ -396,7 +396,7 @@ impl Plan {
     pub fn slot_names(&self) -> HashMap<SlotId, String> {
         let mut names: HashMap<SlotId, String> = HashMap::new();
         for (name, slot) in self.tree.leaves() {
-            let own = self.provenance.get(slot).is_some_and(|o| o.name == name);
+            let own = self.provenance.get(slot.index()).is_some_and(|o| o.name == name);
             if own || !names.contains_key(&slot) {
                 names.insert(slot, name);
             }
@@ -419,7 +419,7 @@ impl Plan {
     /// The tag field's column: what a route's `when` reads and the serializer writes, under the route's tag field,
     /// beside the pipeline's own fields.
     pub fn tag_slot(&self) -> SlotId {
-        self.slot_layout.len()
+        SlotId::at(self.slot_layout.len())
     }
 }
 
@@ -751,7 +751,11 @@ fn stamp_live(plan: &mut Plan) {
     let mut live = SLOT_LIVE;
     for instr in &mut plan.instrs {
         instr.live = Some(live);
-        if plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live") {
+        if plan
+            .provenance
+            .get(instr.out.index())
+            .is_some_and(|o| o.name == "__live")
+        {
             live = instr.out;
         }
     }
@@ -836,7 +840,7 @@ fn unread_writes(
     every_eval(&plan.instrs, &mut |s| written.push(s));
     let mut out: Vec<CompileError> = Vec::new();
     for slot in written {
-        let o = &plan.provenance[slot];
+        let o = &plan.provenance[slot.index()];
         let Origin::Function(f) = o.origin else { continue };
         if !spelled(&o.name)
             || read.contains(&slot)
@@ -847,7 +851,7 @@ fn unread_writes(
             continue;
         }
         // Each name the value was put at, from the slot after which a write of that name replaces it.
-        let names: Vec<(&str, usize)> = std::iter::once((o.name.as_str(), slot + 1))
+        let names: Vec<(&str, usize)> = std::iter::once((o.name.as_str(), slot.index() + 1))
             .chain(
                 aliases
                     .iter()
@@ -3826,7 +3830,7 @@ impl Compiler<'_> {
             self.err(Some(id), format!("unroll field `{field}` is not bound"));
             return;
         };
-        let array_ty = self.syms.layout[array_slot].clone();
+        let array_ty = self.syms.layout[array_slot.index()].clone();
         let DataType::Array(element_ty) = array_ty else {
             self.err(
                 Some(id),
@@ -3878,7 +3882,7 @@ impl Compiler<'_> {
             .chain(self.syms.hidden_slots())
             .chain(clear.iter().copied())
             .collect();
-        clear.extend((0..out_slot).filter(|s| !live.contains(s)));
+        clear.extend((0..out_slot.index()).map(SlotId::at).filter(|s| !live.contains(s)));
         self.emit(
             Op::Unroll {
                 array: array_slot,
@@ -4103,7 +4107,7 @@ impl Compiler<'_> {
         self.unshare_assigned(body, None, id);
         self.unshare_assigned(next, None, id);
         let before = self.syms.bindings();
-        let first = self.syms.slot_count();
+        let first = SlotId::at(self.syms.slot_count());
         let mut stay = None;
         let body_instrs = self.compile_isolated(|c| stay = c.trip(Some((cond, next)), body, id));
         let (acc_names, accumulators) = self.accumulators(&before, first, self.outer.len(), None);
@@ -4198,7 +4202,7 @@ impl Compiler<'_> {
                 // element's leaves from it first.
                 self.unshare_assigned(body, Some(var), id);
                 let before = self.syms.bindings();
-                let first = self.syms.slot_count();
+                let first = SlotId::at(self.syms.slot_count());
                 let mut stay = None;
                 let body_instrs = self.compile_isolated(|c| {
                     for (slot, ir) in leaves {
@@ -4394,7 +4398,7 @@ impl Compiler<'_> {
 
     fn compile_isolated(&mut self, f: impl FnOnce(&mut Self)) -> Vec<Instr> {
         self.outer.push(std::mem::take(&mut self.instrs));
-        self.loop_firsts.push(self.syms.slot_count());
+        self.loop_firsts.push(SlotId::at(self.syms.slot_count()));
         f(self);
         self.loop_firsts.pop();
         let saved = self.outer.pop().expect("pushed above");
@@ -4416,7 +4420,7 @@ impl Compiler<'_> {
             // A variant is compatible with any type, and a `null` meets any. A row that runs no trip keeps a variant
             // it held before, so the result is a variant.
             if *self.syms.type_of(*r) == DataType::Variant {
-                self.syms.layout[*write_slot] = DataType::Variant;
+                self.syms.layout[write_slot.index()] = DataType::Variant;
                 continue;
             }
             if *self.syms.type_of(*write_slot) == DataType::Variant {
@@ -4746,7 +4750,7 @@ fn liveness(plan: &mut Plan) {
     // A loop body's own slots live on the wave's batch, not this one. What the body reads from the outer batch is
     // gathered into the wave, so it is read here and is marked here.
     for (i, instr) in plan.instrs.iter().enumerate() {
-        instr.reads(&mut |s| last_read[s] = i);
+        instr.reads(&mut |s| last_read[s.index()] = i);
     }
 
     // A literal may stay one value only where the serializer is the last reader, because the serializer is the one
@@ -4761,7 +4765,7 @@ fn liveness(plan: &mut Plan) {
     // The text slots it reads, each `Placement` and `__destination.id`, take a constant as the value in every row.
     for i in 0..n {
         let out = plan.instrs[i].out;
-        plan.instrs[i].constant_ok = last_read[out] == usize::MAX && out != plan.live_slot;
+        plan.instrs[i].constant_ok = last_read[out.index()] == usize::MAX && out != plan.live_slot;
     }
 
     // `__source.bytes` is the record as read, as large as the record. A destination reads it from the record a row
@@ -4769,9 +4773,9 @@ fn liveness(plan: &mut Plan) {
     // preview or a capture shows none on them.
     let payload = plan.tree.leaf(crate::plan::topology::SOURCE_BYTES);
     let runtime_filled = plan.ingest_slots;
-    for slot in plan.tree.slots().into_iter().chain(0..runtime_filled) {
+    for slot in plan.tree.slots().into_iter().chain((0..runtime_filled).map(SlotId::at)) {
         if Some(slot) != payload {
-            last_read[slot] = n;
+            last_read[slot.index()] = n;
         }
     }
 
@@ -4781,7 +4785,8 @@ fn liveness(plan: &mut Plan) {
         let out = instr.out;
         if let Op::Unroll { clear, live, .. } = &mut instr.op {
             let live = *live;
-            for (s, &lr) in last_read.iter().enumerate().take(out) {
+            for (s, &lr) in last_read.iter().enumerate().take(out.index()) {
+                let s = SlotId::at(s);
                 if (lr <= i || lr == usize::MAX) && s != live && !clear.contains(&s) {
                     clear.push(s);
                 }
@@ -4794,14 +4799,14 @@ fn liveness(plan: &mut Plan) {
         let out_ty = plan.instrs[i].out_ty.clone();
         if let Some(pos) = available
             .iter()
-            .position(|&d| plan.slot_layout[d].same_storage_shape(&out_ty) && last_read[d] < i)
+            .position(|&d| plan.slot_layout[d.index()].same_storage_shape(&out_ty) && last_read[d.index()] < i)
         {
             let dead = available.remove(pos);
             plan.instrs[i].reuse = Some(dead);
         }
         for (s, &lr) in last_read.iter().enumerate() {
-            if lr == i && !available.contains(&s) && s >= runtime_filled {
-                available.push(s);
+            if lr == i && s >= runtime_filled && !available.contains(&SlotId::at(s)) {
+                available.push(SlotId::at(s));
             }
         }
     }
@@ -5231,7 +5236,12 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let below = |ty: &DataType| (0..out).filter(|&s| plan.slot_layout[s] == *ty).collect::<Vec<_>>();
+        let below = |ty: &DataType| {
+            (0..out.index())
+                .filter(|&s| plan.slot_layout[s] == *ty)
+                .map(SlotId::at)
+                .collect::<Vec<_>>()
+        };
         assert!(!below(&DataType::Duration).is_empty());
         assert!(
             below(&DataType::Duration).iter().all(|s| clear.contains(s)),
@@ -5298,7 +5308,7 @@ mod tests {
         let first = crate::core::batch::PREFIX_SLOTS;
         assert_eq!(plan.slot_layout[first..first + 2], [DataType::I64, DataType::Str]);
         assert_eq!(plan.provenance[first].name, "id");
-        assert_eq!(plan.provenance[meta.source_slot(0)].name, "__source.name");
+        assert_eq!(plan.provenance[meta.source_slot(0).index()].name, "__source.name");
 
         let errs = compile(&code_pipeline("t = _raw;"), &meta).unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("_raw")), "{errs:?}");

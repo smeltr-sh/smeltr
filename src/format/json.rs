@@ -545,6 +545,7 @@ mod tests {
     use super::*;
     use crate::core::buffer::BufferPool;
     use crate::core::column::{Column, StrBuilder, VarType};
+    use crate::core::id::SlotId;
     use crate::format::tag::Tag;
     use crate::plan::tree::{self, Node};
 
@@ -863,20 +864,20 @@ mod tests {
         let mut tree = tree::Object::default();
         let mut cols: Vec<&'a Column> = Vec::new();
         for (name, col) in fields {
-            tree.put(name, Node::Leaf(cols.len()));
+            tree.put(name, Node::Leaf(SlotId::at(cols.len())));
             cols.push(col);
         }
         if let Some((at, col)) = unclaimed {
             if tree.object(at).is_none() {
                 tree.put(at, Node::Object(tree::Object::default()));
             }
-            tree.object_mut(at).unwrap().unclaimed = Some(cols.len());
+            tree.object_mut(at).unwrap().unclaimed = Some(SlotId::at(cols.len()));
             cols.push(col);
         }
         if show_internal {
-            RecordView::new_with_internal(&tree, move |s| cols[s])
+            RecordView::new_with_internal(&tree, move |s| cols[s.index()])
         } else {
-            RecordView::new(&tree, move |s| cols[s])
+            RecordView::new(&tree, move |s| cols[s.index()])
         }
     }
 
@@ -958,7 +959,7 @@ mod tests {
         let mut pool = BufferPool::new();
         let rest = objects(&mut pool, &[&[("id", 5), ("k", 1)]]);
         let tree = tree::Object {
-            unclaimed: Some(0),
+            unclaimed: Some(SlotId::new(0)),
             removed: vec!["id".into()],
             ..Default::default()
         };

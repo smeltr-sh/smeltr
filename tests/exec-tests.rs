@@ -16,6 +16,7 @@
 
 use smeltr::core::batch::Batch;
 use smeltr::core::column::DataType;
+use smeltr::core::id::SlotId;
 use smeltr::format::json::scalar_text;
 use smeltr::plan::compile::Plan;
 use smeltr::plan::config::{FunctionKind, Step};
@@ -32,7 +33,7 @@ fn drop_step(id: u32, cond: &str) -> Step {
 /// name reassigned more than once (`__live` across multiple `Drop`s, say)
 /// appears several times in `provenance` — the last one is the current
 /// binding.
-fn slot_named(plan: &Plan, name: &str) -> usize {
+fn slot_named(plan: &Plan, name: &str) -> SlotId {
     plan.provenance
         .iter()
         .rev()
@@ -257,6 +258,7 @@ fn unroll_releases_the_source_array_instead_of_copying_it_into_every_output_row(
         .slot_layout
         .iter()
         .position(|t| matches!(t, DataType::Array(_)))
+        .map(SlotId::at)
         .expect("the pre-unroll Array(I64) slot is still in the layout");
     assert!(
         b.get(array_slot).is_unbound(),
