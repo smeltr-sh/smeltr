@@ -9,7 +9,7 @@ use crate::core::buffer::{self, BufferPool, Scratch};
 use crate::core::column::{Column, DataType, StrBuilder, Validity, VarType};
 use crate::core::ctx::{Ctx, OpenRegion};
 use crate::core::error::{ExceptionKind, Read};
-use crate::core::id::{FunctionId, SlotId};
+use crate::core::id::{FunctionId, SlotId, Slots};
 use crate::expr::ast::Region;
 use crate::expr::eval::{eval, eval_for_slot};
 use crate::format::{csv_parse, grok_parse, json_parse, kv_parse, spread};
@@ -60,11 +60,7 @@ pub fn run_scoped<'a>(
 
     for instr in &plan.instrs {
         // A `Drop` step's instruction is the one whose output slot is named `__live`.
-        let redefines_live = metrics.is_some()
-            && plan
-                .provenance
-                .get(instr.out.index())
-                .is_some_and(|o| o.name == "__live");
+        let redefines_live = metrics.is_some() && plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live");
         let live_before = match (redefines_live, instr.live) {
             (true, Some(live)) => live_popcount(batch, live),
             _ => 0,
@@ -103,7 +99,7 @@ pub fn run_scoped<'a>(
 }
 
 /// Run one instruction on `batch`: the pipeline's, or a loop's wave.
-fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ctx, scope: MetricsScope) {
+fn run_instr(layout: &Slots<DataType>, instr: &Instr, batch: &mut Batch, ctx: &mut Ctx, scope: MetricsScope) {
     ctx.function = instr.function;
     ctx.field = Some(instr.out);
     if let Some(dead) = instr.reuse {
@@ -112,11 +108,7 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
     if let Some(written) = skipped(instr, batch) {
         // Every reader takes the prior on every row: a null of the slot's type is all it needs.
         for slot in written {
-            batch.put(
-                slot,
-                Column::empty(layout[slot.index()].clone(), batch.rows()),
-                ctx.pool,
-            );
+            batch.put(slot, Column::empty(layout[slot].clone(), batch.rows()), ctx.pool);
         }
         return;
     }
@@ -536,7 +528,14 @@ fn record_error_metrics(
 /// which belongs to the `Code` block (`Ctx::loop_owner`), and marks each row it stops.
 ///
 /// With metrics, records `smeltr_rows_in_total` (batch width) and `smeltr_rows_out_total` (rows the guard let through).
-fn run_loop(layout: &[DataType], spec: &Loop, batch: &mut Batch, ctx: &mut Ctx, taken: &[bool], scope: MetricsScope) {
+fn run_loop(
+    layout: &Slots<DataType>,
+    spec: &Loop,
+    batch: &mut Batch,
+    ctx: &mut Ctx,
+    taken: &[bool],
+    scope: MetricsScope,
+) {
     let rows = batch.rows();
     // `run_wave` overwrites `ctx.function` per nested instruction.
     let function = ctx.function;
@@ -762,7 +761,7 @@ fn record_exits(
 /// Run a loop body against a wave. What the body marks is keyed to the wave's rows, and `active` maps each back to
 /// the row of the batch the loop runs over. Returns, in those rows, the rows that leave a region around the loop.
 fn run_wave(
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     body: &[Instr],
     wave: &mut Batch,
     active: &[u32],
@@ -797,7 +796,7 @@ fn run_wave(
 ///
 /// Returns the batch, each row's span in it, and each pseudo-row's row.
 fn explode_array(
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     batch: &Batch,
     array: SlotId,
     element_slot: SlotId,
@@ -855,7 +854,7 @@ fn run_unroll(
     clear: &[SlotId],
     out: SlotId,
     batch: &mut Batch,
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     ctx: &mut Ctx,
 ) {
     let rows = batch.rows();
@@ -927,7 +926,7 @@ fn run_unroll(
 /// `Op::ArrayFold`: the body runs once over the exploded batch, then each fold folds each row's span of the elements
 /// its write ran on. A masked-out row has no elements, and keeps its seeds.
 fn run_array_fold(
-    layout: &[DataType],
+    layout: &Slots<DataType>,
     spec: &ArrayFold,
     batch: &mut Batch,
     ctx: &mut Ctx,

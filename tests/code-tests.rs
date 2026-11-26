@@ -3811,10 +3811,7 @@ fn a_pushed_value_meets_the_arrays_element_type() {
     ]);
     // `out = x` names `x`'s slot, so the slot is found through the tree.
     let slot = plan.tree.leaf("out").unwrap();
-    assert_eq!(
-        plan.provenance[slot.index()].ty,
-        DataType::Array(Box::new(DataType::I64))
-    );
+    assert_eq!(plan.provenance[slot].ty, DataType::Array(Box::new(DataType::I64)));
     let rows = run(&plan, &[r#"{"n":1}"#]);
     assert_eq!(rows[0]["out"], json!([1, 2]));
     assert_eq!(rows[0]["y"], json!([1.0, 2.0, 2.5]));
@@ -4316,7 +4313,7 @@ fn the_operands_ahead_of_a_map_keep_their_types() {
         code(1, r#"r = a ?? xs.map(x => "f")[0];"#),
     ]);
     let (_, r) = plan.tree.leaves().into_iter().find(|(n, _)| n == "r").unwrap();
-    assert_eq!(plan.slot_layout[r.index()], DataType::Variant);
+    assert_eq!(plan.slot_layout[r], DataType::Variant);
     assert_eq!(
         cols(&run(&plan, &[r#"{"xs":[1],"a":9}"#, r#"{"xs":[1]}"#]), &["r"]),
         rows![[9], ["f"]]
@@ -4572,7 +4569,7 @@ fn an_f64_accumulator_widens_its_i64_elements() {
     ] {
         let plan = ok(vec![code(0, &json("xs: array<i64>;")), code(1, body)]);
         let r = plan.tree.leaf("r").unwrap();
-        assert_eq!(plan.provenance[r.index()].ty, DataType::F64, "{body}");
+        assert_eq!(plan.provenance[r].ty, DataType::F64, "{body}");
         assert_eq!(
             cols(&run(&plan, &[r#"{"xs":[1,2]}"#, r#"{"xs":[]}"#]), &["r"]),
             rows![[3.0], [0.0]],
@@ -4705,7 +4702,7 @@ fn a_folds_overflow_is_null_on_its_row_and_i64_beside_it() {
              let s = n + n; for (let x of xs) { s += x; } seeded = s;",
         ),
     ]);
-    let ty = |name: &str| plan.provenance[plan.tree.leaf(name).unwrap().index()].ty.clone();
+    let ty = |name: &str| plan.provenance[plan.tree.leaf(name).unwrap()].ty.clone();
     assert_eq!(ty("r"), DataType::I64);
     assert_eq!(ty("seeded"), DataType::I64);
     let docs = [

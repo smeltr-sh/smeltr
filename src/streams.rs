@@ -193,9 +193,7 @@ impl Streams {
             .fields
             .iter()
             .filter_map(|(key, node)| match node {
-                Node::Leaf(slot)
-                    if !tree::is_internal(key) && plan.slot_layout.get(slot.index()) == Some(&DataType::Str) =>
-                {
+                Node::Leaf(slot) if !tree::is_internal(key) && plan.slot_layout.get(*slot) == Some(&DataType::Str) => {
                     Some(Counted {
                         name: tree::spell(key).into_owned(),
                         slot: Some(*slot),

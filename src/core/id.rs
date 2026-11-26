@@ -1,3 +1,134 @@
+use std::marker::PhantomData;
+use std::ops::{Deref, Index, IndexMut};
+
+/// What numbers the entries of a [`ById`].
+pub trait Id: Copy {
+    /// Its place in a list that holds one entry per id.
+    fn index(self) -> usize;
+
+    /// The id of the entry at `index`.
+    fn at(index: usize) -> Self;
+}
+
+/// A list with one entry per id of one kind. Only that kind of id indexes it, so a row number, a count or another
+/// kind of id cannot stand in for one. `as_slice` reads it as a slice of every entry in id order, the one way to
+/// index by position.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ById<I, T> {
+    entries: Vec<T>,
+    read_by: PhantomData<fn(I)>,
+}
+
+impl<I: Id, T> ById<I, T> {
+    pub fn new() -> Self {
+        Self::from(Vec::new())
+    }
+
+    /// Adds `entry` and gives the id that reads it.
+    pub fn push(&mut self, entry: T) -> I {
+        self.entries.push(entry);
+        I::at(self.entries.len() - 1)
+    }
+
+    /// The id the next entry pushed will have.
+    pub fn next_id(&self) -> I {
+        I::at(self.entries.len())
+    }
+
+    pub fn get(&self, id: I) -> Option<&T> {
+        self.entries.get(id.index())
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        &self.entries
+    }
+
+    /// The entries from the one `id` reads, on, in order.
+    pub fn from_id(&self, id: I) -> &[T] {
+        &self.entries[id.index()..]
+    }
+
+    /// Every id that reads an entry, in order.
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator + use<I, T> {
+        (0..self.entries.len()).map(I::at)
+    }
+
+    /// Each entry with the id that reads it, in order.
+    pub fn entries(&self) -> impl DoubleEndedIterator<Item = (I, &T)> + ExactSizeIterator {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (I::at(index), entry))
+    }
+}
+
+impl<I, T> IntoIterator for ById<I, T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+impl<'a, I, T> IntoIterator for &'a ById<I, T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter()
+    }
+}
+
+impl<I: Id, T> Default for ById<I, T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<I, T> From<Vec<T>> for ById<I, T> {
+    fn from(entries: Vec<T>) -> Self {
+        ById {
+            entries,
+            read_by: PhantomData,
+        }
+    }
+}
+
+impl<I, T> FromIterator<T> for ById<I, T> {
+    fn from_iter<A: IntoIterator<Item = T>>(entries: A) -> Self {
+        Self::from(entries.into_iter().collect::<Vec<T>>())
+    }
+}
+
+impl<I, T> Deref for ById<I, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        &self.entries
+    }
+}
+
+impl<I: Id, T> Index<I> for ById<I, T> {
+    type Output = T;
+
+    fn index(&self, id: I) -> &T {
+        &self.entries[id.index()]
+    }
+}
+
+impl<I: Id, T> IndexMut<I> for ById<I, T> {
+    fn index_mut(&mut self, id: I) -> &mut T {
+        &mut self.entries[id.index()]
+    }
+}
+
+impl<I, T: std::fmt::Debug> std::fmt::Debug for ById<I, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.entries.fmt(f)
+    }
+}
+
 /// Makes `$name` a number of its own kind, so one kind of id cannot be passed for another.
 macro_rules! id {
     ($(#[$doc:meta])* $name:ident) => {
@@ -15,6 +146,16 @@ macro_rules! id {
             /// Its place in a list that holds one entry per id.
             pub fn index(self) -> usize {
                 self.0 as usize
+            }
+        }
+
+        impl Id for $name {
+            fn index(self) -> usize {
+                $name::index(self)
+            }
+
+            fn at(index: usize) -> Self {
+                Self::try_from(index).expect("the entries of a list read by id fit a u32")
             }
         }
 
@@ -58,6 +199,9 @@ id!(
 impl SlotId {
     /// The slot at `index` of a layout.
     pub fn at(index: usize) -> SlotId {
-        SlotId::try_from(index).expect("the slots of one plan fit a u32")
+        <SlotId as Id>::at(index)
     }
 }
+
+/// A list with one entry per slot.
+pub type Slots<T> = ById<SlotId, T>;

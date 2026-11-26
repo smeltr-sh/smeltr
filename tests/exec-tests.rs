@@ -256,9 +256,9 @@ fn unroll_releases_the_source_array_instead_of_copying_it_into_every_output_row(
     // slot is the one Unroll consumed and should have released.
     let array_slot = plan
         .slot_layout
-        .iter()
-        .position(|t| matches!(t, DataType::Array(_)))
-        .map(SlotId::at)
+        .entries()
+        .find(|(_, t)| matches!(t, DataType::Array(_)))
+        .map(|(slot, _)| slot)
         .expect("the pre-unroll Array(I64) slot is still in the layout");
     assert!(
         b.get(array_slot).is_unbound(),

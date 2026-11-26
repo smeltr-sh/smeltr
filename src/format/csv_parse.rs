@@ -74,7 +74,6 @@ mod tests {
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
     use crate::core::id::FunctionId;
-    use crate::core::id::SlotId;
     use crate::plan::compile::{Plan, compile};
     use crate::plan::config::{DeclaredField, FunctionConfig, FunctionKind, ParserKind, PipelineConfig, Step};
 
@@ -149,8 +148,8 @@ mod tests {
         assert!(errors.is_empty(), "a wide row still parses");
         let written = [SLOT_RAW, fields[0].slot, fields[1].slot];
         assert!(
-            (0..plan.slot_layout.len())
-                .map(SlotId::at)
+            plan.slot_layout
+                .ids()
                 .filter(|s| !written.contains(s))
                 .all(|s| batch.peek(s).is_unbound()),
             "nothing else is written"

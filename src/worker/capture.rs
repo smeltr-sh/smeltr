@@ -1160,7 +1160,7 @@ fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, cr
                 && !crate::heartbeat::DESTINATION_COLUMNS.contains(&name.as_str())
         })
         .map(|(name, slot)| {
-            let ty = plan.slot_layout[slot.index()].spell();
+            let ty = plan.slot_layout[slot].spell();
             (CaptureColumn { name, ty }, slot)
         })
         .collect()
@@ -1203,7 +1203,7 @@ impl<'a> Finished<'a> {
         let fields = (self.internal.iter())
             .map(|(_, slot)| {
                 doc.clear();
-                let ty = &self.plan.slot_layout[slot.index()];
+                let ty = &self.plan.slot_layout[*slot];
                 let written = crate::format::json::write_value(batch.peek(*slot), ty, row, &mut doc);
                 tapped_value(written.then_some(&doc[..]))
             })

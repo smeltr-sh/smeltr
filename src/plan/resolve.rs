@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::core::column::DataType;
-use crate::core::id::{FunctionId, PatternId, SlotId};
+use crate::core::id::{FunctionId, PatternId, SlotId, Slots};
 use crate::expr::ast::{Expr, ExprKind, PatternSrc, Site, Span, Value};
 use crate::expr::inline::PRELUDE_FUNCTIONS;
 use crate::expr::ir::{Ir, IrKind, Layer};
@@ -69,8 +69,8 @@ impl ResourceBuilder {
 #[derive(Clone)]
 pub struct SymbolTable {
     root: Object,
-    pub layout: Vec<DataType>,
-    pub origins: Vec<SlotOrigin>,
+    pub layout: Slots<DataType>,
+    pub origins: Slots<SlotOrigin>,
     pub warnings: Vec<CompileError>,
     /// The slots bound to a local, rather than to the record's field.
     pub local_slots: HashSet<SlotId>,
@@ -146,7 +146,7 @@ impl SymbolTable {
             laid: laid.iter().map(|(name, slot)| (name.to_string(), *slot)).collect(),
             under,
             reads_only: true,
-            layout: layout.to_vec(),
+            layout: layout.iter().cloned().collect(),
             // Origins are logs only (`logs`'s slot listing); a `when` never binds, so nothing here is ever read
             // back.
             origins: layout
@@ -173,8 +173,8 @@ impl SymbolTable {
     pub fn new(ingest: &[(Place, DataType)]) -> SymbolTable {
         let mut t = SymbolTable {
             root: Object::default(),
-            layout: Vec::new(),
-            origins: Vec::new(),
+            layout: Slots::new(),
+            origins: Slots::new(),
             warnings: Vec::new(),
             local_slots: HashSet::new(),
             deleted_slots: HashSet::new(),
@@ -188,8 +188,7 @@ impl SymbolTable {
             reads_only: false,
         };
         for (place, ty) in ingest {
-            let slot = SlotId::at(t.layout.len());
-            t.layout.push(ty.clone());
+            let slot = t.layout.push(ty.clone());
             match place {
                 Place::Unclaimed(object) => t.set_unclaimed(object, Some(slot)),
                 Place::Leaf(name) => {
@@ -404,17 +403,22 @@ impl SymbolTable {
     }
 
     pub fn type_of(&self, slot: SlotId) -> &DataType {
-        &self.layout[slot.index()]
+        &self.layout[slot]
     }
 
     /// Whether `name` is a leaf bound to a variant.
     pub fn is_dynamic(&self, name: &str) -> bool {
         self.lookup(name)
-            .is_some_and(|slot| self.layout[slot.index()] == DataType::Variant)
+            .is_some_and(|slot| self.layout[slot] == DataType::Variant)
     }
 
     pub fn slot_count(&self) -> usize {
         self.layout.len()
+    }
+
+    /// The slot the next allocation takes.
+    pub fn next_slot(&self) -> SlotId {
+        self.layout.next_id()
     }
 
     /// Every slot the tree names right now, by its place. What `rebound_since` compares against.
@@ -434,10 +438,12 @@ impl SymbolTable {
         let mut rebound: Vec<(SlotId, Place, Option<SlotId>, SlotId)> = self
             .bindings()
             .into_iter()
-            .filter(|&(_, slot)| slot >= first && assigned(&self.origins[slot.index()]))
+            .filter(|&(_, slot)| slot >= first && assigned(&self.origins[slot]))
             .map(|(place, slot)| {
                 let name = place.to_string();
-                let first_bound = self.origins[first.index()..]
+                let first_bound = self
+                    .origins
+                    .from_id(first)
                     .iter()
                     .find(|o| o.name == name && assigned(o))
                     .map_or(slot, |o| o.slot);
@@ -533,8 +539,7 @@ impl SymbolTable {
     /// A fresh slot of type `ty`, named `name` in provenance and bound to nothing: what an instruction writes before
     /// a write binds it.
     pub fn alloc(&mut self, name: String, ty: DataType, origin: Origin) -> SlotId {
-        let slot = SlotId::at(self.layout.len());
-        self.layout.push(ty.clone());
+        let slot = self.layout.push(ty.clone());
         self.origins.push(SlotOrigin { slot, name, ty, origin });
         slot
     }
@@ -562,7 +567,7 @@ impl SymbolTable {
             Node::Object(o) => o.places().into_iter().map(|(p, slot)| (p.under(to), slot)).collect(),
         };
         for (place, slot) in moved {
-            self.origins[slot.index()].name = place.to_string();
+            self.origins[slot].name = place.to_string();
         }
         self.root.put(to, node);
         Ok(())
@@ -2054,7 +2059,7 @@ pub fn undeclared_use(name: &str, hint: &str, syms: &SymbolTable) -> Option<Stri
     let (object, at, _) = syms.root.deepest(name);
     let ingested = object
         .unclaimed
-        .is_some_and(|slot| syms.origins[slot.index()].origin == Origin::Ingest);
+        .is_some_and(|slot| syms.origins[slot].origin == Origin::Ingest);
     (ingested && at.is_empty() && !syms.reads_only && syms.lookup(name).is_none()).then(|| {
         format!(
             "`{name}` is not a field this source declares. Read a field it declares, or give `{name}` a type to read \
@@ -2462,15 +2467,15 @@ mod tests {
         // Config reads a field by name, and the serializer writes the live names. Neither may reach a temp.
         assert_eq!(t.root().leaves(), names);
         assert_eq!(
-            t.lookup(&t.origins[s.index()].name),
+            t.lookup(&t.origins[s].name),
             None,
             "not even by the name provenance shows"
         );
         t.bind("b", DataType::I64, Origin::Function(FunctionId::new(0)));
         // The runtime reads a slot's provenance at the slot's index.
         assert_eq!(t.origins.len(), t.slot_count());
-        assert!(t.origins.iter().enumerate().all(|(i, o)| o.slot.index() == i));
-        assert_eq!(t.origins[s.index()].origin, Origin::Guard);
+        assert!(t.origins.entries().all(|(slot, o)| o.slot == slot));
+        assert_eq!(t.origins[s].origin, Origin::Guard);
     }
 
     #[test]

@@ -304,7 +304,7 @@ fn an_unknown_field_is_a_compile_error_unless_the_root_is_open() {
 
     let plan = ok(vec![json(""), code(1, "x = whatever.key;")]);
     let x = plan.tree.leaf("x").expect("`x` is a leaf");
-    assert_eq!(plan.provenance[x.index()].ty, DataType::Variant);
+    assert_eq!(plan.provenance[x].ty, DataType::Variant);
     let mut env = Env::new();
     let mut b = raw_batch(&plan, &[r#"{"a":1}"#], &mut env.pool);
     let rows = env.run_json(&plan, &mut b);
@@ -326,7 +326,7 @@ fn renaming_onto_a_bound_name_replaces_it() {
     let live: Vec<&str> = leaves.iter().map(|(n, _)| n.as_str()).collect();
     assert!(live.contains(&"b") && !live.contains(&"a"), "{live:?}");
     let b = p.tree.leaf("b").unwrap();
-    assert_eq!(p.provenance[b.index()].slot, b);
+    assert_eq!(p.provenance[b].slot, b);
     let parsed = ok(vec![json("a: i64; b: i64;")]);
     let a_parsed = parsed.tree.leaf("a").expect("the parser binds `a`");
     assert_eq!(b, a_parsed, "`b` is `a`'s column");
@@ -404,16 +404,16 @@ fn declared_types_survive_into_the_slot_layout() {
 fn reserved_slots_come_first_then_the_sources_own_fields() {
     use smeltr::core::batch::{RAW_SLOTS, SLOT_LIVE, SLOT_RAW, raw_layout};
     let p = ok(vec![json("")]);
-    assert_eq!(p.provenance[SLOT_LIVE.index()].name, "__live");
-    assert_eq!(p.provenance[SLOT_RAW.index()].name, "_raw");
-    assert_eq!(p.slot_layout[..RAW_SLOTS], raw_layout()[..]);
+    assert_eq!(p.provenance[SLOT_LIVE].name, "__live");
+    assert_eq!(p.provenance[SLOT_RAW].name, "_raw");
+    assert_eq!(p.slot_layout.as_slice()[..RAW_SLOTS], raw_layout()[..]);
     for (i, (name, ty)) in smeltr::plan::topology::SourceMeta::KAFKA
         .source_fields()
         .iter()
         .enumerate()
     {
-        assert_eq!(p.provenance[RAW_SLOTS + i].name, *name, "source field {i}");
-        assert_eq!(p.slot_layout[RAW_SLOTS + i], *ty, "source field {i}");
+        assert_eq!(p.provenance.as_slice()[RAW_SLOTS + i].name, *name, "source field {i}");
+        assert_eq!(p.slot_layout.as_slice()[RAW_SLOTS + i], *ty, "source field {i}");
     }
 }
 
@@ -435,7 +435,7 @@ fn a_dotted_path_through_nested_declared_structs_reads_the_leaf() {
     let p = ok(vec![json("n: {inner: {deep: i64}};"), code(1, "out = n.inner.deep;")]);
     assert!(p.warnings.is_empty(), "{:?}", p.warnings);
     let out = p.tree.leaf("out").unwrap();
-    assert_eq!(p.provenance[out.index()].ty, DataType::I64);
+    assert_eq!(p.provenance[out].ty, DataType::I64);
 }
 
 /// A closed object has no unclaimed fields: a dotted read of a key it does not have is a compile error on the step that
@@ -454,7 +454,7 @@ fn a_key_the_object_does_not_have_is_a_compile_error_unless_the_object_is_open()
 
         let p = ok(vec![json("geo: {city: str, country: str, ...};"), read]);
         let out = p.tree.leaf("out").expect("`out` is a leaf");
-        assert_eq!(p.provenance[out.index()].ty, DataType::Variant, "{expr}");
+        assert_eq!(p.provenance[out].ty, DataType::Variant, "{expr}");
     }
 }
 
@@ -468,7 +468,7 @@ fn a_renamed_declared_struct_carries_its_dotted_reads_with_it() {
     ]);
     assert!(p.warnings.is_empty(), "{:?}", p.warnings);
     let out = p.tree.leaf("out").unwrap();
-    assert_eq!(p.provenance[out.index()].ty, DataType::Str);
+    assert_eq!(p.provenance[out].ty, DataType::Str);
 }
 
 /// An object literal bound in an earlier step is its paths: `obj.k` is a column the step produced, and there is no
@@ -853,7 +853,7 @@ fn a_csv_column_writes_a_source_field() {
 fn a_csv_column_nobody_declared_is_a_str_field() {
     let plan = ok(vec![code(0, HOST_CODE), code(1, "out = code;")]);
     let out = plan.tree.leaf("out").expect("`out` is a leaf");
-    assert_eq!(plan.provenance[out.index()].ty, DataType::Str);
+    assert_eq!(plan.provenance[out].ty, DataType::Str);
     let mut env = Env::new();
     let mut b = raw_batch(&plan, &["web1,200"], &mut env.pool);
     let rows = env.run_json(&plan, &mut b);

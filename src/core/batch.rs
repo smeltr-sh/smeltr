@@ -3,7 +3,7 @@
 //! `SlotId` is a column index fixed by the compiler before any data arrives. Every column in a batch has exactly `rows`
 //! rows; a cardinality change produces a new batch through `gather`.
 
-use super::id::SlotId;
+use super::id::{SlotId, Slots};
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType};
 
@@ -36,14 +36,14 @@ pub fn raw_layout() -> Vec<DataType> {
 
 pub struct Batch {
     /// Fixed length = plan.slot_count. Unbound slots hold `Empty`, not `None`.
-    slots: Vec<Column>,
+    slots: Slots<Column>,
     rows: usize,
     partition: i32,
 
     /// Debug-only: which slots have been written. Reading an unwritten slot is a compiler bug (it resolved a read to a
     /// slot no instruction writes), and the design says assert, not fall back.
     #[cfg(debug_assertions)]
-    bound: Vec<bool>,
+    bound: Slots<bool>,
 }
 
 impl Batch {
@@ -55,7 +55,7 @@ impl Batch {
             rows,
             partition,
             #[cfg(debug_assertions)]
-            bound: vec![false; layout.len()],
+            bound: layout.iter().map(|_| false).collect(),
         }
     }
 
@@ -75,23 +75,23 @@ impl Batch {
     pub fn get(&self, slot: SlotId) -> &Column {
         #[cfg(debug_assertions)]
         debug_assert!(
-            self.bound[slot.index()],
+            self.bound[slot],
             "slot {slot} read before it was ever written — the compiler resolved a \
              read to a slot nothing produces"
         );
-        &self.slots[slot.index()]
+        &self.slots[slot]
     }
 
     /// Read without the bound check, for the serializer and for kernels that tolerate an unbound slot as null.
     #[inline]
     pub fn peek(&self, slot: SlotId) -> &Column {
-        &self.slots[slot.index()]
+        &self.slots[slot]
     }
 
     /// Write a bound column in place: a region's mask, whose bits clear as rows leave it.
     #[inline]
     pub fn get_mut(&mut self, slot: SlotId) -> &mut Column {
-        &mut self.slots[slot.index()]
+        &mut self.slots[slot]
     }
 
     /// Bind `col` to `slot`, reclaiming whatever was there. `col` must have exactly `rows` rows.
@@ -102,30 +102,30 @@ impl Batch {
             self.rows,
             "every column in a batch must have exactly `rows` rows"
         );
-        let old = std::mem::replace(&mut self.slots[slot.index()], col);
+        let old = std::mem::replace(&mut self.slots[slot], col);
         old.reclaim(pool);
         #[cfg(debug_assertions)]
         {
-            self.bound[slot.index()] = true;
+            self.bound[slot] = true;
         }
     }
 
     /// Move a column out, leaving `Empty` behind. Only legal once liveness has proven the slot dead.
     #[inline]
     pub fn take_dead(&mut self, slot: SlotId) -> Column {
-        let ty = self.slots[slot.index()].data_type();
+        let ty = self.slots[slot].data_type();
         #[cfg(debug_assertions)]
         {
-            self.bound[slot.index()] = false;
+            self.bound[slot] = false;
         }
-        std::mem::replace(&mut self.slots[slot.index()], Column::empty(ty, self.rows))
+        std::mem::replace(&mut self.slots[slot], Column::empty(ty, self.rows))
     }
 
     // -- cardinality ---------------------------------------------------------
 
     /// A new batch containing only `indices`: row `i` of the result is row `indices[i]` of `self`, across every slot. Consuming, because `rows` is fixed for a batch's lifetime.
     pub fn gather(self, pool: &mut BufferPool, indices: &[u32]) -> Batch {
-        let new_slots: Vec<Column> = self.slots.iter().map(|c| c.gather(pool, indices)).collect();
+        let new_slots: Slots<Column> = self.slots.iter().map(|c| c.gather(pool, indices)).collect();
         let partition = self.partition;
         #[cfg(debug_assertions)]
         let bound = self.bound.clone();
@@ -140,8 +140,8 @@ impl Batch {
     }
 
     /// Return every buffer to the pool.
-    pub fn reclaim(mut self, pool: &mut BufferPool) {
-        for col in self.slots.drain(..) {
+    pub fn reclaim(self, pool: &mut BufferPool) {
+        for col in self.slots {
             col.reclaim(pool);
         }
     }
@@ -186,7 +186,7 @@ mod tests {
         let b = Batch::new(&layout(), 100, 0);
         assert_eq!(b.rows(), 100);
         assert_eq!(b.slot_count(), RAW_SLOTS + 3);
-        for s in (0..b.slot_count()).map(SlotId::at) {
+        for s in b.slots.ids() {
             assert!(b.peek(s).is_unbound());
             assert_eq!(b.peek(s).len(), 100);
         }
