@@ -90,7 +90,7 @@ fn read(signal: Signal, records: &[SourceRecord]) -> Vec<Value> {
     let filed = meta.objects(records, Some("in"));
     (records.iter().zip(filed))
         .map(|(record, mut filed)| {
-            let fields: Value = serde_json::from_slice(&meta.record_json(record, "")).unwrap();
+            let fields: Value = serde_json::from_slice(&meta.record_json(record)).unwrap();
             filed.retain(|key, _| key == "resource" || key.starts_with("scope"));
             json!({"record": fields, "filed": filed})
         })

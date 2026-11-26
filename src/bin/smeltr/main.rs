@@ -2644,7 +2644,7 @@ mod tests {
         let chunk = &read[1].chunk;
         assert_eq!(chunk.failed(), &[(1, 0, "1".to_string()), (1, 1, "bo".to_string())]);
         assert_eq!(
-            meta.record_object(&read[0], ""),
+            meta.record_object(&read[0]),
             *serde_json::json!({"id": 1, "user": {"name": "ann"}, "__source": {"offset": 7}})
                 .as_object()
                 .unwrap()
@@ -2665,7 +2665,7 @@ mod tests {
         }
         let own = smeltr::plan::topology::SourceMeta::of_columns(&held.columns).unwrap();
         let read = smeltr::leader::preview::read_sample(&own, &held).unwrap();
-        let object = own.record_object(&read.records[0], "");
+        let object = own.record_object(&read.records[0]);
         assert_eq!(
             object["__exception"],
             serde_json::json!({"message": "matched no route"})
@@ -2680,7 +2680,7 @@ mod tests {
             .unwrap();
         let read = smeltr::leader::preview::read_sample(&live, &held).unwrap();
         assert_eq!(
-            live.record_object(&read.records[0], ""),
+            live.record_object(&read.records[0]),
             *serde_json::json!({"id": 1, "user": {"name": "ann"}})
                 .as_object()
                 .unwrap()
@@ -2698,7 +2698,7 @@ mod tests {
             let read = smeltr::leader::preview::read_sample(&now, &held).unwrap().records;
             let failed = read[0].chunk.failed().to_vec();
             let rows: Vec<_> = (read.iter())
-                .map(|r| serde_json::Value::Object(now.record_object(r, "")))
+                .map(|r| serde_json::Value::Object(now.record_object(r)))
                 .collect();
             (rows, failed)
         };

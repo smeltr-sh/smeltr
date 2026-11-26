@@ -1500,7 +1500,7 @@ fn check_records(c: &ObjectSourceConfig, records: &[SourceRecord], objects: &[Ob
     for r in records {
         let bytes = match &c.avro {
             Some(avro) => {
-                let json = avro.meta.record_json(r, "");
+                let json = avro.meta.record_json(r);
                 let value: Value =
                     serde_json::from_slice(&json).map_err(|e| format!("a record that is no JSON: {e}"))?;
                 serde_json::to_vec(&value).unwrap()
