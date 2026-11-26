@@ -32,7 +32,7 @@ use crate::handoff::Ready;
 use crate::io::{BatchCompletion, BatchId, Destination, Dispatched, HeldRefusal, IoError, OwnedRecord, Rejection};
 use crate::metrics::MetricsHandle;
 use crate::worker::capture::{Captures, HeldAt};
-use pacing::{Completion, Pacer};
+use pacing::{Completion, Gate, Pacer};
 
 /// Which reader a unit came from, and where its completion goes.
 type ReaderId = u64;
@@ -109,10 +109,6 @@ struct Queue {
     most: usize,
     /// The least a paced queue's budget is, one batch, once the queue is paced.
     paced: OnceLock<usize>,
-    /// A source asked for room this queue did not have, since the last pop. The pacing model's mark that the link,
-    /// not the source, bounded what the next unit's sample measures: at steady state the queue is often empty with
-    /// everything in flight, so a backlog alone would read a full link as a quiet source.
-    pressed: AtomicBool,
     /// Signaled when a unit arrives, or on close.
     work: Condvar,
     /// The transform pool's wake-up, signaled when bytes are freed: a lane parked on this queue is the pool's to run
@@ -286,7 +282,6 @@ impl Queue {
             budget: AtomicUsize::new(budget),
             most: budget,
             paced: OnceLock::new(),
-            pressed: AtomicBool::new(false),
             work: Condvar::new(),
             pool: Mutex::new(None),
             holds_refusals: AtomicBool::new(false),
@@ -302,7 +297,7 @@ impl Queue {
     /// reaches the refusal that says so.
     fn has_room(&self, bytes: usize) -> bool {
         let st = self.state.lock();
-        let room = st.closed
+        st.closed
             || st.bytes == 0
             || (st.bytes + bytes <= self.budget()
                 && self.lend.get().is_none_or(|l| {
@@ -311,19 +306,7 @@ impl Queue {
                         st.borrowed + st.senders,
                         l.borrowed(st.bytes + bytes) - st.borrowed,
                     )
-                }));
-        if !room {
-            self.pressed.store(true, Ordering::Relaxed);
-        }
-        room
-    }
-
-    /// Whether the source is pressing on this queue: it was refused room since the last pop. Units waiting behind
-    /// the one popped are not enough: they wait on this thread, with the budget not yet full, and a sample taken
-    /// then says how fast this thread hands batches over, not how fast the link carries them. Consumed: the mark is
-    /// the next unit's.
-    fn pressing(&self) -> bool {
-        self.pressed.swap(false, Ordering::Relaxed)
+                }))
     }
 
     /// The most a paced budget may be: the queue bytes whose borrowing fits this queue's share of the pool, less
@@ -377,7 +360,6 @@ impl Queue {
             return Err(Refused::Closed);
         }
         if st.bytes > 0 && st.bytes + unit.bytes > self.budget() {
-            self.pressed.store(true, Ordering::Relaxed);
             return Err(Refused::NoRoom(unit));
         }
         if let Some(lend) = self.lend.get() {
@@ -386,7 +368,6 @@ impl Queue {
                 .pool
                 .take(lend.id, st.borrowed + st.senders, borrowed - st.borrowed, st.bytes == 0)
             {
-                self.pressed.store(true, Ordering::Relaxed);
                 return Err(Refused::NoRoom(unit));
             }
             st.borrowed = borrowed;
@@ -402,14 +383,14 @@ impl Queue {
     fn pop(&self, timeout: Duration) -> Popped {
         let mut st = self.state.lock();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, self.pressing());
+            return Popped::Work(u);
         }
         if st.closed {
             return Popped::Closed;
         }
         let (mut st, _) = self.work.wait_timeout(st, timeout);
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, self.pressing());
+            return Popped::Work(u);
         }
         if st.closed {
             return Popped::Closed;
@@ -424,6 +405,11 @@ impl Queue {
             return;
         }
         let _ = self.work.wait_timeout(st, d);
+    }
+
+    /// Whether no unit waits to be popped.
+    fn is_empty(&self) -> bool {
+        self.state.lock().units.is_empty()
     }
 
     /// Give budget back: on acknowledgment, never merely on send. Every waiting pool thread is woken, since more than
@@ -463,8 +449,7 @@ impl Queue {
 }
 
 enum Popped {
-    /// A unit, and whether the source was pressing on the queue: refused room since the last.
-    Work(Unit, bool),
+    Work(Unit),
     Idle,
     Closed,
 }
@@ -667,8 +652,10 @@ fn run(
     let mut open_reported: Option<usize> = None;
     // Held while any are kept, so a capture at this destination waits to be shown them.
     let mut holding: Option<crate::worker::capture::Holding> = None;
-    // The pacing model, once the queue is paced. Its target is the queue's budget, and so what is in flight.
+    // The pacing model, once the queue is paced: BBR, whose window is the queue's budget, and so what is in flight.
     let mut pacer: Option<Pacer> = None;
+    // A unit the pacing model held back: it goes before anything else once the model lets it.
+    let mut gated: Option<Unit> = None;
     let mut finishing = false;
 
     loop {
@@ -696,24 +683,43 @@ fn run(
         note_queue(metrics, id, queue, &mut held_reported, &mut held_reported_at);
         // A re-send that is due before anything new: it is older.
         let now = Instant::now();
-        let mut pressing = true;
-        let next = match again.iter().position(|(at, _)| *at <= now) {
-            Some(i) => Some(again.swap_remove(i).1),
-            None => match queue.pop(POLL_INTERVAL) {
-                Popped::Closed => break,
-                Popped::Idle => None,
-                Popped::Work(u, pressed) => {
-                    pressing = pressed;
-                    Some(u)
+        let next = match gated.take() {
+            Some(unit) => Some(unit),
+            None => match again.iter().position(|(at, _)| *at <= now) {
+                Some(i) => Some(again.swap_remove(i).1),
+                None => match queue.pop(POLL_INTERVAL) {
+                    Popped::Closed => break,
+                    Popped::Idle => {
+                        if let Some(p) = pacer.as_mut().filter(|_| again.is_empty()) {
+                            p.check_app_limited(true);
+                        }
+                        None
+                    }
+                    Popped::Work(u) => Some(u),
+                },
+            },
+        };
+        // A batch goes only while the window has room for it and the pacing rate has it due.
+        let next = match (next, pacer.as_mut()) {
+            (Some(unit), Some(p)) => match p.gate(unit.bytes) {
+                Gate::Send => Some(unit),
+                Gate::Wait(due) => {
+                    gated = Some(unit);
+                    queue.sleep_unless_closed(due.min(POLL_INTERVAL));
+                    None
+                }
+                Gate::Full => {
+                    gated = Some(unit);
+                    queue.sleep_unless_closed(POLL_INTERVAL);
+                    None
                 }
             },
+            (next, _) => next,
         };
 
         if let Some(unit) = next {
             let local = next_local;
             next_local += 1;
-            // A re-send is never the source's doing: it counts as the link's.
-            let app_limited = !pressing;
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
             tracing::trace!(
@@ -734,10 +740,7 @@ fn run(
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
             // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
             let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
-            let paced = pacer
-                .as_mut()
-                .filter(|_| taken)
-                .map(|p| p.dispatched(unit.bytes, app_limited));
+            let paced = pacer.as_mut().filter(|_| taken).map(|p| p.dispatched(unit.bytes));
             match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
@@ -796,6 +799,9 @@ fn run(
                 // A batch that landed beside one that failed does not clear the stall, nor does it wait on the failed
                 // one: that waits its own `retry`. The destination recovers once every unit that failed has landed.
                 let (mut failures, mut landed) = (false, false);
+                if let Some(p) = pacer.as_mut().filter(|_| !done.is_empty()) {
+                    p.check_app_limited(gated.is_none() && again.is_empty() && queue.is_empty());
+                }
                 for c in done {
                     let Some(mut owed) = owner.remove(&c.batch) else {
                         continue;
@@ -898,6 +904,7 @@ fn run(
     }
 
     // Rows nobody will deliver. None of it was committed, so it is redelivered when the deployment comes back.
+    again.extend(gated.map(|unit| (Instant::now(), unit)));
     abandon(returns, &owner, &again);
 }
 
@@ -1532,33 +1539,6 @@ mod tests {
         let _ = queue.paced.set(4);
         queue.set_budget(4);
         assert_eq!(queue.share(), 100, "its stated buffer, or its kind's default");
-    }
-
-    #[test]
-    fn a_refusal_marks_the_next_unit_as_pressed_and_a_quiet_source_does_not() {
-        let queue = Queue::new(4);
-        let pressed = |p| match p {
-            Popped::Work(_, pressed) => pressed,
-            _ => panic!("a unit was queued"),
-        };
-        // A quiet source: one unit, nothing refused, nothing behind it.
-        assert!(queue.offer(unit(4)).is_ok());
-        assert!(!pressed(queue.pop(Duration::ZERO)));
-        // Everything in flight, the queue empty, and the source asks for room it does not get: the link is full.
-        assert!(!queue.has_room(1));
-        assert!(queue.offer(unit(4)).is_err());
-        queue.release(4);
-        assert!(queue.offer(unit(4)).is_ok());
-        assert!(pressed(queue.pop(Duration::ZERO)), "a refusal marks the next unit");
-        // The mark is consumed: the one after is quiet again.
-        queue.release(4);
-        assert!(queue.offer(unit(4)).is_ok());
-        assert!(!pressed(queue.pop(Duration::ZERO)));
-        // A backlog under the budget does not: the queue had room.
-        queue.release(4);
-        assert!(queue.offer(unit(2)).is_ok());
-        assert!(queue.offer(unit(2)).is_ok());
-        assert!(!pressed(queue.pop(Duration::ZERO)));
     }
 
     #[test]
