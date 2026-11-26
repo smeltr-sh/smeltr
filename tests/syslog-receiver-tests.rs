@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use smeltr::io::framing::Framing;
 use smeltr::io::senders::{Fingerprint, Hash};
@@ -165,11 +165,11 @@ fn stopping_a_receiver_ends_its_connections_and_leaves_the_others_serving() {
     drop(stopping);
     held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     assert!(closed(&mut held), "a stopped receiver's connection is still open");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while std::net::TcpListener::bind(a).is_err() {
-        assert!(Instant::now() < deadline, "a stopped receiver still holds its port");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    crate::harness::wait_until(
+        "a stopped receiver to let go of its port",
+        Duration::from_secs(5),
+        || std::net::TcpListener::bind(a).is_ok(),
+    );
     let mut again = receiver(a, &["127.0.0.0/8"], None, 1 << 16, &secrets);
     for (at, source) in [(a, &mut again), (b, &mut staying)] {
         let mut sender = TcpStream::connect(at).unwrap();
@@ -860,13 +860,10 @@ fn a_datagram_while_blocked_is_dropped_and_counted() {
     let sender = datagram_sender(at);
     source.block().unwrap();
     sender.send(b"<13>Oct 11 22:14:15 web-1 app: lost").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut dropped = 0;
-    while dropped == 0 {
-        assert!(Instant::now() < deadline, "no datagram was counted dropped");
-        std::thread::sleep(Duration::from_millis(20));
-        dropped = source.take_dropped();
-    }
+    let dropped = crate::harness::wait_for("a datagram to be counted dropped", Duration::from_secs(10), || {
+        Some(source.take_dropped()).filter(|dropped| *dropped > 0)
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
     assert_eq!(dropped, 1);
     assert_eq!(source.take_dropped(), 0, "a drop is reported once");
     source.release().unwrap();

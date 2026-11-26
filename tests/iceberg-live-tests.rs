@@ -13,7 +13,7 @@ use crate::live;
 use smeltr::core::id::DestId;
 
 use std::borrow::Cow;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use smeltr::io::iceberg::manifest::{read_manifest, read_manifest_list};
 use smeltr::io::parquet::Columns;
@@ -51,20 +51,14 @@ fn deliver(d: &mut dyn Destination, batch: u64, rows: Vec<OwnedRecord>) {
         return;
     }
     d.flush().expect("flushed");
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        if let Some(c) = d
-            .poll_completions()
+    let done = harness::wait_for(&format!("batch {batch} to finish"), Duration::from_secs(90), || {
+        d.poll_completions()
             .expect("landed")
             .into_iter()
             .find(|c| c.batch == batch)
-        {
-            assert!(c.rejections.is_empty(), "{:?}", c.rejections);
-            return;
-        }
-        assert!(Instant::now() < deadline, "no completion");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    })
+    .unwrap_or_else(|late| panic!("{late}"));
+    assert!(done.rejections.is_empty(), "{:?}", done.rejections);
 }
 
 /// The table's metadata as the catalog answers it.
@@ -359,11 +353,9 @@ fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
         )]
     );
     d.flush().expect("flushed");
-    let deadline = Instant::now() + Duration::from_secs(90);
-    while !d.poll_completions().expect("landed").iter().any(|c| c.batch == 1) {
-        assert!(Instant::now() < deadline, "no completion");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    harness::wait_until("the batch to finish", Duration::from_secs(90), || {
+        d.poll_completions().expect("landed").iter().any(|c| c.batch == 1)
+    });
 
     let table = load(&catalog, &namespace, "narrow");
     let schema_id = &table["metadata"]["current-schema-id"];

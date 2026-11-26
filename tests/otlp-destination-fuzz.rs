@@ -1002,14 +1002,12 @@ fn collector_config(listening: SocketAddr, at: SocketAddr, signal: Signal, reach
 
 /// Waits for something to listen at `at`.
 fn listening(at: SocketAddr, within: Duration) -> bool {
-    let until = Instant::now() + within;
-    while Instant::now() < until {
-        if std::net::TcpStream::connect_timeout(&at, Duration::from_millis(200)).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
+    crate::harness::wait_for(&format!("something to listen at {at}"), within, || {
+        std::net::TcpStream::connect_timeout(&at, Duration::from_millis(200))
+            .is_ok()
+            .then_some(())
+    })
+    .is_ok()
 }
 
 /// A bundle of one OTLP destination of `signal` sending to `url`, with the settings `d` adds.

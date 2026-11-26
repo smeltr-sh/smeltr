@@ -3,8 +3,8 @@
 //! `&&`, `||` and `!` read null as false (design doc, Language), so none of them yields null. `??` takes the first non-null operand per row. None of these may use `short_circuit_empty`.
 //! Each reads a literal operand as one value.
 
-use super::arrayops;
 use super::helpers::{self, One, Operand, Side, side};
+use super::pieces::{self, Piece};
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, Scalar, SealedRows, StrBuilder, VarType};
@@ -162,7 +162,22 @@ pub(crate) fn take(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataTy
         // A `null` type holds no value: its column is `Empty`, as `build`'s is.
         DataType::Null => Column::empty(DataType::Null, len),
         DataType::Str | DataType::Bytes | DataType::Variant => take_varlen(ctx, ins, takes, ty, len),
-        DataType::Array(elem_ty) => arrayops::take_list(ctx, ins, takes, elem_ty, len),
+        // Each run of rows one source wins is one `Piece` for `build`.
+        DataType::Array(_) => {
+            let taker = bits::index_of_set(takes, len);
+            let mut pieces = Vec::new();
+            let mut start = 0;
+            for row in 1..=len {
+                if row == len || taker[row] != taker[start] {
+                    pieces.push(match taker[start] {
+                        Some(k) => Piece::Span(ins[k as usize], start, row),
+                        None => Piece::Null(row - start),
+                    });
+                    start = row;
+                }
+            }
+            pieces::build(ctx.pool, ty, &pieces, len)
+        }
         DataType::Struct(..) => {
             // An unbound struct has no fields to read, and the rows it wins are null.
             let (cols, takes): (Vec<&Column>, Vec<&[u64]>) = ins

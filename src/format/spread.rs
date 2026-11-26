@@ -245,7 +245,7 @@ impl<'d> Spread<'d> {
         for (i, f) in fields.iter().enumerate() {
             let n = s.node_at(&f.name);
             s.nodes[n].leaf = Some(i);
-            let builder = TypedBuilder::new(&f.ty, f.time_source.as_ref(), ctx.now_micros);
+            let builder = TypedBuilder::new(&f.ty, f.time_source.as_ref(), ctx.now_micros, ctx.pool);
             s.fields.push((f.slot, f.ty.clone(), f.name.clone(), builder));
         }
         for (i, o) in objects.iter().enumerate() {

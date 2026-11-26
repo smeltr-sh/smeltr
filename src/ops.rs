@@ -13,6 +13,7 @@ pub mod hashops;
 pub mod logic;
 pub mod netops;
 pub mod objectops;
+pub(crate) mod pieces;
 pub mod rebuildops;
 pub mod stdfuncs;
 pub mod strops;
