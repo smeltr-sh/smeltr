@@ -60,7 +60,7 @@ pub struct Checked {
 /// The leader's checks: what the last found, and what wakes the timer.
 #[derive(Default)]
 pub struct Updates {
-    state: std::sync::Mutex<(Option<Newer>, Option<Checked>)>,
+    state: crate::sync::Mutex<(Option<Newer>, Option<Checked>)>,
     /// Wakes the timer to check at once: the setting turned on, or an administrator asked.
     pub wake: tokio::sync::Notify,
     /// Told each time a check is recorded.
@@ -68,8 +68,8 @@ pub struct Updates {
 }
 
 impl Updates {
-    fn held(&self) -> std::sync::MutexGuard<'_, (Option<Newer>, Option<Checked>)> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    fn held(&self) -> crate::sync::MutexGuard<'_, (Option<Newer>, Option<Checked>)> {
+        self.state.lock()
     }
 
     /// The newer release, if the last check that reached GitHub found one.

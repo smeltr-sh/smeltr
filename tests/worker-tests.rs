@@ -2,6 +2,7 @@
 //! own authority) and as a worker subprocess -- enrollment, heartbeat, a
 //! git-fetched bundle, real Kafka records. Needs `KAFKA_TEST_BROKERS`.
 
+use smeltr::core::id::DestId;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Once};
@@ -47,17 +48,17 @@ fn unique(prefix: &str) -> String {
 /// Enough at the same time and the slowest misses its deadline for no reason but the others.
 const CONCURRENT_STARTS: usize = 2;
 
-static STARTS_FREE: std::sync::Mutex<usize> = std::sync::Mutex::new(CONCURRENT_STARTS);
-static A_START_FINISHED: std::sync::Condvar = std::sync::Condvar::new();
+static STARTS_FREE: smeltr::sync::Mutex<usize> = smeltr::sync::Mutex::new(CONCURRENT_STARTS);
+static A_START_FINISHED: smeltr::sync::Condvar = smeltr::sync::Condvar::new();
 
 /// Held while a leader is bootstrapping. Dropping it lets the next one begin.
 struct StartPermit;
 
 impl StartPermit {
     fn acquire() -> StartPermit {
-        let mut free = STARTS_FREE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut free = STARTS_FREE.lock();
         while *free == 0 {
-            free = A_START_FINISHED.wait(free).unwrap_or_else(|e| e.into_inner());
+            free = A_START_FINISHED.wait(free);
         }
         *free -= 1;
         StartPermit
@@ -66,7 +67,7 @@ impl StartPermit {
 
 impl Drop for StartPermit {
     fn drop(&mut self) {
-        *STARTS_FREE.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        *STARTS_FREE.lock() += 1;
         A_START_FINISHED.notify_one();
     }
 }
@@ -75,14 +76,14 @@ impl Drop for StartPermit {
 /// holding one it did not choose may do nothing else. Returns the cookie an operator route takes.
 ///
 /// The one-time password is on the console, which is the only place it is ever written.
-fn operator_session(agent: &ureq::Agent, base: &str, console: &Arc<std::sync::Mutex<String>>) -> String {
+fn operator_session(agent: &ureq::Agent, base: &str, console: &Arc<smeltr::sync::Mutex<String>>) -> String {
     install_crypto_provider();
     let _permit = StartPermit::acquire();
     // A minute, as `gate-tests` gives it. Thirty seconds is tight for an Argon2id bootstrap on a machine already
     // running the rest of the suite, and a leader that needs longer than a minute is telling you something.
     let deadline = Instant::now() + Duration::from_secs(60);
     let password = loop {
-        let said = console.lock().unwrap().clone();
+        let said = console.lock().clone();
         if let Some((_, rest)) = said.split_once("one-time password:") {
             break rest.lines().next().unwrap().trim().to_string();
         }
@@ -456,7 +457,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -587,7 +588,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -771,7 +772,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -856,13 +857,13 @@ fn standalone_enrolls_its_own_worker() {
 
     // Drained on a thread of its own: the console carries the one-time password this leader bootstrapped with,
     // and a pipe nobody reads eventually blocks the process writing to it.
-    let console = Arc::new(std::sync::Mutex::new(String::new()));
+    let console = Arc::new(smeltr::sync::Mutex::new(String::new()));
     let sink = console.clone();
     let pipe = leader.stderr.take().expect("stderr is piped");
     std::thread::spawn(move || {
         use std::io::BufRead;
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-            let mut held = sink.lock().unwrap();
+            let mut held = sink.lock();
             held.push_str(&line);
             held.push('\n');
         }
@@ -904,7 +905,7 @@ fn standalone_enrolls_its_own_worker() {
     let _ = leader.kill();
     let _ = leader.wait();
     if ready.is_none() {
-        eprintln!("smeltr --standalone console:\n{}", console.lock().unwrap());
+        eprintln!("smeltr --standalone console:\n{}", console.lock());
     }
     let ready = ready.expect("the standalone process should enroll its embedded worker");
     // A fresh install is a fleet that runs: the group its worker was told to serve is on `main` before any change is
@@ -937,13 +938,13 @@ fn a_worker_discovers_main_and_reports_the_commit_it_deployed() {
         .spawn()
         .expect("spawn smeltr standalone");
 
-    let console = Arc::new(std::sync::Mutex::new(String::new()));
+    let console = Arc::new(smeltr::sync::Mutex::new(String::new()));
     let sink = console.clone();
     let pipe = leader.stderr.take().expect("stderr is piped");
     std::thread::spawn(move || {
         use std::io::BufRead;
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-            let mut held = sink.lock().unwrap();
+            let mut held = sink.lock();
             held.push_str(&line);
             held.push('\n');
         }
@@ -992,7 +993,7 @@ fn a_worker_discovers_main_and_reports_the_commit_it_deployed() {
     let _ = leader.wait();
     if reported.is_none() {
         eprintln!("last /api/health: {last_seen:#}");
-        eprintln!("smeltr standalone console:\n{}", console.lock().unwrap());
+        eprintln!("smeltr standalone console:\n{}", console.lock());
     }
     let (commit, deployed) = reported.expect("the worker should fetch main and report the commit it deployed");
     assert_eq!(commit.len(), 40, "a full commit id, not a ref name: {commit}");
@@ -1095,7 +1096,7 @@ fn kill_outright(pid: u32) {
 struct Standalone {
     process: std::process::Child,
     data_dir: std::path::PathBuf,
-    console: Arc<std::sync::Mutex<String>>,
+    console: Arc<smeltr::sync::Mutex<String>>,
     agent: ureq::Agent,
     base: String,
     session: String,
@@ -1155,13 +1156,13 @@ impl Standalone {
             .spawn()
             .expect("spawn smeltr standalone");
 
-        let console = Arc::new(std::sync::Mutex::new(String::new()));
+        let console = Arc::new(smeltr::sync::Mutex::new(String::new()));
         let sink = console.clone();
         let pipe = process.stderr.take().expect("stderr is piped");
         std::thread::spawn(move || {
             use std::io::BufRead;
             for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-                let mut held = sink.lock().unwrap();
+                let mut held = sink.lock();
                 held.push_str(&line);
                 held.push('\n');
             }
@@ -1260,7 +1261,7 @@ impl Standalone {
     }
 
     fn said(&self) -> String {
-        self.console.lock().unwrap().clone()
+        self.console.lock().clone()
     }
 
     /// Ends it, whatever state the test left it in, and panics with its console when `outcome` is a failure.
@@ -1461,11 +1462,11 @@ fn a_signaled_runtime_drains_and_is_replaced() {
 }
 
 /// A service on `ip` that takes every POST, keeps its body, and answers 200, on as many connections as it is sent.
-fn collector(ip: &str) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+fn collector(ip: &str) -> (String, Arc<smeltr::sync::Mutex<Vec<String>>>) {
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind((ip.parse::<std::net::IpAddr>().unwrap(), 0)).unwrap();
     let url = format!("http://{}/intake", listener.local_addr().unwrap());
-    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let bodies = Arc::new(smeltr::sync::Mutex::new(Vec::new()));
     let kept = bodies.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().map_while(Result::ok) {
@@ -1491,7 +1492,7 @@ fn collector(ip: &str) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
                     if reader.read_exact(&mut body).is_err() {
                         return;
                     }
-                    kept.lock().unwrap().push(String::from_utf8_lossy(&body).to_string());
+                    kept.lock().push(String::from_utf8_lossy(&body).to_string());
                     if reader
                         .get_mut()
                         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
@@ -1590,7 +1591,7 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        let delivered = bodies.lock().unwrap().join("\n");
+        let delivered = bodies.lock().join("\n");
         if !delivered.contains("before") || !delivered.contains("during") {
             return Err(format!("the destination took {delivered:?}"));
         }
@@ -1784,7 +1785,7 @@ fn a_worker_pulls_and_is_pushed_to(name: &str, reach: &Reach, pull: &str, sink: 
         }
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let delivered = bodies.lock().unwrap().join("\n");
+            let delivered = bodies.lock().join("\n");
             if delivered.contains("pulled")
                 && push
                     .iter()
@@ -1894,13 +1895,13 @@ fn a_standalone_worker_fetches_over_https_with_no_leader_role_in_its_own_process
         .spawn()
         .expect("spawn smeltr in its worker role, with no leader role in this process");
 
-    let console = Arc::new(std::sync::Mutex::new(String::new()));
+    let console = Arc::new(smeltr::sync::Mutex::new(String::new()));
     let sink = console.clone();
     let pipe = worker.stderr.take().expect("stderr is piped");
     std::thread::spawn(move || {
         use std::io::BufRead;
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-            let mut held = sink.lock().unwrap();
+            let mut held = sink.lock();
             held.push_str(&line);
             held.push('\n');
         }
@@ -1926,7 +1927,7 @@ fn a_standalone_worker_fetches_over_https_with_no_leader_role_in_its_own_process
         if let Ok(Some(status)) = worker.try_wait() {
             panic!(
                 "the worker process exited early with {status:?}.\nworker console:\n{}",
-                console.lock().unwrap()
+                console.lock()
             );
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -1943,7 +1944,7 @@ fn a_standalone_worker_fetches_over_https_with_no_leader_role_in_its_own_process
         panic!(
             "the worker never reported a commit -- its fetch over HTTPS never landed.\nlast /api/health: \
              {last_health:#?}\nworker console:\n{}",
-            console.lock().unwrap()
+            console.lock()
         );
     };
     assert_eq!(

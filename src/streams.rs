@@ -10,9 +10,10 @@
 //! string field the pipeline delivers, and of the source's stream key, by the rows that held it ([`SenderTally`]).
 //! A field past [`SENDER_VALUES`] values names no sender, and is counted no more.
 
+use crate::sync::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::core::column::{Column, DataType, Scalar};
@@ -51,11 +52,11 @@ pub struct SenderEdits(Arc<RwLock<Vec<SenderFields>>>);
 
 impl SenderEdits {
     pub fn set(&self, fields: Vec<SenderFields>) {
-        *self.0.write().unwrap_or_else(|e| e.into_inner()) = fields;
+        *self.0.write() = fields;
     }
 
     fn of(&self, source: &str) -> SenderFields {
-        let edits = self.0.read().unwrap_or_else(|e| e.into_inner());
+        let edits = self.0.read();
         edits.iter().find(|f| f.source == source).cloned().unwrap_or_default()
     }
 }
@@ -177,7 +178,7 @@ impl Streams {
 
     /// Whether `field` of `source` is counted: an editor did not uncheck it, and it has not held too many values.
     fn counts(&self, source: &str, field: &str, edits: &SenderFields) -> bool {
-        let senders = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+        let senders = self.senders.lock();
         !edits.unchecked.iter().any(|f| f == field)
             && !matches!(senders.get(&(source.to_string(), field.to_string())), Some(None))
     }
@@ -228,7 +229,7 @@ impl Streams {
         }
         let mut counts = Vec::new();
         {
-            let mut senders = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+            let mut senders = self.senders.lock();
             for field in tally.fields {
                 let seen = senders
                     .entry((source.to_string(), field.name.clone()))
@@ -259,7 +260,7 @@ impl Streams {
                 });
             }
         }
-        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        let mut window = self.window.lock();
         window.absorb(StreamReport {
             senders: counts,
             ..Default::default()
@@ -291,7 +292,7 @@ impl Streams {
     pub fn saw_parse(&self, source: &str, route: &str, plan: &Plan, tally: &FieldTally) {
         let mut shapes = Vec::new();
         for parse in tally.parses() {
-            let Some(step) = plan.step_ids.get(parse.function as usize) else {
+            let Some(step) = plan.step_ids.get(parse.function.index()) else {
                 continue;
             };
             let mut shape = ParserShape {
@@ -319,7 +320,7 @@ impl Streams {
         if shapes.is_empty() {
             return;
         }
-        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        let mut window = self.window.lock();
         window.absorb(StreamReport {
             parsers: shapes,
             ..Default::default()
@@ -354,7 +355,7 @@ impl Streams {
         if streams.rows == 0 {
             return;
         }
-        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        let mut window = self.window.lock();
         window.absorb(StreamReport {
             unmatched: vec![streams],
             ..Default::default()
@@ -366,7 +367,7 @@ impl Streams {
     /// was seen.
     pub fn drain(&self) -> Option<StreamReport> {
         let too_many: Vec<SenderCounts> = {
-            let senders = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+            let senders = self.senders.lock();
             senders
                 .iter()
                 .filter(|(_, seen)| seen.is_none())
@@ -378,7 +379,7 @@ impl Streams {
                 })
                 .collect()
         };
-        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        let mut window = self.window.lock();
         window.absorb(StreamReport {
             senders: too_many,
             ..Default::default()
@@ -392,7 +393,7 @@ impl Streams {
     /// `report`, drained earlier and not delivered, put back ahead of what was seen since, so the next drain carries
     /// both.
     pub fn give_back(&self, report: StreamReport) {
-        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        let mut window = self.window.lock();
         let mut earlier = report;
         earlier.absorb(std::mem::take(&mut *window));
         *window = earlier;

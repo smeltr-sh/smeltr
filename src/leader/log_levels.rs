@@ -23,17 +23,17 @@ pub fn stored(store: &Store) -> Result<LogLevels, StoreError> {
 
 /// The levels as stored, held so a heartbeat answer need not read the store for them.
 #[derive(Default)]
-pub struct Held(std::sync::RwLock<LogLevels>);
+pub struct Held(crate::sync::RwLock<LogLevels>);
 
 impl Held {
     pub fn get(&self) -> LogLevels {
-        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.0.read().clone()
     }
 
     /// Hold `levels` and keep the leader's own lines at them.
     fn keep(&self, levels: LogLevels) {
         levels.apply();
-        *self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner) = levels;
+        *self.0.write() = levels;
     }
 }
 

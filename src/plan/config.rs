@@ -29,7 +29,10 @@ pub struct PipelineConfig {
 impl PipelineConfig {
     /// The `FunctionId` of the step the file names `id`: what `step_ids` holds at it.
     pub fn function_id(&self, id: &str) -> Option<FunctionId> {
-        self.step_ids.iter().position(|s| s == id).map(|i| i as FunctionId)
+        self.step_ids
+            .iter()
+            .position(|s| s == id)
+            .and_then(|i| FunctionId::try_from(i).ok())
     }
 }
 

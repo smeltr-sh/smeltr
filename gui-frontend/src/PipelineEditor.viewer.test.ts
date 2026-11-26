@@ -44,8 +44,14 @@ beforeEach(async () => {
         };
         return new Response(JSON.stringify(answer), { status: 200 });
       }
-      if (url.pathname === '/api/captures/c1/download') {
-        return new Response('{"_raw":"one"}\n{"_raw":"two"}\n', { status: 200 });
+      if (url.pathname === '/api/captures/c1/records') {
+        answer = {
+          ok: true,
+          errors: [],
+          columns: [{ name: '_raw', type: 'str' }],
+          rows: [{ values: ['one'] }, { values: ['two'] }],
+        };
+        return new Response(JSON.stringify(answer), { status: 200 });
       }
       if (url.pathname === '/api/auth/session') {
         answer = {
@@ -137,7 +143,7 @@ describe('a viewer in the pipeline editor', () => {
     await vi.waitFor(() => expect(previews.some((p) => p.capture === 'c1')).toBe(true));
     const used = previews.find((p) => p.capture === 'c1')!;
     expect(used.sample).toBeNull();
-    expect(asked).toContain('/api/captures/c1/download');
+    expect(asked).toContain('/api/captures/c1/records');
     expect(target.textContent).not.toContain('Lock this as a test');
   });
 

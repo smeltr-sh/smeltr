@@ -4,14 +4,13 @@
 use smeltr::core::batch::Batch;
 use smeltr::core::column::DataType;
 use smeltr::core::error::ExceptionKind;
-use smeltr::core::id::FunctionId;
 use smeltr::plan::config::{DeclaredField, FunctionKind, GrokConfig, ParserKind, Step, TimeSource};
 
 use crate::harness;
 use harness::*;
 
 /// A grok parser step, kept for what only a step has: a filter of its own.
-fn grok_parser(id: FunctionId, config: GrokConfig, declared: &[(&str, DataType)]) -> Step {
+fn grok_parser(id: u32, config: GrokConfig, declared: &[(&str, DataType)]) -> Step {
     func(
         id,
         FunctionKind::Parser {

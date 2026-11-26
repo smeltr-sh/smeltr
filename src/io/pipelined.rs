@@ -12,9 +12,10 @@
 //! it was throttled, so the model caps what it holds below what was in flight then. Not for Kafka: librdkafka
 //! pipelines on its own threads.
 
+use crate::sync::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
-use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -55,18 +56,18 @@ struct Jobs<J> {
 
 impl<J> Jobs<J> {
     fn push(&self, job: (BatchId, J)) {
-        self.waiting.lock().unwrap().0.push_back(job);
+        self.waiting.lock().0.push_back(job);
         self.arrived.notify_one();
     }
 
     fn close(&self) {
-        self.waiting.lock().unwrap().1 = true;
+        self.waiting.lock().1 = true;
         self.arrived.notify_all();
     }
 
     /// The next job, or `None` once closed. Hands this thread's free pages back once per idle stretch.
     fn take(&self) -> Option<(BatchId, J)> {
-        let mut waiting = self.waiting.lock().unwrap();
+        let mut waiting = self.waiting.lock();
         let mut released = false;
         loop {
             if let Some(job) = waiting.0.pop_front() {
@@ -76,16 +77,16 @@ impl<J> Jobs<J> {
                 return None;
             }
             if released {
-                waiting = self.arrived.wait(waiting).unwrap();
+                waiting = self.arrived.wait(waiting);
                 continue;
             }
-            let (held, timeout) = self.arrived.wait_timeout(waiting, IDLE).unwrap();
+            let (held, timeout) = self.arrived.wait_timeout(waiting, IDLE);
             waiting = held;
             if timeout.timed_out() && waiting.0.is_empty() {
                 drop(waiting);
                 crate::core::buffer::release_idle();
                 released = true;
-                waiting = self.waiting.lock().unwrap();
+                waiting = self.waiting.lock();
             }
         }
     }
@@ -163,17 +164,15 @@ impl<S: Sender> Pool<S> {
         if let (Some(mut s), Some(done_tx)) = (self.parked.pop(), self.done_tx.clone()) {
             let jobs = self.jobs.clone();
             self.handles.push(
-                std::thread::Builder::new()
-                    .name("smeltr-destination-sender".into())
-                    .spawn(move || {
-                        while let Some((batch, job)) = jobs.take() {
-                            let outcome = s.send_one(job);
-                            if done_tx.send((batch, outcome)).is_err() {
-                                break;
-                            }
+                crate::sync::spawn("smeltr-destination-sender", move || {
+                    while let Some((batch, job)) = jobs.take() {
+                        let outcome = s.send_one(job);
+                        if done_tx.send((batch, outcome)).is_err() {
+                            break;
                         }
-                    })
-                    .expect("spawn destination sender"),
+                    }
+                })
+                .expect("spawn destination sender"),
             );
         }
         if self.parked.is_empty() {

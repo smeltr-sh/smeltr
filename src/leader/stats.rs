@@ -505,13 +505,13 @@ fn running_steps(system: &LoadedSystem, index: usize) -> Vec<String> {
                 Step::Function(f) => {
                     if !f.disabled
                         && !matches!(f.kind, FunctionKind::Comment { .. })
-                        && let Some(id) = step_ids.get(f.id as usize)
+                        && let Some(id) = step_ids.get(f.id.index())
                     {
                         out.push(id.clone());
                     }
                 }
                 Step::If { id, then, else_, .. } => {
-                    if let Some(step) = step_ids.get(*id as usize) {
+                    if let Some(step) = step_ids.get(id.index()) {
                         out.push(step.clone());
                     }
                     walk(then, step_ids, out);

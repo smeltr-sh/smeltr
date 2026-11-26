@@ -885,7 +885,7 @@ fn check_table(
     taken: &BTreeMap<i64, BTreeMap<String, Val>>,
     reached: &mut Vec<String>,
 ) -> Result<(), String> {
-    let table = fake.lock().unwrap().table.clone().ok_or("no table was made")?;
+    let table = fake.lock().table.clone().ok_or("no table was made")?;
     let schema = table.schema().ok_or("the table has no current schema")?;
     for (leaf, _) in leaves {
         let path: Vec<&str> = leaf.split('.').collect();
@@ -1179,7 +1179,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
             .map_err(|e| format!("the earlier table: {e:?}"))?;
         // As an engine of format version 3 made it, or upgraded it, its row ids already counted up to somewhere.
         if rng.chance(2) {
-            let mut fake = fake.lock().unwrap();
+            let mut fake = fake.lock();
             let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
             table.format_version = 3;
             table.next_row_id = Some(rng.below(1000) as i64);
@@ -1188,7 +1188,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         }
         // As another engine made it: some of its columns narrower than the record types them.
         if evolution_refused.is_none() && (earlier.iter().any(|(_, k)| *k == "datetime") || !rng.chance(4)) {
-            let mut fake = fake.lock().unwrap();
+            let mut fake = fake.lock();
             let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
             let current = table.current_schema_id;
             let mut sources: Vec<(i32, &str)> = Vec::new();
@@ -1268,7 +1268,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         // As another engine evolved it: a column the record does not write, and one in a struct it does. Always at
         // version 3, which so few seeds reach that a draw can miss one of its types.
         if version_3 || rng.chance(2) {
-            let mut fake = fake.lock().unwrap();
+            let mut fake = fake.lock();
             let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
             let current = table.current_schema_id;
             let mut last = table.last_column_id;
@@ -1336,7 +1336,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         }
         // As another engine set it: how the table's files are written.
         if rng.chance(2) {
-            let mut fake = fake.lock().unwrap();
+            let mut fake = fake.lock();
             let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
             let mut set = |key: &str, value: &str| table.properties.insert(format!("write.{key}"), value.to_string());
             let codec = *rng.pick(&["zstd", "gzip", "snappy", "lz4", "uncompressed", "brotli"]);
@@ -1386,7 +1386,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     let faults: Vec<Fault> = (0..rng.below(4))
         .map(|_| *rng.pick(&[Fault::Lost, Fault::Late, Fault::Dropped, Fault::Refused]))
         .collect();
-    fake.lock().unwrap().faults = faults.clone();
+    fake.lock().faults = faults.clone();
 
     let writers = if rng.chance(3) { 2 } else { 1 };
     let mut built = Vec::new();
@@ -1403,7 +1403,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                     return Err(format!("expected {why}, and the writer was refused for: {e:?}"));
                 }
                 reached.push(why.into());
-                let fake = fake.lock().unwrap();
+                let fake = fake.lock();
                 if fake.table.as_ref().is_some_and(|t| t.current_snapshot().is_some()) {
                     return Err(format!("a refused writer committed: {e:?}"));
                 }
@@ -1521,7 +1521,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         .map(|(leaf, kind)| (leaf.clone(), narrow.get(leaf).copied().unwrap_or(kind)))
         .collect();
     check_table(&fake, &store, &runtime, &read, &lacked, &taken, reached)?;
-    let fake = fake.lock().unwrap();
+    let fake = fake.lock();
     if let Some(wrong) = fake.signed.iter().find(|s| *s != signed_as) {
         return Err(format!(
             "a call for the table signed in as {wrong:?}, not {signed_as:?}"

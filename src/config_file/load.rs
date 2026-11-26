@@ -997,7 +997,7 @@ fn to_pipeline(
     maps: &IdMaps,
 ) -> Result<PipelineConfig, String> {
     let in_pipeline = |e: String| format!("pipeline {:?}: {e}", dto.name);
-    let mut next_function_id: FunctionId = 0;
+    let mut next_function_id = 0;
     let mut held_step_ids = HashSet::new();
     let mut step_ids = Vec::new();
     for call_id in call_ids {
@@ -1207,7 +1207,7 @@ fn step_id(step: &StepDto) -> &str {
 
 fn to_steps(
     steps: &[StepDto],
-    next_id: &mut FunctionId,
+    next_id: &mut u32,
     step_ids: &mut Vec<String>,
     held_step_ids: &mut HashSet<String>,
     maps: &IdMaps,
@@ -1223,7 +1223,7 @@ fn to_steps(
 /// step that owns `FunctionId f`.
 fn to_step(
     dto: &StepDto,
-    next_id: &mut FunctionId,
+    next_id: &mut u32,
     step_ids: &mut Vec<String>,
     held_step_ids: &mut HashSet<String>,
     maps: &IdMaps,
@@ -1378,12 +1378,12 @@ fn to_step(
 /// The next `FunctionId`, for the step `step_id` names. Refused when `step_id` is already held.
 fn claim_step_id(
     step_id: &str,
-    next_id: &mut FunctionId,
+    next_id: &mut u32,
     step_ids: &mut Vec<String>,
     held_step_ids: &mut HashSet<String>,
 ) -> Result<FunctionId, String> {
     hold_step_id(step_id, held_step_ids)?;
-    let id = *next_id;
+    let id = FunctionId::new(*next_id);
     *next_id += 1;
     step_ids.push(step_id.to_string());
     Ok(id)

@@ -90,7 +90,7 @@ pub fn open_log_analytics(
 ) -> Result<Box<dyn super::Destination>, IoError> {
     let what = "Log Analytics destination";
     let resource = super::entra::monitor_resource(&c.http.url);
-    let sign_in: super::http::SharedSignIn = Arc::new(std::sync::Mutex::new(Box::new(super::entra::Entra::new(
+    let sign_in: super::http::SharedSignIn = Arc::new(crate::sync::Mutex::new(Box::new(super::entra::Entra::new(
         &c.sign_in, resource, secrets, what,
     )?)));
     let config = super::http::agent_config(c.http.tls.as_ref(), secrets)?;

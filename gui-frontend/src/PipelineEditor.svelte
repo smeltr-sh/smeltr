@@ -97,15 +97,16 @@
     type LookupTableDto,
     type PipelineDto,
     type Connected,
-    type SampleDto,
+    type CaptureBatchDto,
     type SampleRecordDto,
     type TestSummary,
     type SaveConflict,
     type PreviewResult,
     type ParserProposal,
     parsersIn,
-    chooseLock,
-    type LockChoice,
+    putTest,
+    type MutationResult,
+    type ShownCut,
   } from './api';
   import ChipPicker from './ChipPicker.svelte';
   import JumpLinks from './JumpLinks.svelte';
@@ -119,7 +120,8 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import { heldCount } from './capture';
+  import LockTestDialog from './LockTestDialog.svelte';
+  import { heldCount, heldTable } from './capture';
   import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
   import { RECOMPUTE_MS } from './FindBox.svelte';
   import SampleMenu from './SampleMenu.svelte';
@@ -732,8 +734,8 @@
   // the sample away from under whoever is fixing it. `result` still drives
   // the error itself -- this only decides what the grid below it shows.
   let lastGoodResult = $state<PreviewResult | null>(null);
-  /** The instant `lastGoodResult` ran at, and the steps it ran. */
-  let lastGoodRun: { at: number; steps: Step[] } = { at: 0, steps: [] };
+  /** The steps `lastGoodResult` ran. */
+  let lastGoodRun: Step[] = [];
   // The name boxes and the Fields menu offer the produced schemas' fields, each marked where the record holds it.
   const produced = provideProducedSchemas();
   $effect(() => {
@@ -786,9 +788,11 @@
 
   // The tests, for the sample menu. A failure to load them only leaves them out of the menu.
   let tests: TestSummary[] = $state([]);
-  listTests()
-    .then((res) => (tests = res.tests))
-    .catch(() => {});
+  const loadTests = () =>
+    listTests()
+      .then((res) => (tests = res.tests))
+      .catch(() => {});
+  void loadTests();
 
   // Where each of this pipeline's tests stands, for the sample menu: run when the pipeline opens and after each save,
   // so the marks are the saved pipeline's.
@@ -908,30 +912,24 @@
   /** One `/api/areas/:area/preview/pipeline` call over `stepsSubset`: the whole tree for a
    * Run, a truncated one for each side of a per-step diff. Goes through
    * `previewPipeline`, like every other config call, so it carries the
-   * branch being edited. The rows still being written stay out of it.
-   *
-   * `at` pins `now()`, which matters for the two sides of a diff:
-   * without it each side reads its own clock, and a `parseTime` given no
-   * reference of its own -- a yearless syslog stamp takes its year from
-   * `now()` -- can land on a different instant either side and be drawn as
-   * a change the step never made. */
+   * branch being edited. The rows still being written stay out of it. */
   async function fetchPreview(
     stepsSubset: Step[],
     sample: string,
     {
-      at,
       filter,
       attribution,
       asSample,
+      test,
     }: {
-      /** Microseconds since the epoch. */
-      at?: number;
       /** An expression the rows must meet (`PreviewRequest.filter`). */
       filter?: string;
       /** Which steps touched, dropped and failed each row. */
       attribution?: boolean;
-      /** Return the rows as a sample holds them too (`PreviewRequest.asSample`). */
-      asSample?: boolean;
+      /** Return these fields and rows as a sample holds them too (`PreviewRequest.asSample`). */
+      asSample?: { rows: number[]; fields?: string[] };
+      /** Compare the rows with this test (`PreviewRequest.test`). */
+      test?: string;
     } = {},
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
@@ -952,10 +950,10 @@
       sample: sample || undefined,
       // Always: whether an internal field is shown is the Columns choice.
       showInternal: true,
-      atMicros: at,
       filter,
       attribution,
       asSample,
+      test,
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
@@ -1034,11 +1032,13 @@
     const at = Date.now() * 1000;
     try {
       const ran = $state.snapshot(steps);
-      const res = await fetchPreview(ran, sample, { at, attribution: true });
+      const judging = opened?.test;
+      const res = await fetchPreview(ran, sample, { attribution: true, test: judging });
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
-      if (res.ok) [lastGoodResult, lastGoodRun] = [res, { at, steps: ran }];
+      judged = judging;
+      if (res.ok) [lastGoodResult, lastGoodRun] = [res, ran];
       lastSample = sample;
       if (res.ok && proposedSteps && at >= proposedSteps.at) {
         if (proposedSteps.signature === signatureOf(ran)) takeSchemaTypes(steps, res.fixes ?? []);
@@ -1056,6 +1056,13 @@
    * test. */
   let opened = $state(untrack(() => test));
   let relocking = $derived(!!opened && selectedSample === opened.sample);
+  /** The test `result` was judged by, whose marks it carries. */
+  let judged = $state<string>();
+  // A test opened over its sample's run runs the sample again, so that the test judges the run.
+  $effect(() => {
+    if (opened && untrack(() => opened!.sample === lastSample && opened!.test !== judged))
+      untrack(run);
+  });
 
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
   // name, and a run that actually produced the output being locked. The lock
@@ -1069,26 +1076,42 @@
         : INCOMPLETE,
   );
 
-  /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
-   * them, so the rows are the ones on screen. */
-  async function outputOf(rows: Set<number>): Promise<Pick<SampleDto, 'columns' | 'records'>> {
-    const { at, steps: ran } = pause && pauseRun ? pauseRan : lastGoodRun;
-    const res = await fetchPreview(ran, lastSample, { at, asSample: true });
+  /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, so the rows are the
+   * ones on screen. */
+  /** The output's `rows` as a sample holds them, cut to `fields`, else with every field. */
+  async function outputOf(rows: number[], fields?: string[]): Promise<CaptureBatchDto> {
+    const ran = pause && pauseRun ? pauseRan : lastGoodRun;
+    const res = await fetchPreview(ran, lastSample, { asSample: { rows, fields } });
     if (!res.ok || !res.as_sample) throw new Error(previewFailure(res));
-    const { columns, records, rows: of } = res.as_sample;
-    return { columns, records: records.filter((_, i) => rows.has(of[i])) };
+    return heldTable(res.as_sample);
   }
-  let savingOutput = $state<Set<number> | null>(null);
+  let savingOutput = $state<ShownCut | null>(null);
   /** The dialog is open to save the held capture, the input run over, as a sample. */
   let savingInput = $state(false);
 
-  function goLockTest(choice: LockChoice) {
-    chooseLock(
-      choice,
-      relocking
-        ? `#/build/tests/relock/${encodeURIComponent(opened!.test)}`
-        : `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
-    );
+  /** The fields and rows on screen when Lock this as a test was pressed, while its dialog is open. */
+  let locking = $state<ShownCut | null>(null);
+  function goLockTest(choice: ShownCut) {
+    locking = choice;
+  }
+  async function lockShown(name: string): Promise<MutationResult> {
+    const cut = locking;
+    if (!cut) return { ok: false, errors: [] };
+    const id = relocking ? opened!.test : name;
+    const res = await putTest(id, {
+      name,
+      pipeline: loadedId,
+      sample: selectedSample,
+      fields: cut.fields,
+      rows: cut.rows,
+    });
+    if (!res.ok) return res;
+    await loadTests();
+    judged = undefined;
+    openTest(id);
+    // Closed last, so whoever waits on the dialog finds the test opened.
+    locking = null;
+    return res;
   }
 
   // The output is not an action. It follows the steps and the sample, one
@@ -1097,7 +1120,8 @@
   // still compiles, for the steps' errors and the data dictionary.
   $effect(() => {
     const key = signature;
-    void selectedSample;
+    // The test opened is compared in the run.
+    void [selectedSample, opened?.test];
     // A run before the scope's bundle loads finds the pipelines it calls missing.
     if (!autoRun || key === '' || !configRead) return;
     const timer = setTimeout(() => void run(), RECOMPUTE_MS);
@@ -1192,8 +1216,8 @@
   });
 
   let pauseRun = $state<PauseRun | null>(null);
-  /** The instant the pause ran at, and the steps it ran, up to and including its step. */
-  let pauseRan: { at: number; steps: Step[] } = { at: 0, steps: [] };
+  /** The steps the pause ran, up to and including its step. */
+  let pauseRan: Step[] = [];
   let pauseLoading = $state(false);
   let errorsOpen = $state(false);
   /** A failed stage as the error chip names it. */
@@ -1216,13 +1240,10 @@
     const { before, after } = pause;
     pauseLoading = true;
     try {
-      // One instant for both sides, so the only difference between them is
-      // the step.
-      const at = Date.now() * 1000;
-      pauseRan = { at, steps: $state.snapshot(after) };
+      pauseRan = $state.snapshot(after);
       const [beforeRes, afterRes] = await Promise.all([
-        fetchPreview(before, sample, { at }),
-        fetchPreview(after, sample, { at, attribution: true }),
+        fetchPreview(before, sample),
+        fetchPreview(after, sample, { attribution: true }),
       ]);
       // A later pause answers for the screen.
       if (asked !== pauseAsked) return;
@@ -1741,7 +1762,8 @@
         {pipelineId}
         test={opened && {
           test: opened.test,
-          ready: !!result?.ok && lastSample === opened.sample,
+          ready: !!result?.ok && lastSample === opened.sample && !pause,
+          differences: judged === opened.test ? result?.verdict?.differences : undefined,
         }}
         {steps}
         {signature}
@@ -1797,12 +1819,21 @@
         {#snippet stage()}{@render stageChips()}{/snippet}
       </RecordsPane>
     </div>
+    <LockTestDialog
+      open={locking !== null}
+      {relocking}
+      name={relocking ? (tests.find((t) => t.id === opened?.test)?.name ?? '') : ''}
+      fields={locking?.fields.length ?? 0}
+      rows={locking?.rows.length ?? 0}
+      onlock={lockShown}
+      oncancel={() => (locking = null)}
+    />
     <AddSampleDialog
       open={capturing || adding || savingOutput !== null || savingInput}
       start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
       target={captureAt ?? captureTarget}
       onuse={useCapture}
-      output={savingOutput ? () => outputOf(savingOutput!) : undefined}
+      output={savingOutput ? () => outputOf(savingOutput!.rows, savingOutput!.fields) : undefined}
       input={savingInput && choices.held ? choices.held : undefined}
       oncancel={() => {
         capturing = false;

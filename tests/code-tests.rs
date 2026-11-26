@@ -40,7 +40,7 @@ fn json_split(fields: &str) -> String {
 }
 
 /// A JSON parser step over `_raw` declaring `declared`, for a name only a step's field spells.
-fn parse(id: FunctionId, declared: &[(&str, DataType)]) -> Step {
+fn parse(id: u32, declared: &[(&str, DataType)]) -> Step {
     let declared = declared
         .iter()
         .map(|(n, t)| DeclaredField {
@@ -61,7 +61,8 @@ fn parse(id: FunctionId, declared: &[(&str, DataType)]) -> Step {
     )
 }
 
-fn guarded(id: FunctionId, cond: &str, then: Step) -> Step {
+fn guarded(id: u32, cond: &str, then: Step) -> Step {
+    let id = FunctionId::new(id);
     Step::If {
         id,
         cond: cond.into(),
@@ -84,7 +85,7 @@ fn pairs() -> Step {
 /// holding a dot one key: a variant, a value whose shape only the row knows. It is null where `pairs` holds none. The
 /// object is written into an open object of variants by a key only the row knows, since a literal key would name a
 /// field of its own type, and read back out.
-fn build(id: FunctionId, name: &str) -> Step {
+fn build(id: u32, name: &str) -> Step {
     code(
         id,
         &format!("let held: {{...}} = {{}}; let key = \"v\"; held[key] = fromEntries(pairs); {name} = held.v;"),
@@ -210,7 +211,8 @@ fn counter(m: &Metrics, name: &str, labels: &[(&str, &str)]) -> Option<u64> {
     })
 }
 
-fn function_metric(m: &MetricsHandle, name: &str, function: FunctionId) -> u64 {
+fn function_metric(m: &MetricsHandle, name: &str, function: u32) -> u64 {
+    let function = FunctionId::new(function);
     let f = function.to_string();
     // `PipelineConfig::id`, which is what the label carries -- the worker resolves it to the author's own id on its
     // way to the leader, and nothing here is a worker.
@@ -218,12 +220,13 @@ fn function_metric(m: &MetricsHandle, name: &str, function: FunctionId) -> u64 {
         .unwrap_or_else(|| panic!("function {f} recorded no {name}"))
 }
 
-fn function_calls(plan: &Plan, docs: &[&str], function: FunctionId) -> u64 {
+fn function_calls(plan: &Plan, docs: &[&str], function: u32) -> u64 {
     function_metric(&run_with_metrics(plan, docs), "smeltr_function_calls_total", function)
 }
 
 /// `(body instructions, other top-level instructions)` of `function`'s one `Op::Loop`.
-fn foreach_shape(plan: &Plan, function: FunctionId) -> (usize, usize) {
+fn foreach_shape(plan: &Plan, function: u32) -> (usize, usize) {
+    let function = FunctionId::new(function);
     let body = plan
         .instrs
         .iter()
@@ -5367,12 +5370,21 @@ fn a_write_under_a_variant_is_a_compile_error() {
         ]
     };
     let cases: Vec<(Vec<Step>, FunctionId)> = vec![
-        (vec![pairs(), build(1, "o"), code(2, "q = o; q.a = 9;")], 2),
-        (vec![pairs(), build(1, "o"), code(2, "q = o; q.a.b: i64 = null;")], 2),
-        (after_copy(code(3, "move(q.a, x);")), 3),
-        (after_copy(code(3, "move(q.a, q);")), 3),
-        (after_copy(code(3, "move(q.a, q.a.b); move(q.b, q.c);")), 3),
-        (after_copy(code(3, "move(r, q.a);")), 3),
+        (
+            vec![pairs(), build(1, "o"), code(2, "q = o; q.a = 9;")],
+            FunctionId::new(2),
+        ),
+        (
+            vec![pairs(), build(1, "o"), code(2, "q = o; q.a.b: i64 = null;")],
+            FunctionId::new(2),
+        ),
+        (after_copy(code(3, "move(q.a, x);")), FunctionId::new(3)),
+        (after_copy(code(3, "move(q.a, q);")), FunctionId::new(3)),
+        (
+            after_copy(code(3, "move(q.a, q.a.b); move(q.b, q.c);")),
+            FunctionId::new(3),
+        ),
+        (after_copy(code(3, "move(r, q.a);")), FunctionId::new(3)),
     ];
     for (steps, id) in cases {
         let label = format!("{steps:?}");
@@ -6832,7 +6844,10 @@ fn a_second_parse_lays_only_the_keys_it_found() {
 #[test]
 fn a_renamed_claim_keeps_the_records_key_gone() {
     let plan = ok(vec![code(0, JSON), code(1, "x = 1;"), code(2, "move(x, y);")]);
-    assert!(plan.instrs.iter().all(|i| i.function != 2), "the rename emits nothing");
+    assert!(
+        plan.instrs.iter().all(|i| i.function != FunctionId::new(2)),
+        "the rename emits nothing"
+    );
     let rows = run(&plan, &[r#"{"x":5,"k":1}"#]);
     assert_eq!(fields(&rows[0]), json!({"y": 1, "k": 1}));
 }
@@ -6862,8 +6877,14 @@ fn a_copy_and_a_spread_leave_out_a_key_a_rename_took_away() {
         code(3, "c = user;"),
         code(4, "s = {...user, extra: 2}; t = {id: 0, ...user};"),
     ]);
-    assert!(plan.instrs.iter().all(|i| i.function != 2), "the rename emits nothing");
-    assert!(plan.instrs.iter().all(|i| i.function != 3), "the copy emits nothing");
+    assert!(
+        plan.instrs.iter().all(|i| i.function != FunctionId::new(2)),
+        "the rename emits nothing"
+    );
+    assert!(
+        plan.instrs.iter().all(|i| i.function != FunctionId::new(3)),
+        "the copy emits nothing"
+    );
     let rows = run(&plan, &[r#"{"user":{"id":5,"name":"ann"}}"#]);
     assert_eq!(
         fields(&rows[0]),
@@ -7216,7 +7237,7 @@ fn a_first_write_in_a_construct_binds_the_name_at_the_top_level() {
     let plan = ok(vec![
         code(0, "c = _raw == \"T\";"),
         Step::If {
-            id: 3,
+            id: FunctionId::new(3),
             cond: "c".into(),
             then: vec![code(1, "x = 1;")],
             else_: vec![code(2, "x = \"1\";")],

@@ -6,19 +6,20 @@
 //! loops over the same lanes.
 //! Both call the same `step`, so a test that ticks and a deployment that threads run the same code.
 
+use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commit::{CommitTracker, TRANSFORM};
+use crate::commit::{CommitTracker, WaitsOn};
 use crate::core::batch::{Batch, SLOT_LIVE, SLOT_RAW};
 use crate::core::bits;
 use crate::core::buffer::{self, BufferPool, MemoryBudget};
 use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
-use crate::core::error::{ErrorSink, ExceptionKind, INGEST_FUNCTION, Read};
+use crate::core::error::{ErrorSink, ExceptionKind, Read};
 use crate::core::id::{DestId, SlotId, SourceId};
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
@@ -382,18 +383,18 @@ impl Lane {
 
     /// Every destination a batch of this source's records is dispatched to.
     fn destinations(&self) -> Vec<DestId> {
-        self.destinations.lock().unwrap().clone()
+        self.destinations.lock().clone()
     }
 
     fn add_destination(&self, id: DestId) {
-        self.destinations.lock().unwrap().push(id);
+        self.destinations.lock().push(id);
     }
 
     /// The next parked batch. Taken under the lock, so two threads serving this source cannot run the same batch
     /// twice. `has_room` answers for the destination an undelivered batch waits on; a batch it says no to stays, and
     /// so does everything behind it.
     fn take_parked(&self, has_room: impl Fn(DestId, usize) -> bool) -> ParkedTake {
-        let mut parked = self.parked.lock().unwrap();
+        let mut parked = self.parked.lock();
         let Some(front) = parked.retry.front() else {
             return ParkedTake::Nothing;
         };
@@ -411,7 +412,7 @@ impl Lane {
     /// Record that the reader has been told, if the oldest parked batch is still the one waiting on `dest` since
     /// `since`. A batch that went through and was parked again is a new wait, told anew.
     fn note_hold_reported(&self, dest: DestId, since: std::time::Instant) {
-        let mut parked = self.parked.lock().unwrap();
+        let mut parked = self.parked.lock();
         if let Some(w) = parked.retry.front_mut().and_then(|u| u.waiting.as_mut())
             && w.dest == dest
             && w.since == since
@@ -424,7 +425,7 @@ impl Lane {
     /// has not delivered.
     fn park_retry(&self, batch: BatchId, mut records: Vec<SourceRecord>, unprocessable: bool) {
         crate::io::own_rows(&mut records);
-        self.parked.lock().unwrap().retry.push_front(Undelivered {
+        self.parked.lock().retry.push_front(Undelivered {
             batch,
             records,
             waiting: None,
@@ -441,7 +442,7 @@ impl Lane {
     /// Show the records the held batch blocked on to each capture of `name` that has not been shown them. Under the
     /// lock, so two threads serving this source cannot show a capture the same records twice.
     fn show_held(&self, captures: &crate::worker::capture::Captures, name: &str) {
-        let mut parked = self.parked.lock().unwrap();
+        let mut parked = self.parked.lock();
         let Some(held) = parked.retry.front_mut().filter(|u| u.held) else {
             return;
         };
@@ -469,7 +470,7 @@ impl Lane {
         let hold = captures
             .zip(self.source_name.as_ref())
             .map(|(c, name)| c.holding(crate::worker::capture::HeldAt::Source(name.clone())));
-        self.parked.lock().unwrap().retry.push_front(Undelivered {
+        self.parked.lock().retry.push_front(Undelivered {
             batch,
             records,
             waiting: None,
@@ -493,7 +494,7 @@ impl Lane {
         processed: Option<Processed>,
     ) {
         crate::io::own_rows(&mut records);
-        self.parked.lock().unwrap().retry.push_front(Undelivered {
+        self.parked.lock().retry.push_front(Undelivered {
             batch,
             records,
             waiting: Some(waiting),
@@ -1140,7 +1141,10 @@ impl Transform {
             Ok(HandOff::Delivered(outcomes)) => outcomes,
         };
         if routed_nowhere {
-            reports.send(Report::Acked { batch, dest: TRANSFORM });
+            reports.send(Report::Acked {
+                batch,
+                by: WaitsOn::Transform,
+            });
         }
         if let (Some(streams), Some(name)) = (&self.streams, &lane.source_name) {
             streams.saw_senders(name, std::mem::take(&mut outcomes.senders));
@@ -1332,7 +1336,10 @@ impl Transform {
         if owed.outstanding.is_empty() {
             self.owed.remove(&batch);
         }
-        self.lanes[lane].reports.send(Report::Acked { batch, dest });
+        self.lanes[lane].reports.send(Report::Acked {
+            batch,
+            by: WaitsOn::Destination(dest),
+        });
     }
 
     /// `dest` refused rows of `batch` and keeps them to send again, since it is set to block: the source blocks until
@@ -1986,10 +1993,10 @@ impl Transform {
         // Destination id -> position in `destinations`, so the per-row loop visits only the destinations a row goes
         // to. `id == index` is not assumed: the caller may hold any subset, in any order. Ids are allocated densely at
         // load, so a vector indexed by id is small.
-        let width = self.destinations.iter().map(|t| t.id as usize + 1).max().unwrap_or(0);
+        let width = self.destinations.iter().map(|t| t.id.index() + 1).max().unwrap_or(0);
         let mut slot_of: Vec<Option<usize>> = vec![None; width];
         for (idx, t) in self.destinations.iter().enumerate() {
-            slot_of[t.id as usize] = Some(idx);
+            slot_of[t.id.index()] = Some(idx);
         }
         // What each destination writes, and the forms a row keeps for the DLQs down its chain, by position in
         // `destinations`.
@@ -2013,7 +2020,7 @@ impl Transform {
             );
             for (i, &dest) in dests.iter().enumerate() {
                 // A row naming a destination this worker does not hold goes nowhere, and is not counted as Unmatched either.
-                let Some(slot) = slot_of.get(dest as usize).copied().flatten() else {
+                let Some(slot) = slot_of.get(dest.index()).copied().flatten() else {
                     continue;
                 };
                 let target = &self.destinations[slot];
@@ -2427,7 +2434,7 @@ impl RefusalRing {
             at_millis: now_millis(),
             message: truncate(exemplar, MAX_TEXT_LEN),
         };
-        let mut by_dest = self.by_dest.lock().unwrap();
+        let mut by_dest = self.by_dest.lock();
         let ring = by_dest.entry(dest).or_default();
         ring.push_back(entry);
         while ring.len() > REFUSAL_RING_CAP {
@@ -2437,7 +2444,7 @@ impl RefusalRing {
 
     /// Whether `dest`'s refusals are due their line now.
     fn due(&self, dest: DestId) -> bool {
-        let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
+        let mut said = self.said.lock();
         said.entry(dest).or_default().due()
     }
 
@@ -2445,7 +2452,6 @@ impl RefusalRing {
     pub fn snapshot(&self, dest: DestId) -> Vec<Refusal> {
         self.by_dest
             .lock()
-            .unwrap()
             .get(&dest)
             .map(|ring| ring.iter().cloned().collect())
             .unwrap_or_default()
@@ -2822,7 +2828,7 @@ impl Reader {
     pub fn apply(&mut self, reports: Vec<Report>) {
         for r in reports {
             match r {
-                Report::Acked { batch, dest } => self.commits.acknowledge(batch, dest),
+                Report::Acked { batch, by } => self.commits.acknowledge(batch, by),
                 Report::Owes { batch, dest } => self.commits.owe(batch, dest),
                 Report::Abandoned { batch, waits_on } => self.commits.abandon(batch, &waits_on),
                 Report::Block(cause, why) => self.enter_block(cause, &why),
@@ -3444,13 +3450,11 @@ fn run_plan(
     // Ingest's repairs, inside this route's window so a repaired row is marked wherever it goes and an `Unroll`
     // remaps it with the rest.
     for (row, kind) in &raw.notes {
-        let raw = ctx
-            .errors
-            .raise(*row as usize, INGEST_FUNCTION, Some(SLOT_RAW), kind.clone());
+        let raw = ctx.errors.raise(*row as usize, None, Some(SLOT_RAW), kind.clone());
         raw.read = vec![Read::new(Some((SLOT_RAW, String::new())), None)];
     }
     for (row, slot, kind, value) in noted {
-        let at = ctx.errors.raise(row as usize, INGEST_FUNCTION, Some(slot), kind);
+        let at = ctx.errors.raise(row as usize, None, Some(slot), kind);
         if value.is_some() {
             at.read = vec![Read::new(Some((slot, String::new())), value)];
         }
@@ -3472,7 +3476,7 @@ fn marked_block(
     let slot_names = plan.slot_names();
     let exception = |a: &crate::core::error::Exception| {
         let what = a.message(&slot_names);
-        match plan.step_ids.get(a.function as usize) {
+        match a.function.and_then(|f| plan.step_ids.get(f.index())) {
             Some(step) => format!("at step {step}: {what}"),
             None => format!("with: {what}"),
         }
@@ -3989,6 +3993,8 @@ mod tests {
     use crate::config_file;
     use crate::core::column::Scalar;
     use crate::core::error::{Exception, ExceptionKind};
+    use crate::core::id::FunctionId;
+    use crate::heartbeat::pasted_from;
     use crate::plan::output::{RowException, row_exceptions};
 
     #[test]
@@ -4020,7 +4026,7 @@ mod tests {
     fn ann(row: u32, field: Option<SlotId>, kind: ExceptionKind) -> Exception {
         Exception {
             row,
-            function: 0,
+            function: Some(FunctionId::new(0)),
             field,
             kind,
             read: Vec::new(),
@@ -4098,7 +4104,7 @@ mod tests {
     #[test]
     fn a_failure_read_before_any_step_names_none() {
         let mut read = ann(0, Some(0), ExceptionKind::InvalidUtf8);
-        read.function = crate::core::error::INGEST_FUNCTION;
+        read.function = None;
         assert_eq!(raised(&[read])[&0][0].step, None);
     }
 
@@ -4276,7 +4282,7 @@ mod tests {
     fn a_record_no_rule_takes_shows_its_routes_unmatched_answer() {
         for (answer, unmatched) in [
             (Answer::Drop, r#""drop""#),
-            (Answer::Deliver(vec![1]), r#"{ "deliver": ["dlq"] }"#),
+            (Answer::Deliver(vec![DestId::new(1)]), r#"{ "deliver": ["dlq"] }"#),
             (Answer::Block, r#""block""#),
         ] {
             let json = format!(
@@ -4313,7 +4319,7 @@ mod tests {
             assert_eq!(route.answer, answer, "{unmatched}");
             match answer {
                 Answer::Drop => assert!(route.documents.is_empty() && rows[0].refused.is_none()),
-                Answer::Deliver(_) => assert_eq!(route.documents[0].destinations, vec![1]),
+                Answer::Deliver(_) => assert_eq!(route.documents[0].destinations, vec![DestId::new(1)]),
                 _ => {
                     let why = rows[0].refused.as_deref().expect("a blocked record says why");
                     assert!(why.contains("no condition"), "{why}");
@@ -4367,7 +4373,7 @@ mod tests {
         let objects: Vec<crate::io::RecordObject> = objects.iter().map(|o| o.as_object().unwrap().clone()).collect();
         let fields = crate::io::SourceFields::new();
         let stored: Vec<_> = objects.iter().map(|o| (o, &fields)).collect();
-        let records = meta.read_stored(&stored).unwrap();
+        let records = meta.read_table(&pasted_from(&stored)).unwrap();
 
         let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
@@ -4397,7 +4403,7 @@ mod tests {
             .unwrap();
         let object = serde_json::json!({"id": 7, "name": "a"}).as_object().unwrap().clone();
         let fields = crate::io::SourceFields::new();
-        let records = meta.read_stored(&[(&object, &fields)]).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&object, &fields)])).unwrap();
         let form =
             |payload: Payload| source_form(&payload, &meta, &records[0], "").map(|v| String::from_utf8(v).unwrap());
 
@@ -4481,7 +4487,7 @@ mod tests {
     }
 
     fn bare_reader(metrics: MetricsHandle) -> Reader {
-        Reader::new(7, Box::new(NullSource), vec![], MAX_IN_FLIGHT, metrics)
+        Reader::new(SourceId::new(7), Box::new(NullSource), vec![], MAX_IN_FLIGHT, metrics)
     }
 
     /// A source whose `connection_error` is fixed at construction (E4), to exercise `Reader::connection_error_fact`
@@ -4643,7 +4649,7 @@ mod tests {
     fn a_sources_connection_error_reaches_a_heartbeat_fact() {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut healthy = Reader::new(
-            7,
+            SourceId::new(7),
             Box::new(FlakySource { error: None }),
             vec![],
             MAX_IN_FLIGHT,
@@ -4656,7 +4662,7 @@ mod tests {
 
         let reason = "kafka-nowhere.invalid:9092/bootstrap: Failed to resolve".to_string();
         let mut unreachable = Reader::new(
-            7,
+            SourceId::new(7),
             Box::new(FlakySource {
                 error: Some(reason.clone()),
             }),
@@ -4675,7 +4681,7 @@ mod tests {
         ));
 
         let mut rambling = Reader::new(
-            7,
+            SourceId::new(7),
             Box::new(FlakySource {
                 error: Some("x".repeat(10 * MAX_TEXT_LEN)),
             }),
@@ -4713,7 +4719,7 @@ mod tests {
     fn a_failed_poll_is_counted_and_a_landed_one_ends_it() {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut reader = Reader::new(
-            7,
+            SourceId::new(7),
             Box::new(DownSource { down: true }),
             vec![],
             MAX_IN_FLIGHT,
@@ -4760,7 +4766,7 @@ mod tests {
         let size = record(0).size();
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut reader = Reader::new(
-            7,
+            SourceId::new(7),
             Box::new(crate::io::fake::FakeSource::new((0..3).map(record))),
             vec![],
             MAX_IN_FLIGHT,
@@ -4817,7 +4823,7 @@ mod tests {
     fn messages_finished_are_counted_for_the_source() {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut reader = Reader::new(
-            7,
+            SourceId::new(7),
             Box::new(FinishingSource),
             vec![],
             MAX_IN_FLIGHT,
@@ -4848,9 +4854,9 @@ mod tests {
     fn the_refusal_ring_drops_the_oldest_entry_past_its_cap() {
         let ring = RefusalRing::default();
         for i in 0..REFUSAL_RING_CAP + 5 {
-            ring.record(1, &format!("refusal {i}"));
+            ring.record(DestId::new(1), &format!("refusal {i}"));
         }
-        let kept = ring.snapshot(1);
+        let kept = ring.snapshot(DestId::new(1));
         assert_eq!(kept.len(), REFUSAL_RING_CAP, "capped, not one entry per call");
         assert_eq!(
             kept.first().unwrap().message,
@@ -4866,8 +4872,8 @@ mod tests {
     #[test]
     fn the_refusal_ring_truncates_an_overlong_message() {
         let ring = RefusalRing::default();
-        ring.record(1, &"x".repeat(MAX_TEXT_LEN + 50));
-        let kept = ring.snapshot(1);
+        ring.record(DestId::new(1), &"x".repeat(MAX_TEXT_LEN + 50));
+        let kept = ring.snapshot(DestId::new(1));
         assert_eq!(
             kept[0].message.chars().count(),
             MAX_TEXT_LEN + 1,
@@ -4879,8 +4885,8 @@ mod tests {
     #[test]
     fn a_destination_with_no_refusals_has_an_empty_ring() {
         let ring = RefusalRing::default();
-        assert!(ring.snapshot(9).is_empty());
-        assert!(ring.heartbeat_facts(9).is_empty());
+        assert!(ring.snapshot(DestId::new(9)).is_empty());
+        assert!(ring.heartbeat_facts(DestId::new(9)).is_empty());
     }
 
     /// A batch can refuse thousands of rows at once for the same underlying cause; `smeltr_rows_rejected_total` already
@@ -4892,9 +4898,9 @@ mod tests {
         let ring = RefusalRing::default();
         let rows: Vec<(usize, String)> = (0..500).map(|i| (i, "same cause every time".to_string())).collect();
 
-        report_rejections(&metrics, &ring, 0, 2, "d", &rows);
+        report_rejections(&metrics, &ring, SourceId::new(0), DestId::new(2), "d", &rows);
 
-        let kept = ring.snapshot(2);
+        let kept = ring.snapshot(DestId::new(2));
         assert_eq!(kept.len(), 1, "one call, one exemplar");
         assert_eq!(kept[0].message, "same cause every time");
     }

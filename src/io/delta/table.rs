@@ -18,7 +18,8 @@
 //! a count of its commits, so a commit whose answer was lost is found in the log and not made twice. Only tables in
 //! S3, or a store that speaks its API, are written.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use crate::sync::Mutex;
+use std::sync::Arc;
 
 use ::parquet::file::metadata::ParquetMetaData;
 use arrow_schema::{Field, Schema as ArrowSchema};
@@ -182,7 +183,7 @@ fn unity_table(
         "Unity Catalog".to_string(),
         (first.credential, first.expires),
         move || {
-            let mut catalog = catalog.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut catalog = catalog.lock();
             let grant = catalog.credentials(&id).map_err(|e| e.to_string())?;
             // The store sends every request to the first grant's access point.
             if grant.access_point != first_access_point {
@@ -1182,10 +1183,10 @@ fn insert(object: &mut Map<String, Value>, path: &[String], value: Value) {
 
 #[cfg(test)]
 mod tests {
+    use crate::sync::Mutex;
     use std::collections::VecDeque;
     use std::fmt;
     use std::ops::Range;
-    use std::sync::Mutex;
     use std::time::Duration;
 
     use ::parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
@@ -1254,7 +1255,7 @@ mod tests {
             opts: PutOptions,
         ) -> object_store::Result<PutResult> {
             let fault = if matches!(opts.mode, PutMode::Create) {
-                self.faults.lock().unwrap().pop_front()
+                self.faults.lock().pop_front()
             } else {
                 None
             };
@@ -1266,7 +1267,7 @@ mod tests {
                 }
                 Some(Fault::Dropped) => Err(lost_answer()),
                 Some(Fault::Late) => {
-                    *self.late.lock().unwrap() = Some((location.clone(), payload));
+                    *self.late.lock() = Some((location.clone(), payload));
                     Err(lost_answer())
                 }
             }
@@ -1351,12 +1352,12 @@ mod tests {
         }
 
         pub(super) fn arm(&self, fault: Fault) {
-            self.store.faults.lock().unwrap().push_back(fault);
+            self.store.faults.lock().push_back(fault);
         }
 
         /// Writes the late create, where none is.
         fn land(&self) {
-            let (path, payload) = self.store.late.lock().unwrap().take().expect("a late create");
+            let (path, payload) = self.store.late.lock().take().expect("a late create");
             self.runtime
                 .block_on(self.store.inner.put_opts(&path, payload, PutMode::Create.into()))
                 .unwrap();

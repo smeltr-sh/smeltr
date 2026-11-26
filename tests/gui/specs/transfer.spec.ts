@@ -3,6 +3,7 @@
 //
 // A fresh browser edits branch `work` in the `shared` scope, which is where `api` arranges things too.
 import { test, expect, goto } from '../fleet';
+import { pasted } from '../samples';
 
 const ON = '?branch=work';
 const SHARED = '/api/areas/shared';
@@ -44,13 +45,12 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
     id: 'lines',
     name: 'lines',
     columns: [{ name: '_raw', type: 'str' }],
-    records: [{ _raw: '10.0.0.1 allow' }],
+    ...pasted([{ _raw: '10.0.0.1 allow' }]),
   });
   await api.put(`${SHARED}/tests/firewall-lines${ON}`, {
     name: 'firewall lines',
     pipeline: 'firewall',
     sample: 'lines',
-    lockedAt: 0,
     fields: [],
     rows: [0],
   });

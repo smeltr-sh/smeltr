@@ -13,12 +13,16 @@ import {
   type ConfigSection,
   type FileConfigDto,
   type Outcome,
+  type HeldRecord,
   type SampleDto,
+  type SampleRecordDto,
   type TestDto,
+  testOutcomes,
   type TestResult,
   type TestSummary,
   type UndoTarget,
 } from './api';
+import { tableRecords } from './capture';
 import { diffObjects, type DiffEntry } from './diff';
 import { count } from './time';
 import { partsWidth, stepParts, stepSummary, stepsFromDto, type Step } from './pipeline';
@@ -656,7 +660,7 @@ function present(fields: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
 }
 
-function recordCells(record: SampleDto['records'][number], sourced: boolean): string[] {
+function recordCells(record: SampleRecordDto, sourced: boolean): string[] {
   return sourced
     ? [recordLine(record), sampleSource(record) ? JSON.stringify(sampleSource(record)) : '']
     : [recordLine(record)];
@@ -713,14 +717,21 @@ export function fileChange(
   if (file.kind === SAMPLES) {
     const fieldsOf = (s: SampleDto | undefined) => s && present({ name: s.name, source: s.source });
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
-    const was = file.before?.records ?? [];
-    const now = file.after?.records ?? [];
-    const sourced = [...was, ...now].some((r) => sampleSource(r) !== undefined);
-    change.headers = sourced ? ['record', 'source fields'] : ['record'];
-    change.rows = compareRows(
-      was.map((r) => recordCells(r, sourced)),
-      now.map((r) => recordCells(r, sourced)),
-    );
+    const was = file.before ? tableRecords(file.before) : [];
+    const now = file.after ? tableRecords(file.after) : [];
+    const sourced = [...was, ...now].some((r) => sampleSource(r.record) !== undefined);
+    // A cell that failed its type reads differently from one that did not, though its text is the same.
+    const failed = [...was, ...now].some((r) => r.failed);
+    change.headers = [
+      'record',
+      ...(sourced ? ['source fields'] : []),
+      ...(failed ? ['failed'] : []),
+    ];
+    const cells = (r: HeldRecord) => [
+      ...recordCells(r.record, sourced),
+      ...(failed ? [(r.failed ?? []).join(', ')] : []),
+    ];
+    change.rows = compareRows(was.map(cells), now.map(cells));
   } else {
     const fieldsOf = (t: TestDto | undefined) =>
       t &&
@@ -729,13 +740,13 @@ export function fileChange(
         pipeline: t.pipeline,
         sample: t.sample,
         rowsIn: t.rowsIn,
-        lockedAt: t.lockedAt,
-        checks: t.fields.join(', '),
+        // With its type: a relock that changes only a type changes what the test accepts.
+        checks: t.table.columns.map((c) => `${c.name} ${c.type}`).join(', '),
       });
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
     change.headers = ['checks'];
     const lines = (t: TestDto | undefined) =>
-      (t?.rows ?? []).map((o) => [`row ${o.row}: ${outcomeText(o, routeName)}`]);
+      (t ? testOutcomes(t) : []).map((o) => [`row ${o.row}: ${outcomeText(o, routeName)}`]);
     change.rows = compareRows(lines(file.before), lines(file.after));
   }
   change.fields = change.fields.filter((f) => f.kind !== 'unchanged');

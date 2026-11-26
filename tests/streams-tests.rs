@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use smeltr::core::buffer::MemoryBudget;
-use smeltr::core::id::FunctionId;
+use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::handoff::{Handed, Handoff, Ready, reports};
 use smeltr::heartbeat::SenderFields;
 use smeltr::io::SourceRecord;
@@ -16,7 +16,8 @@ use smeltr::plan::topology::{DeliverRule, RouteConfig, compile_topology};
 use smeltr::runtime::{DestinationTarget, Lane, Transform};
 use smeltr::streams::{SenderEdits, Streams};
 
-fn code(id: FunctionId, body: &str) -> Step {
+fn code(id: u32, body: &str) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }))
 }
 
@@ -37,12 +38,12 @@ fn route(id: &str, cond: Option<&str>) -> RouteConfig {
     RouteConfig {
         id: id.to_string(),
         name: id.to_string(),
-        source: 0,
+        source: SourceId::new(0),
         cond: cond.map(str::to_string),
         pipeline: 0,
         deliver: vec![DeliverRule {
             when: None,
-            to: vec![0],
+            to: vec![DestId::new(0)],
         }],
         on_exception: Default::default(),
     }
@@ -70,16 +71,16 @@ fn transform_with(
     let ready = Arc::new(Ready::new());
     let (tx, _rx) = reports();
     let lane = Arc::new(Lane::new(
-        0,
+        SourceId::new(0),
         Some("orders".to_string()),
-        topology.meta_for(0),
+        topology.meta_for(SourceId::new(0)),
         Handoff::watched(ready.clone(), 8_000_000),
-        vec![0],
+        vec![DestId::new(0)],
         tx,
     ));
     let dest = AsyncDestination::new();
     let target = DestinationTarget {
-        id: 0,
+        id: DestId::new(0),
         name: "es".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Drop,

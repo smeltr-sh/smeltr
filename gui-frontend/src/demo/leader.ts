@@ -18,6 +18,7 @@ import type {
   SampleDto,
   SampleRecordDto,
 } from '../api';
+import { heldTable } from '../capture';
 import { CHANGED_EVENT } from './guide';
 import { bareError } from '../errors.svelte';
 import { SERIES_PART } from './parts';
@@ -41,10 +42,9 @@ export interface Recording {
  * part holds. */
 export type Parts = (key: string) => Promise<unknown>;
 
-/** What one capture of main's took. A source's carries the sample a save made of it too, record for row. */
+/** What one capture of main's took: its table, as one batch. */
 export interface Pool {
   batches: CaptureBatchDto[];
-  sample?: Required<Pick<SampleDto, 'columns' | 'records'>>;
 }
 type Bundle = Record<string, unknown> & { pipelines?: { id: string; steps?: unknown[] }[] };
 
@@ -65,10 +65,9 @@ export function keyOf(url: URL): string {
 
 /** Times the recording holds, by key, that are not milliseconds. */
 const SECONDS = new Set(['time', 'lastSave', 'opened', 'updated']);
-const MICROS = new Set(['lockedAt']);
 
 /** `value` with every time in it moved on by `deltaMs`: a millisecond count by its size, which nothing but a time
- * reaches, and seconds and microseconds by their key. An answer that names its buckets' width (`bucketMillis` below
+ * reaches, and seconds by their key. An answer that names its buckets' width (`bucketMillis` below
  * a time's size) moves by a whole number of buckets, so its points stay on the grid its charts read them from. */
 export function shifted(value: unknown, deltaMs: number, key?: string): unknown {
   if (Array.isArray(value)) return value.map((v) => shifted(v, deltaMs, key));
@@ -83,9 +82,6 @@ export function shifted(value: unknown, deltaMs: number, key?: string): unknown 
   if (typeof value !== 'number' || !Number.isInteger(value)) return value;
   if (key !== undefined && SECONDS.has(key) && value > 1e9 && value < 1e10) {
     return value + Math.round(deltaMs / 1000);
-  }
-  if (key !== undefined && MICROS.has(key) && value > 1e15 && value < 1e16) {
-    return value + deltaMs * 1000;
   }
   if (value > 1.5e12 && value < 2.5e12) return value + deltaMs;
   return value;
@@ -181,10 +177,9 @@ interface TestDto {
   name: string;
   pipeline?: string;
   sample: string;
-  lockedAt: number;
   rowsIn: number;
-  fields: string[];
-  rows: unknown[];
+  table: unknown;
+  shown: unknown[];
 }
 
 interface Capture {
@@ -762,8 +757,11 @@ export class DemoLeader {
           id: s.id,
           name: s.name,
           source: s.source,
-          records: s.records.length,
-          captured: (s.records[0]?.__capture as { timestamp?: string } | undefined)?.timestamp,
+          records: s.rows.length,
+          captured:
+            heldTable(s).rows[0]?.values[
+              s.columns.findIndex((c) => c.name === '__capture.timestamp')
+            ],
         }));
         return ok({ samples, commit: branch.commit });
       }
@@ -853,16 +851,15 @@ export class DemoLeader {
       const answer = await this.lockTest(name, scope, lock);
       const held = answer.body as LockedResult;
       if (!held.ok) return answer;
-      const { name: testName, pipeline, sample, lockedAt } = lock;
+      const { name: testName, pipeline, sample } = lock;
       const locked: TestDto = {
         id,
         name: testName,
         ...(pipeline ? { pipeline } : {}),
         sample,
-        lockedAt,
         rowsIn: held.rowsIn ?? 0,
-        fields: held.fields ?? [],
-        rows: held.rows ?? [],
+        table: held.table ?? { columns: [], rows: [] },
+        shown: held.shown ?? [],
       };
       return this.write(
         name,
@@ -941,7 +938,6 @@ export class DemoLeader {
     if (method === 'POST') {
       if (within === '/preview/pipeline') return this.preview(name, scope, json());
       if (within === '/preview/routes') return this.routePreview(name, scope, json());
-      if (within === '/preview/test-lock') return this.lockTest(name, scope, json());
       if (within === '/samples') {
         const { capture, ...save } = json() as {
           capture: string;
@@ -1029,7 +1025,7 @@ export class DemoLeader {
     return run ? ok({ results }) : ok({ tests });
   }
 
-  /** What locking `lock` on branch `name` holds, as the leader runs it (`test_api::preview_lock`). */
+  /** What locking `lock` on branch `name` holds, as the leader runs it (`test_api::put_test`). */
   private async lockTest(name: string, scope: string, lock: Lock): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
     return this.ask('/test-lock', {
@@ -1413,10 +1409,9 @@ export class DemoLeader {
       pipeline: string | null;
       sample: string | null;
       show_internal: boolean;
-      at_micros: number | null;
       filter: string | null;
       attribution?: boolean;
-      as_sample?: boolean;
+      as_sample?: { fields: string[]; rows: number[] } | null;
       after_dot: unknown;
       capture_filter: unknown;
     },
@@ -1433,12 +1428,11 @@ export class DemoLeader {
       pipeline: req.pipeline,
       // What follows a dot reads the sample's columns, never its records: only the one a sample must hold crosses
       // the network.
-      sample: sample && req.after_dot ? { ...sample, records: sample.records.slice(0, 1) } : sample,
+      sample: sample && req.after_dot ? { ...sample, rows: sample.rows.slice(0, 1) } : sample,
       showInternal: req.show_internal,
-      atMicros: req.at_micros,
       filter: req.filter,
       attribution: req.attribution ?? false,
-      asSample: req.as_sample ?? false,
+      asSample: req.as_sample ?? null,
       afterDot: req.after_dot ?? undefined,
       captureFilter: req.capture_filter ?? undefined,
     });
@@ -1447,7 +1441,7 @@ export class DemoLeader {
   private async routePreview(
     name: string,
     scope: string,
-    req: { config: string; sample: string; source: string | null; at_micros: number | null },
+    req: { config: string; sample: string; source: string | null },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = this.sampleOn(branch, scope, req.sample);
@@ -1458,7 +1452,6 @@ export class DemoLeader {
     return this.ask('/route-preview', {
       ...this.bundleOf(branch, scope, JSON.parse(req.config)),
       sample: { ...sample, source: sample.source ?? req.source ?? undefined },
-      atMicros: req.at_micros,
     });
   }
 
@@ -1513,7 +1506,7 @@ export class DemoLeader {
           ...this.bundleOf(main, req.group, own),
           source: req.source.id,
           filter: req.filter,
-          sample: { id: 'pool', name: 'pool', ...(await this.pool(pool))!.sample },
+          sample: { id: 'pool', name: 'pool', ...(await this.pool(pool))!.batches[0] },
         });
         const a = answer.body as { ok?: boolean; errors?: ApiError[]; kept?: number[] };
         if (!a.ok) return refused(422, a.errors ?? []);
@@ -1597,15 +1590,25 @@ export class DemoLeader {
   private async captureRecords(session: string): Promise<Answer> {
     const capture = this.state.captures[session];
     if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
-    const { batches } = await this.held(capture);
-    const pool = (await this.pool(capture.pool))?.sample;
-    const workers = batches.flatMap((b) => b.rows.map((r) => r.worker));
-    const fields = this.takenFields(capture);
-    const records = capture.kept.slice(0, workers.length).map((i, n) => ({
-      ...(workers[n] === undefined ? {} : { worker: workers[n] }),
-      record: stamped(pool?.records[i] ?? {}, fields),
-    }));
-    return ok({ columns: this.takenColumns(capture, pool?.columns ?? []), records });
+    return ok({ ...this.table(capture, (await this.held(capture)).batches) });
+  }
+
+  /** The table `capture` holds of `batches`, with how it was taken as its `__capture` columns, each a constant, in
+   * place of the recorder's, which are a table's last. */
+  private table(capture: Capture, batches: CaptureBatchDto[]): CaptureBatchDto {
+    const { columns, rows } = heldTable(batches[0] ?? { columns: [], rows: [] });
+    const own = columns.filter((c) => !c.name.startsWith('__capture.')).length;
+    return {
+      columns: [
+        ...columns.slice(0, own),
+        ...Object.entries(this.taken(capture)).map(([k, [type, value]]) => ({
+          name: `__capture.${k}`,
+          type,
+          value,
+        })),
+      ],
+      rows: rows.map((row) => ({ ...row, values: row.values.slice(0, own) })),
+    };
   }
 
   /** How `capture` was taken, by `__capture` field: each one's type and value (`Captures::capture_fields`). */
@@ -1618,21 +1621,6 @@ export class DemoLeader {
       ...(capture.filter ? { filter: ['str', capture.filter] } : {}),
       config: ['str', this.state.branches.main.commit],
     };
-  }
-
-  private takenFields(capture: Capture): Record<string, string> {
-    return Object.fromEntries(Object.entries(this.taken(capture)).map(([k, [, v]]) => [k, v]));
-  }
-
-  /** A pool's columns with `capture`'s `__capture` fields in place of the ones the recorder's own save stamped. */
-  private takenColumns(capture: Capture, columns: { name: string; type: string }[]) {
-    return [
-      ...columns.filter((c) => !c.name.startsWith('__capture.')),
-      ...Object.entries(this.taken(capture)).map(([k, [type]]) => ({
-        name: `__capture.${k}`,
-        type,
-      })),
-    ];
   }
 
   private async stopCapture(session: string): Promise<Answer> {
@@ -1660,27 +1648,22 @@ export class DemoLeader {
     const capture = this.state.captures[session];
     if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
     const { done, batches } = await this.held(capture);
-    const pool = (await this.pool(capture.pool))?.sample;
     if (!done)
       return refused(409, [
         bareError('this capture is still running. Stop it first to save what it holds'),
       ]);
-    if (!pool || !batches.length) {
+    if (!batches.length) {
       return refused(409, [
         bareError(
           'this capture caught nothing, and a sample of no records would preview as an empty pipeline rather than as the problem it is',
         ),
       ]);
     }
-    const arrived = batches.reduce((n, b) => n + b.rows.length, 0);
-    const fields = this.takenFields(capture);
-    const records = capture.kept.slice(0, arrived).map((i) => stamped(pool.records[i], fields));
     const sample: SampleDto = {
       id: req.id,
       name: req.name,
       source: capture.source ?? req.source,
-      columns: this.takenColumns(capture, pool.columns ?? []),
-      records,
+      ...this.table(capture, batches),
     };
     const saved = await this.write(
       name,
@@ -1694,20 +1677,10 @@ export class DemoLeader {
     if ((saved.body as { ok: boolean }).ok) {
       delete this.state.captures[session];
       this.save();
-      (saved.body as Record<string, unknown>).records = records.length;
+      (saved.body as Record<string, unknown>).records = sample.rows.length;
     }
     return saved;
   }
-}
-
-/** `record` with how a capture took it as its `__capture` fields, keeping the fields it lists as mistyped
- * (`io::MISTYPED_FIELDS`). */
-function stamped(record: SampleRecordDto, fields: Record<string, string>): SampleRecordDto {
-  const own = record.__capture as { mistyped?: unknown } | undefined;
-  return {
-    ...record,
-    __capture: own?.mistyped === undefined ? fields : { ...fields, mistyped: own.mistyped },
-  };
 }
 
 const NOT_RECORDED: Answer = refused(404, [bareError('not found')]);

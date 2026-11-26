@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::core::buffer::MemoryBudget;
-use smeltr::core::id::FunctionId;
+use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::io::fake::FakeDestination;
 use smeltr::io::logs::{LogsSource, LogsSourceConfig};
 use smeltr::metrics::{Metrics, MetricsHandle};
@@ -15,7 +15,8 @@ use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, PipelineConfig,
 use smeltr::plan::topology::{DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology_with};
 use smeltr::runtime::{DestinationTarget, Worker};
 
-fn code(id: FunctionId, body: &str) -> Step {
+fn code(id: u32, body: &str) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }))
 }
 
@@ -26,12 +27,12 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
     let routes = vec![RouteConfig {
         id: "r".to_string(),
         name: "r".to_string(),
-        source: 9,
+        source: SourceId::new(9),
         cond: None,
         pipeline: 0,
         deliver: vec![DeliverRule {
             when: None,
-            to: vec![0],
+            to: vec![DestId::new(0)],
         }],
         on_exception: Default::default(),
     }];
@@ -47,7 +48,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
         grok_patterns: Default::default(),
         produces: Vec::new(),
     }];
-    let metas = SourceMetas::from([(9, SourceMeta::LOGS)]);
+    let metas = SourceMetas::from([(SourceId::new(9), SourceMeta::LOGS)]);
     let topology = compile_topology_with(&routes, &pipelines, Default::default(), &metas).unwrap();
 
     // Built first: nothing is kept for a reader that is not there yet, which is what stops an unread queue
@@ -64,7 +65,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
 
     let registry = Arc::new(Metrics::new());
     let mut w = Worker::new(
-        9,
+        SourceId::new(9),
         Box::new(source),
         topology,
         Vec::new(),
@@ -73,7 +74,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
     );
     let dest = FakeDestination::new();
     w.add_destination(DestinationTarget {
-        id: 0,
+        id: DestId::new(0),
         name: "0".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Block,
