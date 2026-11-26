@@ -1317,6 +1317,12 @@ struct Sink {
     _stop: tokio::sync::oneshot::Sender<()>,
 }
 
+/// Where an engine reaches what the harness serves: `HARNESS_ADDRESS`, this host's address on the network the
+/// engine's host shares with it, or loopback.
+fn harness_address() -> String {
+    std::env::var("HARNESS_ADDRESS").unwrap_or_else(|_| "127.0.0.1".into())
+}
+
 impl Sink {
     fn start() -> Sink {
         Sink::with(None)
@@ -1328,7 +1334,7 @@ impl Sink {
     }
 
     fn with(kept: Option<Arc<std::sync::Mutex<Vec<Value>>>>) -> Sink {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = std::net::TcpListener::bind((harness_address().as_str(), 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (rows, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
         let (r, b, k) = (rows.clone(), bytes.clone(), kept.clone());

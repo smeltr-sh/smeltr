@@ -716,12 +716,6 @@ fn engine_address() -> String {
     })
 }
 
-/// Where an engine reaches what the harness serves: `HARNESS_ADDRESS`, this host's address on the network the
-/// engine's host shares with it, or loopback.
-fn harness_address() -> String {
-    std::env::var("HARNESS_ADDRESS").unwrap_or_else(|_| "127.0.0.1".into())
-}
-
 /// `docker`, speaking to `host`'s Docker, or this host's.
 fn docker(host: Option<&str>) -> Command {
     let mut docker = Command::new("docker");
@@ -1457,7 +1451,7 @@ impl Ends {
         let give = match transport.to {
             Out::Http | Out::Elasticsearch | Out::SplunkHec | Out::Prometheus | Out::Otlp | Out::LogAnalytics => {
                 Give::Sink {
-                    url: format!("http://127.0.0.1:{}", sink.port),
+                    url: format!("http://{}:{}", harness_address(), sink.port),
                     to: transport.to,
                 }
             }
@@ -1728,7 +1722,7 @@ fn http_ceiling(push: &Push, apart: &[usize], rest: &[usize]) -> f64 {
     set_affinity(0, rest);
     let senders = env_or("ENGINE_SENDERS", SENDERS);
     let sender = Sender::start(
-        &format!("http://127.0.0.1:{}{}", sink.port, push.path),
+        &format!("http://{}:{}{}", harness_address(), sink.port, push.path),
         push,
         &bodies(push),
         senders,
