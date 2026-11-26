@@ -726,10 +726,8 @@ impl Source for KafkaSource {
         self.place_held()?;
 
         let deadline = Instant::now() + timeout;
-        // Records are moved out under the slot's lock and copied into the batch after it: the client thread routes
-        // every record under that lock, and waits on it while the reader holds it.
-        let mut taken = Vec::new();
-        let mut taken_bytes = 0;
+        // The client thread built each record into a chunk already, so the reader only moves them out.
+        let (mut taken, mut taken_bytes): (Vec<SourceRecord>, usize) = (Vec::new(), 0);
         let slot = Arc::clone(&self.slot);
         let mut state = slot.lock();
         'poll: loop {
@@ -750,7 +748,7 @@ impl Source for KafkaSource {
             }
             // The first always goes out, however large, as a fresh one would; the rest only while they fit.
             while !state.refetch && taken.len() < max_rows {
-                let Some(len) = state.inbox.front().map(client::Pending::size) else {
+                let Some(len) = state.inbox.front().map(SourceRecord::size) else {
                     break;
                 };
                 if !taken.is_empty() && taken_bytes + len > max_bytes {
@@ -759,7 +757,9 @@ impl Source for KafkaSource {
                 // A record at or past its partition's stop ends that partition, and one from a partition not yet
                 // placed is not where it starts: both are dropped unread, and the others read on.
                 let front = state.inbox.front().expect("a front");
-                let (topic, partition, timestamp) = (Arc::clone(&front.topic), front.partition, front.timestamp);
+                // Stamped in microseconds from Kafka's milliseconds, so this division is exact.
+                let timestamp = front.chunk.time(front.row as usize).map(|micros| micros / 1000);
+                let (topic, partition) = (Arc::clone(&front.topic), front.partition);
                 if !state.unplaced.is_empty() && state.unplaced.contains(&(topic.to_string(), partition))
                     || self.past_stop(&mut state, &topic, partition, timestamp)?
                 {
@@ -768,7 +768,8 @@ impl Source for KafkaSource {
                 }
                 // The registry is asked before the record leaves the inbox, so a registry that does not answer
                 // leaves it there to be read again.
-                let unasked = (self.avro.as_ref()).and_then(|a| a.unasked(&state.inbox.front().expect("a front").raw));
+                let unasked = (self.avro.as_ref())
+                    .and_then(|a| a.unasked(state.inbox.front().expect("a front").bytes().unwrap_or_default()));
                 if let (Some(id), Some(avro)) = (unasked, self.avro.as_mut()) {
                     drop(state);
                     let asked = avro.ask(id);
@@ -790,21 +791,9 @@ impl Source for KafkaSource {
             state = slot.arrived.wait_timeout(state, remaining).0;
         }
         drop(state);
-        let mut out = crate::io::RecordChunkBuilder::new();
-        for record in taken {
-            out.push_stamped(
-                &record.raw,
-                record.offset,
-                record.partition,
-                record.topic,
-                record.headers,
-                record.timestamp.and_then(|millis| millis.checked_mul(1000)),
-            );
-        }
-        let records = out.finish();
         Ok(match &self.avro {
-            Some(avro) if !records.is_empty() => avro.read(records),
-            _ => records,
+            Some(avro) if !taken.is_empty() => avro.read(taken),
+            _ => taken,
         })
     }
 
