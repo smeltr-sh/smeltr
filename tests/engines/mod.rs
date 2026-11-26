@@ -754,11 +754,14 @@ struct Broker {
     runtime: tokio::runtime::Runtime,
 }
 
-/// Partitions in every topic: at least as many as the hyperthreads the most cores a row gives an engine have, so each
-/// consumer thread can have its own, and never fewer than 16.
+/// Partitions in every topic: `ENGINE_PARTITIONS`, or at least as many as the hyperthreads the most cores a row gives
+/// an engine have, so each consumer thread can have its own, and never fewer than 16.
 fn partitions() -> i32 {
     let (cores, most) = (cores_by_cpu(), *core_counts().iter().max().unwrap());
-    cores[..most.min(cores.len())].concat().len().max(16) as i32
+    env_or(
+        "ENGINE_PARTITIONS",
+        cores[..most.min(cores.len())].concat().len().max(16) as i32,
+    )
 }
 
 impl Broker {
