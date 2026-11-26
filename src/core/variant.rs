@@ -47,8 +47,8 @@ pub const BYTES: u8 = 10;
 pub struct Encoded<'a>(&'a [u8]);
 
 impl<'a> Encoded<'a> {
-    /// The value `b` starts with. Panics if a string or key in it is not UTF-8: only this module writes these bytes, so
-    /// one that is not is a bug.
+    /// The value at the start of `b`. Panics if a string or key in it is not UTF-8, which is a bug: the bytes are written
+    /// with `put_*`, which takes text as `&str`.
     pub fn check(b: &'a [u8]) -> Encoded<'a> {
         assert!(text_is_utf8(b), "a variant's strings and keys are UTF-8");
         Encoded(b)

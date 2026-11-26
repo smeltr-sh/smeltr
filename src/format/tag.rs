@@ -199,7 +199,7 @@ pub fn encode(tag: &Tag<'_>, out: &mut Vec<u8>) {
 }
 
 /// `tag`'s encoding, as a value whose text is known to be UTF-8.
-pub fn encoded(tag: &Tag<'_>) -> EncodedBuf {
+pub(crate) fn encoded(tag: &Tag<'_>) -> EncodedBuf {
     let mut out = Vec::new();
     encode(tag, &mut out);
     // SAFETY: `encode` writes a tag's strings and keys, each a `str`, and moves them only whole.
