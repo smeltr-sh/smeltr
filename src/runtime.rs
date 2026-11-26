@@ -1676,194 +1676,198 @@ impl Transform {
         // Routing, every route's pipeline and every delivery rule read the same `now()`, the one a split carries over.
         let now = attempt.now.unwrap_or_else(DateTime::now);
         let routed = buffer::catch_over_budget(|| {
-            let mut ingest = seed_ingest_batch(pool, slice, &raw, &lane.meta, lane.source_name.as_deref());
+            let mut seeded = seed_ingest_batch(pool, slice, &raw, &lane.meta, lane.source_name.as_deref());
             let masks = {
                 let mut ctx = Ctx::at(pool, &mut errors, now);
-                route_masks(&self.topology.routes, lane.source_id, &mut ingest, &mut ctx)
+                route_masks(&self.topology.routes, lane.source_id, &mut seeded.batch, &mut ctx)
             };
-            ingest.reclaim(pool);
-            masks
+            (seeded, masks)
         });
-        let masks = match routed {
-            Ok(masks) => masks,
+        let (mut seeded, masks) = match routed {
+            Ok(routed) => routed,
             Err(over) => {
                 return Ok(Some(self.abandon(lane, began, attempt.resume_from, over)));
             }
         };
-
-        // Which rows a route took: the union of every mask, since routing leaves `SLOT_LIVE` as it came. Over every
-        // route, including the ones a resumed attempt skips -- those matched on the attempt that was refused.
-        let mut taken = vec![0u64; bits::words_for(slice.len())];
-        for (_, mask) in &masks {
-            bits::or_assign(
-                &mut taken,
-                mask.bool().expect("a route mask is Bool").values,
-                slice.len(),
-            );
-        }
-
-        tracing::trace!(
-            name: "routing", target: "pipelines",
-            records = slice.len(),
-            routes = masks.len(),
-            taken = bits::popcount(&taken),
-            "routing decided which routes take which records"
-        );
-
-        // Before any pipeline runs: the retry meets the same rows and the same routes, so running them now is work
-        // the block throws away on every attempt until a redeploy.
-        if *self.topology.on_exception.answer(&ExceptionKind::Unmatched) == Answer::Block {
-            let unmatched = slice.len() - bits::popcount(&taken);
-            if unmatched > 0 {
-                self.key_unmatched(lane, slice, &taken);
-                for (_, mask) in masks {
-                    mask.reclaim(pool);
-                }
-                out.blocking = (0..slice.len())
-                    .filter(|&i| !bits::get_row(&taken, i))
-                    .map(|i| (attempt.start + i, UNMATCHED_MESSAGE.to_string()))
-                    .collect();
-                let msg = unmatched_block_reason(unmatched);
-                return Err(IoError::transient(msg));
+        let ran = 'routes: {
+            // Which rows a route took: the union of every mask, since routing leaves `SLOT_LIVE` as it came. Over every
+            // route, including the ones a resumed attempt skips -- those matched on the attempt that was refused.
+            let mut taken = vec![0u64; bits::words_for(slice.len())];
+            for (_, mask) in &masks {
+                bits::or_assign(
+                    &mut taken,
+                    mask.bool().expect("a route mask is Bool").values,
+                    slice.len(),
+                );
             }
-        }
 
-        // Every mask reaches `reclaim`, including the ones this attempt skips and the ones a refusal leaves behind:
-        // `Column`'s `Drop` asserts against a column dropped still holding buffers.
-        let mut masks = masks.into_iter();
-        // Each record and source bytes destination it was written to, over every route of the batch: a record's bytes go once.
-        let mut delivered: HashSet<(u32, DestId)> = HashSet::new();
-        let fields = self.topology.text_fields();
-        let at_destinations = self.captures.as_ref().map_or_else(Vec::new, |c| c.at_destinations());
-        self.capture_filters.retain(|(session, admission, _), _| {
-            at_destinations
-                .iter()
-                .any(|at| at.session == *session && at.admission == *admission)
-        });
-        while let Some((route_idx, mask)) = masks.next() {
-            if route_idx < attempt.resume_from {
-                mask.reclaim(pool);
-                continue;
-            }
-            let pipeline_id = self.topology.routes[route_idx].pipeline;
-            let plan = self
-                .topology
-                .plan_for(lane.source_id, pipeline_id)
-                .expect("compile_topology validated every route's pipeline id");
-            let taps = Self::route_taps(
-                &mut self.capture_filters,
-                self.captures.as_deref(),
-                &self.destinations,
-                &at_destinations,
-                &self.topology,
-                route_idx,
+            tracing::trace!(
+                name: "routing", target: "pipelines",
+                records = slice.len(),
+                routes = masks.len(),
+                taken = bits::popcount(&taken),
+                "routing decided which routes take which records"
             );
-            // The one batch this interval describes for the leader (`streams::Streams::due`): its Parsers tally
-            // what they produce, which every other batch skips. A batch the route took no row of is not it.
-            let taken_by_route = mask.bool().expect("a route mask is Bool").values;
-            let matched = bits::popcount(taken_by_route) as u64;
-            let mut matched_bytes = 0u64;
-            bits::for_each_set(taken_by_route, slice.len(), |i| {
-                matched_bytes += slice[i].read_size() as u64
-            });
-            let took_rows = matched > 0;
-            let observed = match (&self.streams, &lane.source_name) {
-                (Some(streams), Some(name)) if took_rows && streams.due(route_idx) => Some((streams, name)),
-                _ => None,
-            };
-            let mut tally = observed.map(|_| crate::core::tally::FieldTally::new());
-            let counted = match (&self.streams, &lane.source_name) {
-                (Some(streams), Some(name)) if took_rows => streams.sender_fields(name, plan),
-                _ => Vec::new(),
-            };
-            let docs = buffer::catch_over_budget(|| {
-                run_and_serialize(
-                    plan,
-                    Ingest {
-                        records: slice,
-                        raw: &raw,
-                        meta: &lane.meta,
-                        source: lane.source_name.as_deref(),
-                        now,
-                        tally: tally.as_mut(),
-                        senders: (!counted.is_empty()).then_some(Senders {
-                            tally: &mut out.outcomes.senders,
-                            fields: &counted,
-                            first: attempt.start,
-                        }),
-                    },
-                    mask,
-                    pool,
-                    &mut errors,
-                    &self.metrics,
-                    Egress {
-                        route: &self.topology.routes[route_idx],
-                        id_fields,
-                        dlq_of: &self.topology.dlq_of,
-                        columns: Some(self.columnar.route(Some(route_idx as u32), &self.topology, &fields)),
-                        taps: &taps,
-                    },
-                )
-            });
-            let mut docs = match docs {
-                Ok(docs) => docs,
-                Err(over) => {
-                    // The range is run again, split; one of those runs tallies in its place.
-                    if let Some((streams, _)) = observed {
-                        streams.not_run(route_idx);
+
+            // Before any pipeline runs: the retry meets the same rows and the same routes, so running them now is work
+            // the block throws away on every attempt until a redeploy.
+            if *self.topology.on_exception.answer(&ExceptionKind::Unmatched) == Answer::Block {
+                let unmatched = slice.len() - bits::popcount(&taken);
+                if unmatched > 0 {
+                    self.key_unmatched(lane, slice, &taken);
+                    for (_, mask) in masks {
+                        mask.reclaim(pool);
                     }
+                    out.blocking = (0..slice.len())
+                        .filter(|&i| !bits::get_row(&taken, i))
+                        .map(|i| (attempt.start + i, UNMATCHED_MESSAGE.to_string()))
+                        .collect();
+                    let msg = unmatched_block_reason(unmatched);
+                    break 'routes Err(IoError::transient(msg));
+                }
+            }
+
+            // Every mask reaches `reclaim`, including the ones this attempt skips and the ones a refusal leaves behind:
+            // `Column`'s `Drop` asserts against a column dropped still holding buffers.
+            let mut masks = masks.into_iter().peekable();
+            // Each record and source bytes destination it was written to, over every route of the batch: a record's bytes go once.
+            let mut delivered: HashSet<(u32, DestId)> = HashSet::new();
+            let fields = self.topology.text_fields();
+            let at_destinations = self.captures.as_ref().map_or_else(Vec::new, |c| c.at_destinations());
+            self.capture_filters.retain(|(session, admission, _), _| {
+                at_destinations
+                    .iter()
+                    .any(|at| at.session == *session && at.admission == *admission)
+            });
+            while let Some((route_idx, mask)) = masks.next() {
+                if route_idx < attempt.resume_from {
+                    mask.reclaim(pool);
+                    continue;
+                }
+                let pipeline_id = self.topology.routes[route_idx].pipeline;
+                let plan = self
+                    .topology
+                    .plan_for(lane.source_id, pipeline_id)
+                    .expect("compile_topology validated every route's pipeline id");
+                let taps = Self::route_taps(
+                    &mut self.capture_filters,
+                    self.captures.as_deref(),
+                    &self.destinations,
+                    &at_destinations,
+                    &self.topology,
+                    route_idx,
+                );
+                // The one batch this interval describes for the leader (`streams::Streams::due`): its Parsers tally
+                // what they produce, which every other batch skips. A batch the route took no row of is not it.
+                let taken_by_route = mask.bool().expect("a route mask is Bool").values;
+                let matched = bits::popcount(taken_by_route) as u64;
+                let mut matched_bytes = 0u64;
+                bits::for_each_set(taken_by_route, slice.len(), |i| {
+                    matched_bytes += slice[i].read_size() as u64
+                });
+                let took_rows = matched > 0;
+                let observed = match (&self.streams, &lane.source_name) {
+                    (Some(streams), Some(name)) if took_rows && streams.due(route_idx) => Some((streams, name)),
+                    _ => None,
+                };
+                let mut tally = observed.map(|_| crate::core::tally::FieldTally::new());
+                let counted = match (&self.streams, &lane.source_name) {
+                    (Some(streams), Some(name)) if took_rows => streams.sender_fields(name, plan),
+                    _ => Vec::new(),
+                };
+                let last = masks.peek().is_none();
+                let docs = buffer::catch_over_budget(|| {
+                    run_and_serialize(
+                        plan,
+                        Ingest {
+                            records: slice,
+                            raw: &raw,
+                            meta: &lane.meta,
+                            seeded: &mut seeded,
+                            last,
+                            now,
+                            tally: tally.as_mut(),
+                            senders: (!counted.is_empty()).then_some(Senders {
+                                tally: &mut out.outcomes.senders,
+                                fields: &counted,
+                                first: attempt.start,
+                            }),
+                        },
+                        mask,
+                        pool,
+                        &mut errors,
+                        &self.metrics,
+                        Egress {
+                            route: &self.topology.routes[route_idx],
+                            id_fields,
+                            dlq_of: &self.topology.dlq_of,
+                            columns: Some(self.columnar.route(Some(route_idx as u32), &self.topology, &fields)),
+                            taps: &taps,
+                        },
+                    )
+                });
+                let mut docs = match docs {
+                    Ok(docs) => docs,
+                    Err(over) => {
+                        // The range is run again, split; one of those runs tallies in its place.
+                        if let Some((streams, _)) = observed {
+                            streams.not_run(route_idx);
+                        }
+                        for (_, unrun) in masks {
+                            unrun.reclaim(pool);
+                        }
+                        break 'routes Ok(Some(self.abandon(lane, began, route_idx, over)));
+                    }
+                };
+                if let (Some((streams, name)), Some(tally)) = (observed, &tally) {
+                    streams.saw_parse(name, &self.topology.routes[route_idx].id, plan, tally);
+                }
+                if let Some(blocked) = &mut docs.blocking {
                     for (_, unrun) in masks {
                         unrun.reclaim(pool);
                     }
-                    return Ok(Some(self.abandon(lane, began, route_idx, over)));
+                    out.blocking = std::mem::take(&mut blocked.records)
+                        .into_iter()
+                        .map(|(i, why)| (attempt.start + i, why))
+                        .collect();
+                    let msg = failed_block_reason(blocked);
+                    break 'routes Err(IoError::transient(msg));
                 }
-            };
-            if let (Some((streams, name)), Some(tally)) = (observed, &tally) {
-                streams.saw_parse(name, &self.topology.routes[route_idx].id, plan, tally);
-            }
-            if let Some(blocked) = &mut docs.blocking {
-                for (_, unrun) in masks {
-                    unrun.reclaim(pool);
+                out.outcomes.routes.insert(
+                    route_idx,
+                    RouteRows {
+                        matched,
+                        matched_bytes,
+                        out: docs.rows.len() as u64,
+                    },
+                );
+                let (dropped, no_rule, no_rule_dropped) = (docs.dropped, docs.no_rule, docs.no_rule_dropped);
+                tracing::trace!(
+                    name: "route_ran", target: "pipelines",
+                    route = %self.topology.routes[route_idx].id,
+                    route_name = %self.topology.routes[route_idx].name,
+                    rows = docs.rows.len(),
+                    dropped,
+                    no_rule,
+                    no_rule_dropped,
+                    "a route ran its pipeline over the records it took"
+                );
+                if let Some(captures) = &self.captures {
+                    for (tap, rows) in taps.iter().zip(std::mem::take(&mut docs.captured)) {
+                        captures.offer_sent(&at_destinations[tap.at], rows);
+                    }
                 }
-                out.blocking = std::mem::take(&mut blocked.records)
-                    .into_iter()
-                    .map(|(i, why)| (attempt.start + i, why))
-                    .collect();
-                let msg = failed_block_reason(blocked);
-                return Err(IoError::transient(msg));
+                self.place_rows(out, docs, route_idx, &lane.meta, slice, &mut delivered);
+                out.outcomes.drop_rows(DROPPED_EXCEPTION, dropped);
+                out.outcomes.no_rule += no_rule;
+                out.outcomes.drop_rows(DROPPED_UNMATCHED, no_rule_dropped);
             }
-            out.outcomes.routes.insert(
-                route_idx,
-                RouteRows {
-                    matched,
-                    matched_bytes,
-                    out: docs.rows.len() as u64,
-                },
-            );
-            let (dropped, no_rule, no_rule_dropped) = (docs.dropped, docs.no_rule, docs.no_rule_dropped);
-            tracing::trace!(
-                name: "route_ran", target: "pipelines",
-                route = %self.topology.routes[route_idx].id,
-                route_name = %self.topology.routes[route_idx].name,
-                rows = docs.rows.len(),
-                dropped,
-                no_rule,
-                no_rule_dropped,
-                "a route ran its pipeline over the records it took"
-            );
-            if let Some(captures) = &self.captures {
-                for (tap, rows) in taps.iter().zip(std::mem::take(&mut docs.captured)) {
-                    captures.offer_sent(&at_destinations[tap.at], rows);
-                }
-            }
-            self.place_rows(out, docs, route_idx, &lane.meta, slice, &mut delivered);
-            out.outcomes.drop_rows(DROPPED_EXCEPTION, dropped);
-            out.outcomes.no_rule += no_rule;
-            out.outcomes.drop_rows(DROPPED_UNMATCHED, no_rule_dropped);
-        }
-        // Past the loop, so a refusal above returns first and the retry that resumes it places these instead: once.
-        self.place_unmatched(lane, slice, &raw.text, &taken, out);
-        Ok(None)
+            // Past the loop, so a refusal above returns first and the retry that resumes it places these instead: once.
+            self.place_unmatched(lane, slice, &raw.text, &taken, out);
+            Ok(None)
+        };
+        seeded.batch.reclaim(pool);
+        ran
     }
 
     /// What route `route_idx` copies for each capture in `at`: those at a destination of this thread's the route
@@ -2993,8 +2997,10 @@ struct Ingest<'a> {
     records: &'a [SourceRecord],
     raw: &'a RawText<'a>,
     meta: &'a SourceMeta,
-    /// The source's name in the deployment, what `__source.name` reads.
-    source: Option<&'a str>,
+    /// The records' columns, as routing read them.
+    seeded: &'a mut Seeded,
+    /// Whether no later route reads `seeded`, so this one takes its columns.
+    last: bool,
     /// What `now()` reads for every row and every route of these records. See [`Ctx::now`].
     now: DateTime,
     /// Where each Parser tallies the fields it produces, for the one batch an interval describes to the leader
@@ -3012,7 +3018,7 @@ struct Senders<'a> {
     first: usize,
 }
 
-/// A batch's records as text, decoded once per attempt and rebuilt as a column for routing and for each route.
+/// A batch's records as text, decoded once per attempt.
 pub(crate) struct RawText<'a> {
     pub(crate) text: Vec<Cow<'a, str>>,
     /// What a decode had to do, per row. Replayed into every route's exception window, so a repaired or guessed-at
@@ -3443,7 +3449,7 @@ fn run_plan(
     let watched = !egress.taps.is_empty();
     let wanted =
         |i: usize| watched || plan.reads_meta[i] || egress.id_fields.iter().any(|(_, field)| field == fields[i].0);
-    let noted = meta.ingest(&mut batch, records, &raw.text, ingest.source, wanted, pool);
+    let noted = ingest.seeded.give(&mut batch, meta, wanted, ingest.last, pool);
 
     let mut ctx = Ctx::at(pool, errors, ingest.now);
     ctx.fields = ingest.tally.take();
@@ -3651,15 +3657,52 @@ fn read_text(batch: &Batch, slot: SlotId, row: usize) -> Option<String> {
     }
 }
 
-/// A batch for route evaluation: the prefix, the record, and every `__source` field the source declares, `__live`
-/// primed all-true.
+/// The columns of a batch's records, built once: routing reads them, then each route's batch takes its own.
+struct Seeded {
+    /// The prefix column `__live`, primed all-true, a column for each field of the record, and every `__source` field
+    /// the source declares.
+    batch: Batch,
+    /// What `SourceMeta::ingest` noted while building them.
+    noted: Vec<(u32, SlotId, ExceptionKind, Option<String>)>,
+}
+
+impl Seeded {
+    /// Puts the record's fields and each `__source` field `wanted` names into `batch`, a route's. They are copied, or
+    /// moved when `last` says no later route reads them. Returns what was noted against the slots it put.
+    fn give(
+        &mut self,
+        batch: &mut Batch,
+        meta: &SourceMeta,
+        wanted: impl Fn(usize) -> bool,
+        last: bool,
+        pool: &mut BufferPool,
+    ) -> Vec<(u32, SlotId, ExceptionKind, Option<String>)> {
+        let record = (0..meta.record_len()).map(|field| SlotId::at(crate::core::batch::PREFIX_SLOTS + field));
+        let source = (0..meta.source_fields().len())
+            .filter(|field| wanted(*field))
+            .map(|field| meta.source_slot(field));
+        let slots: Vec<SlotId> = record.chain(source).collect();
+        for &slot in &slots {
+            let column = if last {
+                self.batch.take_dead(slot)
+            } else {
+                self.batch.peek(slot).deep_copy(pool)
+            };
+            batch.put(slot, column, pool);
+        }
+        let put = |note: &&(u32, SlotId, ExceptionKind, Option<String>)| slots.contains(&note.1);
+        self.noted.iter().filter(put).cloned().collect()
+    }
+}
+
+/// `records` as [`Seeded`] columns, for route evaluation.
 fn seed_ingest_batch(
     pool: &mut BufferPool,
     records: &[SourceRecord],
     raw: &RawText<'_>,
     meta: &SourceMeta,
     source: Option<&str>,
-) -> Batch {
+) -> Seeded {
     let rows = records.len();
     let layout: Vec<DataType> = crate::plan::compile::ingest_fields(meta)
         .into_iter()
@@ -3672,10 +3715,10 @@ fn seed_ingest_batch(
     batch.put(SLOT_LIVE, live, pool);
 
     // Every declared field, not just what one plan reads: a route condition may test any of them before a pipeline is
-    // chosen. What ingest notes is not a row's to carry from here: the route's own run builds and notes it.
-    meta.ingest(&mut batch, records, &raw.text, source, |_| true, pool);
+    // chosen.
+    let noted = meta.ingest(&mut batch, records, &raw.text, source, |_| true, pool);
 
-    batch
+    Seeded { batch, noted }
 }
 
 // -- route preview ------------------------------------------------------
@@ -3828,16 +3871,15 @@ pub fn preview_routes_at(
             let mut errors = ErrorSink::new();
 
             let masks = buffer::catch_over_budget(|| {
-                let mut ingest = seed_ingest_batch(&mut pool, slice, &raw, &meta, Some(source_name));
+                let mut seeded = seed_ingest_batch(&mut pool, slice, &raw, &meta, Some(source_name));
                 let masks = {
                     let mut ctx = Ctx::at(&mut pool, &mut errors, now);
-                    route_masks(&topology.routes, source, &mut ingest, &mut ctx)
+                    route_masks(&topology.routes, source, &mut seeded.batch, &mut ctx)
                 };
-                ingest.reclaim(&mut pool);
-                masks
+                (seeded, masks)
             });
-            let masks = match masks {
-                Ok(masks) => masks,
+            let (mut seeded, masks) = match masks {
+                Ok(routed) => routed,
                 Err(over) => {
                     entry.refused = Some(over.to_string());
                     return entry;
@@ -3870,7 +3912,8 @@ pub fn preview_routes_at(
                             records: slice,
                             raw: &raw,
                             meta: &meta,
-                            source: Some(source_name),
+                            seeded: &mut seeded,
+                            last: false,
                             now,
                             tally: None,
                             senders: None,
@@ -3895,6 +3938,7 @@ pub fn preview_routes_at(
                         for (_, unrun) in masks {
                             unrun.reclaim(&mut pool);
                         }
+                        seeded.batch.reclaim(&mut pool);
                         return entry;
                     }
                 };
@@ -3944,6 +3988,7 @@ pub fn preview_routes_at(
                     for (_, unrun) in masks {
                         unrun.reclaim(&mut pool);
                     }
+                    seeded.batch.reclaim(&mut pool);
                     return entry;
                 }
                 let sets = docs.sets;
@@ -3973,6 +4018,7 @@ pub fn preview_routes_at(
                 blocker.get_or_insert(row);
                 entry.refused = Some("no route matched it, and Unmatched is answered with block".into());
             }
+            seeded.batch.reclaim(&mut pool);
             entry
         })
         .collect();
