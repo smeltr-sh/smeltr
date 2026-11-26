@@ -160,7 +160,7 @@ pub const DROPPED_EXCEPTION: &str = "exception";
 pub const DROPPED_UNPROCESSABLE: &str = "unprocessable";
 
 /// How long a reader goes without taking work before it keeps its source's membership in place of waiting (design doc,
-/// Runtime stages: ingest keeps whatever membership its source protocol requires). Short spells of backpressure are
+/// Runtime stages: a reader keeps whatever membership the source's protocol requires). Short spells of backpressure are
 /// ordinary, and pausing throws away what the client has prefetched; ten seconds is well inside Kafka's poll interval,
 /// and a group's rebalance takes seconds anyway.
 pub const MEMBERSHIP_AFTER: Duration = Duration::from_secs(10);
