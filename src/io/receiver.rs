@@ -43,6 +43,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Notify, oneshot};
 
 use super::api::Records;
+use super::batch_wait::BatchWait;
 use super::connections::{self, Connections, Marked};
 use super::elastic_receiver;
 use super::hec;
@@ -59,7 +60,6 @@ use crate::format::json_scan::{Next, Reader};
 use crate::plan::topology::{
     ApiRecords, ConnectionLimits, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport,
 };
-use crate::worker::LEAST_BATCH_BYTES;
 
 /// Where a receiver answers whether it takes requests: 200 while it does, 503 while it is busy, blocked or stopping.
 /// What a balancer's health check or a Kubernetes readiness probe asks.
@@ -68,10 +68,6 @@ pub const HEALTH_PATH: &str = "/health";
 /// What a receiver holds that its reader has not taken. One request may be as large as this
 /// (`MaxRequestBytes::MAX`), so a receiver with room takes any request it may be sent.
 pub const INBOX_BYTES: usize = 64 * 1024 * 1024;
-
-/// How long a reader waits, after a request arrives, for a batch's worth (`LEAST_BATCH_BYTES`) to arrive too: the
-/// longest a record waits on it while traffic is light.
-const SMALL_BATCH_WAIT: Duration = Duration::from_millis(2);
 
 /// How long a sender has to send a request's whole body. One that sends slower holds read budget other senders need.
 const BODY_READ_SECS: u64 = 30;
@@ -1035,8 +1031,8 @@ struct Inbox {
     queued: VecDeque<Request>,
     /// What `queued` holds in memory, taken from the receiver's holdings.
     queued_bytes: Counted,
-    /// When the oldest of `queued` arrived, while it holds any.
-    since: Option<Instant>,
+    /// When the reader hands `queued` over.
+    wait: BatchWait,
     /// The offset the next record takes. One sequence per receiver, so the watermark is one number.
     next_offset: i64,
     /// Each request whose records are all taken, by the offset of its last record.
@@ -1054,17 +1050,13 @@ impl Inbox {
         !self.closed && !self.blocked && !self.stopping
     }
 
-    /// Queues a request. Whether a reader waiting on `arrived` needs waking: the inbox was empty, or now holds a batch
-    /// worth handing over.
+    /// Queues a request. Whether a reader waiting on `arrived` needs waking ([`BatchWait::arrived`]).
     fn queue(&mut self, request: Request) -> bool {
-        let empty = self.queued.is_empty();
-        if empty {
-            self.since = Some(Instant::now());
-        }
+        let first = self.queued.is_empty();
         let before = self.queued_bytes.total();
         self.queued_bytes.add(request.bytes);
         self.queued.push_back(request);
-        empty || (before < LEAST_BATCH_BYTES && self.queued_bytes.total() >= LEAST_BATCH_BYTES)
+        self.wait.arrived(first, before, self.queued_bytes.total())
     }
 }
 
@@ -1392,8 +1384,8 @@ impl Shared {
     }
 
     /// Up to `max_rows` records and `max_bytes` of them, the first whatever its size, waiting up to `timeout` for
-    /// the first to arrive, and then up to [`SMALL_BATCH_WAIT`] after it for a batch's worth. Nothing while blocked: a
-    /// blocked source stops supplying.
+    /// the first to arrive, and then as [`BatchWait`] says for a batch's worth. Nothing while blocked: a blocked source
+    /// stops supplying.
     fn take(&self, max_rows: usize, max_bytes: usize, timeout: Duration) -> Vec<Queued> {
         let deadline = Instant::now() + timeout;
         let mut inbox = self.state.lock();
@@ -1404,10 +1396,8 @@ impl Shared {
             }
             inbox = self.arrived.wait_timeout(inbox, left).0;
         }
-        // Small requests would otherwise make batches of a few rows, whose own work outweighs them.
-        let handed_by = inbox.since.expect("a request is queued") + SMALL_BATCH_WAIT;
-        while inbox.queued_bytes.total() < LEAST_BATCH_BYTES {
-            let left = handed_by.saturating_duration_since(Instant::now());
+        loop {
+            let left = inbox.wait.left(inbox.queued_bytes.total());
             if left.is_zero() {
                 break;
             }
@@ -3778,6 +3768,7 @@ impl Sockets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::batch_wait::SMALL_BATCH_WAIT;
 
     #[test]
     fn allow_from_admits_only_its_networks() {

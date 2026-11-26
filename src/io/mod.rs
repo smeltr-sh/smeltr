@@ -17,6 +17,7 @@ use std::time::Duration;
 pub mod api;
 pub mod app_sign_in;
 pub mod avro;
+mod batch_wait;
 pub mod client_credentials;
 pub mod connections;
 pub mod csv;

@@ -34,6 +34,7 @@ use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::util::Timeout;
 use regex::Regex;
 
+use crate::io::batch_wait::BatchWait;
 use crate::io::{IoError, PartitionLag, TopicPartition};
 use crate::plan::topology::{HeldSecrets, KafkaSourceConfig, StartPosition};
 
@@ -491,6 +492,8 @@ pub(super) struct SlotState {
     pub(super) inbox: VecDeque<Pending>,
     /// What `inbox` holds, as `Pending::size` counts it.
     bytes: usize,
+    /// When the reader hands `inbox` over.
+    wait: BatchWait,
     /// Paused because the inbox reached its cap, until the reader drains it to half.
     full: bool,
     /// Paused by `block`, until `release`.
@@ -531,6 +534,13 @@ pub(super) struct SlotState {
     skipped: HashSet<Arc<str>>,
 }
 
+impl SlotState {
+    /// How much longer the reader waits before it takes what the inbox holds ([`BatchWait::left`]).
+    pub(super) fn wait_left(&self) -> Duration {
+        self.wait.left(self.bytes)
+    }
+}
+
 impl Slot {
     fn new(config: &KafkaSourceConfig, seq: u64) -> Slot {
         Slot {
@@ -549,6 +559,7 @@ impl Slot {
             state: Mutex::new(SlotState {
                 inbox: VecDeque::new(),
                 bytes: 0,
+                wait: BatchWait::default(),
                 full: false,
                 blocked: false,
                 keeping: false,
@@ -1005,7 +1016,7 @@ impl Routes {
     }
 
     /// Hands `msg` to the inbox of the source reading its topic. A full inbox pauses that source's partitions.
-    /// Answers the source when its reader waits on an empty inbox, for the caller to wake.
+    /// Answers the source when its reader needs waking ([`BatchWait::arrived`]), for the caller to wake.
     fn route(&self, consumer: &BaseConsumer<Routes>, msg: &impl Message) -> Option<Arc<Slot>> {
         // Read once: each read of a message's topic measures and checks the name again.
         let topic = msg.topic();
@@ -1019,10 +1030,11 @@ impl Routes {
             headers: headers_of(msg, state.keep_headers),
             timestamp: msg.timestamp().to_millis(),
         };
-        // A reader waits only on an empty inbox, so only the first record into one owes it a wake.
-        let wake = state.inbox.is_empty();
-        state.bytes += record.size();
+        let (first, before) = (state.inbox.is_empty(), state.bytes);
+        let after = before + record.size();
+        state.bytes = after;
         state.inbox.push_back(record);
+        let wake = state.wait.arrived(first, before, after);
         if !state.full && state.bytes >= slot.cap {
             state.full = true;
             if let Err(e) = slot.sync(consumer, &state) {
@@ -1735,6 +1747,42 @@ mod tests {
 
         assert_eq!(a.lock().commit_results, vec![Ok(())]);
         assert_eq!(b.lock().commit_results, vec![Ok(()), refused(), Ok(())]);
+    }
+
+    /// The first record into an empty inbox wakes its reader, and so does the one that makes it a batch's worth; until
+    /// then the reader waits for more.
+    #[test]
+    fn the_first_record_and_a_batchs_worth_wake_the_reader() {
+        let routes = Routes::default();
+        let slot = Arc::new(Slot::new(&config(&["a"]), 0));
+        routes.attach(&slot);
+        // Never polled: routing pauses a source through it only once its inbox is full.
+        let consumer: BaseConsumer<Routes> = ClientConfig::new().create_with_context(routes.clone()).unwrap();
+        let record = |offset, bytes| {
+            let payload = Some(vec![b'x'; bytes]);
+            rdkafka::message::OwnedMessage::new(
+                payload,
+                None,
+                "a".into(),
+                rdkafka::Timestamp::NotAvailable,
+                0,
+                offset,
+                None,
+            )
+        };
+
+        assert!(routes.route(&consumer, &record(0, 100)).is_some(), "the first record");
+        assert!(
+            routes.route(&consumer, &record(1, 100)).is_none(),
+            "one more, short of a batch's worth"
+        );
+        assert!(slot.lock().wait_left() > Duration::ZERO, "the reader waits for more");
+        let worth = crate::worker::LEAST_BATCH_BYTES;
+        assert!(
+            routes.route(&consumer, &record(2, worth)).is_some(),
+            "the record that makes a batch's worth"
+        );
+        assert_eq!(slot.lock().wait_left(), Duration::ZERO, "the reader takes it at once");
     }
 
     /// A source refused after the group handed it partitions gives them up: it owns nothing, and its reader hears
