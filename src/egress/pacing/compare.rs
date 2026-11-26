@@ -172,6 +172,14 @@ impl Path {
     }
 }
 
+/// A batch on its way to the bottleneck: it enters it at `enters`, or is refused there.
+struct Waiting<T> {
+    enters: Instant,
+    token: T,
+    sent_at: Instant,
+    throttled: bool,
+}
+
 struct Out<T> {
     at: Instant,
     seen: Instant,
@@ -188,6 +196,7 @@ struct Flow<M: Model> {
     /// Whether the source was refused room since the last batch went.
     pressed: bool,
     held: u64,
+    waiting: Vec<Waiting<M::Token>>,
     out: Vec<Out<M::Token>>,
     acks: Vec<(Instant, u64)>,
     refused: Vec<Instant>,
@@ -234,6 +243,7 @@ impl<M: Model> Sim<M> {
                     source_next: start,
                     pressed: false,
                     held: 0,
+                    waiting: Vec::new(),
                     out: Vec::new(),
                     acks: Vec::new(),
                     refused: Vec::new(),
@@ -288,61 +298,109 @@ impl<M: Model> Sim<M> {
                 if let Some(o) = f.out.iter().map(|o| o.seen).min() {
                     next = next.min(o);
                 }
+                if let Some(w) = f.waiting.iter().map(|w| w.enters).min() {
+                    next = next.min(w);
+                }
             }
             self.now = next.max(self.now + Duration::from_micros(1)).min(end.max(self.now));
+            self.admit();
             self.acknowledge();
         }
     }
 
+    /// Hands a batch to the path. A destination over its limit refuses it at once; otherwise it reaches the
+    /// bottleneck half a round trip later, where [`Sim::admit`] queues or refuses it.
     fn send(&mut self, i: usize) {
         let now = self.now;
         let t = self.secs(now);
-        let capacity = Path::at(&self.path.capacity, t);
         let out_total: u64 = self.flows.iter().map(|f| f.held).sum();
-        let queued = self.link_free.saturating_duration_since(now).as_secs_f64() * capacity;
-        self.queue.push((now, queued));
         let over_limit = Path::at(&self.path.limit, t).is_some_and(|l| out_total + BATCH as u64 > l);
-        let over_buffer = self.path.buffer.is_some_and(|b| queued > b);
-        let throttled = over_limit || over_buffer;
         let failed = self.path.fail_every.is_some_and(|n| (self.sent * 7919 + 13) % n == 0);
         self.sent += 1;
         let half = self.path.rtt / 2;
-        // A refused batch is answered at once, then sent again after the wait the destination names.
-        let enters = if throttled {
-            now + self.path.rtt + self.path.retry + half
-        } else {
-            now + half
-        };
-        let at = if failed {
-            now + self.path.rtt
-        } else {
-            self.link_free = self.link_free.max(enters) + Duration::from_secs_f64(BATCH as f64 / capacity);
-            self.link_free + half
-        };
-        let seen = match self.path.slot {
-            Some(slot) => {
-                let since = (at - self.start).as_nanos();
-                let s = slot.as_nanos();
-                self.start + Duration::from_nanos(since.div_ceil(s) as u64 * s as u64)
-            }
-            None => at,
-        };
         let f = &mut self.flows[i];
         let token = f.model.dispatched(now, std::mem::take(&mut f.pressed));
         f.held += BATCH as u64;
-        if throttled {
-            f.refused.push(now);
+        if failed {
+            let at = now + self.path.rtt;
+            f.out.push(Out {
+                at,
+                seen: at,
+                token,
+                sent_at: now,
+                throttled: false,
+                failed,
+            });
+        } else {
+            // A refused batch is answered at once, then sent again after the wait the destination names.
+            if over_limit {
+                f.refused.push(now);
+            }
+            f.waiting.push(Waiting {
+                enters: if over_limit {
+                    now + self.path.rtt + self.path.retry + half
+                } else {
+                    now + half
+                },
+                token,
+                sent_at: now,
+                throttled: over_limit,
+            });
         }
-        f.out.push(Out {
-            at,
-            seen,
-            token,
-            sent_at: now,
-            throttled,
-            failed,
-        });
         if let Source::Rate(rate) = f.source {
             f.source_next = f.source_next.max(now) + Duration::from_secs_f64(BATCH as f64 / rate);
+        }
+    }
+
+    /// Lets each batch that has reached the bottleneck in, in the order they reached it. One that finds more than
+    /// the buffer queued ahead of it is refused: the answer takes half a round trip back, and it is sent again after
+    /// the destination's wait.
+    fn admit(&mut self) {
+        let now = self.now;
+        loop {
+            let Some((i, k)) = self
+                .flows
+                .iter()
+                .enumerate()
+                .flat_map(|(i, f)| f.waiting.iter().enumerate().map(move |(k, w)| (i, k, w.enters)))
+                .filter(|(_, _, e)| *e <= now)
+                .min_by_key(|(_, _, e)| *e)
+                .map(|(i, k, _)| (i, k))
+            else {
+                return;
+            };
+            let w = self.flows[i].waiting.swap_remove(k);
+            let capacity = Path::at(&self.path.capacity, self.secs(w.enters));
+            let queued = self.link_free.saturating_duration_since(w.enters).as_secs_f64() * capacity;
+            self.queue.push((w.enters, queued));
+            let half = self.path.rtt / 2;
+            if self.path.buffer.is_some_and(|b| queued > b) {
+                self.flows[i].refused.push(w.enters);
+                self.flows[i].waiting.push(Waiting {
+                    enters: w.enters + self.path.rtt + self.path.retry,
+                    throttled: true,
+                    ..w
+                });
+                continue;
+            }
+            self.link_free = self.link_free.max(w.enters) + Duration::from_secs_f64(BATCH as f64 / capacity);
+            let at = self.link_free + half;
+            let seen = match self.path.slot {
+                Some(slot) => {
+                    let since = (at - self.start).as_nanos();
+                    let s = slot.as_nanos();
+                    self.start + Duration::from_nanos(since.div_ceil(s) as u64 * s as u64)
+                }
+                None => at,
+            };
+            self.flows[i].out.push(Out {
+                at,
+                seen,
+                token: w.token,
+                sent_at: w.sent_at,
+                throttled: w.throttled,
+                failed: false,
+            });
         }
     }
 
@@ -408,7 +466,7 @@ impl<M: Model> Sim<M> {
         (l[l.len() / 2], l[(l.len() * 99 / 100).min(l.len() - 1)])
     }
 
-    /// Mean bytes queued at the bottleneck, sampled at each send between `from` and `to`.
+    /// Mean bytes queued at the bottleneck ahead of each batch as it reaches it, between `from` and `to`.
     fn queued(&self, from: f64, to: f64) -> f64 {
         let q: Vec<f64> = self
             .queue
@@ -808,5 +866,38 @@ fn sweep_a_capacity_drop() {
                 old.latency(45.0, 60.0).1,
             );
         }
+    }
+}
+
+/// Prints the segment-reading model's state each half second on a 1 GiB/s, 20 ms path whose bottleneck holds 16 MiB,
+/// less than one round trip's worth.
+#[test]
+#[ignore = "a trace for a person to read: cargo nextest run --lib egress::pacing::compare --run-ignored only --no-capture"]
+fn trace_a_shallow_buffer() {
+    let path = Path {
+        buffer: Some(16.0 * MIB as f64),
+        ..Path::new(GIB, 20)
+    };
+    let mut s = Sim::new(path, vec![(new_model(), Source::Backlogged)]);
+    let mut t = 0.0;
+    while t < 12.0 {
+        t += 0.25;
+        let before = s.refused(0.0, t);
+        s.run_to(t);
+        let p = &s.flows[0].model.0;
+        println!(
+            "t {t:>5.2}  {:<14} {:>5.0} MiB/s lost {:>3}  max_bw {:>5.0} bw_short {:>6.0} bw {:>5.0}  in_long {:>6.1} in_short {:>6.1} cwnd {:>5.1} inflight {:>5.1} MiB  min_rtt {:?}",
+            format!("{:?}", p.state),
+            mib(s.throughput(None, t - 0.25, t)),
+            s.refused(0.0, t) - before,
+            mib(p.max_bw),
+            mib(p.bw_shortterm),
+            mib(p.bw),
+            mib(p.inflight_longterm),
+            mib(p.inflight_shortterm),
+            mib(p.cwnd),
+            mib(p.inflight as f64),
+            p.min_rtt,
+        );
     }
 }
