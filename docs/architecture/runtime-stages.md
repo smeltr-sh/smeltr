@@ -96,18 +96,18 @@ Transform is stateless per batch. It is the only stage running user-authored
 logic, so panic isolation lives here. One batch fans out to one delivery unit
 for each destination it touched, encoded once. A capture taps a batch at
 both ends of transform: as its records arrive, and as each route's pipeline
-finishes its rows.
+finishes its records.
 
 A batch runs through transform in slices sized to the L2 cache one hardware
 thread has to itself, since a pipeline runs each step over all its input
 before the next. A batch stays whole on either side: it is read, delivered
 and committed once, whatever its slices.
 
-A route selects a pipeline for a source's rows. Routes have no order: every
-route sees every row of its source, and a row two routes match runs both
+A route selects a pipeline for a source's records. Routes have no order: every
+route sees every record of its source, and a record two routes match runs both
 pipelines. Delivery belongs to the route as a list of rules over the pipeline's
-output; rules are additive, so a row matching two goes to both.
-Every row a pipeline finishes is delivered, dropped by a drop its author
+output; rules are additive, so a record matching two goes to both.
+Every record a pipeline finishes is delivered, dropped by a drop its author
 chose, or answered as `Unmatched`
 ([exception taxonomy](exception-taxonomy.md)).
 
@@ -162,6 +162,6 @@ must not be stalled by it.
 
 The [compiler](compiler.md)'s plan is what transform runs. The
 [exception taxonomy](exception-taxonomy.md) decides what each stage does with a bad
-row or batch. Every stage records into the [observability](observability.md)
+record or batch. Every stage records into the [observability](observability.md)
 registry. The [control plane](control-plane.md) starts and stops the whole
 assembly.

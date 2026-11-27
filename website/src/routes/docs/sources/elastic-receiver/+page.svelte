@@ -165,8 +165,7 @@ setup.ilm.enabled: false`;
   <pre><code>{bulk}</code></pre>
   <p>
     The receiver takes no <code>update</code> or <code>delete</code>. Each is answered
-    <code>400</code> in its own item, and the request's other actions are taken all the same. So is a
-    document that is not a JSON object.
+    <code>400</code> in its own item, and the request's other actions are taken all the same.
   </p>
 
   <h2 id="fields-it-gives">Fields it gives</h2>
