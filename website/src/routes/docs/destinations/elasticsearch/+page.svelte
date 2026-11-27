@@ -75,8 +75,8 @@
         >
         <tr
           ><th scope="row">index</th><td
-            >Replaces the document with that ID. Two copies sent close together can land in either
-            order, so either can end up kept.</td
+            >Replaces the document with that ID. Two copies sent close together can be delivered in
+            either order, so either can end up kept.</td
           ></tr
         >
       </tbody>

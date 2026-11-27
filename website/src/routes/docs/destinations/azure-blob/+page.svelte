@@ -95,7 +95,7 @@
     >, and finishes it when it reaches <code>maxObjectBytes</code> on disk, when
     <code>fileIntervalSecs</code>
     passes, when <code>bufferBytes</code> fills on the worker, or when a 65th blob opens and this one
-    was written least recently. A batch is acknowledged once every blob holding its records has landed.
+    was written least recently. A batch is acknowledged once every blob holding its records has been written.
     Two blobs never share a key, so records written again after a failure make new blobs.
   </p>
 

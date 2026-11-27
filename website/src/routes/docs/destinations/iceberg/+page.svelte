@@ -242,7 +242,7 @@
     table's next snapshot on top of the one it read. In a table of format version 3, the snapshot
     gives its manifests row ids from the table's <code>next-row-id</code>, as the spec's
     <a href="https://iceberg.apache.org/spec/#row-lineage">row lineage</a> asks. A batch is acknowledged
-    once the commit holding its records lands.
+    once the commit holding its records succeeds.
   </p>
   <p>
     A commit another writer beat to the table is made again at once on top of the new snapshot, up

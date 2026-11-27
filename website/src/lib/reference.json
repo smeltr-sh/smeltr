@@ -454,7 +454,7 @@
         {
           "name": "encode",
           "signature": "text.encode(encoding)",
-          "summary": "The text's bytes in the encoding named, by the labels `decode` takes. `\"auto\"` names no encoding to write. A character the encoding cannot spell makes the result null and throws a `CoercionRefused` exception.",
+          "summary": "The text's bytes in the text encoding named, by the labels `decode` takes. `\"auto\"` names no text encoding to write. A character the text encoding cannot spell makes the result null and throws a `CoercionRefused` exception.",
           "examples": [
             {
               "expr": "\"café\".encode(\"latin1\").toString(\"hex\")",
@@ -480,7 +480,7 @@
         {
           "name": "decode",
           "signature": "bytes.decode(encoding)",
-          "summary": "Reads bytes as text in the encoding named: a WHATWG label such as `\"utf-8\"`, `\"utf-16le\"` or `\"latin1\"`, or `\"auto\"`, which detects as a source's `encoding` does. Bytes that do not decode become U+FFFD. An encoding it does not know is null and throws a `CoercionRefused` exception.",
+          "summary": "Reads bytes as text in the text encoding named: a WHATWG label such as `\"utf-8\"`, `\"utf-16le\"` or `\"latin1\"`, or `\"auto\"`, which detects as a source's `encoding` does. Bytes that do not decode become U+FFFD. A text encoding it does not know is null and throws a `CoercionRefused` exception.",
           "examples": [
             {
               "expr": "\"6361 66e9\".replaceAll(/ /, \"\").parseBytes(\"hex\").decode(\"latin1\")",
@@ -2312,7 +2312,7 @@
     {
       "id": "datetime",
       "title": "Dates and times",
-      "blurb": "A datetime is an instant in UTC, microsecond-resolution, and serializes as ISO 8601. `now()` is read once per record, so every route a record takes sees the same instant. There is no local time zone: a log line's own offset is read when it is parsed and kept nowhere else.",
+      "blurb": "A datetime is an instant in UTC, microsecond-resolution, and is encoded as ISO 8601. `now()` is read once per record, so every route a record takes sees the same instant. There is no local time zone: a log line's own offset is read when it is parsed and kept nowhere else.",
       "rows": [
         {
           "symbol": "+",
@@ -2862,7 +2862,7 @@
     {
       "id": "durations",
       "title": "Durations",
-      "blurb": "A duration is a signed span, microsecond-resolution. Subtracting two datetimes produces one. It serializes as a bare count of microseconds, `toString()` produces the same text, and `parseDuration()` reads it back.",
+      "blurb": "A duration is a signed span, microsecond-resolution. Subtracting two datetimes produces one. It is encoded as a bare count of microseconds, `toString()` produces the same text, and `parseDuration()` reads it back.",
       "rows": [
         {
           "symbol": "+",
@@ -3421,12 +3421,12 @@
     {
       "kind": "InvalidUtf8",
       "category": "encoding",
-      "when": "Bytes that did not decode under the source's encoding were replaced with U+FFFD."
+      "when": "Bytes that did not decode under the source's text encoding were replaced with U+FFFD."
     },
     {
       "kind": "GuessedEncoding",
       "category": "encoding",
-      "when": "A source set to `auto` recognized neither UTF-8 nor UTF-16 and guessed the encoding. The text may well be right."
+      "when": "A source set to `auto` recognized neither UTF-8 nor UTF-16 and guessed the text encoding. The text may well be right."
     },
     {
       "kind": "Unmatched",
@@ -3792,7 +3792,7 @@
     },
     {
       "name": "bytes",
-      "holds": "Bytes, not read as text. Text functions refuse them; `decode` reads them as text in a named encoding. They write as base64, and `toString` names another form."
+      "holds": "Bytes, not read as text. Text functions refuse them; `decode` reads them as text in a named text encoding. They write as base64, and `toString` names another form."
     },
     {
       "name": "datetime",
