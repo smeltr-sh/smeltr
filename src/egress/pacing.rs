@@ -157,7 +157,9 @@ impl State {
 }
 
 /// A windowed max filter, Kathleen Nichols' algorithm as Linux's `lib/minmax.c` has it: the best, second best and
-/// third best samples over the window, so the max can fall back as the best ages out.
+/// third best samples over the window, so the max can fall back as the best ages out. A window `win` long holds the
+/// samples of `win` slots of virtual time, the current one and the `win - 1` before it, as the draft's BBR.max_bw
+/// filter holds two ProbeBW cycles: a sample lapses once it is `win` old, where `lib/minmax.c` keeps it one longer.
 #[derive(Clone, Copy, Debug, Default)]
 struct MaxFilter {
     s: [(u64, f64); 3],
@@ -172,7 +174,7 @@ impl MaxFilter {
     /// UpdateWindowedMaxFilter: take `v` at virtual time `t`, over a window `win` long.
     fn update(&mut self, win: u64, t: u64, v: f64) -> f64 {
         let val = (t, v);
-        if v >= self.s[0].1 || t.saturating_sub(self.s[2].0) > win {
+        if v >= self.s[0].1 || t.saturating_sub(self.s[2].0) >= win {
             return self.reset(t, v);
         }
         if v >= self.s[1].1 {
@@ -182,11 +184,11 @@ impl MaxFilter {
             self.s[2] = val;
         }
         let dt = t.saturating_sub(self.s[0].0);
-        if dt > win {
+        if dt >= win {
             self.s[0] = self.s[1];
             self.s[1] = self.s[2];
             self.s[2] = val;
-            if t.saturating_sub(self.s[0].0) > win {
+            if t.saturating_sub(self.s[0].0) >= win {
                 self.s[0] = self.s[1];
                 self.s[1] = self.s[2];
                 self.s[2] = val;
@@ -427,6 +429,8 @@ impl Pacing {
     /// Whether a batch of `bytes` may go now: cwnd and the receiver's window must have room for it, unless nothing is
     /// in flight, and the pacing rate must have it due.
     pub fn gate(&mut self, bytes: usize, now: Instant) -> Gate {
+        // OnTransmit, before the batch goes: a flow restarting from idle paces it at the restarted rate.
+        self.handle_restart_from_idle(now);
         if self.inflight > 0 && (self.inflight + bytes as u64) as f64 > self.window() {
             if self.cwnd <= self.ceiling {
                 self.cwnd_limited_now = true;
@@ -451,10 +455,9 @@ impl Pacing {
         self.app_limited = (self.delivered + self.inflight).max(1);
     }
 
-    /// A batch of `bytes` whose handoff to the destination began at `began` and ended at `now`: OnTransmit and
-    /// OnPacketSent. The answer goes back with its [`Completion`].
+    /// A batch of `bytes` whose handoff to the destination began at `began` and ended at `now`: OnPacketSent.
+    /// The answer goes back with its [`Completion`].
     pub fn dispatched(&mut self, bytes: usize, began: Instant, now: Instant) -> Sent {
-        self.handle_restart_from_idle(now);
         let bytes = bytes as u64;
         // The batch departs when its handoff begins, so the handoff is spent from its own pacing delay.
         let departed = self.next_send_time.max(began);
@@ -511,7 +514,7 @@ impl Pacing {
         if landed == 0 {
             return;
         }
-        if self.recovery.is_some_and(|at| p.sent_before >= at) || self.inflight == 0 {
+        if self.recovery.is_some_and(|at| p.sent_before >= at) {
             self.exit_recovery();
         }
 
@@ -1724,9 +1727,9 @@ mod tests {
     fn the_max_filter_keeps_the_best_within_its_window() {
         let mut f = MaxFilter::default();
         assert_eq!(f.update(2, 0, 10.0), 10.0);
-        assert_eq!(f.update(2, 1, 5.0), 10.0, "the best stands within the window");
-        assert_eq!(f.update(2, 2, 4.0), 10.0);
-        assert_eq!(f.update(2, 3, 3.0), 5.0, "and lapses past it to the next best");
+        assert_eq!(f.update(2, 1, 5.0), 10.0, "the best stands within the window: its slot and the next");
+        assert_eq!(f.update(2, 2, 4.0), 5.0, "and lapses past it to the next best");
+        assert_eq!(f.update(2, 3, 3.0), 4.0);
     }
 
     #[test]
