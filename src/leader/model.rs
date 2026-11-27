@@ -450,7 +450,7 @@ impl Model for Client {
         // A model too old for compaction, or a provider's endpoint that does not offer it, is asked again without,
         // and the leader writes its summaries from then on.
         let answer = match self.send(request).await {
-            Err(why) if request.compact && refused_compaction(&why) => {
+            Err(failed) if request.compact && failed.refused_compaction() => {
                 self.refused.store(true, Ordering::Relaxed);
                 self.send(Request {
                     compact: false,
@@ -521,7 +521,7 @@ impl Client {
     }
 
     /// `request` in the provider's terms, and what it answered.
-    async fn send(&self, request: Request<'_>) -> Result<Value, String> {
+    async fn send(&self, request: Request<'_>) -> Result<Value, EndpointError> {
         let Endpoint {
             provider,
             model,
@@ -581,7 +581,7 @@ impl Client {
         url: &str,
         mut body: Value,
         heard: Option<Heard<'_>>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, EndpointError> {
         let Some(heard) = heard else {
             return post(call, url, &body).await;
         };
@@ -592,7 +592,7 @@ impl Client {
         let response = sent(json_body(call, &body), url).await?;
         let mut folded = Folded::new(self.endpoint.provider);
         events(response, url, |data| folded.add(data, heard)).await?;
-        folded.answer()
+        Ok(folded.answer()?)
     }
 }
 
@@ -817,10 +817,39 @@ fn streamed_error(error: &Value) -> String {
     }
 }
 
-/// Whether `why`, what [`post`] said, is an endpoint refusing the request for its compaction.
-fn refused_compaction(why: &str) -> bool {
-    let why = why.to_ascii_lowercase();
-    why.contains(" answered 400") && (why.contains("compact") || why.contains("context_management"))
+/// Why asking an endpoint failed. Each holds what a person is told.
+#[derive(Debug)]
+enum EndpointError {
+    /// The endpoint answered with this status, which is not a success.
+    Answered(reqwest::StatusCode, String),
+    /// It was not reached, or its answer could not be read.
+    Unread(String),
+}
+
+impl EndpointError {
+    /// Whether the endpoint answered 400 because of the compaction setting the request carried, which the caller then
+    /// asks again without. Only the answer's own text says so: it names `compact` or `context_management`.
+    fn refused_compaction(&self) -> bool {
+        let EndpointError::Answered(reqwest::StatusCode::BAD_REQUEST, why) = self else {
+            return false;
+        };
+        let why = why.to_ascii_lowercase();
+        why.contains("compact") || why.contains("context_management")
+    }
+}
+
+impl From<String> for EndpointError {
+    fn from(why: String) -> Self {
+        EndpointError::Unread(why)
+    }
+}
+
+impl From<EndpointError> for String {
+    fn from(failed: EndpointError) -> Self {
+        match failed {
+            EndpointError::Answered(_, why) | EndpointError::Unread(why) => why,
+        }
+    }
 }
 
 /// Ask `endpoint` for a short answer, so a setting whose key, model or URL cannot work is found when it is saved.
@@ -942,7 +971,7 @@ async fn models_get(endpoint: &Endpoint, path: &str) -> Result<Value, String> {
             .header("anthropic-version", ANTHROPIC_VERSION),
         Provider::OpenAi | Provider::OpenAiCompatible => client.get(&url).bearer_auth(&endpoint.api_key),
     };
-    send_json(call, &url).await
+    Ok(send_json(call, &url).await?)
 }
 
 /// Whether `url` may name a model endpoint: the rule an OIDC issuer follows, https unless it is on this host.
@@ -951,7 +980,7 @@ pub fn check_endpoint(url: &str) -> Result<(), String> {
 }
 
 /// POST `body` to `url` and read the answer, to [`MAX_ANSWER`].
-async fn post(request: reqwest::RequestBuilder, url: &str, body: &Value) -> Result<Value, String> {
+async fn post(request: reqwest::RequestBuilder, url: &str, body: &Value) -> Result<Value, EndpointError> {
     send_json(json_body(request, body), url).await
 }
 
@@ -962,15 +991,15 @@ fn json_body(request: reqwest::RequestBuilder, body: &Value) -> reqwest::Request
 }
 
 /// Send `request` to `url` and read the answer, to [`MAX_ANSWER`].
-async fn send_json(request: reqwest::RequestBuilder, url: &str) -> Result<Value, String> {
+async fn send_json(request: reqwest::RequestBuilder, url: &str) -> Result<Value, EndpointError> {
     let answer = outbound::read(sent(request, url).await?, MAX_ANSWER)
         .await
         .map_err(|e| format!("{url}: {e}"))?;
-    serde_json::from_slice(&answer).map_err(|e| format!("{url} answered something that is not JSON: {e}"))
+    Ok(serde_json::from_slice(&answer).map_err(|e| format!("{url} answered something that is not JSON: {e}"))?)
 }
 
 /// Send `request` to `url`, and its answer unread when it succeeded, or what its refusal says.
-async fn sent(request: reqwest::RequestBuilder, url: &str) -> Result<reqwest::Response, String> {
+async fn sent(request: reqwest::RequestBuilder, url: &str) -> Result<reqwest::Response, EndpointError> {
     let response = request
         .send()
         .await
@@ -982,7 +1011,7 @@ async fn sent(request: reqwest::RequestBuilder, url: &str) -> Result<reqwest::Re
     let answer = outbound::read(response, MAX_ANSWER)
         .await
         .map_err(|e| format!("{url}: {e}"))?;
-    Err(refusal(url, status, &answer))
+    Err(EndpointError::Answered(status, refusal(url, status, &answer)))
 }
 
 /// What `url` refusing with `status` and `answer` says. The provider's own sentence says what is wrong: a bad key,
