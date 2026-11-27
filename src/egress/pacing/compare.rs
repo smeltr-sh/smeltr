@@ -1265,3 +1265,43 @@ fn how_long_a_lasting_capacity_drop_takes_to_recover() {
         }
     }
 }
+
+/// Prints each change of state, round or ProbeBW cycle on a 1 GiB/s, 20 ms path that drops to a tenth at 30 s and
+/// stays there, under a 1 GiB ceiling.
+#[test]
+#[ignore = "a trace for a person to read: cargo nextest run --lib egress::pacing::compare --run-ignored only --no-capture"]
+fn trace_a_lasting_capacity_drop() {
+    let path = Path {
+        capacity: vec![(0.0, GIB), (30.0, 0.1 * GIB)],
+        ..Path::new(GIB, 20)
+    };
+    let mut s = Sim::new(path, vec![(new_model(), Source::Backlogged)]);
+    s.run_to(28.0);
+    let mut last = None;
+    let mut t = 28.0;
+    while t < 160.0 {
+        t += 0.01;
+        s.run_to(t);
+        let p = &s.flows[0].model.0;
+        let now = (format!("{:?}", p.state), p.round_count, p.cycle_count);
+        if last.as_ref() != Some(&now) {
+            println!(
+                "t {t:>7.2} {:<14} round {:>5} cycle {:>3} max_bw {:>5.0} bw {:>5.0} full_bw {:>5.0} count {} | min_rtt {:>7.0} ms stamp {:>6.1} s | cwnd {:>6.1} probe_rtt_cwnd {:>7.1} inflight {:>6.1} MiB | app_limited {}",
+                now.0,
+                p.round_count,
+                p.cycle_count,
+                mib(p.max_bw),
+                mib(p.bw),
+                mib(p.full_bw),
+                p.full_bw_count,
+                p.min_rtt.map_or(0.0, |d| d.as_secs_f64() * 1e3),
+                s.secs(p.min_rtt_stamp),
+                mib(p.cwnd),
+                mib(p.probe_rtt_cwnd),
+                mib(p.inflight as f64),
+                p.app_limited != 0,
+            );
+            last = Some(now);
+        }
+    }
+}
