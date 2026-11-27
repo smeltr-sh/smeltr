@@ -212,13 +212,13 @@ impl Pacing {
         sent
     }
 
-    /// A batch handed over failed but for `landed` of its bytes, and what failed goes back to be sent again: none of
-    /// it is in flight any more, and what landed counts as delivered. No sample: its round trip is the failure's, not
+    /// A batch handed over failed but for `delivered` of its bytes, and what failed goes back to be sent again: none of
+    /// it is in flight any more, and what was delivered counts. No sample: its round trip is the failure's, not
     /// the link's.
-    pub fn abandoned(&mut self, c: Completion, landed: usize) {
-        let landed = landed.min(c.bytes);
-        self.delivered += landed as u64;
-        self.abandoned += (c.bytes - landed) as u64;
+    pub fn abandoned(&mut self, c: Completion, delivered: usize) {
+        let delivered = delivered.min(c.bytes);
+        self.delivered += delivered as u64;
+        self.abandoned += (c.bytes - delivered) as u64;
     }
 
     /// A batch came back acknowledged. Updates the estimates and the target.
@@ -255,8 +255,8 @@ impl Pacing {
         // While the target is held to one batch, the link is not what bounds the rate.
         let app_limited = c.app_limited || self.probing_rtt_from.is_some() || probe_ended;
 
-        // BBR's sample: what was acknowledged while this batch was out, over at least its own round trip. Acks come
-        // in bursts -- a Kafka producer reports a batch only once its last record lands -- and a rate taken between
+        // BBR's sample: what was acknowledged while this batch was out, over at least its own round trip. Acks come in
+        // bursts -- a Kafka producer reports a batch only once its last record is delivered -- and a rate taken between
         // two acks microseconds apart would read as a link far faster than any.
         self.delivered_at = Some(now);
         let interval = now.saturating_duration_since(c.sent.delivered_at).max(rtt);
@@ -389,9 +389,9 @@ impl Pacer {
         }
     }
 
-    /// Tell the model a batch failed but for `landed` of its bytes, and goes back to be sent again.
-    pub(super) fn abandoned(&mut self, c: Completion, landed: usize) {
-        self.model.abandoned(c, landed);
+    /// Tell the model a batch failed but for `delivered` of its bytes, and goes back to be sent again.
+    pub(super) fn abandoned(&mut self, c: Completion, delivered: usize) {
+        self.model.abandoned(c, delivered);
     }
 
     /// Tell the model a batch came back, and carry its target to the queue and the metrics when it moves. The ceiling
@@ -475,7 +475,7 @@ mod tests {
 
     /// A link `rtt` away that carries `capacity` bytes a second, fed by a source with plenty to send, for `rounds`
     /// round trips. The destination holds batches up to the target, as the queue does: a new batch goes out the
-    /// moment the target has room for it, and the link lands them one transmission time apart, the first a round
+    /// moment the target has room for it, and the link carries them one transmission time apart, the first a round
     /// trip after it was sent. Answers the target at each round trip's end.
     fn drive(p: &mut Pacing, rtt: Duration, capacity: f64, rounds: usize, app_limited: bool) -> Vec<usize> {
         drive_throttling(p, rtt, capacity, rounds, app_limited, usize::MAX)
@@ -494,7 +494,7 @@ mod tests {
         let per_batch = Duration::from_secs_f64(BATCH as f64 / capacity);
         let start = Instant::now();
         let mut now = start;
-        // (lands at, as sent, throttled), in landing order.
+        // (arrives at, as sent, throttled), in arrival order.
         let mut in_flight: VecDeque<(Instant, Sent, bool)> = VecDeque::new();
         let mut link_free_at = start;
         let mut targets = Vec::new();
@@ -503,13 +503,13 @@ mod tests {
             let held = in_flight.len() * BATCH;
             if held == 0 || held + BATCH <= p.target() {
                 let sent = p.dispatched(BATCH, now);
-                let lands = (now + rtt).max(link_free_at + per_batch);
-                link_free_at = lands;
-                in_flight.push_back((lands, sent, held + BATCH > limit));
+                let arrives = (now + rtt).max(link_free_at + per_batch);
+                link_free_at = arrives;
+                in_flight.push_back((arrives, sent, held + BATCH > limit));
                 continue;
             }
-            let (lands, sent, throttled) = in_flight.pop_front().expect("something in flight");
-            now = lands;
+            let (arrives, sent, throttled) = in_flight.pop_front().expect("something in flight");
+            now = arrives;
             p.completed(
                 Completion {
                     bytes: BATCH,
@@ -795,10 +795,10 @@ mod tests {
         );
     }
 
-    /// A batch that failed in part: what landed is delivered, so the next sample's rate counts it, and only the rest
+    /// A batch that failed in part: the next sample's rate counts what was delivered, and only the rest
     /// went back.
     #[test]
-    fn the_part_of_a_failed_batch_that_landed_counts_delivered() {
+    fn the_part_of_a_failed_batch_that_was_delivered_counts() {
         let mut p = Pacing::new(BATCH, 1024 * MIB);
         let now = Instant::now();
         let sent = p.dispatched(BATCH, now);

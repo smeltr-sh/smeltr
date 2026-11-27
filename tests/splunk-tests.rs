@@ -116,7 +116,7 @@ fn numbered(n: usize) -> Vec<OwnedRecord> {
 
 /// Hands `rows` over as one batch. With no senders the batch is answered before `deliver` returns.
 fn deliver<T: Transport>(d: &mut HttpDestination<Hec, T>, rows: Vec<OwnedRecord>) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
+    let (dispatched, refused) = d.send(0, Cow::Owned(rows))?;
     assert_eq!(dispatched, Dispatched::Complete);
     Ok(refused)
 }

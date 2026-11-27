@@ -130,15 +130,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -408,15 +408,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -622,7 +622,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -642,7 +642,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it."
               }
             ]
           },
@@ -651,7 +651,7 @@
             "type": "string",
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
-            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames XML events with no line ends between them. It needs a capture group and must not match the empty string."
           },
           {
             "name": "lengthPrefix",
@@ -751,15 +751,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -899,7 +899,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -919,7 +919,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it."
               }
             ]
           },
@@ -928,7 +928,7 @@
             "type": "string",
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
-            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames XML events with no line ends between them. It needs a capture group and must not match the empty string."
           },
           {
             "name": "lengthPrefix",
@@ -1080,15 +1080,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -1212,7 +1212,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -1232,7 +1232,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it."
               }
             ]
           },
@@ -1241,7 +1241,7 @@
             "type": "string",
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
-            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames XML events with no line ends between them. It needs a capture group and must not match the empty string."
           },
           {
             "name": "lengthPrefix",
@@ -1354,15 +1354,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -1530,7 +1530,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -1550,7 +1550,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it."
               }
             ]
           },
@@ -1559,7 +1559,7 @@
             "type": "string",
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
-            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames XML events with no line ends between them. It needs a capture group and must not match the empty string."
           },
           {
             "name": "lengthPrefix",
@@ -1682,15 +1682,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -1854,7 +1854,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -1874,7 +1874,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it."
               }
             ]
           },
@@ -1883,7 +1883,7 @@
             "type": "string",
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
-            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames XML events with no line ends between them. It needs a capture group and must not match the empty string."
           },
           {
             "name": "lengthPrefix",
@@ -1966,15 +1966,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -2140,7 +2140,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -2160,7 +2160,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it."
               }
             ]
           },
@@ -2169,7 +2169,7 @@
             "type": "string",
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
-            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames XML events with no line ends between them. It needs a capture group and must not match the empty string."
           },
           {
             "name": "lengthPrefix",
@@ -2240,15 +2240,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -2375,7 +2375,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -2395,7 +2395,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it."
               }
             ]
           },
@@ -2404,7 +2404,7 @@
             "type": "string",
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
-            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+            "what": "With `lines` or `syslog` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames XML events with no line ends between them. It needs a capture group and must not match the empty string."
           },
           {
             "name": "lengthPrefix",
@@ -2472,15 +2472,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each record's encoding."
+                "what": "Detects each record's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -3525,7 +3525,7 @@
       {
         "type": "hecReceiver",
         "name": "HEC receiver",
-        "summary": "Takes what Splunk HTTP Event Collector clients send to its port, at the paths Splunk serves: OpenTelemetry Collectors, Fluent Bit, logging libraries and other HEC clients. A Splunk forwarder's `httpout` posts S2S to `/services/collector/s2s`, which it takes; a forwarder sending with `tcpout` needs an S2S receiver. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. A request is answered `Success` only once every destination has its events. A sender whose token has `acknowledgement` names a channel and is given an `ackId` at once instead; `/services/collector/ack` reports it `true` once every destination has its events. Only the worker that gave an ID can report it, so a balancer must keep a channel on one worker. A full or blocked receiver answers code `9` with `Retry-After` at once. Each event is a record, filed under the `__source` fields its envelope names.",
+        "summary": "Takes what Splunk HTTP Event Collector clients send to its port, at the paths Splunk serves: OpenTelemetry Collectors, Fluent Bit, logging libraries and other HEC clients. A Splunk forwarder's `httpout` posts S2S to `/services/collector/s2s`, which it takes; a forwarder sending with `tcpout` needs an S2S receiver. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. A request is answered `Success` only once every destination has its records. A sender whose token has `acknowledgement` names a channel and is given an `ackId` at once instead; `/services/collector/ack` reports it `true` once every destination has its records. Only the worker that gave an ID can report it, so a balancer must keep a channel on one worker. A full or blocked receiver answers code `9` with `Retry-After` at once. Each event is a record, filed under the `__source` fields its envelope names.",
         "settings": [
           {
             "name": "port",
@@ -3752,7 +3752,7 @@
                 }
               }
             ],
-            "what": "Each sourcetype's name to its `lineBreaker`, where an event ends. Its first capture group is the break and is dropped: the bytes before it end an event, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how an event starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts a stream of XML events with no line ends between them. It needs a capture group and must not match the empty string. A sourcetype not named, or named with no `lineBreaker` or with `([\\r\\n]+)`, is an event per line, a line ending at `\\n`, `\\r\\n` or a lone `\\r`. An event that arrives already broken is one record as it came."
+            "what": "Each sourcetype's name to its `lineBreaker`, where an event ends. Its first capture group is the break and is dropped: the bytes before it end an event, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how an event starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` frames a stream of XML events with no line ends between them. It needs a capture group and must not match the empty string. A sourcetype not named, or named with no `lineBreaker` or with `([\\r\\n]+)`, is an event per line, a line ending at `\\n`, `\\r\\n` or a lone `\\r`. An event that arrives already broken is one record as it came."
           },
           {
             "name": "maxRequestBytes",
@@ -4001,7 +4001,7 @@
             "values": [
               {
                 "value": "lines",
-                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+                "what": "Gives one record per line, or per piece `lineBreaker` frames."
               },
               {
                 "value": "object",
@@ -4021,7 +4021,7 @@
               },
               {
                 "value": "syslog",
-                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` cuts it. A sender may mix them. Over UDP, one record per datagram, a line end that closes it dropped."
+                "what": "Gives one record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or where `lineBreaker` ends it. A sender may mix them. Over UDP, one record per datagram, a line end that closes it dropped."
               }
             ]
           },
@@ -4130,15 +4130,15 @@
             "type": "string",
             "default": "auto",
             "examples": ["none"],
-            "what": "How a message's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8` or `windows-1252`. A binary protocol takes `none`.",
+            "what": "How a message's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8` or `windows-1252`. A binary protocol takes `none`.",
             "values": [
               {
                 "value": "auto",
-                "what": "Detects each message's encoding."
+                "what": "Detects each message's text encoding."
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every message as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every message as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -4299,7 +4299,7 @@
       {
         "type": "elasticReceiver",
         "name": "Elasticsearch receiver",
-        "summary": "Takes what Beats, Fluent Bit and other Elasticsearch clients send to Elasticsearch's Bulk API at its port. It serves `POST` and `PUT` of `/_bulk` and `/{index}/_bulk`. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Each `index` or `create` action's document is a record, as sent, with the index, `_id` and `pipeline` its action names as `__source` fields. A request is answered only once every destination has its documents, with an item per action, so a sender that retries an unanswered request loses nothing. An `update` or `delete` is answered `400` in its own item and not taken. A full or blocked receiver answers `429` with `Retry-After` at once, which a sender may retry. It serves no templates or lifecycle policies, so set `setup.template.enabled: false` and `setup.ilm.enabled: false` on a Beat.",
+        "summary": "Takes what Beats, Fluent Bit and other Elasticsearch clients send to Elasticsearch's Bulk API at its port. It serves `POST` and `PUT` of `/_bulk` and `/{index}/_bulk`. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Each `index` or `create` action's document is a record, as sent, with the index, `_id` and `pipeline` its action names as `__source` fields. A request is answered only once every destination has its records, with an item per action, so a sender that retries an unanswered request loses nothing. An `update` or `delete` is answered `400` in its own item and not taken. A full or blocked receiver answers `429` with `Retry-After` at once, which a sender may retry. It serves no templates or lifecycle policies, so set `setup.template.enabled: false` and `setup.ilm.enabled: false` on a Beat.",
         "settings": [
           {
             "name": "port",
@@ -4768,7 +4768,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver before it counts as stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered before it counts as stalled. 1 to 120."
           },
           {
             "name": "bufferBytes",
@@ -4989,7 +4989,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver before it counts as stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered before it counts as stalled. 1 to 120."
           },
           {
             "name": "bufferBytes",
@@ -5139,7 +5139,7 @@
             "type": "string",
             "absent": "`__destination.id`",
             "examples": ["event.id", "request_id"],
-            "what": "The row field each document's ID is read from. A row with no ID gets one Elasticsearch generates."
+            "what": "The record field each document's ID is read from. A record with no ID gets one Elasticsearch generates."
           },
           {
             "name": "inFlight",
@@ -5167,7 +5167,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver, every retry included, before it counts as stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered, every retry included, before it counts as stalled. 1 to 120."
           },
           {
             "name": "sniff",
@@ -5396,7 +5396,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver, its acknowledgement included, before it counts as stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered, its acknowledgement included, before it counts as stalled. 1 to 120."
           }
         ],
         "reads": ["__destination.index"],
@@ -5605,7 +5605,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver, every retry included, before the destination reports it stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered, every retry included, before the destination reports it stalled. 1 to 120."
           }
         ],
         "reads": [],
@@ -5749,7 +5749,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver, every retry included, before the destination reports it stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered, every retry included, before the destination reports it stalled. 1 to 120."
           }
         ],
         "reads": [],
@@ -5783,7 +5783,7 @@
       {
         "type": "prometheus",
         "name": "Prometheus remote_write",
-        "summary": "Sends each record as a sample over remote_write 1.0 or 2.0 to any store that takes it. A record is a sample in the record a Prometheus receiver gives: `name`, `value`, `time`, and `attributes`, its labels; or, with `type` `exponentialHistogram`, a native histogram, or with `histogram`, one of explicit bounds sent as a classic histogram, as a Prometheus receiver gives one or an OTLP receiver its point. A record's `exemplars` go as its series' exemplars. A record of no `time` and no `value` is a family's metadata. Records of one series in a request go oldest first. It sends one request at a time, so a series lands in order. A record that is no sample is refused naming why; a NaN or infinite value arrives as none, so such a record is refused.",
+        "summary": "Sends each record as a sample over remote_write 1.0 or 2.0 to any store that takes it. A record is a sample in the record a Prometheus receiver gives: `name`, `value`, `time`, and `attributes`, its labels; or, with `type` `exponentialHistogram`, a native histogram, or with `histogram`, one of explicit bounds sent as a classic histogram, as a Prometheus receiver gives one or an OTLP receiver its point. A record's `exemplars` go as its series' exemplars. A record of no `time` and no `value` is a family's metadata. Records of one series in a request go oldest first. It sends one request at a time, so a series is delivered in order. A record that is no sample is refused naming why; a NaN or infinite value arrives as none, so such a record is refused.",
         "settings": [
           {
             "name": "url",
@@ -5876,7 +5876,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver, every retry included, before the destination reports it stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered, every retry included, before the destination reports it stalled. 1 to 120."
           }
         ],
         "reads": [],
@@ -6029,7 +6029,7 @@
             "type": "integer",
             "default": 30,
             "examples": [60, 120],
-            "what": "Seconds one batch may take to deliver, every retry included, before the destination reports it stalled. 1 to 120."
+            "what": "Seconds one batch may take to be delivered, every retry included, before the destination reports it stalled. 1 to 120."
           }
         ],
         "reads": [],

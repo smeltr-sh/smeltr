@@ -291,8 +291,8 @@
     <p>
       Every record has these fields. A source's own fields are on its
       <a href="/docs/sources">source page</a>, and the fields a destination reads are on its
-      <a href="/docs/destinations">destination page</a>. Smeltr never delivers a field at the
-      record's root whose name starts with <code>__</code>.
+      <a href="/docs/destinations">destination page</a>. Smeltr never sends a field at the record's
+      root whose name starts with <code>__</code>.
     </p>
     <div class="tscroll">
       <table class="kinds">

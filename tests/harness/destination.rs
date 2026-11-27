@@ -296,7 +296,7 @@ pub fn write(
     let mut pending = Vec::new();
     for (batch, rows) in batches.iter().enumerate() {
         let (dispatched, now) = d
-            .deliver(batch as u64, Cow::Owned(rows.clone()))
+            .send(batch as u64, Cow::Owned(rows.clone()))
             .map_err(|e| format!("batch {batch} not delivered: {e}"))?;
         refused[batch].extend(now);
         if dispatched == Dispatched::InFlight {

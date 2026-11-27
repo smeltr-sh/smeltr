@@ -701,7 +701,7 @@ fn seed(
     .map_err(|e| fail(format!("does not build: {e:?}")))?;
     if faults.busy_destination {
         registry.unwrap().fail(1);
-        match d.deliver(99, std::borrow::Cow::Borrowed(&rows)) {
+        match d.send(99, std::borrow::Cow::Borrowed(&rows)) {
             Err(e) if e.message.contains("busy") => {}
             other => return Err(fail(format!("delivered to a registry that did not answer: {other:?}"))),
         }

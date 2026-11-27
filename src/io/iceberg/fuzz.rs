@@ -655,7 +655,7 @@ fn drive(
         let rows = delivered(record, leaves, &batch.rows);
         loop {
             let (dispatched, now) = d
-                .deliver(batch.id, Cow::Borrowed(&rows))
+                .send(batch.id, Cow::Borrowed(&rows))
                 .map_err(|e| format!("batch {} not delivered: {e:?}", batch.id))?;
             match dispatched {
                 Dispatched::NoRoom { .. } => {
