@@ -695,6 +695,9 @@ pub enum IoErrorKind {
     /// The answer was larger than the worker holds. The same request draws the same answer, so it is never sent again
     /// whole: a batch is split, and one record is refused.
     Oversized,
+    /// The service asked to be sent less, and to wait at least this long before asking again. Not a stall: the
+    /// service answered. Egress sends the rows again once the wait is over, and the pacing model counts them lost.
+    Throttled(Duration),
 }
 
 impl IoError {
@@ -727,6 +730,22 @@ impl IoError {
 
     pub fn is_oversized(&self) -> bool {
         self.kind == IoErrorKind::Oversized
+    }
+
+    /// The service asked to be sent less, and to wait `wait` first.
+    pub fn throttled(message: impl Into<String>, wait: Duration) -> IoError {
+        IoError {
+            message: message.into(),
+            kind: IoErrorKind::Throttled(wait),
+        }
+    }
+
+    /// The wait the service asked for, when it asked to be sent less.
+    pub fn throttled_wait(&self) -> Option<Duration> {
+        match self.kind {
+            IoErrorKind::Throttled(wait) => Some(wait),
+            _ => None,
+        }
     }
 }
 
@@ -1554,6 +1573,21 @@ pub mod fake {
                 throttled: false,
                 undelivered: Some(Undelivered {
                     error: IoError::transient(why),
+                    rows,
+                }),
+            });
+        }
+
+        /// Answer `batch` as the service asking to be sent less, `wait` first, of its `rows`.
+        pub fn throttle_rows(&self, batch: BatchId, rows: Vec<usize>, wait: Duration) {
+            let mut st = self.0.lock();
+            st.dispatched.retain(|b| *b != batch);
+            st.ready.push(BatchCompletion {
+                batch,
+                rejections: Vec::new(),
+                throttled: true,
+                undelivered: Some(Undelivered {
+                    error: IoError::throttled("asked to be sent less", wait),
                     rows,
                 }),
             });

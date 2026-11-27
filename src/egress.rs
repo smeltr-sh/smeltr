@@ -739,11 +739,14 @@ fn run(
                 "a destination was handed a batch"
             );
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
-            // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
-            let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
+            // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight. A
+            // batch answered inside `deliver` was sent and answered within the call, so egress sees no round trip of
+            // it; its destination holds one batch at a time, under BBR's least window, and waits out its own
+            // throttles, so the model is not told of it.
+            let in_flight = matches!(delivered, Ok((Dispatched::InFlight, _)));
             let paced = pacer
                 .as_mut()
-                .filter(|_| taken)
+                .filter(|_| in_flight)
                 .map(|p| p.dispatched(unit.bytes, began));
             match delivered {
                 Err(e) => {
@@ -762,9 +765,6 @@ fn run(
                         backoff = RETRY_MIN;
                     } else {
                         clear_stall(metrics, id, name, &mut stalled, &mut backoff);
-                    }
-                    if let (Some(p), Some(c)) = (&mut pacer, paced) {
-                        p.completed(queue, c);
                     }
                     finish(queue, returns, metrics, (id, name), unit, rejections, &mut again);
                 }
@@ -821,13 +821,23 @@ fn run(
                     );
                     owed.rejections.extend(c.rejections);
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
-                        note_stall(metrics, id, name, &undelivered.error, &mut stalled);
-                        failures = true;
+                        // A throttle is an answer: the service is up and asked for less, which the pacing model
+                        // answers by counting the rows lost.
+                        let throttled = undelivered.error.throttled_wait();
+                        if throttled.is_none() {
+                            note_stall(metrics, id, name, &undelivered.error, &mut stalled);
+                            failures = true;
+                        }
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
                         if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
-                            p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes));
+                            let c = Completion {
+                                throttled: throttled.is_some(),
+                                ..paced
+                            };
+                            p.abandoned(queue, c, paced.bytes.saturating_sub(rest.bytes));
                         }
-                        again.push(failed(rest));
+                        let (at, rest) = failed(rest);
+                        again.push((throttled.map_or(at, |wait| at.max(Instant::now() + wait)), rest));
                         continue;
                     }
                     landed = true;
@@ -869,7 +879,7 @@ fn run(
             Err(e) => {
                 note_stall(metrics, id, name, &e, &mut stalled);
                 cut_off = false;
-                take_back_all(&mut owner, &mut again, &mut pacer);
+                take_back_all(queue, &mut owner, &mut again, &mut pacer);
                 queue.sleep_unless_closed(backoff);
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
@@ -1082,11 +1092,16 @@ fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> bool {
 }
 
 /// Take every sent-but-unacknowledged batch back to be sent again. The pacing model is told of each, so it no longer
-/// counts it in flight.
-fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, pacer: &mut Option<Pacer>) {
+/// counts it in flight; a destination that failed whole says nothing of the path, so none is lost.
+fn take_back_all(
+    queue: &Queue,
+    owner: &mut HashMap<BatchId, Owed>,
+    again: &mut Vec<(Instant, Unit)>,
+    pacer: &mut Option<Pacer>,
+) {
     for (_, o) in owner.drain() {
         if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
-            p.abandoned(paced, 0);
+            p.abandoned(queue, paced, 0);
         }
         again.push(failed(o.unit));
     }

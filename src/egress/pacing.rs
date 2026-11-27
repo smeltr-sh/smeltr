@@ -23,20 +23,21 @@
 //!
 //! What the draft says of packets, this says of batches, and where that forces a reading it is this:
 //!
-//! - A packet is a TCP segment, C.SMSS, since every destination is reached over TCP. A batch is the send quantum,
-//!   the aggregate handed down whole, as TSO hands a burst of segments to the NIC: it cannot be split, so the
-//!   quantum is the batch size the worker cut. The offload budget is TCP's, three quanta, and a batch goes whenever
-//!   nothing is in flight, however small cwnd is.
+//! - A packet is a batch: egress hands over and hears back about nothing smaller. So C.SMSS and the send quantum are
+//!   both the batch size the worker cut, and every count the draft makes in packets is a count of batches. The
+//!   offload budget is TCP's, three quanta.
 //! - Each batch is acknowledged on its own, as with selective acknowledgments, so C.has_selective_acks holds and
 //!   each lost batch is one loss event.
-//! - Loss is the bytes of a batch that failed and goes back to be sent again, and of one the destination answered
-//!   by asking to be sent less (a 429, a 503, a bulk item refused for a full queue): those mark congestion as an ECN
-//!   CE mark does, which the draft has a sender treat as loss. A loss recovery lasts until a batch sent after the loss
-//!   is acknowledged. Nothing here tells a loss to be spurious, so the draft's undo has no counterpart.
+//! - Loss is the bytes the destination was asked to send less for (a 429, a 503, a bulk item refused for a full
+//!   queue). Those that go back to be sent again are lost; those that landed all the same are delivered and lost both,
+//!   as an ECN CE mark is congestion on data that arrived ("MUST treat any CE marks as congestion"). Any other failure,
+//!   a reset or an error, says nothing of how full the path is: its bytes leave flight and signal nothing. What landed
+//!   of a batch that failed in part is acknowledged. A loss recovery lasts until a batch sent after the loss is
+//!   acknowledged. Nothing here tells a loss to be spurious, so the draft's undo has no counterpart.
 //! - The destination's share of the worker's memory pool, or the buffer it states, bounds what it may hold as a
 //!   receiver's window does: the sender holds to the lesser of it and cwnd, and a link the share holds back reads as
 //!   the bottleneck, not as a source with nothing to send (the draft's receiver flow control limits).
-//! - The initial window is RFC 6928's ten segments, within the share.
+//! - The initial window is ten batches, within the share.
 //!
 //! The egress queue holds the window and one batch ready behind it, so the next batch is made while the last is on
 //! the wire.
@@ -55,11 +56,9 @@ const LOSS_THRESH: f64 = 0.02;
 const BETA: f64 = 0.7;
 /// BBR.Headroom: the share of inflight_longterm left free for other flows while cruising.
 const HEADROOM: f64 = 0.15;
-/// C.SMSS: a TCP segment's payload on a 1500-byte path with timestamps.
-const SMSS: f64 = 1448.0;
-/// BBR.MinPipeCwnd, in segments.
+/// BBR.MinPipeCwnd, in packets.
 const MIN_PIPE_CWND: f64 = 4.0;
-/// C.InitialCwnd, in segments: RFC 6928's initial window.
+/// C.InitialCwnd, in packets.
 const INITIAL_CWND: f64 = 10.0;
 /// The offload budget, in send quanta: TCP's three.
 const OFFLOAD_BUDGET: f64 = 3.0;
@@ -158,7 +157,9 @@ impl State {
 }
 
 /// A windowed max filter, Kathleen Nichols' algorithm as Linux's `lib/minmax.c` has it: the best, second best and
-/// third best samples over the window, so the max can fall back as the best ages out.
+/// third best samples over the window, so the max can fall back as the best ages out. A window `win` long holds the
+/// samples of `win` slots of virtual time, the current one and the `win - 1` before it, as the draft's BBR.max_bw
+/// filter holds two ProbeBW cycles: a sample lapses once it is `win` old, where `lib/minmax.c` keeps it one longer.
 #[derive(Clone, Copy, Debug, Default)]
 struct MaxFilter {
     s: [(u64, f64); 3],
@@ -173,7 +174,7 @@ impl MaxFilter {
     /// UpdateWindowedMaxFilter: take `v` at virtual time `t`, over a window `win` long.
     fn update(&mut self, win: u64, t: u64, v: f64) -> f64 {
         let val = (t, v);
-        if v >= self.s[0].1 || t.saturating_sub(self.s[2].0) > win {
+        if v >= self.s[0].1 || t.saturating_sub(self.s[2].0) >= win {
             return self.reset(t, v);
         }
         if v >= self.s[1].1 {
@@ -183,11 +184,11 @@ impl MaxFilter {
             self.s[2] = val;
         }
         let dt = t.saturating_sub(self.s[0].0);
-        if dt > win {
+        if dt >= win {
             self.s[0] = self.s[1];
             self.s[1] = self.s[2];
             self.s[2] = val;
-            if t.saturating_sub(self.s[0].0) > win {
+            if t.saturating_sub(self.s[0].0) >= win {
                 self.s[0] = self.s[1];
                 self.s[1] = self.s[2];
                 self.s[2] = val;
@@ -217,7 +218,7 @@ struct RateSample {
 /// The BBR model and sender state for one destination.
 #[derive(Debug)]
 pub struct Pacing {
-    /// C.SMSS.
+    /// C.SMSS: one batch.
     smss: f64,
     /// C.send_quantum: one batch.
     send_quantum: f64,
@@ -312,7 +313,7 @@ impl Pacing {
     }
 
     fn seeded(batch: usize, ceiling: usize, now: Instant, rng: u64) -> Pacing {
-        let (smss, send_quantum) = (SMSS, batch.max(1) as f64);
+        let (smss, send_quantum) = (batch.max(1) as f64, batch.max(1) as f64);
         let mut p = Pacing {
             smss,
             send_quantum,
@@ -415,11 +416,6 @@ impl Pacing {
         self.max_bw
     }
 
-    #[cfg(test)]
-    fn state(&self) -> State {
-        self.state
-    }
-
     /// How far a probe above the link's measured capacity would stand below the ceiling, in bytes: 0 once the link
     /// carries at least the ceiling over the probe's gain. A model held at its ceiling measures no more than the
     /// ceiling lets through, so this is as near as it can come to saying the ceiling, not the link, is the bound.
@@ -433,6 +429,8 @@ impl Pacing {
     /// Whether a batch of `bytes` may go now: cwnd and the receiver's window must have room for it, unless nothing is
     /// in flight, and the pacing rate must have it due.
     pub fn gate(&mut self, bytes: usize, now: Instant) -> Gate {
+        // OnTransmit, before the batch goes: a flow restarting from idle paces it at the restarted rate.
+        self.handle_restart_from_idle(now);
         if self.inflight > 0 && (self.inflight + bytes as u64) as f64 > self.window() {
             if self.cwnd <= self.ceiling {
                 self.cwnd_limited_now = true;
@@ -457,10 +455,9 @@ impl Pacing {
         self.app_limited = (self.delivered + self.inflight).max(1);
     }
 
-    /// A batch of `bytes` whose handoff to the destination began at `began` and ended at `now`: OnTransmit and
-    /// OnPacketSent. The answer goes back with its [`Completion`].
+    /// A batch of `bytes` whose handoff to the destination began at `began` and ended at `now`: OnPacketSent.
+    /// The answer goes back with its [`Completion`].
     pub fn dispatched(&mut self, bytes: usize, began: Instant, now: Instant) -> Sent {
-        self.handle_restart_from_idle(now);
         let bytes = bytes as u64;
         // The batch departs when its handoff begins, so the handoff is spent from its own pacing delay.
         let departed = self.next_send_time.max(began);
@@ -488,31 +485,40 @@ impl Pacing {
         }
     }
 
-    /// A batch handed over failed but for `landed` of its bytes, and what failed goes back to be sent again: lost, and
-    /// in flight no longer. What landed counts as delivered.
+    /// A batch handed over failed but for `landed` of its bytes, and what failed goes back to be sent again. What
+    /// landed is acknowledged. What failed is lost only when the destination was asked to send less (`c.throttled`):
+    /// any other failure, a reset or an error, says nothing of how full the path is, so it is in flight no longer and
+    /// signals nothing.
     pub fn abandoned(&mut self, c: Completion, landed: usize, now: Instant) {
         let bytes = c.bytes as u64;
         let landed = (landed as u64).min(bytes);
-        self.inflight = self.inflight.saturating_sub(bytes);
-        self.delivered += landed;
-        self.lost_packet(&c.sent, bytes, bytes - landed, now);
+        let lost = if c.throttled { bytes - landed } else { 0 };
+        self.answered(c.sent, bytes, landed, lost, now);
     }
 
-    /// A batch came back acknowledged: UpdateOnACK.
+    /// A batch came back acknowledged whole. One the destination was asked to send less for while delivering it is
+    /// also congestion, as an ECN CE mark is: its bytes are delivered and count as lost.
     pub fn completed(&mut self, c: Completion, now: Instant) {
-        let p = c.sent;
         let bytes = c.bytes as u64;
-        self.inflight = self.inflight.saturating_sub(bytes);
-        if c.throttled {
-            // The destination asked to be sent less: its bytes mark congestion, as a CE mark does.
-            self.lost_packet(&p, bytes, bytes, now);
+        self.answered(c.sent, bytes, bytes, if c.throttled { bytes } else { 0 }, now);
+    }
+
+    /// The answer for a batch of `size` bytes sent as `p`: `landed` of them acknowledged, and `lost` marked lost.
+    /// The transport's loss marking, then UpdateOnACK for what landed.
+    fn answered(&mut self, p: Sent, size: u64, landed: u64, lost: u64, now: Instant) {
+        self.inflight = self.inflight.saturating_sub(size);
+        // Delivered before marked, as a transport counts what an ACK acknowledges before the losses it implies, so
+        // the loss round that the marking starts begins after this answer.
+        self.delivered += landed;
+        self.lost_packet(&p, size, lost, now);
+        if landed == 0 {
+            return;
         }
-        if self.recovery.is_some_and(|at| p.sent_before >= at) || self.inflight == 0 {
+        if self.recovery.is_some_and(|at| p.sent_before >= at) {
             self.exit_recovery();
         }
 
         // UpdateRateSample and GenerateRateSample, for one batch: it is the newest acknowledged.
-        self.delivered += bytes;
         self.delivered_time = now;
         let send_elapsed = p.send_time.saturating_duration_since(p.first_send_time);
         let ack_elapsed = now.saturating_duration_since(p.delivered_time);
@@ -533,7 +539,7 @@ impl Pacing {
             is_app_limited: p.is_app_limited,
             delivered: self.delivered - p.delivered,
             prior_delivered: p.delivered,
-            newly_acked: bytes,
+            newly_acked: landed,
             tx_in_flight: p.tx_in_flight,
             lost: self.lost - p.lost,
         };
@@ -585,7 +591,7 @@ impl Pacing {
         };
         if self.is_inflight_too_high(&rs) {
             let rs = RateSample {
-                tx_in_flight: self.inflight_at_loss(&rs, bytes),
+                tx_in_flight: self.inflight_at_loss(&rs, bytes, lost),
                 ..rs
             };
             self.handle_inflight_too_high(&rs, now);
@@ -611,10 +617,11 @@ impl Pacing {
         rs.lost as f64 > rs.tx_in_flight as f64 * LOSS_THRESH
     }
 
-    /// InflightAtLoss: at what part of the batch losses passed BBR.LossThresh.
-    fn inflight_at_loss(&self, rs: &RateSample, size: u64) -> u64 {
+    /// InflightAtLoss: at what part of the batch losses passed BBR.LossThresh. `lost` of its `size` bytes were lost:
+    /// the draft's packet is lost whole, and a batch may be lost in part.
+    fn inflight_at_loss(&self, rs: &RateSample, size: u64, lost: u64) -> u64 {
         let inflight_prev = rs.tx_in_flight as f64 - size as f64;
-        let lost_prev = rs.lost as f64 - size as f64;
+        let lost_prev = rs.lost as f64 - lost as f64;
         let lost_prefix = (LOSS_THRESH * inflight_prev - lost_prev) / (1.0 - LOSS_THRESH);
         (inflight_prev + lost_prefix).max(0.0) as u64
     }
@@ -1186,19 +1193,24 @@ impl Pacer {
         }
     }
 
-    /// Tell the model a batch failed but for `landed` of its bytes, and goes back to be sent again.
-    pub(super) fn abandoned(&mut self, c: Completion, landed: usize) {
-        self.model.abandoned(c, landed, Instant::now());
+    /// Tell the model a batch failed but for `landed` of its bytes, and goes back to be sent again: throttled, if
+    /// `c.throttled`. Carries its window to the queue as [`Pacer::completed`] does.
+    pub(super) fn abandoned(&mut self, queue: &Queue, c: Completion, landed: usize) {
+        self.answered(queue, |model, now| model.abandoned(c, landed, now));
     }
 
     /// Tell the model a batch came back, and carry its window to the queue and the metrics when it moves. The ceiling
     /// is read each time: the pool's share moves as other queues come and go. The model's headroom under the ceiling
     /// is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a destination memory holds back.
     pub(super) fn completed(&mut self, queue: &Queue, c: Completion) {
+        self.answered(queue, |model, now| model.completed(c, now));
+    }
+
+    fn answered(&mut self, queue: &Queue, answer: impl FnOnce(&mut Pacing, Instant)) {
         let before = self.model.queue_bytes();
         let ceiling = queue.share();
         self.model.set_ceiling(ceiling);
-        self.model.completed(c, Instant::now());
+        answer(&mut self.model, Instant::now());
         if self.model.queue_bytes() != before {
             queue.set_budget(self.model.queue_bytes());
             note_queue_budget(&self.metrics, self.id, queue);
@@ -1385,8 +1397,8 @@ mod tests {
                 self.p.completed(c, at);
                 self.acks.push((at, c.bytes as u64));
                 self.throttled += usize::from(c.throttled);
-                if self.states.last() != Some(&self.p.state()) {
-                    self.states.push(self.p.state());
+                if self.states.last() != Some(&self.p.state) {
+                    self.states.push(self.p.state);
                 }
             }
         }
@@ -1467,7 +1479,7 @@ mod tests {
         let mut s = Sim::new(BATCH, 1024 * MIB, path);
         s.run_to(3.0);
         assert_eq!(
-            s.p.state(),
+            s.p.state,
             State::Startup,
             "app-limited rounds without loss stay in Startup"
         );
@@ -1493,7 +1505,7 @@ mod tests {
         while t < 13.0 {
             t += 0.001;
             s.run_to(t);
-            if s.p.state() == State::ProbeRtt {
+            if s.p.state == State::ProbeRtt {
                 least = least.min(s.p.target());
             }
         }
@@ -1533,7 +1545,7 @@ mod tests {
     }
 
     #[test]
-    fn a_product_under_one_batch_keeps_the_offload_budget_on_the_wire() {
+    fn a_product_under_one_batch_keeps_the_least_window_on_the_wire() {
         // 1 ms at 100 MiB/s: a tenth of a batch.
         let mut s = Sim::new(
             BATCH,
@@ -1542,8 +1554,8 @@ mod tests {
         );
         s.run_to(5.0);
         assert!(
-            s.p.target() >= 3 * BATCH,
-            "the offload budget is three batches: {}",
+            s.p.target() >= 4 * BATCH,
+            "BBR.MinPipeCwnd is four packets, and a packet is a batch: {}",
             s.p.target()
         );
         let carried = s.throughput(3.0, 5.0);
@@ -1660,7 +1672,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_batch_is_lost_not_in_flight_and_what_landed_counts_delivered() {
+    fn a_failed_batch_leaves_flight_signalling_nothing_and_what_landed_is_acknowledged() {
         let now = Instant::now();
         let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
         let sent = p.dispatched(BATCH, now, now);
@@ -1670,20 +1682,66 @@ mod tests {
             sent,
             throttled: false,
         };
-        p.abandoned(c, BATCH / 4, now);
+        p.abandoned(c, BATCH / 4, now + Duration::from_millis(10));
         assert_eq!(p.inflight, 0, "nothing in flight");
         assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter landed");
-        assert_eq!(p.lost, (BATCH - BATCH / 4) as u64, "the rest is lost");
+        assert_eq!(p.lost, 0, "a failure is no congestion");
+        assert!(p.recovery.is_none(), "and starts no recovery");
+        assert!(
+            p.min_rtt.is_some(),
+            "what landed was acknowledged: a round trip was sampled"
+        );
+    }
+
+    #[test]
+    fn a_throttled_batch_is_lost_for_what_goes_again_and_acknowledged_for_what_landed() {
+        let now = Instant::now();
+        let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
+        let sent = p.dispatched(BATCH, now, now);
+        let c = Completion {
+            bytes: BATCH,
+            sent,
+            throttled: true,
+        };
+        p.abandoned(c, BATCH / 4, now + Duration::from_millis(10));
+        assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter landed");
+        assert_eq!(p.lost, (BATCH - BATCH / 4) as u64, "the rest was asked for less: lost");
         assert!(p.recovery.is_some(), "a loss starts recovery");
+    }
+
+    #[test]
+    fn a_batch_that_landed_throttled_is_delivered_then_marked() {
+        let now = Instant::now();
+        let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
+        let sent = p.dispatched(BATCH, now, now);
+        p.completed(
+            Completion {
+                bytes: BATCH,
+                sent,
+                throttled: true,
+            },
+            now + Duration::from_millis(10),
+        );
+        assert_eq!(p.delivered, BATCH as u64, "it landed");
+        assert_eq!(p.lost, BATCH as u64, "and marks congestion");
+        assert_eq!(
+            p.loss_round_delivered, BATCH as u64,
+            "the loss round it starts begins after this answer"
+        );
+        assert!(!p.loss_round_start, "so it does not end on the same answer");
     }
 
     #[test]
     fn the_max_filter_keeps_the_best_within_its_window() {
         let mut f = MaxFilter::default();
         assert_eq!(f.update(2, 0, 10.0), 10.0);
-        assert_eq!(f.update(2, 1, 5.0), 10.0, "the best stands within the window");
-        assert_eq!(f.update(2, 2, 4.0), 10.0);
-        assert_eq!(f.update(2, 3, 3.0), 5.0, "and lapses past it to the next best");
+        assert_eq!(
+            f.update(2, 1, 5.0),
+            10.0,
+            "the best stands within the window: its slot and the next"
+        );
+        assert_eq!(f.update(2, 2, 4.0), 5.0, "and lapses past it to the next best");
+        assert_eq!(f.update(2, 3, 3.0), 4.0);
     }
 
     #[test]

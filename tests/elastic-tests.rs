@@ -654,6 +654,35 @@ fn a_failed_batch_comes_back_beside_the_batch_a_flush_collected() {
     assert_eq!(got, vec![(1, None), (2, Some(vec![0]))]);
 }
 
+/// A document the cluster is too busy to take comes back with its batch's answer at once, undelivered and throttled,
+/// so egress sends it again and the pacing model counts it lost within the round trip that drew it. The documents
+/// the cluster took land, and none is sent twice.
+#[test]
+fn a_busy_document_comes_back_at_once_to_be_sent_again() {
+    let (sender, sent) = scripted(&[Ok(r#"{"errors":true,"items":[
+        {"create":{"status":201}},
+        {"create":{"status":429,"error":{"type":"es_rejected_execution_exception","reason":"busy"}}},
+        {"create":{"status":201}}
+    ]}"#)]);
+    let mut d = HttpDestination::new(scripted(&[]).0, Elastic::new("logs")).with_senders(vec![sender], 1);
+    let rows: Vec<OwnedRecord> = (1..=3)
+        .map(|n| OwnedRecord::from(&OutgoingRecord::new(format!(r#"{{"n":{n}}}"#).as_bytes())))
+        .collect();
+    assert_eq!(d.deliver(1, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
+    d.flush().unwrap();
+    let done = d.poll_completions().unwrap();
+    let busy = done[0].undelivered.as_ref().expect("the busy document did not land");
+    assert_eq!(busy.rows, vec![1]);
+    assert_eq!(
+        busy.error.throttled_wait(),
+        Some(Duration::ZERO),
+        "{}",
+        busy.error.message
+    );
+    assert!(done[0].throttled);
+    assert_eq!(sent.lock().len(), 1, "sent again by egress, not within the request");
+}
+
 /// The answer lists a status per document unless the request filters it, and a bulk of many small documents would
 /// then pass the transport's read limit after the cluster had indexed them.
 #[test]

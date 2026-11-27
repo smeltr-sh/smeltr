@@ -6,6 +6,7 @@
 //! live half.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::Arc;
@@ -285,40 +286,76 @@ impl Pki {
 
 // -- delivering ---------------------------------------------------------------------------------------------------
 
-/// Hands `batches` to `d` one after another, flushes, waits for every one, and answers what each refused, by batch. A
-/// batch some of whose rows did not land is an error.
+/// Hands `batches` to `d` one after another, flushes, waits for every one, and answers what each refused, by batch.
+/// Rows the destination was asked to send less of go again after the wait it was asked for, as egress sends them; a
+/// batch some of whose rows did not land otherwise is an error.
 pub fn write(
     d: &mut dyn Destination,
     batches: &[Vec<OwnedRecord>],
     deadline: Duration,
 ) -> Result<Vec<Vec<Rejection>>, String> {
     let mut refused: Vec<Vec<Rejection>> = (0..batches.len()).map(|_| Vec::new()).collect();
-    let mut pending = Vec::new();
+    // What each batch handed over is: which of `batches`, and which of its rows.
+    let mut pending: HashMap<u64, (usize, Vec<usize>)> = HashMap::new();
     for (batch, rows) in batches.iter().enumerate() {
-        let (dispatched, now) = d
-            .deliver(batch as u64, Cow::Owned(rows.clone()))
-            .map_err(|e| format!("batch {batch} not delivered: {e}"))?;
-        refused[batch].extend(now);
-        if dispatched == Dispatched::InFlight {
-            pending.push(batch as u64);
-        }
+        let id = batch as u64;
+        hand_over(
+            d,
+            batches,
+            id,
+            (batch, (0..rows.len()).collect()),
+            &mut pending,
+            &mut refused,
+        )?;
     }
     d.flush().map_err(|e| format!("not flushed: {e}"))?;
     let until = Instant::now() + deadline;
+    let mut next = batches.len() as u64;
     while !pending.is_empty() {
         for done in d.poll_completions().map_err(|e| format!("not landed: {e}"))? {
+            let Some((batch, rows)) = pending.remove(&done.batch) else {
+                return Err(format!("batch {} completed twice", done.batch));
+            };
+            refused[batch].extend(done.rejections.into_iter().map(|r| Rejection { doc: rows[r.doc], ..r }));
             if let Some(u) = done.undelivered {
-                return Err(format!("not landed: {}", u.error));
+                let Some(wait) = u.error.throttled_wait() else {
+                    return Err(format!("not landed: {}", u.error));
+                };
+                std::thread::sleep(wait);
+                let again = u.rows.iter().map(|&i| rows[i]).collect();
+                hand_over(d, batches, next, (batch, again), &mut pending, &mut refused)?;
+                next += 1;
             }
-            refused[done.batch as usize].extend(done.rejections);
-            pending.retain(|b| *b != done.batch);
         }
         if Instant::now() > until {
-            return Err(format!("batches {pending:?} never completed"));
+            return Err(format!(
+                "batches {:?} never completed",
+                pending.values().map(|(b, _)| b).collect::<Vec<_>>()
+            ));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
     Ok(refused)
+}
+
+/// Hands `d` the rows `rows` names of one of `batches`, as batch `id`.
+fn hand_over(
+    d: &mut dyn Destination,
+    batches: &[Vec<OwnedRecord>],
+    id: u64,
+    (batch, rows): (usize, Vec<usize>),
+    pending: &mut HashMap<u64, (usize, Vec<usize>)>,
+    refused: &mut [Vec<Rejection>],
+) -> Result<(), String> {
+    let owned: Vec<OwnedRecord> = rows.iter().map(|&i| batches[batch][i].clone()).collect();
+    let (dispatched, now) = d
+        .deliver(id, Cow::Owned(owned))
+        .map_err(|e| format!("batch {batch} not delivered: {e}"))?;
+    refused[batch].extend(now.into_iter().map(|r| Rejection { doc: rows[r.doc], ..r }));
+    if dispatched == Dispatched::InFlight {
+        pending.insert(id, (batch, rows));
+    }
+    Ok(())
 }
 
 /// Checks that each batch refused exactly the rows `is_refused` says it had to.
