@@ -45,8 +45,7 @@
     <a href="https://kafka.apache.org/44/configuration/topic-configs/#topicconfigs_retention.ms"
       >retention</a
     > keeps them. Allow enough for the outage and the time needed to catch up. Worker memory has a fixed
-    limit and does not replace this storage. Smeltr cannot reread local logs and metrics from a retained
-    Kafka topic.
+    limit and does not replace this storage.
   </p>
   <p>
     An unreachable destination does not automatically switch to a standby destination. Dead-letter
