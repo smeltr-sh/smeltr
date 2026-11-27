@@ -23,7 +23,9 @@ trait Model {
     fn gate(&mut self, held: u64, now: Instant) -> G;
     fn dispatched(&mut self, now: Instant, pressed: bool) -> Self::Token;
     fn completed(&mut self, t: Self::Token, throttled: bool, now: Instant, nothing_to_send: bool);
-    fn failed(&mut self, t: Self::Token, now: Instant);
+    /// The batch came back undelivered, to be sent again as a new one: `throttled` when the destination was asked
+    /// to send less, else a failure that says nothing of the path.
+    fn failed(&mut self, t: Self::Token, throttled: bool, now: Instant);
     fn idle(&mut self);
     fn budget(&self) -> usize;
     fn rate(&self) -> f64;
@@ -54,12 +56,12 @@ impl Model for New {
             now,
         );
     }
-    fn failed(&mut self, sent: Sent, now: Instant) {
+    fn failed(&mut self, sent: Sent, throttled: bool, now: Instant) {
         self.0.abandoned(
             Completion {
                 bytes: BATCH,
                 sent,
-                throttled: false,
+                throttled,
             },
             0,
             now,
@@ -103,13 +105,13 @@ impl Model for Old {
             now,
         );
     }
-    fn failed(&mut self, (sent, app_limited): (old::Sent, bool), _now: Instant) {
+    fn failed(&mut self, (sent, app_limited): (old::Sent, bool), throttled: bool, _now: Instant) {
         self.0.abandoned(
             old::Completion {
                 bytes: BATCH,
                 sent,
                 app_limited,
-                throttled: false,
+                throttled,
             },
             0,
         );
@@ -351,7 +353,7 @@ impl<M: Model> Sim<M> {
                         seen: at,
                         token,
                         sent_at: now,
-                        throttled: false,
+                        throttled: true,
                         failed: true,
                     });
                     return;
@@ -404,7 +406,7 @@ impl<M: Model> Sim<M> {
                         seen: at,
                         token: w.token,
                         sent_at: w.sent_at,
-                        throttled: false,
+                        throttled: true,
                         failed: true,
                     });
                     continue;
@@ -446,7 +448,7 @@ impl<M: Model> Sim<M> {
                 f.held -= BATCH as u64;
                 let nothing = !f.has_batch(start, now);
                 if o.failed {
-                    f.model.failed(o.token, o.seen);
+                    f.model.failed(o.token, o.throttled, o.seen);
                 } else {
                     f.model.completed(o.token, o.throttled, o.seen, nothing);
                     f.acks.push((o.at, BATCH as u64));
