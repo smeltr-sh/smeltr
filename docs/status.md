@@ -75,7 +75,7 @@ document's systems.
 | area | status |
 |---|---|
 | Delivery: routes, exception answers, `Unmatched`/`Unprocessable`/`Refused` (Runtime stages) | built |
-| Only transform touches a row (Runtime stages) | not built. A receiver cuts a request into records on the thread that received it, and the OTLP and Prometheus receivers decode in their reader. The object source decompresses and cuts on its fetch threads. A reader reads each record's offset and size. Egress delivers row by row on its own thread, and a file destination also encodes on threads of its own |
+| Only transform touches a record (Runtime stages) | not built. The OTLP and Prometheus receivers decode in their reader, and a Kafka source reading Avro decodes before transform. A reader reads each record's offset and size. Egress sends record by record on its own thread, and a Kafka destination encodes Avro there |
 | Reader/transform split, `Lane`s (Runtime stages) | built |
 | Egress: one thread per destination behind a `bufferBytes` queue (Runtime stages) | built |
 | A destination paced to its link, `egress::pacing`, and the pool's equal shares while queues contend (Runtime stages) | built |

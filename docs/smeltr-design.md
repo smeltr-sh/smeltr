@@ -30,7 +30,8 @@ history, and a worker runs exactly one at a time.
 ```
 
 Ten systems make this up. Five live inside a worker, four describe how work
-reaches it, one crosses both tiers.
+reaches it, one crosses both tiers. [Definitions](definitions.md) gives the
+one name each thing in the data path goes by.
 
 | system | governs |
 |---|---|

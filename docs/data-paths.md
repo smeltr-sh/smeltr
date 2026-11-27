@@ -1,6 +1,6 @@
 # Data paths
 
-Every path a record takes through a worker, from the poll to the commit. Five stages carry it ([runtime stages](architecture/runtime-stages.md)): the source, which receives; its reader, which tracks each batch and commits the oldest run of batches every destination has acknowledged; the transform pool, which decodes, routes, runs pipelines and serializes; egress, one thread per destination behind a bounded queue; and the destination, which sends. Eight things can happen to a record on the way, and each one commits differently.
+Every path a record takes through a worker, from the poll to the commit. Five stages carry it ([runtime stages](architecture/runtime-stages.md)): the source, which receives; its reader, which tracks each batch and commits the oldest run of batches every destination has acknowledged; the transform pool, which decodes, routes, runs pipelines and encodes; egress, one thread per destination behind a bounded queue; and the destination, which sends. Eight things can happen to a record on the way, and each one commits differently.
 
 | path | where the rows go | what they carry | the commit waits for |
 |---|---|---|---|
@@ -11,7 +11,7 @@ Every path a record takes through a worker, from the poll to the commit. Five st
 | over budget | one record that will not fit alone meets the `Unprocessable` answer; under block the whole batch is held, otherwise the rest of the batch goes on | in each destination's format, the record object as it arrived | under block, a new config; otherwise every destination's acknowledgment |
 | dropped | nowhere: a `Drop` step took the row | | every destination's acknowledgment, for the rest of the batch |
 | refused | by the `Refused` answer, the destination's over the group's: kept and sent again, delivered to its targets, or dropped | the row, in the format each target writes | under block, the destination taking the refused rows; under deliver, every target's acknowledgment; under drop, the acknowledgment that carries the refusal |
-| unreachable | retried by egress until it lands | the same unit again | holds until it lands |
+| unreachable | retried by egress until it is delivered | the same delivery unit again | holds until it is delivered |
 
 Function names below are the code's own (`runtime.rs`, `egress.rs`, `commit.rs`).
 
@@ -36,7 +36,7 @@ sequenceDiagram
   H->>T: take the batch
   T->>T: decode_records: each byte record into _raw text
   T->>T: route_masks: which routes match each row
-  T->>T: per route, run the pipeline, serialize, apply the deliver rules
+  T->>T: per route, run the pipeline, encode, apply the deliver rules
   T->>T: keep each destination's rows for the turn
   T->>Q: once every route has run, deliver hands each destination its rows as one unit
   Q->>E: take the unit
@@ -95,13 +95,13 @@ flowchart TD
   B -- drop --> D["Count smeltr_rows_dropped_total, reason exception"]
   B -- deliver --> V["Set the tag field. Send it to each destination named, in its own format, in place of the deliver rules"]
   V --> X
-  B -- block --> Q["Serialize nothing. Block the source, keep the batch"]
+  B -- block --> Q["Encode nothing. Block the source, keep the batch"]
   Q --> R["A redeploy re-reads it from the last commit"]
   N --> X["Hand over, acknowledge and commit as in Success"]
   D --> X2["The commit goes on without it"]
 ```
 
-- The tag field is one column past the plan's own (`Plan::tag_slot`), a variant holding the route, the pipeline and each exception's step, kind and message (`output::tag_type`), set on every row with an exception not ignored and null on every other. A deliver rule reads it by name, and on an untagged row reads what the row holds there, so `smeltr.exception == null` takes a healthy row whose record has no such field, and the serializer writes it beside the pipeline's fields, so a dotted name nests with them. Where a dynamic field claims the same name, or a parent of it, the tag wins on every row it is set on.
+- The tag field is one column past the plan's own (`Plan::tag_slot`), a variant holding the route, the pipeline and each exception's step, kind and message (`output::tag_type`), set on every row with an exception not ignored and null on every other. A deliver rule reads it by name, and on an untagged row reads what the row holds there, so `smeltr.exception == null` takes a healthy row whose record has no such field, and the encoder writes it beside the pipeline's fields, so a dotted name nests with them. Where a dynamic field claims the same name, or a parent of it, the tag wins on every row it is set on.
 - A pipeline run through `call` is inlined; it has no answer of its own, so the route's holds.
 
 ## Unprocessable
@@ -161,7 +161,7 @@ flowchart TD
   S --> F
 ```
 
-- Block is kept in egress because the fix for a refusal is usually the destination's own -- a mapping, a limit -- and nothing tells the worker it is done. Waiting for a redeploy would wait for a config change nobody needs to make. The kept rows count against the destination's queue until they land.
+- Block is kept in egress because the fix for a refusal is usually the destination's own -- a mapping, a limit -- and nothing tells the worker it is done. Waiting for a redeploy would wait for a config change nobody needs to make. The kept rows count against the destination's queue until they are delivered.
 - Targets are the transform thread's to fill: it holds a handle on every destination its source reaches, targets included, and the report that the batch waits on a target goes out before this destination's acknowledgment, on the same channel, so the reader never sees the batch done while a target still has its rows.
 - A target is sent the row in the format it writes, kept beside the row from when it was sent, keyed on the target's own identity, which is worked out when the row is sent, while its fields are still there. A target a delivery rule already sent the row to is not sent it again. Chains that meet -- two destinations that refuse into the same target -- deliver the row there once from each: at least once, as everywhere. The row's placement -- the `__destination.topic`, `.index` or `.prefix` its destination reads -- stays behind: it routes within the destination it was computed for.
 - A target can owe one batch more than one unit -- its own rows, and rows each destination that refuses into it salvaged. The reader hears it done with the batch only once every one has come back.
@@ -169,7 +169,7 @@ flowchart TD
 
 ## Unreachable
 
-The destination did not answer. Nothing commits past the batch until it lands.
+The destination did not answer. Nothing commits past the batch until it is delivered.
 
 ```mermaid
 flowchart TD

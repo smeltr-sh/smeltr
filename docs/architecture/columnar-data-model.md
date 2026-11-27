@@ -34,7 +34,7 @@ Empty(T)                   all null, no buffers
 Constant(T)                one value, every row; no buffers
 ```
 
-A constant column is one value and a row count. The serializer reads the
+A constant column is one value and a row count. The encoder reads the
 value. So does a comparison, or arithmetic on numbers, dates and durations,
 given one as an operand; a chain of `+` on text, `&&`, `||` or `??`; and a
 function given one as an argument its kernel reads as one value: a needle,
@@ -43,7 +43,7 @@ replacement of `replaceAll`. `status == 200`, `"user:" + name` and
 `includes(path, "/api")` each read one column, not two. Every other reader
 is given rows, built from the batch's own pool, so it pays what a literal
 broadcast to every row has always cost. A literal assigned to a field stays
-one value for the batch exactly where the serializer is its only reader, and
+one value for the batch exactly where the encoder is its only reader, and
 there it is never broadcast. So does a `__source` field every record of a
 batch shares: an OTLP export's resource and scope, which its receiver's polls
 end where they change. Egress reads the delivery's topic and identity
@@ -75,7 +75,7 @@ it: where both hold a key, the later value replaces it, and where both hold an
 object there, the two are one object. A parse that declares an object
 replaces it, unclaimed fields included.
 
-The serializer walks the name tree. At each object it writes the fields,
+The encoder walks the name tree. At each object it writes the fields,
 then the unclaimed fields' keys that no field claims, as they arrived. So a
 name a step writes claims the record's key of that name on every row, and the
 key stays claimed after a rename takes the name away. A key a step reads is a
@@ -89,7 +89,7 @@ Three rules bound what a step may be:
   cardinality produces a new batch by selecting indices out of the old one,
   and that one primitive serves both compaction and fan-out.
 - A column's buffer is reusable only once nothing live can read it, the
-  serializer at exit included. Violating this serializes the wrong bytes
+  encoder at exit included. Violating this encodes the wrong bytes
   rather than crashing.
 - A construct whose steps are ordered and dependent within a row is a **row
   barrier**, declared by the function and listed in the compiled plan, never
@@ -204,5 +204,5 @@ column takes its value in the column's type, under the same refusal.
 
 The [compiler](compiler.md) resolves every name to a column slot. The
 [runtime stages](runtime-stages.md) hand batches between them whole. The
-serializer walks the compiler's name tree, and is the only place a leaf is
+encoder walks the compiler's name tree, and is the only place a leaf is
 nested into its object.
