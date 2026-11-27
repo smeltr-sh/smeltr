@@ -739,11 +739,14 @@ fn run(
                 "a destination was handed a batch"
             );
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
-            // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
-            let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
+            // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight. A
+            // batch answered inside `deliver` was sent and answered within the call, so egress sees no round trip of
+            // it; its destination holds one batch at a time, under BBR's least window, and waits out its own
+            // throttles, so the model is not told of it.
+            let in_flight = matches!(delivered, Ok((Dispatched::InFlight, _)));
             let paced = pacer
                 .as_mut()
-                .filter(|_| taken)
+                .filter(|_| in_flight)
                 .map(|p| p.dispatched(unit.bytes, began));
             match delivered {
                 Err(e) => {
@@ -762,9 +765,6 @@ fn run(
                         backoff = RETRY_MIN;
                     } else {
                         clear_stall(metrics, id, name, &mut stalled, &mut backoff);
-                    }
-                    if let (Some(p), Some(c)) = (&mut pacer, paced) {
-                        p.completed(queue, c);
                     }
                     finish(queue, returns, metrics, (id, name), unit, rejections, &mut again);
                 }

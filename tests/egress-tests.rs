@@ -1226,6 +1226,41 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
     );
 }
 
+/// A destination that answers inside `deliver` shows egress no round trip, and holds one batch at a time, under the
+/// pacing model's least window: the model is not told of its batches, so its budget stays where the model began.
+#[test]
+fn a_destination_answering_inside_deliver_leaves_the_pacing_model_as_it_began() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let dest = FakeDestination::new();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    )
+    .paced(row.len());
+    let mut h = egress.handle();
+    // Until the model sets it, the budget reported is the buffer the queue was started with.
+    let began = wait_for("the pacing model to set the budget", timeout(), || {
+        budget(&registry, 0).filter(|&b| b < BUDGET)
+    })
+    .unwrap();
+
+    for batch in 0..20 {
+        assert!(matches!(
+            hand(&mut h, batch, &[OutgoingRecord::new(&row)]),
+            Dispatched::InFlight
+        ));
+        wait_until("the batch to be answered", timeout(), || {
+            dest.sent().len() == batch as usize + 1
+        });
+    }
+    assert_eq!(budget(&registry, 0), Some(began));
+}
+
 /// A batch part of which did not land is sent again as only that part, while the batches beside it are not sent
 /// again, and its reader hears of it once, when the rest lands, with every refusal.
 #[test]
