@@ -25,6 +25,7 @@
     {
       title: 'Getting started',
       links: [
+        { href: '/docs/what-is-smeltr', title: 'What is Smeltr?' },
         { href: '/docs/getting-started', title: 'Set up Smeltr' },
         {
           title: 'Install a leader',

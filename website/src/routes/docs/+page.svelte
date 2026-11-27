@@ -1,10 +1,7 @@
 <script lang="ts">
   import DocsLayout from '#lib/components/DocsLayout.svelte';
-  import EditorScreenshot from '#lib/components/EditorScreenshot.svelte';
-  import WorkflowDiagram from '#lib/components/WorkflowDiagram.svelte';
 
   const sections = [
-    { id: 'what-is-smeltr', title: 'What is Smeltr?' },
     { id: 'start', title: 'Get started' },
     { id: 'workflow', title: 'Build and deploy pipelines' },
     { id: 'manual', title: 'Operate Smeltr' },
@@ -25,50 +22,16 @@
     <h1>Smeltr documentation</h1>
   </header>
 
-  <section id="what-is-smeltr">
-    <h2>What is Smeltr?</h2>
-    <p class="lede">
-      Smeltr is data engineering pipeline telemetry software written in Rust for Linux and Windows.
-    </p>
-
-    <h3>Leader pipeline editor</h3>
-    <EditorScreenshot />
-
-    <h3>Leader and workers</h3>
-    <WorkflowDiagram kind="workerFleet" />
-
-    <h3>Inside a worker</h3>
-    <WorkflowDiagram kind="dataPath" />
-
-    <h3>What it does</h3>
-    <p>
-      Smeltr can filter and reshape records before delivering them. A route for application logs
-      might work like this.
-    </p>
-    <ol>
-      <li><strong>Source.</strong> Read application logs from Kafka.</li>
-      <li><strong>Pipeline.</strong> Drop routine health checks and standardize field names.</li>
-      <li>
-        <strong>Destinations.</strong> Send the remaining logs to Elasticsearch for search and Amazon
-        S3 for archiving.
-      </li>
-    </ol>
-
-    <h3>How you run it</h3>
-    <p>
-      You run Smeltr on your own infrastructure. The <strong>leader</strong> provides a browser
-      interface to build pipelines, test them on sample records, and review changes.
-      <strong>Workers</strong> run those pipelines and move records directly from sources to destinations.
-    </p>
-    <p>
-      Workers load the deployed configuration from Git and report which commit they're running. You
-      can verify that a rollout reached the intended workers or roll back to an earlier commit.
-    </p>
-  </section>
-
   <section id="start" aria-labelledby="start-heading">
     <h2 id="start-heading">Get started</h2>
     <ul class="topics">
+      <li>
+        <a href="/docs/what-is-smeltr">What is Smeltr?</a>
+        <p>
+          Smeltr is data engineering pipeline telemetry software written in Rust for Linux and
+          Windows.
+        </p>
+      </li>
       <li>
         <a href="/docs/getting-started">Set up Smeltr</a>
         <p>
@@ -160,9 +123,6 @@
   h1 {
     font-size: clamp(2.2rem, 4vw, 3.5rem);
     letter-spacing: -0.03em;
-  }
-  .lede {
-    font-size: 1.15rem;
   }
   p {
     color: var(--ink);
