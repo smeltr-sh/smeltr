@@ -160,7 +160,7 @@
   <h2 id="see-also">See also</h2>
   <ul>
     <li><a href="/docs/sources">Sources</a></li>
-    <li><a href="/docs/first-pipeline">First pipeline tutorial</a></li>
+    <li><a href="/docs/first-pipeline">Build your first pipeline</a></li>
     <li><a href="/docs/routing/records">Routing records</a></li>
     <li><a href="/docs/delivery">Delivery</a></li>
     <li><a href="/docs/secrets">Secrets & credentials</a></li>

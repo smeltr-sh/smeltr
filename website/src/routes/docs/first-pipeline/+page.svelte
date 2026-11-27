@@ -5,16 +5,16 @@
   import GuideLayout from '#lib/components/GuideLayout.svelte';
 
   const sections = [
-    { id: 'prepare', title: '1. Before you start' },
+    { id: 'prepare', title: '1. Prepare two Kafka topics' },
     { id: 'route', title: '2. Start a route' },
     { id: 'source', title: '3. Add the source' },
-    { id: 'pipeline', title: '4. Make the pipeline from a capture' },
-    { id: 'transform', title: '5. Shape the records' },
+    { id: 'pipeline', title: '4. Capture and parse records' },
+    { id: 'transform', title: '5. Transform the records' },
     { id: 'destination', title: '6. Add the destination' },
-    { id: 'check', title: '7. Check where records go' },
+    { id: 'check', title: '7. Preview routing and save a test' },
     { id: 'deploy', title: '8. Review and deploy' },
-    { id: 'verify', title: '9. Send a real record' },
-    { id: 'filtering', title: 'Try filtering rows and fields' },
+    { id: 'verify', title: '9. Verify delivery in Kafka' },
+    { id: 'filtering', title: 'Optional: Filter records and fields' },
     { id: 'next', title: 'Try your own data' },
   ];
   const assignments = [
@@ -58,28 +58,30 @@ PY`;
 </script>
 
 <GuideLayout
-  title="Your first pipeline"
+  title="Build your first pipeline"
   description="Build one route from a Kafka topic to another, check where its records go, review the change, and see the result arrive."
   {sections}
 >
-  <p class="eyebrow">Tutorial</p>
-  <h1>Your first pipeline</h1>
+  <h1>Build your first pipeline</h1>
   <p class="lede">
-    Read JSON records from one Kafka topic, uppercase each message, add a field, and send them to
-    another topic. You'll build it all from one route and review the change before it reaches a
-    worker.
+    Build a route between two Kafka topics. The pipeline parses each JSON record, uppercases its
+    message, and adds a dataset field. You finish by finding a fresh, transformed record in the
+    output topic.
   </p>
-  <p>
-    You'll need a running Smeltr installation, administrator access, and an online worker in a
-    worker group you can use for testing. If you're still setting up, start with
-    <a href="/docs/getting-started">the setup guide</a>.
-  </p>
+  <p>Before you start, make sure you have:</p>
+  <ul>
+    <li>
+      A <a href="/docs/getting-started">running Smeltr installation</a>, administrator access, and
+      an online worker in a group you can use for testing.
+    </li>
+    <li>
+      A test Kafka broker and Kafka command-line tools. The worker must be able to reach the broker
+      addresses Kafka advertises, read the input topic, and write to the output topic.
+    </li>
+  </ul>
 
-  <h2 id="prepare">1. Before you start</h2>
-  <p>
-    We'll use two Kafka topics: one for incoming records and one for the result. Keeping them
-    separate prevents the output from feeding back into the pipeline.
-  </p>
+  <h2 id="prepare">1. Prepare two Kafka topics</h2>
+  <p>Use separate input and output topics so the pipeline only processes the input records.</p>
   <p>
     In a terminal with Kafka's command-line tools available, replace <code>localhost:9092</code>
     with your test broker's address and create the topics:
@@ -122,16 +124,12 @@ PY`;
     </table>
   </div>
   <p>
-    Use broker addresses the worker can reach, including the addresses Kafka advertises to clients.
-    The worker needs permission to read the input topic and write to the output topic.
-  </p>
-  <p>
-    Smeltr saves the source at once. The first save asks for a branch, because <code>main</code> is
-    only changed by deploying. Call it <code>tutorial-first-pipeline</code> and choose
-    <strong>Edit on this branch</strong>. Everything you save from here on goes on that branch.
+    On the first save, name the branch <code>tutorial-first-pipeline</code> and choose
+    <strong>Edit on this branch</strong>. Smeltr saves your edits there until you deploy them to
+    <code>main</code>.
   </p>
 
-  <h2 id="pipeline">4. Make the pipeline from a capture</h2>
+  <h2 id="pipeline">4. Capture and parse records</h2>
   <p>
     In <strong>pipeline</strong>, choose <strong>+ New pipeline…</strong>. The pipeline
     <code>tutorial-in-parse</code> opens and asks for a capture of your source. A capture reads records
@@ -147,8 +145,12 @@ PY`;
     and adds a Parser step that declares <code>service</code> and <code>message</code>. The parsed
     records show beside the steps.
   </p>
+  <p>
+    Choose <strong>Save or download</strong> → <strong>Save input as sample</strong>. Name the
+    sample <code>Tutorial Kafka input</code> and choose <strong>Save sample</strong>.
+  </p>
 
-  <h2 id="transform">5. Shape the records</h2>
+  <h2 id="transform">5. Transform the records</h2>
   <p>
     After the Parser step, choose <strong>+ step</strong>, then Eval. An Eval step sets fields to
     the values of expressions. Fill in the first row, then choose <strong>+ assignment</strong> for the
@@ -175,8 +177,8 @@ PY`;
   </p>
   <pre><code>{@html highlight(expected)}</code></pre>
   <p>
-    Choose <strong>Save</strong>. Smeltr saves the pipeline and takes you back to the route, with
-    <code>tutorial-in-parse</code> picked.
+    Choose <strong>Save</strong> to return to the route with <code>tutorial-in-parse</code>
+    selected.
   </p>
 
   <h2 id="destination">6. Add the destination</h2>
@@ -201,22 +203,24 @@ PY`;
     <code>tutorial-out</code>. Choose <strong>Save</strong> to save the route.
   </p>
 
-  <h2 id="check">7. Check where records go</h2>
+  <h2 id="check">7. Preview routing and save a test</h2>
   <p>
-    Open the <strong>Route a sample</strong> tab. <strong>Your records</strong>, the ones you
-    captured, are already chosen. Choose <strong>Run</strong>. Smeltr runs the records through your
-    routes. Nothing is delivered.
+    Open <strong>Route a sample</strong>, select <strong>Tutorial Kafka input</strong>, and choose
+    <strong>Run</strong>. The preview shows where the sampled records would go.
   </p>
   <p>
     All three records should reach <code>tutorial-out</code>, with none unrouted or dropped. Choose
-    the <code>tutorial-out</code> count to see the documents as they would be sent.
+    the <code>tutorial-out</code> count to inspect the transformed records.
+  </p>
+  <p>
+    Choose <strong>Lock this as a test</strong>, name the test <code>Tutorial Kafka delivery</code>,
+    and choose <strong>Lock</strong>. The saved test checks the routing and output for this sample.
   </p>
 
   <h2 id="deploy">8. Review and deploy</h2>
   <p>
-    Nothing you've saved runs until it's deployed. In the branch bar, choose
-    <strong>Open for review</strong>. Smeltr fills in the title from what changed. Give it a
-    description and choose <strong>Open for review</strong>.
+    In the branch bar, choose <strong>Open for review</strong>. Check the title and test results,
+    add a description, and choose <strong>Open for review</strong> again.
   </p>
   <p>
     On the review page, read through <strong>Saves</strong> and make sure it holds only your tutorial
@@ -225,11 +229,12 @@ PY`;
   <p>
     If someone has changed <code>main</code> while you were working, choose
     <strong>Bring current</strong> and check the saves again. Then choose
-    <strong>Approve &amp; deploy</strong> and confirm. Smeltr opens Status, where you can watch your workers
-    pick up the change. If a worker reports a deployment failure, resolve it before sending a record.
+    <strong>Approve &amp; deploy</strong> and confirm. In <strong>Status</strong>, check that the
+    test group's workers report the deployed commit before sending a record. If a worker reports a
+    deployment failure, <a href="/docs/troubleshooting#deploy">resolve it first</a>.
   </p>
 
-  <h2 id="verify">9. Send a real record</h2>
+  <h2 id="verify">9. Verify delivery in Kafka</h2>
   <p>
     Back in the same terminal, send a fresh message to the input topic. The timestamp in it will
     help you tell it apart from earlier attempts.
@@ -285,11 +290,11 @@ cat delivered.jsonl</code
     </table>
   </div>
   <p>
-    When you're finished, remove the tutorial route, pipeline, source and destination in a new
-    reviewed change. Once the workers are running that change, you can remove the two Kafka topics
-    too.
+    When you're finished, remove the tutorial test, sample, route, pipeline, source, and destination
+    in a new reviewed change. Once the workers are running that change, you can remove the two Kafka
+    topics.
   </p>
-  <h2 id="filtering">Try filtering rows and fields</h2>
+  <h2 id="filtering">Optional: Filter records and fields</h2>
   <p>
     Use a separate pipeline to try this example. Keep order and error events, drop routine health
     checks, and remove the debug field. Copy each input below into its own saved sample.

@@ -43,17 +43,17 @@
 
   <section class="flow-section" id="where-it-fits" aria-labelledby="fit-heading">
     <div class="section-intro centered">
-      <h2 id="fit-heading">Less noise. One schema.</h2>
+      <h2 id="fit-heading">What is Smeltr?</h2>
       <p>
-        Smeltr runs on your own servers, between the systems that send logs and the places that
-        store them, such as your SIEM. You build pipelines that read each source in its own format,
-        drop what nobody searches, and map the rest to one schema.
+        Smeltr is self-hosted telemetry pipeline software. A Rust backend does the work; you build
+        and manage pipelines in your browser.
       </p>
     </div>
     <HomeDataFlow />
     <p class="connection-links">
       <a href="/siem-costs">Cut SIEM costs →</a>
       <a href="/one-schema">Put every source in one schema →</a>
+      <a href="/docs/what-is-smeltr">More about what Smeltr is →</a>
     </p>
   </section>
 

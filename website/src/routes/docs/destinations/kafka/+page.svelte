@@ -72,6 +72,17 @@
         href="/docs/secrets#kafka">Kafka security</a
       >.
     </dd>
+    <dt><strong>Slower than the network allows</strong></dt>
+    <dd>
+      We recommend setting the brokers' <a
+        href="https://kafka.apache.org/44/configuration/broker-configs/#brokerconfigs_socket.receive.buffer.bytes"
+        ><code>socket.receive.buffer.bytes</code></a
+      >
+      to <code>-1</code>, so that Linux tunes the buffer itself, up to its
+      <a href="https://docs.kernel.org/networking/ip-sysctl.html#tcp-variables"
+        ><code>tcp_rmem</code></a
+      >.
+    </dd>
   </dl>
 
   <h2 id="see-also">See also</h2>
