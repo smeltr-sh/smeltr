@@ -778,7 +778,11 @@ impl Folded {
                 message["tool_calls"] = json!([]);
             }
             let calls = message["tool_calls"].as_array_mut().expect("set just above");
-            while calls.len() <= at {
+            // An index is a call already started or the next one, so no index can make the list longer by more than one.
+            if at > calls.len() {
+                return Err("the endpoint streamed its tool calls out of order".to_string());
+            }
+            if at == calls.len() {
                 calls.push(json!({"id": "", "type": "function", "function": {"name": "", "arguments": ""}}));
             }
             let kept = &mut calls[at];
@@ -1944,6 +1948,19 @@ mod tests {
         };
         assert_eq!((reply.unwrap(), heard.as_str()), (expected, "Looking."));
         assert_eq!(seen.lock()[0]["stream_options"], json!({"include_usage": true}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_compatible_service_that_skips_a_call_index_is_refused() {
+        let call = json!({"index": 4_000_000_000_u64, "id": "call_1", "function": {"name": "list_pipelines"}});
+        let stream = vec![
+            json!({"choices": [{"index": 0, "delta": {"tool_calls": [call]}, "finish_reason": null}]}),
+            json!("[DONE]"),
+        ];
+        let (base, _) = serve_events("/compat/v1/chat/completions", vec![stream]).await;
+        let model = model(endpoint(Provider::OpenAiCompatible, &format!("{base}/compat/v1"))).unwrap();
+        let (reply, _) = streamed(model.as_ref()).await;
+        assert_eq!(reply.unwrap_err(), "the endpoint streamed its tool calls out of order");
     }
 
     #[test]
