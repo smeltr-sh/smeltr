@@ -16,6 +16,7 @@
         detail: string[];
         role?: string;
         stacked?: boolean;
+        joined?: boolean;
       }[];
       paths: string[];
       controlPaths?: string[];
@@ -27,6 +28,18 @@
   let { kind }: { kind: keyof typeof diagrams } = $props();
   const uid = $props.id();
   const diagram: Diagram = $derived(diagrams[kind]);
+
+  type Node = Diagram['layouts'][number]['nodes'][number];
+  /** A node's outline. A `joined` node continues the node just above it, so the corners where they meet are square
+   * and the two read as one box with a divider. */
+  function outline(node: Node, nodes: Node[]): string {
+    const { x, y, w } = node;
+    const h = 80;
+    const top = node.joined ? 0 : 8;
+    const below = nodes.some((n) => n.joined && n.x === x && n.y === y + h);
+    const bottom = below ? 0 : 8;
+    return `M${x + top} ${y}H${x + w - top}a${top} ${top} 0 0 1 ${top} ${top}V${y + h - bottom}a${bottom} ${bottom} 0 0 1 -${bottom} ${bottom}H${x + bottom}a${bottom} ${bottom} 0 0 1 -${bottom} -${bottom}V${y + top}a${top} ${top} 0 0 1 ${top} -${top}Z`;
+  }
 </script>
 
 <figure>
@@ -95,7 +108,7 @@
                 />
               {/each}
             {/if}
-            <rect class={node.role} x={node.x} y={node.y} width={node.w} height="80" rx="8" />
+            <path class="shape {node.role}" d={outline(node, layout.nodes)} />
             {#if glyph}
               <path
                 class="node-glyph"
@@ -142,23 +155,24 @@
   .compact {
     display: none;
   }
-  rect {
+  rect,
+  .shape {
     fill: var(--bg);
     stroke: var(--border);
     stroke-width: 1.5;
   }
   /* Smeltr's own parts are drawn in the accent, the systems it connects in a dashed outline, and a person without a box. */
-  rect.leader,
-  rect.worker {
+  .leader,
+  .worker {
     stroke: var(--accent);
   }
-  rect.source,
-  rect.destination,
-  rect.storage {
+  .source,
+  .destination,
+  .storage {
     fill: none;
     stroke-dasharray: 6 4;
   }
-  rect.administrator {
+  .administrator {
     fill: none;
     stroke: none;
   }

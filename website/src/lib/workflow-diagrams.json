@@ -509,6 +509,7 @@
             "w": 220,
             "title": "Worker",
             "role": "worker",
+            "joined": true,
             "detail": ["Filter and deliver records"]
           },
           {
@@ -574,6 +575,7 @@
             "w": 240,
             "title": "Worker",
             "role": "worker",
+            "joined": true,
             "detail": ["Filter and deliver records"]
           },
           {
