@@ -830,7 +830,11 @@ fn run(
                         }
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
                         if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
-                            p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes));
+                            let c = Completion {
+                                throttled: throttled.is_some(),
+                                ..paced
+                            };
+                            p.abandoned(queue, c, paced.bytes.saturating_sub(rest.bytes));
                         }
                         let (at, rest) = failed(rest);
                         again.push((throttled.map_or(at, |wait| at.max(Instant::now() + wait)), rest));
@@ -875,7 +879,7 @@ fn run(
             Err(e) => {
                 note_stall(metrics, id, name, &e, &mut stalled);
                 cut_off = false;
-                take_back_all(&mut owner, &mut again, &mut pacer);
+                take_back_all(queue, &mut owner, &mut again, &mut pacer);
                 queue.sleep_unless_closed(backoff);
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
@@ -1088,11 +1092,16 @@ fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> bool {
 }
 
 /// Take every sent-but-unacknowledged batch back to be sent again. The pacing model is told of each, so it no longer
-/// counts it in flight.
-fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, pacer: &mut Option<Pacer>) {
+/// counts it in flight; a destination that failed whole says nothing of the path, so none is lost.
+fn take_back_all(
+    queue: &Queue,
+    owner: &mut HashMap<BatchId, Owed>,
+    again: &mut Vec<(Instant, Unit)>,
+    pacer: &mut Option<Pacer>,
+) {
     for (_, o) in owner.drain() {
         if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
-            p.abandoned(paced, 0);
+            p.abandoned(queue, paced, 0);
         }
         again.push(failed(o.unit));
     }
