@@ -74,46 +74,6 @@ export type Diagram = ReturnType<typeof diagram>;
 export type DiagramNode = Diagram['layouts'][number]['nodes'][number];
 
 export const diagrams = {
-  build: diagram({
-    title: 'Keep useful data, then route it',
-    description:
-      'Source records enter filtering and transformation. Dropped rows stop here. Kept records can be delivered to each destination whose rule matches.',
-    caption:
-      'Remove unused fields from kept records. Drop unwanted rows entirely. Each matching delivery rule can send a kept record to a destination.',
-    nodes: {
-      sourceRecords: { title: 'Source records', detail: ['Rows and fields'] },
-      filterTransform: { title: 'Filter & transform', detail: ['Keep useful data'] },
-      destinationA: { title: 'Destination A', detail: ['Matching delivery rule'] },
-      destinationB: { title: 'Destination B', detail: ['Matching delivery rule'] },
-      droppedRows: { title: 'Dropped rows', detail: ['No downstream delivery'] },
-    },
-    layouts: [
-      {
-        width: 900,
-        height: 350,
-        nodes: {
-          sourceRecords: { x: 20, y: 80, w: 200 },
-          filterTransform: { x: 310, y: 80, w: 240 },
-          destinationA: { x: 650, y: 20, w: 230 },
-          destinationB: { x: 650, y: 150, w: 230 },
-          droppedRows: { x: 310, y: 250, w: 240 },
-        },
-        paths: ['M220 120H300', 'M550 120H600V60H640', 'M600 120V190H640', 'M430 160V240'],
-      },
-      {
-        width: 360,
-        height: 500,
-        nodes: {
-          sourceRecords: { x: 80, y: 10, w: 200 },
-          filterTransform: { x: 80, y: 130, w: 200 },
-          droppedRows: { x: 80, y: 265, w: 200 },
-          destinationA: { x: 10, y: 400, w: 160 },
-          destinationB: { x: 190, y: 400, w: 160 },
-        },
-        paths: ['M180 90V120', 'M180 210V255', 'M80 170H25V375H90V390', 'M280 170H335V375H270V390'],
-      },
-    ],
-  }),
   review: diagram({
     title: 'From a draft to running workers',
     description:
