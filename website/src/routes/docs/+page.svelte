@@ -2,6 +2,7 @@
   import DocsLayout from '#lib/components/DocsLayout.svelte';
 
   const sections = [
+    { id: 'what-is-smeltr', title: 'What is Smeltr?' },
     { id: 'start', title: 'Get started' },
     { id: 'workflow', title: 'Build and deploy pipelines' },
     { id: 'manual', title: 'Operate Smeltr' },
@@ -13,19 +14,36 @@
   <title>Documentation — smeltr</title>
   <meta
     name="description"
-    content="Set up Smeltr, build and deploy a telemetry pipeline, or find operations guides and reference material."
+    content="Learn how Smeltr fits into your telemetry stack, then set it up, build a pipeline, or find operations guides and reference material."
   />
 </svelte:head>
 
 <DocsLayout {sections}>
   <header>
     <h1>Smeltr documentation</h1>
-    <p class="lede">
-      Smeltr is a self-hosted tool for filtering, transforming, and routing logs, metrics, and
-      events. Build and test pipelines in the browser, review changes in Git, and deploy them to
-      workers that process and deliver the records.
-    </p>
   </header>
+
+  <section id="what-is-smeltr">
+    <h2>What is Smeltr?</h2>
+    <p class="lede">
+      Smeltr is a self-hosted stream processing tool for logs, metrics, and events. It sits between
+      the systems that produce telemetry and the systems that store or analyze it.
+    </p>
+    <p>
+      A route connects a source to a pipeline and one or more destinations. The pipeline can parse
+      records, standardize or enrich fields, and drop records you do not need. For example, read
+      application logs from Kafka, drop routine health checks, and send the remaining records to
+      Elasticsearch for search and Amazon S3 for archiving.
+    </p>
+    <p>
+      The <strong>leader</strong> hosts the browser interface for building pipelines, testing them
+      on captured records, and reviewing configuration changes. Approved changes are deployed as Git
+      commits. <strong>Workers</strong> fetch the deployed commit, run the pipelines, and connect directly
+      to sources and destinations. Each worker reports the commit it is running. You can run both roles
+      on one host or place workers on separate hosts near the systems they connect to.
+    </p>
+    <p><a href="/docs/getting-started#overview">See the leader and worker diagram</a>.</p>
+  </section>
 
   <section id="start" aria-labelledby="start-heading">
     <h2 id="start-heading">Get started</h2>
@@ -45,10 +63,6 @@
 
   <section id="workflow">
     <h2>Build and deploy pipelines</h2>
-    <p>
-      A route connects a source, a pipeline, and one or more destinations. A sample lets you check
-      the result before deploying the route to a worker group.
-    </p>
     <ol class="topics">
       <li>
         <a href="/docs/capture-sample">Capture records</a>
