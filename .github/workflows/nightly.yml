@@ -56,6 +56,7 @@ jobs:
         with:
           cache: 'true'
       - run: just check-all
+      - run: just build-benches
 
   # Every live test, against `tests/live/compose.live.yaml`.
   live:
