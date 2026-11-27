@@ -398,9 +398,9 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 clients.note_cluster(routes, cluster);
             }
         }
-        // The first poll waits for a record; the rest take only what librdkafka already holds, up to a batch's rows
-        // and until a source's inbox would be full, so a reader is handed a fetch's records together rather than its
-        // first few, and records arriving as fast as they are drained still reach it.
+        // The first poll waits for a record; the rest take only what librdkafka already holds, until a source's inbox
+        // would be full, so a reader is handed a fetch's records together rather than its first few; a batch's rows
+        // also end the pass, so records arriving as fast as they are drained still reach the reader.
         let mut drain = Drain::new(routes);
         let mut wait = CLIENT_POLL;
         let fatal = loop {
@@ -453,8 +453,9 @@ struct Drained {
     slot: Arc<Slot>,
     /// Whether these records were copied with their headers.
     keep_headers: bool,
-    /// What the inbox had left before its cap when the pass met this source. Its reader only takes bytes out, so
-    /// the pass ends once `records` fill it: the hand-off then pauses the source, as a record routed alone would.
+    /// What the inbox had left before its cap when the pass met this source. Its reader only takes bytes out, so it
+    /// has at least this much until the hand-off; the pass ends once `records` fill it, and the hand-off then pauses
+    /// the source.
     room: usize,
     records: crate::io::RecordChunkBuilder,
 }
