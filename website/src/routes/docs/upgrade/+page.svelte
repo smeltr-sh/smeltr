@@ -3,6 +3,7 @@
   const sections = [
     { id: 'new-release', title: 'Know when a release is out' },
     { id: 'executable', title: 'Upgrade the executable' },
+    { id: 'downgrade', title: 'Downgrade the executable' },
     { id: 'kubernetes', title: 'Operate and upgrade on Kubernetes' },
   ];
 </script>
@@ -49,12 +50,25 @@
       closing the window.
     </li>
   </ul>
-  <p id="downgrade">
-    An older build starts on the leader’s upgraded data unless the newer build changed it in a way
-    the older one cannot read. Then the older leader refuses to start and says why: restore the
-    pre-upgrade artifact and its matching backup together. Restoring older configuration can also
-    change what workers deploy.
-  </p>
+  <h2 id="downgrade">Downgrade the executable</h2>
+  <ol>
+    <li>Stop the leader and install the previous binary or image you kept when you upgraded.</li>
+    <li>
+      Start the leader. It runs on the upgraded data unless the newer release changed that data in a
+      way the older one cannot read. Then it refuses to start and says why.
+    </li>
+    <li>
+      If it refuses, <a href="/docs/backup-recovery#recover">restore the backup</a> you took before the
+      upgrade. Its configuration may be older than what workers run, so review the difference before workers
+      fetch it.
+    </li>
+    <li>
+      On Status, check that each worker is <strong>Online</strong> and that its
+      <strong>Commit</strong> matches the commit on <code>main</code>. A worker on another major
+      release shows as <strong>On another build</strong> and takes no new deployment; install the leader’s
+      major release on it.
+    </li>
+  </ol>
   <h2 id="kubernetes">Operate and upgrade on Kubernetes</h2>
   <ul>
     <li>
