@@ -1,32 +1,20 @@
 <script lang="ts">
-  import diagrams from '#lib/workflow-diagrams.json';
+  import { diagrams, type DiagramNode } from '#lib/workflow-diagrams.ts';
   import { diagramGlyphs } from '#lib/diagram-glyphs.ts';
-  type Diagram = {
-    title: string;
-    description: string;
-    caption: string;
-    layouts: {
-      width: number;
-      height: number;
-      nodes: {
-        x: number;
-        y: number;
-        w: number;
-        title: string;
-        detail: string[];
-        role?: string;
-        stacked?: boolean;
-      }[];
-      paths: string[];
-      controlPaths?: string[];
-      storagePaths?: string[];
-      boundaries?: { x: number; y: number; w: number; h: number; label: string }[];
-      labels: { x: number; y: number; text: string }[];
-    }[];
-  };
   let { kind }: { kind: keyof typeof diagrams } = $props();
   const uid = $props.id();
-  const diagram: Diagram = $derived(diagrams[kind]);
+  const diagram = $derived(diagrams[kind]);
+
+  /** A node's outline. A `joined` node continues the node just above it, so the corners where they meet are square
+   * and the two read as one box with a divider. */
+  function outline(node: DiagramNode, nodes: DiagramNode[]): string {
+    const { x, y, w } = node;
+    const h = 80;
+    const top = node.joined ? 0 : 8;
+    const below = nodes.some((n) => n.joined && n.x === x && n.y === y + h);
+    const bottom = below ? 0 : 8;
+    return `M${x + top} ${y}H${x + w - top}a${top} ${top} 0 0 1 ${top} ${top}V${y + h - bottom}a${bottom} ${bottom} 0 0 1 -${bottom} ${bottom}H${x + bottom}a${bottom} ${bottom} 0 0 1 -${bottom} -${bottom}V${y + top}a${top} ${top} 0 0 1 ${top} -${top}Z`;
+  }
 </script>
 
 <figure>
@@ -54,7 +42,7 @@
             <path d="M0 0L10 5L0 10Z" fill="var(--accent)" />
           </marker>
         </defs>
-        {#each layout.boundaries ?? [] as boundary (boundary.label)}
+        {#each layout.boundaries as boundary (boundary.label)}
           <rect
             class="boundary"
             x={boundary.x}
@@ -67,10 +55,10 @@
             >{boundary.label}</text
           >
         {/each}
-        {#each layout.storagePaths ?? [] as path (path)}
+        {#each layout.storagePaths as path (path)}
           <path d={path} class="storage-link" />
         {/each}
-        {#each layout.controlPaths ?? [] as path (path)}
+        {#each layout.controlPaths as path (path)}
           <path d={path} class="connection control" marker-end={`url(#${uid}-${index}-arrow)`} />
         {/each}
         {#each layout.paths as path (path)}
@@ -85,6 +73,7 @@
             {#if node.stacked}
               {#each [16, 8] as offset (offset)}
                 <rect
+                  class={node.role}
                   x={node.x + offset}
                   y={node.y - offset}
                   width={node.w}
@@ -94,7 +83,7 @@
                 />
               {/each}
             {/if}
-            <rect x={node.x} y={node.y} width={node.w} height="80" rx="8" />
+            <path class="shape {node.role}" d={outline(node, layout.nodes)} />
             {#if glyph}
               <path
                 class="node-glyph"
@@ -141,10 +130,26 @@
   .compact {
     display: none;
   }
-  rect {
+  rect,
+  .shape {
     fill: var(--bg);
     stroke: var(--border);
     stroke-width: 1.5;
+  }
+  /* Smeltr's own parts are drawn in the accent, the systems it connects in a dashed outline, and a person without a box. */
+  .leader,
+  .worker {
+    stroke: var(--accent);
+  }
+  .source,
+  .destination,
+  .storage {
+    fill: none;
+    stroke-dasharray: 6 4;
+  }
+  .administrator {
+    fill: none;
+    stroke: none;
   }
   text {
     text-anchor: middle;
@@ -179,8 +184,8 @@
     stroke-dasharray: 7 5;
   }
   .boundary {
-    fill: none;
-    stroke-dasharray: 6 5;
+    fill: color-mix(in oklch, var(--accent) 7%, transparent);
+    stroke: none;
   }
   .boundary-label {
     text-anchor: start;
@@ -199,7 +204,6 @@
     color: var(--ink);
     font-size: 0.9rem;
     line-height: 1.6;
-    max-width: 68ch;
   }
   @container (max-width: 45rem) {
     .wide {

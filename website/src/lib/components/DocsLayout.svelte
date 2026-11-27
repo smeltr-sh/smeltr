@@ -25,7 +25,8 @@
     {
       title: 'Getting started',
       links: [
-        { href: '/docs/getting-started', title: 'Set up a deployment' },
+        { href: '/docs/what-is-smeltr', title: 'What is Smeltr?' },
+        { href: '/docs/getting-started', title: 'Set up Smeltr' },
         {
           title: 'Install a leader',
           links: [
@@ -47,8 +48,28 @@
       ],
     },
     {
-      title: 'Smeltr language',
-      links: [{ href: '/docs/code-reference', title: 'Language reference' }],
+      title: 'Build and deploy',
+      links: [
+        { href: '/docs/first-pipeline', title: 'Build your first pipeline' },
+        { href: '/docs/review', title: 'Review & deploy' },
+        { href: '/docs/move-pipeline', title: 'Move a pipeline' },
+        {
+          title: 'Git & configuration',
+          links: [
+            { href: '/docs/git/configuration', title: 'How Git is used' },
+            { href: '/docs/git/external-host', title: 'External Git host' },
+          ],
+        },
+        { href: '/docs/capture-sample', title: 'Capture a sample' },
+        { href: '/docs/schemas', title: 'Schemas' },
+        {
+          title: 'Routing',
+          links: [
+            { href: '/docs/routing/records', title: 'Routing records' },
+            { href: '/docs/routing/exceptions', title: 'Exceptions' },
+          ],
+        },
+      ],
     },
     {
       title: 'Administration',
@@ -71,30 +92,6 @@
         { href: '/docs/troubleshooting', title: 'Troubleshooting' },
       ],
     },
-    {
-      title: 'Pipeline workflow',
-      links: [
-        { href: '/docs/first-pipeline', title: 'First pipeline tutorial' },
-        { href: '/docs/review', title: 'Review & deploy' },
-        { href: '/docs/move-pipeline', title: 'Move a pipeline' },
-        {
-          title: 'Git & configuration',
-          links: [
-            { href: '/docs/git/configuration', title: 'How Git is used' },
-            { href: '/docs/git/external-host', title: 'External Git host' },
-          ],
-        },
-        { href: '/docs/capture-sample', title: 'Capture a sample' },
-        { href: '/docs/schemas', title: 'Schemas' },
-        {
-          title: 'Routing',
-          links: [
-            { href: '/docs/routing/records', title: 'Routing records' },
-            { href: '/docs/routing/exceptions', title: 'Exceptions' },
-          ],
-        },
-      ],
-    },
   ];
   function categoryLinks(kinds: Connection[], order?: string[]): Entry[] {
     return byCategory(kinds, order).map(({ category, kinds }) => ({
@@ -103,6 +100,10 @@
     }));
   }
   groups.push(
+    {
+      title: 'Smeltr language',
+      links: [{ href: '/docs/code-reference', title: 'Language reference' }],
+    },
     {
       title: 'Pipeline steps',
       links: [{ href: '/docs/steps', title: 'Overview' }, ...stepPages],

@@ -1,7 +1,8 @@
 <script lang="ts">
   import GuideLayout from '#lib/components/GuideLayout.svelte';
   const sections = [
-    { id: 'daily', title: 'Read the running state' },
+    { id: 'daily', title: 'Check workers and data flow' },
+    { id: 'source-warnings', title: 'Investigate source warnings' },
     { id: 'alerts', title: 'Page on warnings' },
     { id: 'delivery', title: 'Delivery and recovery' },
     { id: 'logs', title: 'Change log verbosity' },
@@ -16,7 +17,12 @@
   {sections}
 >
   <h1>Operate and recover the fleet</h1>
-  <h2 id="daily">Read the running state</h2>
+  <p>
+    Use Status to check worker health and the running configuration. Use the Map to trace records
+    and Logs to investigate errors. For a specific symptom, start with
+    <a href="/docs/troubleshooting">Troubleshooting</a>.
+  </p>
+  <h2 id="daily">Check workers and data flow</h2>
   <ol>
     <li>
       Open Status and check Online, Silent, Never heartbeated and Stopped workers, plus active
@@ -29,16 +35,8 @@
       leader. Check the running commit to see whether deployment succeeded.
     </li>
     <li>
-      Trace the affected source, pipeline and destination on the Map. Inspect throughput and owned
-      partitions before changing thread limits. A source warns when its rows over the last 5
-      minutes, 30 minutes, 6 hours or 24 hours stay below the range it normally reads at that time
-      of day, learned from its past weeks, and informs when its last 30 minutes are above it. A
-      source too sparse for those warns once it goes half again as long without a row as its longest
-      quiet spell of the past year. A source's History tab on the Map lists its warnings and longest
-      quiet spells, and an editor marks each Normal, so it is learned, or Outage, so it is not.
-      There an editor also picks the source's preset, from Fast, which warns of a stop in about 5
-      minutes, to Quiet, which takes about 30 minutes and warns of the fewest brief dips. A source's
-      Senders tab lists the senders it carries, each judged against a normal of its own.
+      On the Map, trace the affected source, pipeline, and destination. Check throughput and owned
+      partitions before changing thread limits.
     </li>
     <li>
       Use Logs to narrow by level, worker, worker group, message and time. Preserve timestamps,
@@ -47,6 +45,32 @@
   </ol>
   <p>
     <a href="/docs/git/configuration#verify">How to compare the deployed and running commits →</a>
+  </p>
+  <h2 id="source-warnings">Investigate source warnings</h2>
+  <p>
+    On the Map, open the source's <strong>History</strong> tab to see warnings and its longest quiet
+    spells. Open <strong>Senders</strong> to check whether the change is isolated to a sender. Smeltr
+    learns each sender's usual rate separately.
+  </p>
+  <ul>
+    <li>
+      <strong>Lower volume.</strong> Smeltr warns when row counts stay below the usual range for that
+      time of day. It checks the last 5 minutes, 30 minutes, 6 hours, and 24 hours against patterns from
+      past weeks.
+    </li>
+    <li>
+      <strong>Higher volume.</strong> Smeltr reports when the last 30 minutes are above the usual range.
+    </li>
+    <li>
+      <strong>Sparse input.</strong> Smeltr warns when a source that is too sparse for rate checks goes
+      1.5 times as long without a row as its longest quiet spell in the last year.
+    </li>
+  </ul>
+  <p>
+    In History, mark a quiet spell <strong>Normal</strong> to include it in the learned pattern or
+    <strong>Outage</strong>
+    to exclude it. Choose <strong>Fast</strong> to hear about a stop in about 5 minutes, or
+    <strong>Quiet</strong> to report fewer brief dips and hear about a stop in about 30 minutes.
   </p>
   <h2 id="alerts">Page on warnings</h2>
   <p>
@@ -58,9 +82,8 @@
   </p>
   <ol>
     <li>
-      In Admin → Accounts, add a key account for the scraper and make it a key. Its roles decide
-      which worker groups' warnings it sees; only an administrator sees warnings about the leader
-      itself.
+      In Admin → Accounts, create a key account for the scraper. Its roles determine which worker
+      groups' warnings it sees. Leader warnings require administrator access.
     </li>
     <li>
       Scrape <code>/api/metrics</code> with the key as a bearer token. A failed scrape is how Prometheus
@@ -132,7 +155,7 @@
   </ol>
   <p>
     Do not rewrite the worker's local configuration manually. A configuration rollback is different
-    from <a href="/docs/upgrade#executable">downgrading the executable</a>.
+    from <a href="/docs/upgrade#downgrade">downgrading the executable</a>.
   </p>
   <h2 id="outages">Leader outages and revoked workers</h2>
   <p>

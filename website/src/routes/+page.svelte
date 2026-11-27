@@ -43,11 +43,12 @@
 
   <section class="flow-section" id="where-it-fits" aria-labelledby="fit-heading">
     <div class="section-intro centered">
-      <h2 id="fit-heading">Less noise. One schema.</h2>
+      <h2 id="fit-heading">Where Smeltr fits in your stack</h2>
       <p>
-        Smeltr runs on your own servers, between the systems that send logs and the places that
-        store them, such as your SIEM. You build pipelines that read each source in its own format,
-        drop what nobody searches, and map the rest to one schema.
+        Smeltr runs on your infrastructure, between the systems that produce logs, metrics, and
+        events and the tools that store or analyze them. For example, read from Kafka or receive
+        syslog, drop records you don't need, and standardize fields before sending the results to
+        Elasticsearch, Amazon S3, or both.
       </p>
     </div>
     <HomeDataFlow />
