@@ -589,9 +589,10 @@ fn action(
     };
     match label {
         "index of a document not an object" | "create of a document not an object" => {
-            let document = String::from_utf8_lossy(rng.pick(NOT_OBJECTS));
-            lines.line(rng, document.as_bytes());
-            (item(None), Some(taken(document.into_owned())))
+            let document = *rng.pick(NOT_OBJECTS);
+            lines.line(rng, document);
+            // Read back lossily, as `read_back` reads what arrives.
+            (item(None), Some(taken(String::from_utf8_lossy(document).into_owned())))
         }
         "index of an object" | "create of an object" => {
             let around = rng.chance(5);
