@@ -358,19 +358,19 @@
     "layouts": [
       {
         "width": 900,
-        "height": 370,
+        "height": 400,
         "nodes": [
           {
             "x": 20,
-            "y": 30,
+            "y": 60,
             "w": 220,
             "title": "Administrator",
-            "detail": ["Edit \u00b7 test \u00b7 review"],
+            "detail": ["Edit · test · review"],
             "role": "administrator"
           },
           {
             "x": 340,
-            "y": 30,
+            "y": 60,
             "w": 220,
             "title": "Leader",
             "detail": ["UI + Git repository"],
@@ -378,7 +378,7 @@
           },
           {
             "x": 20,
-            "y": 260,
+            "y": 290,
             "w": 220,
             "title": "Sources",
             "detail": ["Input records"],
@@ -386,7 +386,7 @@
           },
           {
             "x": 340,
-            "y": 260,
+            "y": 290,
             "w": 220,
             "title": "Workers",
             "detail": ["Filter and deliver records"],
@@ -395,27 +395,36 @@
           },
           {
             "x": 660,
-            "y": 260,
+            "y": 290,
             "w": 220,
             "title": "Destinations",
             "detail": ["Kept records"],
             "role": "destination"
           }
         ],
-        "paths": ["M240 70H330", "M240 300H330", "M560 300H650"],
+        "paths": ["M240 100H330", "M240 330H330", "M560 330H650"],
         "labels": [
           {
             "x": 540,
-            "y": 180,
+            "y": 210,
             "text": "Fetch main"
           },
           {
             "x": 540,
-            "y": 201,
+            "y": 231,
             "text": "Report status"
           }
         ],
-        "controlPaths": ["M450 260V120"]
+        "controlPaths": ["M450 290V150"],
+        "boundaries": [
+          {
+            "x": 300,
+            "y": 8,
+            "w": 312,
+            "h": 372,
+            "label": "Smeltr"
+          }
+        ]
       },
       {
         "width": 360,
@@ -426,7 +435,7 @@
             "y": 10,
             "w": 240,
             "title": "Administrator",
-            "detail": ["Edit \u00b7 test \u00b7 review"],
+            "detail": ["Edit · test · review"],
             "role": "administrator"
           },
           {

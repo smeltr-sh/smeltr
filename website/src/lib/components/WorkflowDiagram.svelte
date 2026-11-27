@@ -85,6 +85,7 @@
             {#if node.stacked}
               {#each [16, 8] as offset (offset)}
                 <rect
+                  class={node.role}
                   x={node.x + offset}
                   y={node.y - offset}
                   width={node.w}
@@ -94,7 +95,7 @@
                 />
               {/each}
             {/if}
-            <rect x={node.x} y={node.y} width={node.w} height="80" rx="8" />
+            <rect class={node.role} x={node.x} y={node.y} width={node.w} height="80" rx="8" />
             {#if glyph}
               <path
                 class="node-glyph"
@@ -145,6 +146,21 @@
     fill: var(--bg);
     stroke: var(--border);
     stroke-width: 1.5;
+  }
+  /* Smeltr's own parts are drawn in the accent, the systems it connects in a dashed outline, and a person without a box. */
+  rect.leader,
+  rect.worker {
+    stroke: var(--accent);
+  }
+  rect.source,
+  rect.destination,
+  rect.storage {
+    fill: none;
+    stroke-dasharray: 6 4;
+  }
+  rect.administrator {
+    fill: none;
+    stroke: none;
   }
   text {
     text-anchor: middle;
