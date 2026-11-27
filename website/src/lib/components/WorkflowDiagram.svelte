@@ -195,8 +195,8 @@
     stroke-dasharray: 7 5;
   }
   .boundary {
-    fill: none;
-    stroke-dasharray: 6 5;
+    fill: color-mix(in oklch, var(--accent) 7%, transparent);
+    stroke: none;
   }
   .boundary-label {
     text-anchor: start;
