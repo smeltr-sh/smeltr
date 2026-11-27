@@ -43,7 +43,7 @@
 
   <section class="flow-section" id="where-it-fits" aria-labelledby="fit-heading">
     <div class="section-intro centered">
-      <h2 id="fit-heading">Where Smeltr fits in your stack</h2>
+      <h2 id="fit-heading">What is Smeltr</h2>
       <p>
         Smeltr runs on your infrastructure, between the systems that produce logs, metrics, and
         events and the tools that store or analyze them. For example, read from Kafka or receive
