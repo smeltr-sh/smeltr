@@ -415,11 +415,6 @@ impl Pacing {
         self.max_bw
     }
 
-    #[cfg(test)]
-    fn state(&self) -> State {
-        self.state
-    }
-
     /// How far a probe above the link's measured capacity would stand below the ceiling, in bytes: 0 once the link
     /// carries at least the ceiling over the probe's gain. A model held at its ceiling measures no more than the
     /// ceiling lets through, so this is as near as it can come to saying the ceiling, not the link, is the bound.
@@ -1380,8 +1375,8 @@ mod tests {
                 self.p.completed(c, at);
                 self.acks.push((at, c.bytes as u64));
                 self.throttled += usize::from(c.throttled);
-                if self.states.last() != Some(&self.p.state()) {
-                    self.states.push(self.p.state());
+                if self.states.last() != Some(&self.p.state) {
+                    self.states.push(self.p.state);
                 }
             }
         }
@@ -1462,7 +1457,7 @@ mod tests {
         let mut s = Sim::new(BATCH, 1024 * MIB, path);
         s.run_to(3.0);
         assert_eq!(
-            s.p.state(),
+            s.p.state,
             State::Startup,
             "app-limited rounds without loss stay in Startup"
         );
@@ -1488,7 +1483,7 @@ mod tests {
         while t < 13.0 {
             t += 0.001;
             s.run_to(t);
-            if s.p.state() == State::ProbeRtt {
+            if s.p.state == State::ProbeRtt {
                 least = least.min(s.p.target());
             }
         }
