@@ -506,7 +506,11 @@ impl<'r> Drain<'r> {
         let found = self.routes.slot_for(topic).map(|slot| {
             let (name, keep_headers, room) = {
                 let state = slot.lock();
-                (slot.intern(&state, topic), state.keep_headers, slot.cap.saturating_sub(state.bytes))
+                (
+                    slot.intern(&state, topic),
+                    state.keep_headers,
+                    slot.cap.saturating_sub(state.bytes),
+                )
             };
             let at = match self.sources.iter().position(|s| Arc::ptr_eq(&s.slot, &slot)) {
                 Some(at) => at,
