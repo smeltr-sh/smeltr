@@ -774,7 +774,7 @@ connector-speed: live-up
 
 # Build the benchmarks: they are `test = false` targets, which no check builds.
 [doc("Build every benchmark.")]
-build-benches: need-rust
+build-benches: need-rust (need "jq" "Install jq: it lists the benchmarks.")
     cargo build $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "smeltr") | .targets[] | select(.kind == ["test"] and .test == false) | "--test " + .name')
 
 # Stop the live services and the Kerberos and TLS brokers, and discard their
