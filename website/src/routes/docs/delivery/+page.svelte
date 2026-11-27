@@ -42,9 +42,10 @@
     For Kafka inputs, Smeltr saves its reading position only after the required deliveries finish or
     the <strong>drop</strong> action discards the record. While the source is paused, Smeltr reads
     nothing more from Kafka, so records it has not read wait there for as long as the topic's
-    <a href="https://kafka.apache.org/documentation/#topicconfigs_retention.ms">retention</a> keeps them.
-    Allow enough for the outage and the time needed to catch up. Worker memory has a fixed limit and does
-    not replace this storage. Smeltr cannot reread local logs and metrics from a retained Kafka topic.
+    <a href="https://kafka.apache.org/44/configuration/topic-configs/#topicconfigs_retention.ms"
+      >retention</a
+    > keeps them. Allow enough for the outage and the time needed to catch up. Worker memory has a fixed
+    limit and does not replace this storage.
   </p>
   <p>
     An unreachable destination does not automatically switch to a standby destination. Dead-letter

@@ -110,6 +110,17 @@
         href="#move">move</a
       > the source.
     </dd>
+    <dt><strong>Slower than the network allows</strong></dt>
+    <dd>
+      We recommend setting the brokers' <a
+        href="https://kafka.apache.org/44/configuration/broker-configs/#brokerconfigs_socket.send.buffer.bytes"
+        ><code>socket.send.buffer.bytes</code></a
+      >
+      to <code>-1</code>, so that Linux tunes the buffer itself, up to its
+      <a href="https://docs.kernel.org/networking/ip-sysctl.html#tcp-variables"
+        ><code>tcp_wmem</code></a
+      >.
+    </dd>
   </dl>
 
   <h2 id="see-also">See also</h2>
