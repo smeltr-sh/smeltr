@@ -872,10 +872,11 @@ pub fn run_preview(
 
         // A byte record's `_raw` is text (`core::batch`), and a sample's records are text by the time they are
         // stored -- a paste arrives as text and a capture decodes with its source's encoding, so nothing decodes here.
-        let text: Vec<std::borrow::Cow<'_, str>> =
-            texts.iter().map(|t| std::borrow::Cow::Borrowed(t.as_str())).collect();
+        let raw = meta
+            .raw_record()
+            .then(|| crate::plan::topology::str_column(&mut pool, texts.iter().map(|t| Some(t.as_bytes()))));
         // Each record's `__source` fields are its own columns, so no source names the batch.
-        meta.ingest(&mut batch, &sourced, &text, None, None, &mut pool);
+        meta.ingest(&mut batch, &sourced, raw, None, None, &mut pool);
 
         let mut ctx = Ctx::at(&mut pool, &mut errors, at).tallying(&mut tally);
         let rows = run_to_json_marked(
