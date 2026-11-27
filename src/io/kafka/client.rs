@@ -1,10 +1,13 @@
 //! The consumer a deployment's Kafka sources share: one librdkafka client for every source whose client
-//! configuration is the same, polled on one thread, each record handed to the inbox of the source that reads its
-//! topic.
+//! configuration is the same. Each partition's queue is split off the consumer's as it is assigned and read on one of
+//! the client's pass threads, which hand each record to the inbox of the source that reads its topic. The client
+//! thread serves the consumer's own queue: rebalances, errors and commit answers.
 //!
 //! ```text
-//!   client thread ──poll──► route by topic ──► inbox of source 1 ──► reader 1 (KafkaSource::poll_batch)
-//!                                         └──► inbox of source N ──► reader N
+//!   partition queues ──► pass thread 1 ─┐
+//!   partition queues ──► pass thread M ─┴─► by topic ──► inbox of source 1 ──► reader 1 (KafkaSource::poll_batch)
+//!                                                    └──► inbox of source N ──► reader N
+//!   consumer's queue ──► client thread: rebalances, errors, commit answers
 //!   readers ──commit, place, pause──► the shared consumer
 //! ```
 //!
@@ -19,7 +22,7 @@
 use crate::sync::{Condvar, Mutex, MutexGuard};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -72,6 +75,8 @@ pub struct Clients {
     /// Numbers each source in the order it attached, so of two that may not both read a topic the later one is
     /// refused.
     attached: AtomicU64,
+    /// The worker's threads: the most pass threads a client starts (`Passes`).
+    threads: usize,
 }
 
 /// One client, as the registry knows it. `routes` outlives the client, so comparing two clients never keeps one
@@ -85,6 +90,14 @@ struct Entry {
 }
 
 impl Clients {
+    /// The clients of a worker with `threads` threads.
+    pub fn for_threads(threads: usize) -> Clients {
+        Clients {
+            threads,
+            ..Clients::default()
+        }
+    }
+
     /// Attaches a source reading `config` to the client its configuration names, building that client if none is
     /// open. A source that would read a topic another source on the same cluster reads in the same group is
     /// attached refused: it reads nothing and says why (`Slot::refused`).
@@ -132,7 +145,7 @@ impl Clients {
                     client_config.set("group.instance.id", &id);
                     id
                 });
-                let client = Client::start(&client_config, config, Arc::downgrade(self))?;
+                let client = Client::start(&client_config, config, self.threads, Arc::downgrade(self))?;
                 entries.push(Entry {
                     instance,
                     key,
@@ -333,6 +346,7 @@ impl Client {
     fn start(
         client_config: &ClientConfig,
         config: &KafkaSourceConfig,
+        threads: usize,
         clients: Weak<Clients>,
     ) -> Result<Arc<Client>, IoError> {
         let routes = Routes(Arc::new(RoutesInner {
@@ -344,6 +358,7 @@ impl Client {
         let consumer: Arc<BaseConsumer<Routes>> = Arc::new(client_config.create_with_context(routes.clone())?);
         let stop = Arc::new(AtomicBool::new(false));
         let sampler = Sampler::start(Arc::clone(&consumer), routes.clone(), clients.clone());
+        routes.0.passes.start(&consumer, &routes, threads)?;
         let thread = {
             let (consumer, routes, stop) = (Arc::clone(&consumer), routes.clone(), Arc::clone(&stop));
             crate::sync::spawn("kafka-client", move || run(&consumer, &routes, &stop, &clients))
@@ -371,6 +386,7 @@ impl Drop for Client {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        self.routes.0.passes.close();
         // The sampler shares the consumer, so it goes before the consumer closes.
         self.sampler.take();
     }
@@ -378,7 +394,7 @@ impl Drop for Client {
 
 /// The client thread: polls the consumer, routes each record, and keeps the subscription to what its sources read.
 fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clients: &Weak<Clients>) {
-    let mut cluster_known = false;
+    let (mut cluster_known, mut sized) = (false, false);
     let mut stalls_checked = Instant::now();
     // A poll failing: said once per change and on the interval, not per poll.
     let mut polling = crate::logs::Relog::default();
@@ -397,6 +413,14 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
             if let Some(clients) = clients.upgrade() {
                 clients.note_cluster(routes, cluster);
             }
+        }
+        // Once the cluster is known, ask for its brokers: one pass thread for each.
+        if cluster_known
+            && !sized
+            && let Ok(metadata) = consumer.fetch_metadata(None, super::LAG_QUERY_TIMEOUT)
+        {
+            sized = true;
+            routes.0.passes.grow(routes, metadata.brokers().len());
         }
         // The first poll waits for a record; the rest take only what librdkafka already holds, until a source's inbox
         // would be full, so a reader is handed a fetch's records together rather than its first few; a batch's rows
@@ -435,8 +459,216 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
     }
 }
 
-/// What the client took off librdkafka in one pass, built into a chunk per source on the client thread, so a
-/// source's inbox takes a pass's records in one hand-off and its reader copies nothing.
+/// The threads that copy a client's records, each reading the queues of the partitions dealt to it, split off the
+/// consumer's own queue as they are assigned: one thread for each broker, up to the worker's threads. The client
+/// thread keeps the consumer's own queue: rebalances, errors and commit answers.
+#[derive(Default)]
+struct Passes {
+    /// The most threads the worker gives a client.
+    most: AtomicUsize,
+    /// What splits a partition's queue off. Weak: the consumer's context holds this.
+    consumer: OnceLock<Weak<BaseConsumer<Routes>>>,
+    readers: Mutex<Vec<Arc<PassReader>>>,
+    threads: Mutex<Vec<JoinHandle<()>>>,
+    stop: AtomicBool,
+}
+
+/// One pass thread's partitions, and what wakes it.
+#[derive(Default)]
+struct PassReader {
+    /// Held for a whole pass, so a revoke or a refetch that takes a partition waits for the pass reading it to hand
+    /// its records off.
+    queues: Mutex<Vec<(Assigned, SplitQueue)>>,
+    ready: Mutex<bool>,
+    arrived: Condvar,
+}
+
+/// A partition's own queue, read on a pass thread.
+struct SplitQueue(rdkafka::consumer::base_consumer::PartitionQueue<Routes>);
+
+// SAFETY: `PartitionQueue` is not `Send` only because it holds a raw librdkafka queue handle (rdkafka 0.40).
+// librdkafka's queue calls are thread-safe, and the consumer and callback it holds are `Send` and `Sync`.
+unsafe impl Send for SplitQueue {}
+
+impl SplitQueue {
+    /// Splits `topic`'s `partition` off the consumer's queue, waking `reader` whenever it goes from empty to holding
+    /// records. None if rdkafka cannot split it: an invalid topic or partition.
+    fn split(
+        consumer: &Arc<BaseConsumer<Routes>>,
+        topic: &str,
+        partition: i32,
+        reader: &Arc<PassReader>,
+    ) -> Option<SplitQueue> {
+        let mut queue = SplitQueue(consumer.split_partition_queue(topic, partition)?);
+        queue.wake(reader);
+        Some(queue)
+    }
+
+    fn wake(&mut self, reader: &Arc<PassReader>) {
+        let reader = Arc::downgrade(reader);
+        self.0.set_nonempty_callback(move || {
+            if let Some(reader) = reader.upgrade() {
+                reader.wake();
+            }
+        });
+    }
+}
+
+impl Passes {
+    /// Starts one pass thread; `grow` adds the rest once the brokers are known.
+    fn start(&self, consumer: &Arc<BaseConsumer<Routes>>, routes: &Routes, threads: usize) -> Result<(), IoError> {
+        let _ = self.consumer.set(Arc::downgrade(consumer));
+        self.most.store(threads.max(1), Ordering::Relaxed);
+        self.spawn(consumer, routes)
+    }
+
+    fn spawn(&self, consumer: &Arc<BaseConsumer<Routes>>, routes: &Routes) -> Result<(), IoError> {
+        let reader = Arc::new(PassReader::default());
+        let thread = {
+            let (consumer, routes, reader) = (Arc::clone(consumer), routes.clone(), Arc::clone(&reader));
+            crate::sync::spawn("kafka-pass", move || read_partitions(&consumer, &routes, &reader))
+                .map_err(|e| IoError::transient(format!("could not start a Kafka pass thread: {e}")))?
+        };
+        self.readers.lock().push(reader);
+        self.threads.lock().push(thread);
+        Ok(())
+    }
+
+    fn readers(&self) -> Vec<Arc<PassReader>> {
+        self.readers.lock().clone()
+    }
+
+    /// Starts a thread for each of `brokers`, up to the worker's threads, and deals the partitions out again.
+    fn grow(&self, routes: &Routes, brokers: usize) {
+        let Some(consumer) = self.consumer.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let want = brokers.clamp(1, self.most.load(Ordering::Relaxed));
+        while self.readers.lock().len() < want {
+            if let Err(e) = self.spawn(&consumer, routes) {
+                tracing::warn!(name: "pass_failed", target: "sources", error = %e, "a Kafka source reads its partitions on fewer threads than it has brokers");
+                break;
+            }
+        }
+        let readers = self.readers();
+        let mut held: Vec<_> = readers.iter().map(|r| r.queues.lock()).collect();
+        let queues: Vec<_> = held.iter_mut().flat_map(|q| q.drain(..)).collect();
+        for (i, (key, mut queue)) in queues.into_iter().enumerate() {
+            let at = i % readers.len();
+            queue.wake(&readers[at]);
+            held[at].push((key, queue));
+        }
+        drop(held);
+        readers.iter().for_each(|r| r.wake());
+    }
+
+    /// Splits each partition of `tpl` off the consumer's queue, onto the pass thread reading the fewest.
+    fn split(&self, tpl: &TopicPartitionList) {
+        let Some(consumer) = self.consumer.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let readers = self.readers();
+        for e in tpl.elements() {
+            let Some(reader) = readers.iter().min_by_key(|r| r.queues.lock().len()) else {
+                return;
+            };
+            if let Some(queue) = SplitQueue::split(&consumer, e.topic(), e.partition(), reader) {
+                reader
+                    .queues
+                    .lock()
+                    .push(((e.topic().to_string(), e.partition()), queue));
+                // Records queued before the split set off no callback.
+                reader.wake();
+            }
+        }
+    }
+
+    /// Takes the partitions of `tpl` off their pass threads, once each pass reading them has handed off.
+    fn remove(&self, tpl: &TopicPartitionList) {
+        let revoked: HashSet<Assigned> = tpl
+            .elements()
+            .iter()
+            .map(|e| (e.topic().to_string(), e.partition()))
+            .collect();
+        for reader in self.readers() {
+            reader.queues.lock().retain(|(key, _)| !revoked.contains(key));
+        }
+    }
+
+    /// Stops and joins every pass thread, and drops their queues, which hold the consumer.
+    fn close(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let readers = self.readers();
+        readers.iter().for_each(|r| r.wake());
+        for thread in self.threads.lock().drain(..) {
+            let _ = thread.join();
+        }
+        readers.iter().for_each(|r| r.queues.lock().clear());
+    }
+}
+
+impl PassReader {
+    fn wake(&self) {
+        *self.ready.lock() = true;
+        self.arrived.notify_one();
+    }
+
+    /// Waits for a queue to have records, up to `timeout`.
+    fn wait(&self, timeout: Duration) {
+        let mut ready = self.ready.lock();
+        if !*ready {
+            ready = self.arrived.wait_timeout(ready, timeout).0;
+        }
+        *ready = false;
+    }
+}
+
+/// A pass thread: drains the queues dealt to it as the client thread drains the consumer's, a pass at a time.
+fn read_partitions(consumer: &BaseConsumer<Routes>, routes: &Routes, reader: &PassReader) {
+    let passes = &routes.0.passes;
+    let mut polling = crate::logs::Relog::default();
+    // Where the next pass starts, so a partition that always fills a pass does not keep the others waiting.
+    let mut first = 0;
+    while !passes.stop.load(Ordering::Relaxed) {
+        reader.wait(CLIENT_POLL);
+        let queues = reader.queues.lock();
+        let mut drain = Drain::new(routes);
+        let mut full = false;
+        first += 1;
+        'pass: for at in 0..queues.len() {
+            let queue = &queues[(first + at) % queues.len()].1;
+            while let Some(polled) = queue.0.poll(Duration::ZERO) {
+                match polled {
+                    Ok(msg) => {
+                        if drain.push(&msg) || drain.rows >= crate::worker::TICK_MAX_ROWS {
+                            full = true;
+                            break 'pass;
+                        }
+                    }
+                    Err(KafkaError::MessageConsumption(_) | KafkaError::PartitionEOF(_)) => {}
+                    Err(e) => {
+                        if let Some(error) = polling.fail_due(e.to_string()) {
+                            tracing::warn!(name: "poll_failed", target: "sources", group = %routes.group(), error, "a source could not read from Kafka; trying again");
+                        }
+                    }
+                }
+            }
+        }
+        let woken = drain.hand_off(consumer);
+        drop(queues);
+        for slot in woken {
+            slot.arrived.notify_all();
+        }
+        // A callback fires only when a queue goes from empty to non-empty, so a pass that left records behind wakes its
+        // own thread.
+        if full {
+            reader.wake();
+        }
+    }
+}
+
+/// What the client took off librdkafka in one pass, built into a chunk per source on the thread that drained them,
+/// so a source's inbox takes a pass's records in one hand-off and its reader copies nothing.
 struct Drain<'r> {
     routes: &'r Routes,
     /// Each topic this pass met, interned, and which of `sources` reads it: `None` for a topic no source reads.
@@ -860,9 +1092,16 @@ struct RoutesInner {
     refetch: AtomicBool,
     /// How many revokes the client has been told of: a pass that saw one filters what it drained (`Drain::hand_off`).
     revokes: AtomicU64,
+    passes: Passes,
 }
 
 impl Routes {
+    /// How many pass threads read this client's partitions.
+    #[cfg(test)]
+    pub(super) fn pass_threads(&self) -> usize {
+        self.0.passes.readers().len()
+    }
+
     fn slots(&self) -> Vec<Arc<Slot>> {
         self.0.slots.lock().clone()
     }
@@ -1074,6 +1313,9 @@ impl Routes {
         if !self.0.refetch.swap(false, Ordering::Acquire) {
             return;
         }
+        // No pass is copying records of a partition while it is sought.
+        let readers = self.0.passes.readers();
+        let _held: Vec<_> = readers.iter().map(|r| r.queues.lock()).collect();
         for slot in self.slots() {
             let mut state = slot.lock();
             if std::mem::take(&mut state.refetch) {
@@ -1280,6 +1522,11 @@ impl ConsumerContext for Routes {
                 }
             }
         }
+        // Before the first fetch for them can reach the consumer's queue, so each partition's records come through one
+        // queue.
+        if assign {
+            self.0.passes.split(tpl);
+        }
         // Each source takes its partitions now that they are assigned: a pause before the assignment would be lost.
         let mut touched: Vec<Arc<Slot>> = Vec::new();
         for (slot, key, held, tag) in handed {
@@ -1332,6 +1579,7 @@ impl ConsumerContext for Routes {
         let Rebalance::Revoke(tpl) = rebalance else {
             return;
         };
+        self.0.passes.remove(tpl);
         self.0.revokes.fetch_add(1, Ordering::AcqRel);
         for e in tpl.elements() {
             let Some(slot) = self.slot_for(e.topic()) else {

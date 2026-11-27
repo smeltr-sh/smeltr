@@ -1893,6 +1893,41 @@ mod tests {
         assert_eq!(offsets_of(&read, "range-b", 0), vec![0, 1, 2, 3]);
     }
 
+    /// A client reads its partitions on one pass thread for each broker, up to the worker's threads, and reads each
+    /// partition's records once and in order.
+    #[test]
+    fn a_client_reads_on_a_pass_thread_for_each_broker() {
+        let topic = "range-passes";
+        let mock = rdkafka::mocking::MockCluster::new(3).unwrap();
+        mock.create_topic(topic, 6, 1).unwrap();
+        for partition in 0..6 {
+            produce_range(&mock, topic, partition);
+        }
+
+        let clients = Arc::new(Clients::for_threads(4));
+        let mut source = KafkaSource::open(
+            &range_config(&mock, &[topic], "range-passes"),
+            &Default::default(),
+            &clients,
+        )
+        .unwrap();
+        let mut read = Vec::new();
+        drain_until_exhausted(&mut [&mut source], &mut read);
+        for partition in 0..6 {
+            assert_eq!(
+                offsets_of(&read, topic, partition),
+                vec![0, 1, 2, 3],
+                "partition {partition}"
+            );
+        }
+        // Started once the client has the cluster's brokers, which may come after the range ends.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while source.client.routes.pass_threads() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(source.client.routes.pass_threads(), 3);
+    }
+
     /// Two members of one group share a range's partitions: each partition's range is read once, by one of them.
     #[test]
     fn two_members_of_one_group_share_a_range_without_duplicates() {
