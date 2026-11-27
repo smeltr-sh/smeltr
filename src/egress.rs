@@ -732,7 +732,7 @@ fn run(
                 bytes = unit.bytes,
                 outcome = match &delivered {
                     Err(_) => "failed",
-                    Ok((Dispatched::Complete { .. }, _)) => "complete",
+                    Ok((Dispatched::Complete, _)) => "complete",
                     Ok((Dispatched::InFlight, _)) => "in flight",
                     Ok((Dispatched::NoRoom { .. }, _)) => "no room",
                 },
@@ -740,7 +740,7 @@ fn run(
             );
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
             // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
-            let taken = matches!(delivered, Ok((Dispatched::Complete { .. } | Dispatched::InFlight, _)));
+            let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
             let paced = pacer
                 .as_mut()
                 .filter(|_| taken)
@@ -756,7 +756,7 @@ fn run(
                     continue;
                 }
                 // Nothing will report it later, so report it now.
-                Ok((Dispatched::Complete { throttled }, rejections)) => {
+                Ok((Dispatched::Complete, rejections)) => {
                     // The destination is up, if not yet for every unit.
                     if failing(&owner, &again) {
                         backoff = RETRY_MIN;
@@ -764,7 +764,7 @@ fn run(
                         clear_stall(metrics, id, name, &mut stalled, &mut backoff);
                     }
                     if let (Some(p), Some(c)) = (&mut pacer, paced) {
-                        p.completed(queue, Completion { throttled, ..c });
+                        p.completed(queue, c);
                     }
                     finish(queue, returns, metrics, (id, name), unit, rejections, &mut again);
                 }
@@ -1372,7 +1372,7 @@ impl Destination for EgressHandle {
     ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         // A batch with nothing for this destination stays off the queue.
         if rows.is_empty() {
-            return Ok((Dispatched::Complete { throttled: false }, Vec::new()));
+            return Ok((Dispatched::Complete, Vec::new()));
         }
         let rows = rows.into_owned();
         let unit = Unit {

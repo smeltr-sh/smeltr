@@ -47,7 +47,7 @@ fn stored(name: &str) -> SecretRef {
 fn deliver(d: &mut dyn Destination, batch: u64, rows: Vec<OwnedRecord>) {
     let (dispatched, refused) = d.deliver(batch, Cow::Owned(rows)).expect("delivered");
     assert!(refused.is_empty(), "{refused:?}");
-    if matches!(dispatched, Dispatched::Complete { .. }) {
+    if dispatched == Dispatched::Complete {
         return;
     }
     d.flush().expect("flushed");

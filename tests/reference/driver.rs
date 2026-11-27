@@ -261,7 +261,7 @@ impl Destination for Counter {
                 c.kept.push(row.value.clone());
             }
         }
-        Ok((Dispatched::Complete { throttled: false }, Vec::new()))
+        Ok((Dispatched::Complete, Vec::new()))
     }
 
     fn flush(&mut self) -> Result<(), IoError> {

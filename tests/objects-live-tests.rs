@@ -130,7 +130,7 @@ fn row(value: &str, prefix: Option<&str>) -> OwnedRecord {
 fn deliver(d: &mut dyn Destination, rows: Vec<OwnedRecord>) {
     let (dispatched, refused) = d.deliver(1, Cow::Owned(rows)).expect("delivered");
     assert!(refused.is_empty(), "{refused:?}");
-    if matches!(dispatched, Dispatched::Complete { .. }) {
+    if dispatched == Dispatched::Complete {
         return;
     }
     // A file is finished at its interval or here.

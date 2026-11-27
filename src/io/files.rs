@@ -528,7 +528,7 @@ impl Destination for FileDestination {
         }
         // Nothing for the table, so nothing to wait for: the refusals go back now.
         if groups.is_empty() {
-            return Ok((Dispatched::Complete { throttled: false }, refused));
+            return Ok((Dispatched::Complete, refused));
         }
         let jobs = self.jobs.as_ref().ok_or_else(|| self.stopped())?;
         let generation = self.generation;

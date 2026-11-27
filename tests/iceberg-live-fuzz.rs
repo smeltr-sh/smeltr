@@ -649,7 +649,7 @@ fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool
             assert!(refused.is_empty(), "{refused:?}");
             match dispatched {
                 Dispatched::InFlight => Some(true),
-                Dispatched::Complete { .. } => Some(false),
+                Dispatched::Complete => Some(false),
                 Dispatched::NoRoom { .. } => {
                     take(d, &mut waiting);
                     None

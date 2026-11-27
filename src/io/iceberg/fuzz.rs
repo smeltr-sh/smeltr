@@ -671,7 +671,7 @@ fn drive(
                     waiting.push(batch.id);
                     break;
                 }
-                Dispatched::Complete { .. } => {
+                Dispatched::Complete => {
                     refused.entry(batch.id).or_default().extend(now.iter().map(|r| r.doc));
                     break;
                 }

@@ -339,7 +339,7 @@ fn deliver(
 ) -> Result<Vec<Rejection>, IoError> {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
     let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
-    assert!(matches!(dispatched, Dispatched::Complete { .. }));
+    assert_eq!(dispatched, Dispatched::Complete);
     Ok(refused)
 }
 

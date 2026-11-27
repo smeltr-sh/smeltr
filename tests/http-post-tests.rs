@@ -104,7 +104,7 @@ fn source_bytes(value: &[u8]) -> OwnedRecord {
 /// Hands `rows` over as one batch, answered before `deliver` returns.
 fn deliver<T: Transport>(d: &mut HttpDestination<Post, T>, rows: Vec<OwnedRecord>) -> Result<Vec<Rejection>, IoError> {
     let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
-    assert!(matches!(dispatched, Dispatched::Complete { .. }));
+    assert_eq!(dispatched, Dispatched::Complete);
     Ok(refused)
 }
 

@@ -205,7 +205,7 @@ fn deliver<T: Transport>(
     rows: Vec<OwnedRecord>,
 ) -> Result<Vec<Rejection>, IoError> {
     let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
-    assert!(matches!(dispatched, Dispatched::Complete { .. }));
+    assert_eq!(dispatched, Dispatched::Complete);
     Ok(refused)
 }
 
@@ -223,9 +223,7 @@ fn a_refused_request_is_split_to_the_sample_at_fault() {
         let rows = (0..4)
             .map(|n| sample("x", &n.to_string(), 1.0, "2026-10-11T18:00:00.000000Z"))
             .collect();
-        let (dispatched, refused) = d.deliver(0, Cow::Owned(rows)).unwrap();
-        // A refusal is not a request to be sent less.
-        assert_eq!(dispatched, Dispatched::Complete { throttled: false }, "{status}");
+        let refused = deliver(&mut d, rows).unwrap();
         assert_eq!(refused.len(), 1, "{status}");
         assert_eq!(refused[0].doc, 2, "{status}");
         assert!(
@@ -237,7 +235,7 @@ fn a_refused_request_is_split_to_the_sample_at_fault() {
     }
 }
 
-/// The waits it asked for count as throttled time, and the batch is answered as throttled, for egress's pacing.
+/// The waits it asked for count as throttled time.
 #[test]
 fn a_store_asking_to_wait_gets_the_request_again() {
     let registry = Arc::new(smeltr::metrics::Metrics::new());
@@ -247,9 +245,7 @@ fn a_store_asking_to_wait_gets_the_request_again() {
         DestId::new(4),
     );
     let rows = vec![sample("x", "a", 1.0, "2026-10-11T18:00:00.000000Z")];
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows)).unwrap();
-    assert_eq!(dispatched, Dispatched::Complete { throttled: true });
-    assert!(refused.is_empty());
+    assert!(deliver(&mut d, rows).unwrap().is_empty());
     let sent = sent.lock();
     assert_eq!(sent.len(), 3);
     assert_eq!(sent[0], sent[2]);

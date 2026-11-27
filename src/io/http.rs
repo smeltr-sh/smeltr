@@ -383,9 +383,8 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         !group.pending.is_empty() && group.bytes + size > self.max_request_bytes
     }
 
-    /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`, and
-    /// whether the service asked to be sent less on the way.
-    fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<(Vec<Rejection>, bool), IoError> {
+    /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
+    fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
         group.bytes = 0;
         let mut round = Round::new(
             self.stall_after,
@@ -400,7 +399,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         for r in &mut refused {
             r.record = rows.get(r.doc).cloned();
         }
-        Ok((refused, round.throttled))
+        Ok(refused)
     }
 }
 
@@ -735,13 +734,10 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         full.extend(groups.into_iter().filter(|g| !g.pending.is_empty()));
         // A batch with nothing to send is done: no answer will come for it.
         let Some(pool) = self.pool.as_mut().filter(|_| !full.is_empty()) else {
-            let mut throttled = false;
             for group in &mut full {
-                let (r, t) = self.post(&rows, group)?;
-                refused.extend(r);
-                throttled |= t;
+                refused.extend(self.post(&rows, group)?);
             }
-            return Ok((Dispatched::Complete { throttled }, refused));
+            return Ok((Dispatched::Complete, refused));
         };
         pool.submit(batch, full)?;
         Ok((Dispatched::InFlight, refused))

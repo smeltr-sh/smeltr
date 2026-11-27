@@ -151,7 +151,7 @@ fn a_batch_with_no_rows_for_this_destination_stays_off_the_queue() {
     );
     let mut h = egress.handle();
 
-    assert!(matches!(hand(&mut h, 1, &[]), smeltr::io::Dispatched::Complete { .. }));
+    assert!(matches!(hand(&mut h, 1, &[]), smeltr::io::Dispatched::Complete));
     h.flush().unwrap();
     assert!(dest.sent().is_empty());
     assert_eq!(dest.flushes(), 0, "the destination was never asked");
@@ -427,7 +427,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
             _b: u64,
             _rows: Cow<'_, [OwnedRecord]>,
         ) -> Result<(Dispatched, Vec<smeltr::io::Rejection>), smeltr::io::IoError> {
-            Ok((Dispatched::Complete { throttled: false }, Vec::new()))
+            Ok((Dispatched::Complete, Vec::new()))
         }
         fn flush(&mut self) -> Result<(), smeltr::io::IoError> {
             Ok(())
