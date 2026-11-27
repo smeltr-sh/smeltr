@@ -399,8 +399,8 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
             }
         }
         // The first poll waits for a record; the rest take only what librdkafka already holds, up to a batch's rows
-        // and until a source's inbox would be full, so a reader is handed a fetch's records together rather than its first few, and records arriving as fast as
-        // they are drained still reach it.
+        // and until a source's inbox would be full, so a reader is handed a fetch's records together rather than its
+        // first few, and records arriving as fast as they are drained still reach it.
         let mut drain = Drain::new(routes);
         let mut wait = CLIENT_POLL;
         let fatal = loop {
