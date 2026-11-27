@@ -48,9 +48,9 @@ at save whether or not a step names it yet.
 
 ## Schemas
 
-A schema is what a pipeline's rows should hold: a table of fields, each a
+A schema is what a pipeline's records should hold: a table of fields, each a
 path from the record's root, the type it must hold, its requirement, and what
-it means. A field is required, recommended or optional: a row must hold a
+it means. A field is required, recommended or optional: a record must hold a
 required field, should hold a recommended one, and may hold an optional one. A path spells its keys with dots, and a type is spelled as
 a declaration spells one, so a schema, a parser's field table and a
 declaration read the same. A bundle declares its schemas as such tables. A
@@ -77,13 +77,13 @@ that names it in `metadata.profiles`, so a profile's attributes are read only
 where it is asked for, and a schema read with any profile requires `metadata`
 and `metadata.profiles`, whatever depth and requirements it is read at. The
 description of a schema read from an OCSF class names the release, class, depth,
-requirements and profiles it was read with. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
+requirements and profiles it was read with. A recommended field is exported to JSON Schema as a field a record may lack. A type is read as smeltr spells
 it, or by the name a database, a spreadsheet or a standard gives it, from one
 map every reader shares (`schema::named`); a CSV's type the map does not know
 is read as the type it is told. Each reader gives the same table, checked as a
 bundle's schema is, and a field may carry an example of a value it holds, which ECS,
 OCSF and the CSV fill. A schema is exported as
-JSON Schema, or as the mapping an Elasticsearch index holding its rows should
+JSON Schema, or as the mapping an Elasticsearch index holding its records should
 have. A field may say how it maps in Elasticsearch, a piece of mapping laid
 over the one its type has; its `type` is checked at save to be one a value of
 the field's type can be indexed as, and its other parameters are
@@ -99,26 +99,26 @@ reader takes comes in that way.
 flowchart LR
   S[the bundle's schemas] --> P[pipeline produces]
   S --> D[destination accepts]
-  P --> F{rows fit?}
+  P --> F{records fit?}
   D --> F
   F -- no --> W[finding: editor, review, deployed commit]
 ```
 
-A finding never refuses a save or a deploy: it says where the rows do not fit.
-A recommended field the rows lack is no finding. The editor and review tell it
+A finding never refuses a save or a deploy: it says where the records do not fit.
+A recommended field the records lack is no finding. The editor and review tell it
 after the findings, and it is not counted with them.
 Review shows the findings a change adds, not those main already had where the
 branch left it, field by field: a finding that names several fields names only
 those the change adds.
 The record's type is held to the table path by path: a field whose type only
-the row knows keeps any, an object keeps any object type, and a key the table
+the record knows keeps any, an object keeps any object type, and a key the table
 names only by the fields under it is an object all the same. A required field
 is lacking wherever no object above it that the table names is absent, so ECS's
-`event.kind` is asked of a row with no `event`, while an OCSF attribute is asked
+`event.kind` is asked of a record with no `event`, while an OCSF attribute is asked
 for only where the object the table names for it is there. A recommended field
 is lacking only where the object it sits in is there and does not declare it,
 so a standard's recommended fields inside an object are asked for only where a
-row has that object. A field several schemas name is a misfit only where every
+record has that object. A field several schemas name is a misfit only where every
 one of them says so, a field one requires is missing only where every schema
 the pipeline produces requires it, and a field is recommended where every one
 of them requires or recommends it. A route delivering to a destination whose

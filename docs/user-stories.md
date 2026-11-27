@@ -26,7 +26,7 @@ as healthy, warning, or failed, so an engineer can tell in seconds whether
 anything needs them. Warnings and errors are the content; partitions and
 thread detail are drill-down.
 
-**E2 — Flow over time.** Rows in per source and out per destination over
+**E2 — Flow over time.** Records in per source and out per destination over
 a window the engineer chooses: sixty minutes by default, out to thirty
 days. A stall that started five minutes ago and a slow bleed over three
 weeks are one question at two scales.
@@ -38,7 +38,7 @@ many to hand-tune, and the right number changes by hour and by day.
 **E4 — A stalled source, with a cause.** Which source, since when, and
 why, in words that name the fix.
 
-**E5 — A struggling destination.** Rejecting rows, failing sends, or
+**E5 — A struggling destination.** Rejecting records, failing sends, or
 backing up is its own condition, not something inferred from a missing
 line on a chart.
 
@@ -47,7 +47,7 @@ warning when it grows monotonically. Lag is a property of the source
 kind: a source declares whether it can report it, and only those that can
 show it.
 
-**E7 — Where the rows went.** When out is less than in, attribute the
+**E7 — Where the records went.** When out is less than in, attribute the
 difference: dropped by a step, filtered by a route, unrouted, errored, or
 never arrived.
 
@@ -83,12 +83,12 @@ fixed or added, without losing where each was read from.
 **A2 — Schema from a sample.** The parser's declared fields and their
 types are proposed from a sample, for the analyst to accept and edit.
 
-**A3 — Where the sample is thin.** Fields absent from some rows, fields
-whose rows disagree about their type, and shapes the sample
+**A3 — Where the sample is thin.** Fields absent from some records, fields
+whose records disagree about their type, and shapes the sample
 suggests but cannot pin down.
 
-**A4 — The whole trip.** For a sample: the output rows, which route
-matched, and which destinations each row would reach.
+**A4 — The whole trip.** For a sample: the output records, which route
+matched, and which destinations each record would reach.
 
 **A5 — Blast radius.** Before changing anything: what feeds this object,
 what it feeds, and whose work shares it.
@@ -106,9 +106,9 @@ work. Only a worker can answer: it holds the connection, and the leader
 never opens one. A destination is checked for reach and authentication
 and nothing more — verifying it by writing means writing to production.
 
-**A8 — Bad rows go somewhere.** A row a parser or a step cannot handle is
+**A8 — Bad records go somewhere.** A record a parser or a step cannot handle is
 not lost. It is delivered marked with what went wrong, or sent where the
-analyst says such rows go, and the analyst sees which rows failed and why
+analyst says such records go, and the analyst sees which records failed and why
 while authoring, before anything is deployed.
 
 **A9 — Reference data.** Records are enriched from tables the analyst
@@ -207,11 +207,11 @@ with its state, so nothing is lost or forgotten. A branch is deleted by
 whoever created it or by anyone holding deploy on the objects it touches,
 with a warning when it carries someone else's commits.
 
-**W12 — From a fresh install to rows flowing.** An administrator who has
+**W12 — From a fresh install to records flowing.** An administrator who has
 just installed a leader does the whole job from the GUI and nowhere else:
 signs in and chooses their own password, adds a source, a destination, a
 pipeline and a route between them, saving each, opens the change, comments
-on it, approves and deploys it, and sees rows arrive at the destination.
+on it, approves and deploys it, and sees records arrive at the destination.
 
 **W13 — See what a test checks.** For every test a change adds, removes or
 touches, the reviewer sees what it checks. When a change locks a test
