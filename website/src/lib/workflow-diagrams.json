@@ -469,6 +469,121 @@
       }
     ]
   },
+  "workerFleet": {
+    "title": "One leader and two workers",
+    "description": "The leader hosts the browser interface and stores configuration in Git. Two workers fetch configuration from the leader and report their status to it. Each worker receives records from sources, runs its pipelines, and sends the results to destinations.",
+    "caption": "Solid arrows show records flowing from sources through two workers to destinations. Dashed arrows show workers fetching configuration from the leader and reporting status.",
+    "layouts": [
+      {
+        "width": 760,
+        "height": 485,
+        "nodes": [
+          {
+            "x": 270,
+            "y": 10,
+            "w": 220,
+            "title": "Leader",
+            "detail": ["Browser interface and Git"],
+            "role": "leader"
+          },
+          {
+            "x": 270,
+            "y": 135,
+            "w": 220,
+            "title": "Sources",
+            "detail": ["Input streams"],
+            "role": "source"
+          },
+          {
+            "x": 135,
+            "y": 260,
+            "w": 220,
+            "title": "Worker 1",
+            "detail": ["Runs pipelines"],
+            "role": "worker"
+          },
+          {
+            "x": 405,
+            "y": 260,
+            "w": 220,
+            "title": "Worker 2",
+            "detail": ["Runs pipelines"],
+            "role": "worker"
+          },
+          {
+            "x": 270,
+            "y": 390,
+            "w": 220,
+            "title": "Destinations",
+            "detail": ["Processed streams"],
+            "role": "destination"
+          }
+        ],
+        "paths": [
+          "M365 215V233H245V250",
+          "M395 215V233H515V250",
+          "M245 340V362H325V380",
+          "M515 340V362H435V380"
+        ],
+        "controlPaths": ["M135 300H95V110H325V100", "M625 300H665V110H435V100"],
+        "labels": []
+      },
+      {
+        "width": 360,
+        "height": 485,
+        "nodes": [
+          {
+            "x": 78,
+            "y": 10,
+            "w": 204,
+            "title": "Leader",
+            "detail": ["Browser interface and Git"],
+            "role": "leader"
+          },
+          {
+            "x": 78,
+            "y": 135,
+            "w": 204,
+            "title": "Sources",
+            "detail": ["Input streams"],
+            "role": "source"
+          },
+          {
+            "x": 22,
+            "y": 260,
+            "w": 150,
+            "title": "Worker 1",
+            "detail": ["Runs pipelines"],
+            "role": "worker"
+          },
+          {
+            "x": 188,
+            "y": 260,
+            "w": 150,
+            "title": "Worker 2",
+            "detail": ["Runs pipelines"],
+            "role": "worker"
+          },
+          {
+            "x": 78,
+            "y": 390,
+            "w": 204,
+            "title": "Destinations",
+            "detail": ["Processed streams"],
+            "role": "destination"
+          }
+        ],
+        "paths": [
+          "M165 215V233H97V250",
+          "M195 215V233H263V250",
+          "M97 340V362H130V380",
+          "M263 340V362H230V380"
+        ],
+        "controlPaths": ["M22 300H10V110H130V100", "M338 300H350V110H230V100"],
+        "labels": []
+      }
+    ]
+  },
   "single": {
     "title": "Standalone: leader and worker on one host",
     "description": "An administrator connects to the leader. One Smeltr service runs the leader and one worker together, shown as joined cards. Sources send records through the worker to destinations.",

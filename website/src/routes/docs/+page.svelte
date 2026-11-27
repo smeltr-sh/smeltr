@@ -1,5 +1,7 @@
 <script lang="ts">
   import DocsLayout from '#lib/components/DocsLayout.svelte';
+  import EditorScreenshot from '#lib/components/EditorScreenshot.svelte';
+  import WorkflowDiagram from '#lib/components/WorkflowDiagram.svelte';
 
   const sections = [
     { id: 'what-is-smeltr', title: 'What is Smeltr?' },
@@ -26,10 +28,17 @@
   <section id="what-is-smeltr">
     <h2>What is Smeltr?</h2>
     <p class="lede">
-      Smeltr is self-hosted data pipeline software for logs, metrics, and events. It combines a
-      browser-based pipeline editor with a processing engine. It sits between the systems that
-      produce the data and the systems that store or analyze it.
+      Smeltr is data engineering pipeline telemetry software written in Rust for Linux and Windows.
     </p>
+
+    <h3>Leader pipeline editor</h3>
+    <EditorScreenshot />
+
+    <h3>Leader and workers</h3>
+    <WorkflowDiagram kind="workerFleet" />
+
+    <h3>Inside a worker</h3>
+    <WorkflowDiagram kind="dataPath" />
 
     <h3>What it does</h3>
     <p>
@@ -55,7 +64,6 @@
       Workers load the deployed configuration from Git and report which commit they're running. You
       can verify that a rollout reached the intended workers or roll back to an earlier commit.
     </p>
-    <p><a href="/docs/getting-started#overview">See the leader and worker diagram</a>.</p>
   </section>
 
   <section id="start" aria-labelledby="start-heading">
