@@ -121,8 +121,8 @@ from `tests/live`, so it skips without one, and it gets its own line in `just ch
 The GUI has three fuzzers, seeded the same way (`tests/gui/fuzz.ts` ports `src/fuzz.rs`), and each checks after every
 step that what is on screen works (`tests/gui/onscreen.ts`). `tests/gui/specs/gui-fuzz.spec.ts` walks the GUI as
 each kind of person, by what is on screen. `tests/gui/specs/journey-fuzz.spec.ts` takes an administrator from a
-fresh install to rows flowing and on, by moves (`tests/gui/moves/journey.ts`) each checked against the leader's API,
-the workers and the rows that arrive. A new thing an administrator does is a new move.
+fresh install to records flowing and on, by moves (`tests/gui/moves/journey.ts`) each checked against the leader's API,
+the workers and the records that arrive. A new thing an administrator does is a new move.
 `tests/gui/specs/pipeline-fuzz.spec.ts` edits one pipeline's steps for many moves in a row
 (`tests/gui/moves/pipeline.ts`), and after each the steps on screen must be its model's, and after a save the
 leader's too. A new thing an author does to steps is a new move. `just check-gui` runs a seed for each kind of

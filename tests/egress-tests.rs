@@ -29,7 +29,7 @@ const SETTLED: Duration = Duration::from_millis(50);
 /// Hand `rows` to `h` as `batch`, in one call, as a transform thread does.
 fn hand(h: &mut dyn Destination, batch: u64, rows: &[OutgoingRecord<'_>]) -> Dispatched {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    let (dispatched, refused) = h.deliver(batch, Cow::Owned(rows)).unwrap();
+    let (dispatched, refused) = h.send(batch, Cow::Owned(rows)).unwrap();
     assert!(refused.is_empty(), "a handle refuses nothing itself");
     dispatched
 }
@@ -422,7 +422,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     struct Reporting(Arc<smeltr::sync::Mutex<Option<usize>>>);
 
     impl Destination for Reporting {
-        fn deliver(
+        fn send(
             &mut self,
             _b: u64,
             _rows: Cow<'_, [OwnedRecord]>,

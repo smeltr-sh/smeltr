@@ -31,7 +31,7 @@ fn deliver(
     rows: &[OutgoingRecord<'_>],
 ) -> Result<Vec<Rejection>, IoError> {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    Ok(d.deliver(0, Cow::Owned(rows))?.1)
+    Ok(d.send(0, Cow::Owned(rows))?.1)
 }
 use smeltr::plan::topology::BulkAction;
 

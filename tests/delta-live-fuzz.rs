@@ -766,7 +766,7 @@ fn drive(d: &mut dyn Destination, batches: Vec<(u64, Vec<OwnedRecord>, Then)>, i
         }
     };
     for (batch, rows, then) in batches {
-        let (dispatched, refused) = d.deliver(batch, Cow::Owned(rows)).expect("delivered");
+        let (dispatched, refused) = d.send(batch, Cow::Owned(rows)).expect("delivered");
         assert!(refused.is_empty(), "{refused:?}");
         match dispatched {
             Dispatched::InFlight => {

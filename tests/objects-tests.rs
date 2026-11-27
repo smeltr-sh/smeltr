@@ -138,7 +138,7 @@ impl Fixture {
 
     /// Hands `rows` over as batch `batch`, which stays in flight until its file is finished.
     fn hand_over(&mut self, batch: BatchId, rows: Vec<OwnedRecord>) -> Vec<smeltr::io::Rejection> {
-        let (dispatched, refused) = self.destination.deliver(batch, Cow::Owned(rows)).unwrap();
+        let (dispatched, refused) = self.destination.send(batch, Cow::Owned(rows)).unwrap();
         assert_eq!(dispatched, Dispatched::InFlight);
         refused
     }

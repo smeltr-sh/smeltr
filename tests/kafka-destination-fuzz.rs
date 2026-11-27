@@ -743,7 +743,7 @@ fn deliver(d: &mut dyn Destination, batches: &[Vec<Sent>]) -> Result<(Vec<Vec<Re
     let mut pending = Vec::new();
     for (batch, rows) in batches.iter().enumerate() {
         let owned: Vec<OwnedRecord> = rows.iter().map(|s| s.row.clone()).collect();
-        let (dispatched, now) = d.deliver(batch as u64, Cow::Owned(owned))?;
+        let (dispatched, now) = d.send(batch as u64, Cow::Owned(owned))?;
         refused[batch].extend(now);
         if dispatched == Dispatched::InFlight {
             pending.push(batch as u64);
@@ -786,7 +786,7 @@ fn write(
             let again: Vec<usize> = u.rows.iter().map(|&i| rows[i]).collect();
             let owned: Vec<OwnedRecord> = again.iter().map(|&i| batches[batch][i].row.clone()).collect();
             sent_again += again.len();
-            let (dispatched, now) = (d.deliver(next, Cow::Owned(owned)))
+            let (dispatched, now) = (d.send(next, Cow::Owned(owned)))
                 .map_err(|e| format!("rows {again:?} of batch {batch} not sent again: {e:?}"))?;
             refused[batch].extend(now.into_iter().map(|r| Rejection { doc: again[r.doc], ..r }));
             if dispatched == Dispatched::InFlight {

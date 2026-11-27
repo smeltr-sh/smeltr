@@ -1,4 +1,4 @@
-// W12: from a fresh install to rows flowing, all of it through the GUI. The only things done outside the page are
+// W12: from a fresh install to records flowing, all of it through the GUI. The only things done outside the page are
 // standing up a fake Elasticsearch for the rows to land in and starting the worker that sends them.
 import { test as base, expect, goto, signInThroughGui, signedIn } from '../fleet';
 import { FakeElasticsearch } from '../sinks';
