@@ -627,11 +627,7 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
 impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
     /// Rows are grouped by route and cut into requests within `max_request_bytes`. Every request goes to the pool, each
     /// to a sender of its own, and the batch completes when the last is answered; without a pool, each is posted here.
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut refused = Vec::new();
         let order = self.protocol.order();
         let mut groups: Vec<Group<P::Item>> = Vec::new();

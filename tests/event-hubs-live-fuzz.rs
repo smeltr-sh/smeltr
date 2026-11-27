@@ -213,7 +213,7 @@ fn write(
             })
             .collect();
         let (dispatched, rejections) = dest
-            .deliver(batch, Cow::Owned(owned))
+            .send(batch, Cow::Owned(owned))
             .map_err(|e| format!("delivering batch {batch}: {e}"))?;
         let rejected: BTreeSet<usize> = rejections.iter().map(|r| r.doc).collect();
         for (i, (v, placement, unfit)) in rows.iter().enumerate() {

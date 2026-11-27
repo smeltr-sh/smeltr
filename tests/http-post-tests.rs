@@ -103,7 +103,7 @@ fn source_bytes(value: &[u8]) -> OwnedRecord {
 
 /// Hands `rows` over as one batch, answered before `deliver` returns.
 fn deliver<T: Transport>(d: &mut HttpDestination<Post, T>, rows: Vec<OwnedRecord>) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
+    let (dispatched, refused) = d.send(0, Cow::Owned(rows))?;
     assert_eq!(dispatched, Dispatched::Complete);
     Ok(refused)
 }
@@ -168,7 +168,7 @@ fn single_rows_go_to_the_pool_as_one_batch() {
     let (sender, sent) = scripted(&[200, 200, 200]);
     let mut d = HttpDestination::new(scripted(&[]).0, Post::new(&c)).with_senders(vec![sender], 1);
     let rows = vec![row(b"{\"n\":0}"), row(b"{\"n\":1}"), row(b"{\"n\":2}")];
-    assert_eq!(d.deliver(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
+    assert_eq!(d.send(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
     d.flush().unwrap();
     let done = d.poll_completions().unwrap();
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![7]);
@@ -288,7 +288,7 @@ fn a_failed_request_names_the_rows_it_did_not_land() {
             row(b"{\"n\":2}"),
             row(b"{\"n\":3}"),
         ];
-        assert_eq!(d.deliver(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
+        assert_eq!(d.send(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
         d.flush().unwrap();
         let done = d
             .poll_completions()

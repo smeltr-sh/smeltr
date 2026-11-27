@@ -1249,11 +1249,7 @@ pub trait Destination: Send {
     /// the rest come with the completion. `Err` is a delivery failure of this batch alone: nothing of it may be
     /// committed, and the caller hands it over again. What is already in flight is still answered for by
     /// `poll_completions`, by a completion or by its `Err`.
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError>;
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError>;
 
     /// The barrier: block until everything handed over so far is acknowledged. `Err` means nothing in flight may be
     /// committed.
@@ -1581,7 +1577,7 @@ pub mod fake {
     }
 
     impl Destination for AsyncDestination {
-        fn deliver(
+        fn send(
             &mut self,
             batch: BatchId,
             rows: Cow<'_, [OwnedRecord]>,
@@ -1694,7 +1690,7 @@ pub mod fake {
     }
 
     impl Destination for FakeDestination {
-        fn deliver(
+        fn send(
             &mut self,
             _batch: BatchId,
             rows: Cow<'_, [OwnedRecord]>,

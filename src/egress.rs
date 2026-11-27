@@ -40,13 +40,13 @@ type ReaderId = u64;
 /// A batch sent and not yet acknowledged: refusals seen so far, and the rows, kept for a re-send.
 struct Owed {
     rejections: Vec<Rejection>,
-    unit: Unit,
+    delivery_unit: DeliveryUnit,
     /// What the pacing model is told when it is acknowledged, once the queue is paced.
     paced: Option<Completion>,
 }
 
 /// One reader's batch, as far as one destination is concerned. Owned rows: they cross a thread boundary.
-struct Unit {
+struct DeliveryUnit {
     reader: ReaderId,
     batch: BatchId,
     rows: Vec<OwnedRecord>,
@@ -88,7 +88,7 @@ enum Report {
 
 #[derive(Default)]
 struct QueueState {
-    units: VecDeque<Unit>,
+    delivery_units: VecDeque<DeliveryUnit>,
     /// Queued plus sent-but-unacknowledged. Taking a unit off the queue does not free it; acknowledging the batch does.
     bytes: usize,
     /// What of `bytes` is above the reserve, and so borrowed from the [`QueuePool`].
@@ -275,7 +275,7 @@ impl Lend {
 
 /// Why an offer was not taken. A refused unit comes back with its rows, which are the caller's to drop.
 enum Refused {
-    NoRoom(Unit),
+    NoRoom(DeliveryUnit),
     Closed,
 }
 
@@ -371,28 +371,28 @@ impl Queue {
 
     /// Queue `unit` if it fits, now. Never waits: the caller holds a transform thread, and a queue that is full is
     /// full for as long as the destination is slow, which is not this thread's to wait out.
-    fn offer(&self, unit: Unit) -> Result<(), Refused> {
+    fn offer(&self, delivery_unit: DeliveryUnit) -> Result<(), Refused> {
         let mut st = self.state.lock();
         if st.closed {
             return Err(Refused::Closed);
         }
-        if st.bytes > 0 && st.bytes + unit.bytes > self.budget() {
+        if st.bytes > 0 && st.bytes + delivery_unit.bytes > self.budget() {
             self.pressed.store(true, Ordering::Relaxed);
-            return Err(Refused::NoRoom(unit));
+            return Err(Refused::NoRoom(delivery_unit));
         }
         if let Some(lend) = self.lend.get() {
-            let borrowed = lend.borrowed(st.bytes + unit.bytes);
+            let borrowed = lend.borrowed(st.bytes + delivery_unit.bytes);
             if !lend
                 .pool
                 .take(lend.id, st.borrowed + st.senders, borrowed - st.borrowed, st.bytes == 0)
             {
                 self.pressed.store(true, Ordering::Relaxed);
-                return Err(Refused::NoRoom(unit));
+                return Err(Refused::NoRoom(delivery_unit));
             }
             st.borrowed = borrowed;
         }
-        st.bytes += unit.bytes;
-        st.units.push_back(unit);
+        st.bytes += delivery_unit.bytes;
+        st.delivery_units.push_back(delivery_unit);
         drop(st);
         self.work.notify_one();
         Ok(())
@@ -401,14 +401,14 @@ impl Queue {
     /// Next unit, waiting at most `timeout` for one.
     fn pop(&self, timeout: Duration) -> Popped {
         let mut st = self.state.lock();
-        if let Some(u) = st.units.pop_front() {
+        if let Some(u) = st.delivery_units.pop_front() {
             return Popped::Work(u, self.pressing());
         }
         if st.closed {
             return Popped::Closed;
         }
         let (mut st, _) = self.work.wait_timeout(st, timeout);
-        if let Some(u) = st.units.pop_front() {
+        if let Some(u) = st.delivery_units.pop_front() {
             return Popped::Work(u, self.pressing());
         }
         if st.closed {
@@ -464,7 +464,7 @@ impl Queue {
 
 enum Popped {
     /// A unit, and whether the source was pressing on the queue: refused room since the last.
-    Work(Unit, bool),
+    Work(DeliveryUnit, bool),
     Idle,
     Closed,
 }
@@ -650,7 +650,7 @@ fn run(
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
     let mut next_local: BatchId = 0;
     // Units to send again, each with when: ones that failed to land, and refused rows kept.
-    let mut again: Vec<(Instant, Unit)> = Vec::new();
+    let mut again: Vec<(Instant, DeliveryUnit)> = Vec::new();
     let mut backoff = RETRY_MIN;
     // When the stall was last logged; `None` while the destination is healthy.
     let mut stalled: Option<Instant> = None;
@@ -709,20 +709,20 @@ fn run(
             },
         };
 
-        if let Some(unit) = next {
+        if let Some(delivery_unit) = next {
             let local = next_local;
             next_local += 1;
             // A re-send is never the source's doing: it counts as the link's.
             let app_limited = !pressing;
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
-            let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
+            let delivered = destination.send(local, Cow::Borrowed(&delivery_unit.rows));
             tracing::trace!(
                 name: "delivered", target: "destinations",
                 subject = name,
-                batch = unit.batch,
+                batch = delivery_unit.batch,
                 sent_as = local,
-                rows = unit.rows.len(),
-                bytes = unit.bytes,
+                rows = delivery_unit.rows.len(),
+                bytes = delivery_unit.bytes,
                 outcome = match &delivered {
                     Err(_) => "failed",
                     Ok((Dispatched::Complete, _)) => "complete",
@@ -737,13 +737,13 @@ fn run(
             let paced = pacer
                 .as_mut()
                 .filter(|_| taken)
-                .map(|p| p.dispatched(unit.bytes, app_limited));
+                .map(|p| p.dispatched(delivery_unit.bytes, app_limited));
             match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
                     // This unit alone: the ones in flight are answered for by `poll_completions`.
-                    again.push(failed(unit));
+                    again.push(failed(delivery_unit));
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
@@ -759,7 +759,15 @@ fn run(
                     if let (Some(p), Some(c)) = (&mut pacer, paced) {
                         p.completed(queue, c);
                     }
-                    finish(queue, returns, metrics, (id, name), unit, rejections, &mut again);
+                    finish(
+                        queue,
+                        returns,
+                        metrics,
+                        (id, name),
+                        delivery_unit,
+                        rejections,
+                        &mut again,
+                    );
                 }
                 // Refusals seen at hand-over wait for the acknowledgment, so one completion carries every refusal
                 // against a batch. Handed to the transport is not delivered: `Dispatched::InFlight` means only that, so
@@ -771,7 +779,7 @@ fn run(
                         local,
                         Owed {
                             rejections,
-                            unit,
+                            delivery_unit,
                             paced,
                         },
                     );
@@ -782,7 +790,7 @@ fn run(
                     let e = IoError::transient("destination client would not take the batch");
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    again.push(failed(unit));
+                    again.push(failed(delivery_unit));
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
@@ -803,7 +811,7 @@ fn run(
                     tracing::trace!(
                         name: "completed", target: "destinations",
                         subject = name,
-                        batch = owed.unit.batch,
+                        batch = owed.delivery_unit.batch,
                         sent_as = c.batch,
                         refused = c.rejections.len(),
                         undelivered = c.undelivered.as_ref().map_or(0, |u| u.rows.len()),
@@ -813,7 +821,14 @@ fn run(
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
                         note_stall(metrics, id, name, &undelivered.error, &mut stalled);
                         failures = true;
-                        let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
+                        let rest = remainder(
+                            queue,
+                            metrics,
+                            id,
+                            owed.delivery_unit,
+                            owed.rejections,
+                            &undelivered.rows,
+                        );
                         if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
                             p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes));
                         }
@@ -835,7 +850,7 @@ fn run(
                         returns,
                         metrics,
                         (id, name),
-                        owed.unit,
+                        owed.delivery_unit,
                         owed.rejections,
                         &mut again,
                     );
@@ -886,11 +901,11 @@ fn run(
                 holding = Some(captures.holding(HeldAt::Destination(name.to_string())));
             }
             if keeps {
-                let units = again
+                let delivery_units = again
                     .iter_mut()
                     .map(|(_, u)| u)
-                    .chain(owner.values_mut().map(|o| &mut o.unit));
-                show_held(captures, name, units);
+                    .chain(owner.values_mut().map(|o| &mut o.delivery_unit));
+                show_held(captures, name, delivery_units);
             } else {
                 holding = None;
             }
@@ -909,18 +924,18 @@ fn finish(
     returns: &Returns,
     metrics: &MetricsHandle,
     (id, name): (DestId, &str),
-    mut unit: Unit,
+    mut delivery_unit: DeliveryUnit,
     mut rejections: Vec<Rejection>,
-    again: &mut Vec<(Instant, Unit)>,
+    again: &mut Vec<(Instant, DeliveryUnit)>,
 ) {
     // Refused, not delivered: a rejection is the destination answering, not the row arriving.
-    let mut refused = vec![false; unit.rows.len()];
+    let mut refused = vec![false; delivery_unit.rows.len()];
     for r in &rejections {
         if let Some(at) = refused.get_mut(r.doc) {
             *at = true;
         }
     }
-    let bytes: usize = unit
+    let bytes: usize = delivery_unit
         .rows
         .iter()
         .zip(&refused)
@@ -930,16 +945,16 @@ fn finish(
     note_delivered(
         metrics,
         id,
-        unit.rows.len().saturating_sub(rejections.len()) as u64,
+        delivery_unit.rows.len().saturating_sub(rejections.len()) as u64,
         bytes as u64,
     );
     for r in &mut rejections {
         if r.record.is_none() {
-            r.record = unit.rows.get_mut(r.doc).map(std::mem::take);
+            r.record = delivery_unit.rows.get_mut(r.doc).map(std::mem::take);
         }
     }
-    let mut carried = std::mem::take(&mut unit.carried);
-    let (backoff, shown) = match unit.held.take() {
+    let mut carried = std::mem::take(&mut delivery_unit.carried);
+    let (backoff, shown) = match delivery_unit.held.take() {
         Some(h) => ((h.backoff * 2).min(HELD_RETRY_MAX), h.shown),
         None => (HELD_RETRY_MIN, HashSet::new()),
     };
@@ -947,8 +962,8 @@ fn finish(
     tracing::trace!(
         name: "finished", target: "destinations",
         subject = name,
-        batch = unit.batch,
-        rows = unit.rows.len(),
+        batch = delivery_unit.batch,
+        rows = delivery_unit.rows.len(),
         refused = rejections.len(),
         "a destination is done with a batch"
     );
@@ -958,15 +973,15 @@ fn finish(
     if kept.is_empty() {
         report(
             returns,
-            unit.reader,
+            delivery_unit.reader,
             Report::Done(BatchCompletion {
-                batch: unit.batch,
+                batch: delivery_unit.batch,
                 rejections: carried,
                 throttled: false,
                 undelivered: None,
             }),
         );
-        queue.release(unit.bytes);
+        queue.release(delivery_unit.bytes);
         return;
     }
     let mut rows = Vec::with_capacity(kept.len());
@@ -979,20 +994,20 @@ fn finish(
     }
     let bytes = crate::io::held_bytes(&rows);
     // The rest of the batch landed; what is kept still counts against the queue until it does too.
-    queue.release(unit.bytes.saturating_sub(bytes));
+    queue.release(delivery_unit.bytes.saturating_sub(bytes));
     report(
         returns,
-        unit.reader,
+        delivery_unit.reader,
         Report::Held(HeldRefusal {
-            batch: unit.batch,
+            batch: delivery_unit.batch,
             rejections: refusals,
         }),
     );
     again.push((
         Instant::now() + backoff,
-        Unit {
-            reader: unit.reader,
-            batch: unit.batch,
+        DeliveryUnit {
+            reader: delivery_unit.reader,
+            batch: delivery_unit.batch,
             rows,
             bytes,
             held: Some(Box::new(Held { backoff, why, shown })),
@@ -1004,10 +1019,10 @@ fn finish(
 
 /// Show each capture at this destination the rows it refused and keeps, once per capture: waiting to be sent again, or
 /// sent.
-fn show_held<'a>(captures: &Captures, name: &str, units: impl Iterator<Item = &'a mut Unit>) {
-    for unit in units {
-        if let Some(held) = &mut unit.held {
-            captures.offer_held_at(name, &mut held.shown, &unit.rows, &held.why);
+fn show_held<'a>(captures: &Captures, name: &str, delivery_units: impl Iterator<Item = &'a mut DeliveryUnit>) {
+    for delivery_unit in delivery_units {
+        if let Some(held) = &mut delivery_unit.held {
+            captures.offer_held_at(name, &mut held.shown, &delivery_unit.rows, &held.why);
         }
     }
 }
@@ -1019,20 +1034,20 @@ fn remainder(
     queue: &Queue,
     metrics: &MetricsHandle,
     id: DestId,
-    mut unit: Unit,
+    mut delivery_unit: DeliveryUnit,
     rejections: Vec<Rejection>,
     undelivered: &[usize],
-) -> Unit {
+) -> DeliveryUnit {
     // In the batch's order: each of its requests named its own.
     let mut kept: Vec<usize> = undelivered.to_vec();
     kept.sort_unstable();
-    let mut landed = vec![true; unit.rows.len()];
+    let mut landed = vec![true; delivery_unit.rows.len()];
     for &i in kept.iter().chain(rejections.iter().map(|r| &r.doc)) {
         if let Some(at) = landed.get_mut(i) {
             *at = false;
         }
     }
-    let (count, bytes) = unit
+    let (count, bytes) = delivery_unit
         .rows
         .iter()
         .zip(&landed)
@@ -1041,50 +1056,58 @@ fn remainder(
     note_delivered(metrics, id, count, bytes);
     for mut r in rejections {
         if r.record.is_none() {
-            r.record = unit.rows.get_mut(r.doc).map(std::mem::take);
+            r.record = delivery_unit.rows.get_mut(r.doc).map(std::mem::take);
         }
-        unit.carried.push(r);
+        delivery_unit.carried.push(r);
     }
     let rows: Vec<OwnedRecord> = kept
         .iter()
-        .filter_map(|&i| unit.rows.get_mut(i).map(std::mem::take))
+        .filter_map(|&i| delivery_unit.rows.get_mut(i).map(std::mem::take))
         .collect();
-    if let Some(held) = &mut unit.held {
+    if let Some(held) = &mut delivery_unit.held {
         held.why = kept.iter().filter_map(|&i| held.why.get(i).cloned()).collect();
     }
     let bytes = crate::io::held_bytes(&rows);
-    queue.release(unit.bytes.saturating_sub(bytes));
-    Unit { rows, bytes, ..unit }
+    queue.release(delivery_unit.bytes.saturating_sub(bytes));
+    DeliveryUnit {
+        rows,
+        bytes,
+        ..delivery_unit
+    }
 }
 
 /// `unit`, which failed to land, to be sent again once its own wait is over. Each failure doubles the wait.
-fn failed(mut unit: Unit) -> (Instant, Unit) {
-    let retry = unit.retry.map_or(RETRY_MIN, |r| (r * 2).min(RETRY_MAX));
-    unit.retry = Some(retry);
-    (Instant::now() + retry, unit)
+fn failed(mut delivery_unit: DeliveryUnit) -> (Instant, DeliveryUnit) {
+    let retry = delivery_unit.retry.map_or(RETRY_MIN, |r| (r * 2).min(RETRY_MAX));
+    delivery_unit.retry = Some(retry);
+    (Instant::now() + retry, delivery_unit)
 }
 
 /// Whether a unit that failed to land is still out or waiting to be sent again.
-fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> bool {
-    owner.values().any(|o| o.unit.retry.is_some()) || again.iter().any(|(_, u)| u.retry.is_some())
+fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, DeliveryUnit)]) -> bool {
+    owner.values().any(|o| o.delivery_unit.retry.is_some()) || again.iter().any(|(_, u)| u.retry.is_some())
 }
 
 /// Take every sent-but-unacknowledged batch back to be sent again. The pacing model is told of each, so it no longer
 /// counts it in flight.
-fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, pacer: &mut Option<Pacer>) {
+fn take_back_all(
+    owner: &mut HashMap<BatchId, Owed>,
+    again: &mut Vec<(Instant, DeliveryUnit)>,
+    pacer: &mut Option<Pacer>,
+) {
     for (_, o) in owner.drain() {
         if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
             p.abandoned(paced, 0);
         }
-        again.push(failed(o.unit));
+        again.push(failed(o.delivery_unit));
     }
 }
 
 /// Tell each reader with work outstanding that it will not be delivered.
-fn abandon(returns: &Returns, owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) {
+fn abandon(returns: &Returns, owner: &HashMap<BatchId, Owed>, again: &[(Instant, DeliveryUnit)]) {
     let mut readers: Vec<ReaderId> = owner
         .values()
-        .map(|o| o.unit.reader)
+        .map(|o| o.delivery_unit.reader)
         .chain(again.iter().map(|(_, u)| u.reader))
         .collect();
     readers.sort_unstable();
@@ -1183,15 +1206,16 @@ fn note_kept(
     metrics: &MetricsHandle,
     id: DestId,
     owner: &HashMap<BatchId, Owed>,
-    again: &[(Instant, Unit)],
+    again: &[(Instant, DeliveryUnit)],
     reported: &mut Option<u64>,
 ) {
     // A DLQ's carrier stands for its riders too: each is a row of its own.
-    let held = |u: &Unit| match u.held {
+    let held = |u: &DeliveryUnit| match u.held {
         Some(_) => u.rows.iter().map(OwnedRecord::rows).sum(),
         None => 0,
     };
-    let kept = again.iter().map(|(_, u)| held(u)).sum::<u64>() + owner.values().map(|o| held(&o.unit)).sum::<u64>();
+    let kept =
+        again.iter().map(|(_, u)| held(u)).sum::<u64>() + owner.values().map(|o| held(&o.delivery_unit)).sum::<u64>();
     if *reported == Some(kept) {
         return;
     }
@@ -1330,17 +1354,13 @@ impl EgressHandle {
 
 impl Destination for EgressHandle {
     /// Queues the rows as one unit. Refuses nothing itself: the destination answers on the acknowledgment.
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         // A batch with nothing for this destination stays off the queue.
         if rows.is_empty() {
             return Ok((Dispatched::Complete, Vec::new()));
         }
         let rows = rows.into_owned();
-        let unit = Unit {
+        let delivery_unit = DeliveryUnit {
             reader: self.reader,
             batch,
             bytes: crate::io::held_bytes(&rows),
@@ -1349,13 +1369,15 @@ impl Destination for EgressHandle {
             carried: Vec::new(),
             retry: None,
         };
-        let dispatched = match self.queue.offer(unit) {
+        let dispatched = match self.queue.offer(delivery_unit) {
             Ok(()) => {
                 self.outstanding += 1;
                 Dispatched::InFlight
             }
             // The rows go with the unit: the batch is re-run whole when room returns.
-            Err(Refused::NoRoom(unit)) => Dispatched::NoRoom { bytes: unit.bytes },
+            Err(Refused::NoRoom(delivery_unit)) => Dispatched::NoRoom {
+                bytes: delivery_unit.bytes,
+            },
             Err(Refused::Closed) => return Err(IoError::transient("destination is shutting down")),
         };
         Ok((dispatched, Vec::new()))
@@ -1425,8 +1447,8 @@ mod tests {
         assert!(stall_log_due(Some(old)), "one logged a relog ago is again");
     }
 
-    fn unit(bytes: usize) -> Unit {
-        Unit {
+    fn delivery_unit(bytes: usize) -> DeliveryUnit {
+        DeliveryUnit {
             reader: 0,
             batch: 0,
             rows: Vec::new(),
@@ -1452,12 +1474,12 @@ mod tests {
     fn a_queue_borrows_above_its_reserve_and_gives_back_on_acknowledgment() {
         let pool = QueuePool::new(10);
         let queue = borrowing(100, &pool, 4, 1);
-        assert!(queue.offer(unit(4)).is_ok());
+        assert!(queue.offer(delivery_unit(4)).is_ok());
         assert_eq!(pool.lent(), 0, "the reserve is the queue's own");
-        assert!(queue.offer(unit(6)).is_ok());
+        assert!(queue.offer(delivery_unit(6)).is_ok());
         assert_eq!(pool.lent(), 6);
         assert!(!queue.has_room(5), "the pool has 4 left");
-        assert!(matches!(queue.offer(unit(5)), Err(Refused::NoRoom(_))));
+        assert!(matches!(queue.offer(delivery_unit(5)), Err(Refused::NoRoom(_))));
         queue.release(7);
         assert_eq!(pool.lent(), 0, "3 held are within the reserve");
     }
@@ -1467,11 +1489,11 @@ mod tests {
         let pool = QueuePool::new(20);
         let stalled = borrowing(12, &pool, 2, 1);
         let other = borrowing(100, &pool, 2, 1);
-        assert!(stalled.offer(unit(6)).is_ok());
-        assert!(stalled.offer(unit(6)).is_ok());
+        assert!(stalled.offer(delivery_unit(6)).is_ok());
+        assert!(stalled.offer(delivery_unit(6)).is_ok());
         assert!(!stalled.has_room(1), "at its budget");
         assert_eq!(pool.lent(), 10);
-        assert!(other.offer(unit(12)).is_ok());
+        assert!(other.offer(delivery_unit(12)).is_ok());
         assert_eq!(pool.lent(), 20);
     }
 
@@ -1482,28 +1504,31 @@ mod tests {
         let pool = QueuePool::new(20);
         let greedy = borrowing(100, &pool, 0, 1);
         let other = borrowing(100, &pool, 0, 1);
-        assert!(greedy.offer(unit(16)).is_ok(), "nobody else wants it yet");
-        assert!(other.offer(unit(1)).is_ok());
+        assert!(greedy.offer(delivery_unit(16)).is_ok(), "nobody else wants it yet");
+        assert!(other.offer(delivery_unit(1)).is_ok());
         assert!(
-            matches!(other.offer(unit(6)), Err(Refused::NoRoom(_))),
+            matches!(other.offer(delivery_unit(6)), Err(Refused::NoRoom(_))),
             "the pool has 3 left"
         );
         assert!(!greedy.has_room(1), "contended: greedy is above its share of 10");
-        assert!(matches!(greedy.offer(unit(1)), Err(Refused::NoRoom(_))));
+        assert!(matches!(greedy.offer(delivery_unit(1)), Err(Refused::NoRoom(_))));
         assert_eq!(pool.share(greedy.lend.get().unwrap().id), 10);
         greedy.release(10);
         assert_eq!(pool.lent(), 7);
-        assert!(other.offer(unit(6)).is_ok(), "the other takes what was given back");
         assert!(
-            greedy.offer(unit(4)).is_ok(),
+            other.offer(delivery_unit(6)).is_ok(),
+            "the other takes what was given back"
+        );
+        assert!(
+            greedy.offer(delivery_unit(4)).is_ok(),
             "the other got its room, so the pool is uncontended again"
         );
         assert!(
-            matches!(other.offer(unit(10)), Err(Refused::NoRoom(_))),
+            matches!(other.offer(delivery_unit(10)), Err(Refused::NoRoom(_))),
             "the other wants more than is left"
         );
         assert!(
-            matches!(greedy.offer(unit(1)), Err(Refused::NoRoom(_))),
+            matches!(greedy.offer(delivery_unit(1)), Err(Refused::NoRoom(_))),
             "so greedy, at its share, gets no more"
         );
     }
@@ -1513,11 +1538,11 @@ mod tests {
         let queue = Queue::new(100);
         let _ = queue.paced.set(4);
         queue.set_budget(4);
-        assert!(queue.offer(unit(4)).is_ok());
+        assert!(queue.offer(delivery_unit(4)).is_ok());
         assert!(!queue.has_room(1), "one batch is the budget");
         queue.set_budget(12);
         assert!(queue.has_room(8));
-        assert!(queue.offer(unit(8)).is_ok());
+        assert!(queue.offer(delivery_unit(8)).is_ok());
         queue.set_budget(4);
         assert!(!queue.has_room(1), "above the budget: it drains to it");
         queue.release(8);
@@ -1539,25 +1564,28 @@ mod tests {
         let queue = Queue::new(4);
         let pressed = |p| match p {
             Popped::Work(_, pressed) => pressed,
-            _ => panic!("a unit was queued"),
+            _ => panic!("a delivery unit was queued"),
         };
         // A quiet source: one unit, nothing refused, nothing behind it.
-        assert!(queue.offer(unit(4)).is_ok());
+        assert!(queue.offer(delivery_unit(4)).is_ok());
         assert!(!pressed(queue.pop(Duration::ZERO)));
         // Everything in flight, the queue empty, and the source asks for room it does not get: the link is full.
         assert!(!queue.has_room(1));
-        assert!(queue.offer(unit(4)).is_err());
+        assert!(queue.offer(delivery_unit(4)).is_err());
         queue.release(4);
-        assert!(queue.offer(unit(4)).is_ok());
-        assert!(pressed(queue.pop(Duration::ZERO)), "a refusal marks the next unit");
+        assert!(queue.offer(delivery_unit(4)).is_ok());
+        assert!(
+            pressed(queue.pop(Duration::ZERO)),
+            "a refusal marks the next delivery unit"
+        );
         // The mark is consumed: the one after is quiet again.
         queue.release(4);
-        assert!(queue.offer(unit(4)).is_ok());
+        assert!(queue.offer(delivery_unit(4)).is_ok());
         assert!(!pressed(queue.pop(Duration::ZERO)));
         // A backlog under the budget does not: the queue had room.
         queue.release(4);
-        assert!(queue.offer(unit(2)).is_ok());
-        assert!(queue.offer(unit(2)).is_ok());
+        assert!(queue.offer(delivery_unit(2)).is_ok());
+        assert!(queue.offer(delivery_unit(2)).is_ok());
         assert!(!pressed(queue.pop(Duration::ZERO)));
     }
 
@@ -1572,8 +1600,8 @@ mod tests {
         assert_eq!(pool.lent(), 12);
         assert_eq!(queue.share(), 4 + 4, "what the senders hold is not the queue's to hold");
         assert!(!queue.take_sender(), "the pool lends no further");
-        assert!(queue.offer(unit(4)).is_ok(), "the reserve is the queue's own");
-        assert!(queue.offer(unit(4)).is_ok(), "the pool's rest is the queue's");
+        assert!(queue.offer(delivery_unit(4)).is_ok(), "the reserve is the queue's own");
+        assert!(queue.offer(delivery_unit(4)).is_ok(), "the pool's rest is the queue's");
         assert!(!queue.has_room(1));
         queue.close();
         assert_eq!(pool.lent(), 4, "the senders end with the queue");
@@ -1585,7 +1613,7 @@ mod tests {
     fn an_empty_queue_takes_a_unit_even_from_an_empty_pool() {
         let pool = QueuePool::new(0);
         let queue = borrowing(100, &pool, 0, 2);
-        assert!(queue.offer(unit(3)).is_ok(), "a queue always moves");
+        assert!(queue.offer(delivery_unit(3)).is_ok(), "a queue always moves");
         assert_eq!(pool.lent(), 6, "each byte held counts twice");
         assert!(!queue.has_room(1));
         queue.release(3);

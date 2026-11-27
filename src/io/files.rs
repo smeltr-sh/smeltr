@@ -488,11 +488,7 @@ impl FileDestination {
 impl Destination for FileDestination {
     /// Admits each row and hands the batch to the writer thread by partition. A batch with no row admitted is
     /// complete at once.
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut refused = Vec::new();
         let mut groups: Vec<(Partition, Vec<FileRow>)> = Vec::new();
         let mut at: HashMap<Partition, usize> = HashMap::new();

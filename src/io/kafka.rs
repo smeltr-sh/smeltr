@@ -1485,11 +1485,7 @@ fn avro_values(
 }
 
 impl Destination for KafkaDestination {
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut rejections = Vec::new();
         let encoded = match &mut self.avro {
             Some(avro) => Some(avro_values(avro, &self.default_topic, &rows)?),
@@ -2392,7 +2388,7 @@ mod tests {
             if let Some(error) = error {
                 mock.request_errors(RDKafkaApiKey::Produce, &[error]);
             }
-            dest.deliver(batch, Cow::Owned(rows(2))).unwrap();
+            dest.send(batch, Cow::Owned(rows(2))).unwrap();
             dest.flush().unwrap();
             let done = dest.poll_completions().expect("a failed record fails no poll");
             assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![batch]);
@@ -2638,7 +2634,7 @@ mod tests {
         .unwrap();
 
         let row = OwnedRecord::from(&OutgoingRecord::new(b"row"));
-        dest.deliver(0, Cow::Owned(vec![row])).unwrap();
+        dest.send(0, Cow::Owned(vec![row])).unwrap();
 
         // Statistics arrive through `poll`, which this producer only does when asked.
         let deadline = Instant::now() + STATS_INTERVAL * 4;

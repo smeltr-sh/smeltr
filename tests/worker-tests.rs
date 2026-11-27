@@ -20,7 +20,7 @@ use std::borrow::Cow;
 /// Hand `rows` to `dest` as one batch.
 fn hand(dest: &mut dyn Destination, rows: &[OutgoingRecord<'_>]) {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    dest.deliver(0, Cow::Owned(rows)).unwrap();
+    dest.send(0, Cow::Owned(rows)).unwrap();
 }
 
 /// A destination reports librdkafka's statistics through a handle; these tests do not read them.

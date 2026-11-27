@@ -248,11 +248,7 @@ impl Counter {
 }
 
 impl Destination for Counter {
-    fn deliver(
-        &mut self,
-        _batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    fn send(&mut self, _batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut c = self.0.lock();
         for row in rows.iter() {
             c.records += 1;

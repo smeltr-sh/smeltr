@@ -45,7 +45,7 @@ fn stored(name: &str) -> SecretRef {
 
 /// Hands `rows` over as batch `batch`, commits, and waits until the commit lands.
 fn deliver(d: &mut dyn Destination, batch: u64, rows: Vec<OwnedRecord>) {
-    let (dispatched, refused) = d.deliver(batch, Cow::Owned(rows)).expect("delivered");
+    let (dispatched, refused) = d.send(batch, Cow::Owned(rows)).expect("delivered");
     assert!(refused.is_empty(), "{refused:?}");
     if dispatched == Dispatched::Complete {
         return;
@@ -343,7 +343,7 @@ fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
             ..OwnedRecord::default()
         })
         .collect();
-    let (_, refused) = d.deliver(1, Cow::Owned(rows)).expect("delivered");
+    let (_, refused) = d.send(1, Cow::Owned(rows)).expect("delivered");
     let refused: Vec<(usize, String)> = refused.into_iter().map(|r| (r.doc, r.reason)).collect();
     assert_eq!(
         refused,

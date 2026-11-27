@@ -1228,7 +1228,7 @@ impl Transform {
                 self.lanes[lane].park_waiting(id, records, waiting, unprocessable, processed);
                 return Ok(HandOff::Parked);
             }
-            match self.destinations[i].destination.deliver(id, Cow::Owned(these)) {
+            match self.destinations[i].destination.send(id, Cow::Owned(these)) {
                 // Room taken since it was asked: the rows are gone, so the batch runs again once there is room. A
                 // destination earlier in this loop may already hold it, and the re-run duplicates there --
                 // at-least-once, as specified.
@@ -1510,7 +1510,7 @@ impl Transform {
                 still.push(dlq);
                 continue;
             }
-            match handle.deliver(s.batch, Cow::Owned(rows)) {
+            match handle.send(s.batch, Cow::Owned(rows)) {
                 Ok((dispatched @ (Dispatched::InFlight | Dispatched::Complete), refused)) => {
                     reports.send(Report::Owes {
                         batch: s.batch,
@@ -1777,7 +1777,7 @@ impl Transform {
                 _ => Vec::new(),
             };
             let docs = buffer::catch_over_budget(|| {
-                run_and_serialize(
+                run_and_encode(
                     plan,
                     Ingest {
                         records: slice,
@@ -1984,7 +1984,7 @@ impl Transform {
     fn place_rows(
         &self,
         out: &mut Output,
-        docs: Serialized,
+        docs: Encoded,
         route: usize,
         meta: &SourceMeta,
         slice: &[SourceRecord],
@@ -2011,7 +2011,7 @@ impl Transform {
             texts.get(at)?.as_deref()
         }
 
-        let Serialized { rows, sets, .. } = docs;
+        let Encoded { rows, sets, .. } = docs;
         for mut row in rows {
             let dests = &sets[row.set as usize];
             debug_assert!(
@@ -2899,8 +2899,8 @@ impl Reader {
 
 /// One route's output: its rows, and the distinct destination sets they go to. A row names its set by index, so the
 /// common route -- one rule, one destination -- costs every row a copy of one integer and the table one entry.
-struct Serialized {
-    rows: Vec<SerializedRow>,
+struct Encoded {
+    rows: Vec<EncodedRecord>,
     /// Each sorted and deduplicated, possibly empty.
     sets: Vec<Vec<DestId>>,
     /// Set when the route answered a row with block: nothing was serialized and the source blocks.
@@ -2920,10 +2920,10 @@ struct Serialized {
     captured: Vec<Vec<(Vec<crate::heartbeat::CaptureColumn>, crate::heartbeat::CapturedRow)>>,
 }
 
-impl Serialized {
+impl Encoded {
     /// A run that blocked its source: nothing of it is sent.
-    fn blocked(blocked: Blocked, answers: Vec<Answer>, raised: std::ops::Range<usize>) -> Serialized {
-        Serialized {
+    fn blocked(blocked: Blocked, answers: Vec<Answer>, raised: std::ops::Range<usize>) -> Encoded {
+        Encoded {
             rows: Vec::new(),
             sets: Vec::new(),
             blocking: Some(blocked),
@@ -2955,7 +2955,7 @@ enum Cause {
     Declined { route: String },
 }
 
-struct SerializedRow {
+struct EncodedRecord {
     /// The row's JSON document, where a destination it is bound for, or a DLQ down a chain from one, writes it.
     bytes: Vec<u8>,
     /// Each of `Columnar::fields` on this row, where a destination it is bound for, or a DLQ down a chain from one,
@@ -2976,7 +2976,7 @@ struct SerializedRow {
     columns: Option<Columns>,
 }
 
-impl SerializedRow {
+impl EncodedRecord {
     /// The identity `dest` files this row under: the value of its own `id_field` where it names one, the pipeline's
     /// `__destination.id` where it does not.
     fn doc_id_for(&self, dest: DestId) -> Option<&str> {
@@ -3185,7 +3185,7 @@ impl RouteColumns<'_> {
 /// dropped, it is gone before the rules run; delivered, it goes to the answer's targets instead of the rules'; blocked,
 /// nothing is serialized and `Serialized::blocking` says why. Only exceptions from this call count, not an earlier
 /// route's.
-fn run_and_serialize(
+fn run_and_encode(
     plan: &Plan,
     mut ingest: Ingest<'_>,
     mask: Column,
@@ -3193,7 +3193,7 @@ fn run_and_serialize(
     errors: &mut ErrorSink,
     metrics: &MetricsHandle,
     egress: Egress<'_>,
-) -> Serialized {
+) -> Encoded {
     let route = egress.route;
     let now = ingest.now;
     let on_exception = &route.on_exception;
@@ -3215,7 +3215,7 @@ fn run_and_serialize(
     if blocked > 0 {
         let blocked = marked_block(plan, &batch, entries, &answers, on_exception, blocked);
         batch.reclaim(pool);
-        return Serialized::blocked(blocked, answers, raised);
+        return Encoded::blocked(blocked, answers, raised);
     }
     let tag_slot = plan.tag_slot();
     let at = RaisedIn {
@@ -3281,7 +3281,7 @@ fn run_and_serialize(
                 m.reclaim(pool);
             }
             batch.reclaim(pool);
-            return Serialized::blocked(blocked, answers, raised);
+            return Encoded::blocked(blocked, answers, raised);
         }
     }
 
@@ -3325,9 +3325,9 @@ fn run_and_serialize(
             dests.dedup();
         }
         let set = placed.set(&dests, &egress);
-        let serializer = tag_or_not(&tagged, &plain, &marked, row);
+        let encoder = tag_or_not(&tagged, &plain, &marked, row);
         let Reached { reads, id_fields } = &placed.reached[set as usize];
-        let mut out = SerializedRow {
+        let mut out = EncodedRecord {
             bytes: Vec::new(),
             texts: Vec::new(),
             set,
@@ -3343,15 +3343,15 @@ fn run_and_serialize(
                 .map(|slot| slot.and_then(|slot| read_text(&batch, slot, row)));
             out.doc_id = plan.id_out_slot.and_then(|slot| read_text(&batch, slot, row));
             out.doc_id_by_dest = (id_fields.iter())
-                .map(|(dest, name)| (*dest, serializer.text(name, row)))
+                .map(|(dest, name)| (*dest, encoder.text(name, row)))
                 .collect();
         }
         if reads.json {
-            serializer.write_row(row, &mut doc);
+            encoder.write_row(row, &mut doc);
             out.bytes = doc.as_slice().to_vec();
         }
         if reads.text {
-            out.texts = fields.iter().map(|f| serializer.text(f, row)).collect();
+            out.texts = fields.iter().map(|f| encoder.text(f, row)).collect();
         }
         placed.push(out, row, reads.columns, watched, counted);
     }
@@ -3403,7 +3403,7 @@ fn run_and_serialize(
         m.reclaim(pool);
     }
     batch.reclaim(pool);
-    Serialized {
+    Encoded {
         rows: placed.out,
         sets: placed.sets,
         blocking: None,
@@ -3515,7 +3515,7 @@ struct Reached {
 /// A route run's rows, as `run_and_serialize` places them.
 #[derive(Default)]
 struct Placed {
-    out: Vec<SerializedRow>,
+    out: Vec<EncodedRecord>,
     /// Interned: rows of one route share a handful of sets, usually one.
     sets: Vec<Vec<DestId>>,
     /// What each of `sets` reaches, worked out once when the set is first seen.
@@ -3560,7 +3560,7 @@ impl Placed {
 
     /// Adds `out`, made of batch row `row`, and notes `row` for each later pass that wants it: the column cut, a
     /// capture's copy and the sender count.
-    fn push(&mut self, out: SerializedRow, row: usize, columns: bool, watched: bool, counted: bool) {
+    fn push(&mut self, out: EncodedRecord, row: usize, columns: bool, watched: bool, counted: bool) {
         if columns {
             self.cut.push((self.out.len(), row));
         }
@@ -3864,7 +3864,7 @@ pub fn preview_routes_at(
                     continue;
                 };
                 let docs = buffer::catch_over_budget(|| {
-                    run_and_serialize(
+                    run_and_encode(
                         plan,
                         Ingest {
                             records: slice,
