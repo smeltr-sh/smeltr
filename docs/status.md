@@ -20,7 +20,7 @@ document's systems.
 | Bytes are not text: `decode`, `encode`, `toString(bytes, form)`, `parseBytes` (Language, Columnar data model) | built |
 | Binary messages: `readInt`, `readFloat`, `readBytes` and `unpack`, which `expr::inline` expands to them (Language, Compiler) | built |
 | Binary messages written: `writeInt`, `writeFloat`, `concat` on bytes and `pack`, which `expr::inline` expands to them (Language, Compiler) | built |
-| Functions as values: `let`-bound arrows, `map`/`filter` (Language) | built. Not built: a function type annotation, `(x: T) => R`; a function chosen per row, `(c ? f : g)(x)`; a `let`-bound arrow calling itself |
+| Functions as values: `let`-bound arrows, `map`/`filter` (Language) | built. Not built: a function type annotation, `(x: T) => R`; a function chosen per record, `(c ? f : g)(x)`; a `let`-bound arrow calling itself |
 | A key is a key; `splitDots` (Language) | built |
 | Compile warnings and formatting (Compiler) | built (`Plan::warnings`, `expr::pretty`, `POST /api/preview/format`). Warnings show in the pipeline editor only; a review or a deploy does not list them |
 | CSV column table, `skip` (Config plane) | built |
@@ -39,7 +39,7 @@ document's systems.
 | Splunk HEC: event or raw endpoint, indexer acknowledgement (Runtime stages) | built (`io::splunk`) |
 | Event Hubs (`eventHubs`), through its Kafka endpoint (Runtime stages, Config plane, Security) | built, as a Kafka destination signed in with a connection string, a service principal, the host's managed identity or, in an AKS pod, its workload identity. Not built: the managed identities of App Service, Container Apps and Functions, which Azure's instance metadata service does not serve; a live test of Entra sign-in, which the emulator lacks. Compression is none or gzip, which only the Premium and Dedicated tiers take; the emulator refuses gzip, so the live fuzzer checks it only as refused |
 | HTTP (`http`) (Runtime stages, Config plane, Secrets boundary) | built (`io::http_post`) |
-| Log Analytics workspace (`logAnalytics`), through Azure Monitor's Logs Ingestion API (Runtime stages, Config plane, Security) | built, on the HTTP destination core (`io::http_post`), signed in with Entra as a service principal, the host's managed identity or, in an AKS pod, its workload identity (`io::entra`), with its Destinations page form. Not built: a stream chosen per row; the managed identities of App Service, Container Apps and Functions |
+| Log Analytics workspace (`logAnalytics`), through Azure Monitor's Logs Ingestion API (Runtime stages, Config plane, Security) | built, on the HTTP destination core (`io::http_post`), signed in with Entra as a service principal, the host's managed identity or, in an AKS pod, its workload identity (`io::entra`), with its Destinations page form. Not built: a stream chosen per record; the managed identities of App Service, Container Apps and Functions |
 | Prometheus remote_write 1.0 and 2.0 (`prometheus`) (Runtime stages, Config plane, Secrets boundary) | built (`io::remote_write`). Not built: sharding by series; SigV4 or OAuth sign-in |
 | OTLP (`otlp`), logs, metrics or traces over OTLP/HTTP as protobuf (Runtime stages, Config plane, Secrets boundary) | built, on the HTTP destination core (`io::otlp::export`). Not built: gRPC; OTLP/JSON |
 | Object stores: S3, GCS, Azure Blob (Runtime stages, Config plane) | built (`io::files`, `io::objects`). A batch sent again after a failure may leave a duplicate object |
@@ -124,11 +124,11 @@ document's systems.
 | Moving a pipeline between leaders (Config plane) | built: export (`config_file::export`, `GET /api/areas/:area/pipelines/:id/export`) from the pipelines list and the pipeline editor, and import (`config_file::Objects`, `POST /api/areas/:area/imports`) from the pipelines list |
 | Capture at a source and at a destination, and of a receiver as sent; route preview (Control plane, Runtime stages) | built (`io::raw`); a capture's records download as NDJSON. A reachability check is not built |
 | Routing what arrives (`gui-design.md`, Routing what arrives) | built: the map's tags and panel, the Routes page's new route, and the workspace's capture with its parser proposed (`leader::onboard`). A line of a format with no whole-line Grok pattern is not proposed |
-| Warnings (Control plane) | built (`leader::warnings`), with info entries and the warning on a source's volume against its normal at four widths of rows, learned from days of its kind where its weekdays differ, and, for a source too sparse for those, by how long it goes without a row, the gap (`leader::throughput`); an editor marks that warning Normal or Outage (either turns it into info), resets the source's history, or picks the preset the source, or its senders, is judged at (`leader::marks`); and the warning on a source's senders below their own normal, each watched sender judged at the same widths (`leader::senders`), with the source's Senders tab on the Map. |
+| Warnings (Control plane) | built (`leader::warnings`), with info entries and the warning on a source's volume against its normal at four widths of records, learned from days of its kind where its weekdays differ, and, for a source too sparse for those, by how long it goes without a record, the gap (`leader::throughput`); an editor marks that warning Normal or Outage (either turns it into info), resets the source's history, or picks the preset the source, or its senders, is judged at (`leader::marks`); and the warning on a source's senders below their own normal, each watched sender judged at the same widths (`leader::senders`), with the source's Senders tab on the Map. |
 | A newer release (Control plane, Upgrades) | built (`leader::updates`, through smeltr.sh's `website/worker`), an info entry and Admin -> System -> General |
 | Metrics history (Control plane, E2) | built: any stored metric over a window, narrowed, split by a label, per second or in totals (`leader::query`, `GET /api/series`), on the Status chart and Status › Metrics, which draws several metrics on one chart (a second unit on a right-hand axis) and which the agent links to; a link on its own line in an answer draws that chart in the reply |
 | Streams: what each Parser produces and what arrives unmatched, summed on the leader (Observability) | built, `GET /api/streams`, which the map, the pipeline editor's declared fields and the drift warnings (`leader::warnings`) read. Retention in `leader::series` |
-| Streams: senders, each value of each string field delivered and of the stream key, counted on every batch (Observability) | built (`streams::SenderTally`), summed by the leader for each five-minute bucket and kept as a day row per field and value, which for a watched value holds its rows in each bucket (`leader::senders`) |
+| Streams: senders, each value of each string field delivered and of the stream key, counted on every batch (Observability) | built (`streams::SenderTally`), summed by the leader for each five-minute bucket and kept as a day row per field and value, which for a watched value holds its records in each bucket (`leader::senders`) |
 | Lag (Control plane, E6) | built |
 | The map (Control plane) | built (`leader::map`), stacks included |
 | The GUI from a phone to a 4K display; four text registers (Control plane) | built |
@@ -190,7 +190,7 @@ catalog's volume entry both wait on it.
 - **Writes of one `_id` are not ordered.** Two versions of one `_id`, in one batch or in two, can land in either order: a batch can go out as several requests, and an item the cluster asks for again is sent again alone.
 - **Elasticsearch: not attempted.** Index templates and ILM, `update`/`upsert` actions, OpenSearch-specific behavior.
 - **The registry never evicts a retired thread** of a permanent worker, and `thread_id` is whatever the caller sends, so one credential can grow the map.
-- **A decode exception is not counted:** `GuessedEncoding` and `InvalidUtf8` mark the row, but no counter rates them per source.
+- **A decode exception is not counted:** `GuessedEncoding` and `InvalidUtf8` mark the record, but no counter rates them per source.
 - **Mutual recursion and escaping closures** (Language) are outside the language.
 - **Scaling past one bundle** (Scope): nothing tells an operator a source is a consumer group rather than a topic.
 - **Browser tests reach only what a user story names,** and none reads Kafka or Elasticsearch.
@@ -203,7 +203,7 @@ catalog's volume entry both wait on it.
 - **A finished capture's workers stay "filling"** (`AddSampleDialog.svelte`) until the capture is saved or discarded.
 - **A capture open when a batch blocks holds its blocking records twice:** once as read, and once as held, with why.
 - **A capture of a blocked source shows only the records that blocked first:** a batch stops at the first slice and route that blocks, so records a later one would have blocked are not shown.
-- **A row a destination refused and keeps names no route** in a capture at it: egress knows the row, not the route that sent it.
+- **A record a destination refused and keeps names no route** in a capture at it: egress knows the record, not the route that sent it.
 - **A captured record shows only its start,** so for syslog the text a filter matched is not visible.
 - **A capture as sent of an OTLP receiver shows what arrives at its port for every signal,** since a read is not yet an export of any one.
 - **Two routes from one source to one pipeline are told apart only by their order** (`LoadedSystem::route_name`):

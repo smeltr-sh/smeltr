@@ -70,7 +70,7 @@ fn flush_cost(d: &mut KafkaDestination, rows: usize, reps: usize) -> (Duration, 
             .map(|i| OwnedRecord::from(&OutgoingRecord::new(row(i).as_bytes())))
             .collect();
         let t = Instant::now();
-        d.deliver(rep as u64, Cow::Owned(batch)).expect("deliver");
+        d.send(rep as u64, Cow::Owned(batch)).expect("deliver");
         total_send += t.elapsed();
         let t = Instant::now();
         d.flush().expect("flush");

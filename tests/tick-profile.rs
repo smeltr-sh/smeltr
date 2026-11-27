@@ -101,7 +101,7 @@ fn produce_with(brokers: &str, topic: &str, n: usize, row: impl Fn(usize) -> Vec
     let rows: Vec<OwnedRecord> = (0..n)
         .map(|i| OwnedRecord::from(&OutgoingRecord::new(&row(i))))
         .collect();
-    dest.deliver(0, Cow::Owned(rows)).expect("deliver");
+    dest.send(0, Cow::Owned(rows)).expect("deliver");
     dest.flush().expect("flush");
 }
 

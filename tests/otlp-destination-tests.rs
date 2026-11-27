@@ -155,7 +155,7 @@ fn round_trip(signal: Signal, export: &Value, items: usize, compression: Compres
     let rows = carried(signal, &received);
     let delivered = std::thread::spawn(move || {
         let mut d = HttpDestination::new(transport, Otlp::new(&config));
-        d.deliver(0, Cow::Owned(rows)).map(|(dispatched, refused)| {
+        d.send(0, Cow::Owned(rows)).map(|(dispatched, refused)| {
             assert_eq!(dispatched, Dispatched::Complete);
             refused.into_iter().map(|r| r.reason).collect::<Vec<_>>()
         })
@@ -325,7 +325,7 @@ fn a_row_of_no_resource_lands_and_a_row_otlp_cannot_take_is_refused() {
     ];
     let delivered = std::thread::spawn(move || {
         let mut d = HttpDestination::new(transport, Otlp::new(&config));
-        d.deliver(0, Cow::Owned(rows)).map(|(_, refused)| refused)
+        d.send(0, Cow::Owned(rows)).map(|(_, refused)| refused)
     });
     let arrived = read(Signal::Traces, &take(&mut second, 1));
     let refused = delivered.join().unwrap().expect("delivers");

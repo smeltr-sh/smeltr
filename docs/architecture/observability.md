@@ -24,8 +24,8 @@ its own, sees what accumulated since it last committed, and commits only
 once its delivery has landed, so a failed delivery leaves the counts owed.
 A counter that did not move reports 0, so every reader tells an idle
 subject from a silent process: only a process that stopped reporting
-leaves a gap. A reader and an egress thread start their row counters at 0,
-so a subject reports before its first row.
+leaves a gap. A reader and an egress thread start their record counters at 0,
+so a subject reports before its first record.
 Three consumers, for three audiences: the heartbeat carries metrics to the
 leader for the live view of the fleet, a **smeltr metrics source** turns
 the registry into ordinary records that route through a pipeline to a real
@@ -150,7 +150,7 @@ asked again only when the levels change, so a line below its level costs
 nothing. A library's is asked each time, since the span around it decides its
 class.
 
-What bounds output is the call site. A loop that refuses a thousand rows
+What bounds output is the call site. A loop that refuses a thousand records
 reports once, with a thousand in a field; occupancy is then a property of the
 code, which can be read, rather than of the traffic, which cannot. A path
 about to exit prints and goes, since a buffer has nothing to offer a process
@@ -167,7 +167,7 @@ A line's level is what it asks of whoever reads it:
 | warn | Something failed that the process retries, degrades under or refuses, and an operator should know. |
 | info | A state change an operator wants in the record: started, deployed, connected, recovered, changed by whom. |
 | debug | A decision taken on the way, and a step skipped: what it chose, what it saw, what it left out. |
-| trace | Per row, per frame, per request. |
+| trace | Per record, per frame, per request. |
 
 A failure that begins has a line that ends it: the `cleared` or `recovered`
 line carries how long it held, so a reader of the log alone can see the
@@ -288,34 +288,34 @@ sender.
 ```mermaid
 flowchart LR
   P[Parser, one batch per interval] -- fields, kinds, coverage --> A[account]
-  U[rows no route took, every batch] -- stream key --> A
-  D[rows delivered, every batch] -- each sender's rows --> A
+  U[records no route took, every batch] -- stream key --> A
+  D[records delivered, every batch] -- each sender's records --> A
   A -- report, then heartbeat --> L[leader: one row per field, per key]
   A -- report, then heartbeat --> S[leader: a day row per sender]
   L --> API[/api/streams]
 ```
 
 A Parser tallies one batch per route per heartbeat interval: which fields it
-produced, how many rows held each, and as what, and how many of an
+produced, how many records held each, and as what, and how many of an
 undeclared field's values read as a time: a shape the automatic time reading
 takes, or a count with an epoch's digits. A field all of whose values did is
 proposed as a `datetime`, from a sample or from production alike. The first batch to reach the
 route after the interval tallies, decided with one atomic load, and every
 other batch runs untouched, so the cost follows the configuration and the
-clock rather than the traffic. A row no route took is keyed on every batch,
-because a stream nothing selects is what those rows are: a HEC or S2S
+clock rather than the traffic. A record no route took is keyed on every batch,
+because a stream nothing selects is what those records are: a HEC or S2S
 sender's sourcetype, an Elasticsearch sender's index, an object's bucket and
 directory prefix up to its first dated segment, and otherwise the record's
 topic, which a receiver fills with the sender's address. A batch that
 `Unmatched` blocks is keyed too, before it is held: the stream that blocked
-it is the one to set up. It is held until a new config, so its rows are
+it is the one to set up. It is held until a new config, so its records are
 keyed once.
 
 Senders are counted on every batch, since a sender that goes quiet is what they
 are for: each value of each string field a route delivers at the end of the
 pipeline, and the record's stream key, by the records that held it. A record
 counts once for each field, on the first route that delivers it, so a record two
-routes take is one row of its sender. A field is reported as counted in a window
+routes take is one record of its sender. A field is reported as counted in a window
 even when no record held it, because a sender is judged only where its field was
 counted. A field that passes its cap of values on a worker is counted no more
 there, and every report after says so; a value too long to name is not counted.
@@ -344,13 +344,13 @@ Deferred: runtime schema and learning are the leader's, never a worker's).
 
 A drift warning says production no longer matches a step's declarations, per
 pipeline of a group: a declared field whose values failed to coerce within the
-drift window, or one no row has held for the window while its step read rows.
+drift window, or one no record has held for the window while its step read records.
 A field is summed over every source and route of the group that ran its step,
 so it is gone only once none of them carries it. A declared field is reported
 on every tallied batch, present or not, so the leader keeps when each was last
 present and last failed apart from when it was last reported.
 
-A source warns that a stream is unrouted while rows no route took arrive under
+A source warns that a stream is unrouted while records no route took arrive under
 it within the drift window, from workers running what its group is deployed at
 now. The warning clears once a window passes with none, or at once when a
 deploy changes what the group runs.

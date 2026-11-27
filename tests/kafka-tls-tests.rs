@@ -27,7 +27,7 @@ use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
 /// Hand `rows` to `dest` as one batch.
 fn hand(dest: &mut dyn Destination, rows: &[OutgoingRecord<'_>]) {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    dest.deliver(0, Cow::Owned(rows)).unwrap();
+    dest.send(0, Cow::Owned(rows)).unwrap();
 }
 
 /// The name the certificate is held under.

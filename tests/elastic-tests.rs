@@ -332,13 +332,13 @@ fn answered(responses: &[Result<(u16, &str), &str>]) -> (ScriptedTransport, Arc<
 }
 
 /// Hand `rows` over as one batch. These destinations have no senders, so the batch is posted and answered before
-/// `deliver` returns.
+/// `send` returns.
 fn deliver(
     d: &mut HttpDestination<Elastic, ScriptedTransport>,
     rows: &[OutgoingRecord<'_>],
 ) -> Result<Vec<Rejection>, IoError> {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
+    let (dispatched, refused) = d.send(0, Cow::Owned(rows))?;
     assert_eq!(dispatched, Dispatched::Complete);
     Ok(refused)
 }
@@ -455,8 +455,8 @@ fn a_rejection_index_survives_a_retry_compaction() {
 /// action/document pair after it would be read against the wrong partner -- a whole request misfiled, from one
 /// record. Refused at hand-over, which is where the destination gets to look at it.
 ///
-/// Reachable because a row can be delivered without a pipeline: an unmatched destination and the poison DLQ hand over the
-/// record's own bytes, and a multi-line record is ordinary.
+/// Reachable because a row can be delivered without a pipeline: an unmatched destination and the poison DLQ hand over
+/// the record's own bytes, and a multi-line record is ordinary.
 #[test]
 fn a_document_holding_a_newline_is_refused_rather_than_breaking_the_request() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
@@ -641,9 +641,9 @@ fn a_failed_batch_comes_back_beside_the_batch_a_flush_collected() {
     let (sender, _) = scripted(&[Ok(r#"{"errors":false}"#), Err("cluster said no")]);
     let mut d = HttpDestination::new(scripted(&[]).0, Elastic::new("logs")).with_senders(vec![sender], 1);
     let row = [OwnedRecord::from(&OutgoingRecord::new(br#"{"a":1}"#))];
-    assert_eq!(d.deliver(1, Cow::Borrowed(&row)).unwrap().0, Dispatched::InFlight);
+    assert_eq!(d.send(1, Cow::Borrowed(&row)).unwrap().0, Dispatched::InFlight);
     d.flush().unwrap();
-    d.deliver(2, Cow::Borrowed(&row)).unwrap();
+    d.send(2, Cow::Borrowed(&row)).unwrap();
     std::thread::sleep(Duration::from_millis(200));
     let mut done = d.poll_completions().expect("the landed batch comes first");
     done.extend(d.poll_completions().expect("and the failed one beside it"));

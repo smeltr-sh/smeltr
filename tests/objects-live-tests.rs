@@ -128,7 +128,7 @@ fn row(value: &str, prefix: Option<&str>) -> OwnedRecord {
 
 /// Hands `rows` over as one batch, finishes what holds them, and waits until it lands.
 fn deliver(d: &mut dyn Destination, rows: Vec<OwnedRecord>) {
-    let (dispatched, refused) = d.deliver(1, Cow::Owned(rows)).expect("delivered");
+    let (dispatched, refused) = d.send(1, Cow::Owned(rows)).expect("delivered");
     assert!(refused.is_empty(), "{refused:?}");
     if dispatched == Dispatched::Complete {
         return;
