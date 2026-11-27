@@ -1562,7 +1562,8 @@ fn exec(service: &str, command: &[&str], input: &[u8]) {
         .expect("docker runs");
     // A command that fails stops reading: its status says why, not the broken pipe.
     let _ = child.stdin.take().unwrap().write_all(input);
-    assert!(child.wait().success(), "{service}: {} failed", command.join(" "));
+    let status = child.wait().expect("docker exits");
+    assert!(status.success(), "{service}: {} failed", command.join(" "));
 }
 
 /// `run` as a name that may not hold a hyphen.
