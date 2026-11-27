@@ -4,8 +4,8 @@
 //! Each `index` or `create` action's document is one record, the document as it was sent. What the action names for it,
 //! its index, id and ingest pipeline, rides with the record as its `__source` fields. An `update` or `delete` action
 //! changes a stored document, which a receiver has none of, so it is answered with an error of its own and takes
-//! nothing; so is a document that is not a JSON object. The rest of the request is taken all the same, as
-//! Elasticsearch answers each action of a bulk request by itself.
+//! nothing. The rest of the request is taken all the same, as Elasticsearch answers each action of a bulk request by
+//! itself. A document line is read no further than its end: only transform reads inside a payload.
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -182,17 +182,13 @@ pub fn read(body: Vec<u8>, defaults: Defaults<'_>) -> Result<(Documents, Items),
             ),
         };
         let failed = match (action, document) {
-            ("index" | "create", Some(document)) if is_object(&body[document.clone()]) => {
+            ("index" | "create", Some(document)) => {
                 let mut filed = vec![(INDEX.to_string(), index.clone().into_bytes())];
                 filed.extend(id.iter().map(|id| (ID.to_string(), id.clone().into_bytes())));
                 filed.extend(pipeline.map(|p| (PIPELINE.to_string(), p.into_bytes())));
                 taken.push((document, filed));
                 None
             }
-            ("index" | "create", _) => Some((
-                "document_parsing_exception",
-                "failed to parse: the document is not a JSON object".to_string(),
-            )),
             _ => Some((
                 "illegal_argument_exception",
                 format!("a receiver takes [index] and [create] actions only: it holds no stored document to {action}"),
@@ -310,11 +306,6 @@ fn is_json(text: &[u8]) -> bool {
     Reader::new(text).is_ok_and(|mut r| r.skip().is_ok() && r.end())
 }
 
-/// Whether a document line is a JSON object, the only document Elasticsearch indexes.
-fn is_object(document: &[u8]) -> bool {
-    document.trim_ascii_start().first() == Some(&b'{') && is_json(document)
-}
-
 /// An id for a document whose action names none, 20 URL-safe base64 characters as Elasticsearch's are. The time this
 /// process first made one, with a count after it, keeps each distinct from every other this process makes and from a
 /// process started at another time.
@@ -396,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn takes_index_and_create_and_answers_each_action_in_order() {
+    fn takes_index_and_create_of_any_document_and_answers_each_action_in_order() {
         let body = concat!(
             "{\"index\":{\"_index\":\"logs\",\"_id\":\"a\"}}\n",
             "{\"msg\":\"one\"}\n",
@@ -414,6 +405,7 @@ mod tests {
             vec![
                 ("{\"msg\":\"one\"}".to_string(), filed(&[("index", "logs"), (ID, "a")])),
                 ("{\"msg\":\"two\"}".to_string(), filed(&[("index", "logs")])),
+                ("[1,2]".to_string(), filed(&[("index", "logs")])),
             ]
         );
         let answer = serde_json::from_slice::<serde_json::Value>(&items_.answer(Duration::from_millis(7))).unwrap();
@@ -423,15 +415,14 @@ mod tests {
         let actions: Vec<_> = items.iter().map(|(a, _)| a.as_str()).collect();
         assert_eq!(actions, ["index", "delete", "create", "update", "index"]);
         let statuses: Vec<_> = items.iter().map(|(_, r)| r["status"].as_u64().unwrap()).collect();
-        assert_eq!(statuses, [201, 400, 201, 400, 400]);
+        assert_eq!(statuses, [201, 400, 201, 400, 201]);
         assert_eq!(items[0].1["_id"], "a");
         assert_eq!(items[0].1["result"], "created");
         assert_eq!(items[0].1["_shards"]["successful"], 1);
         assert_eq!(items[1].1["_id"], "b");
         assert_eq!(items[1].1["error"]["type"], "illegal_argument_exception");
         assert_eq!(items[3].1["error"]["type"], "illegal_argument_exception");
-        assert_eq!(items[4].1["error"]["type"], "document_parsing_exception");
-        assert_eq!(items[4].1["_id"], serde_json::Value::Null);
+        assert_eq!(items[4].1["result"], "created");
         assert_eq!(items[4].1["_index"], "logs");
     }
 
@@ -601,12 +592,6 @@ mod tests {
         let cluster: serde_json::Value = serde_json::from_slice(&cluster()).unwrap();
         assert_eq!(cluster["version"]["number"], VERSION);
         assert_eq!(cluster["tagline"], "You Know, for Search");
-    }
-
-    #[test]
-    fn a_document_not_utf8_is_not_an_object() {
-        assert!(!is_object(b"{\"a\":\"\xff\"}"));
-        assert!(is_object("{\"a\":\"\u{e9}\"}".as_bytes()));
     }
 
     #[test]
