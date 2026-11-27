@@ -798,6 +798,12 @@ impl SourceMeta {
         self.reads_bytes() && self.format == Format::Text
     }
 
+    /// Whether a stored record of this source -- a sample's -- is read as its fields. An Avro payload names a writer's
+    /// schema only the worker that read it holds, so its sample keeps the fields it was shown with.
+    pub(crate) fn stored_as_fields(&self) -> bool {
+        !self.reads_bytes() || self.format == Format::Avro
+    }
+
     /// Whether this source hands over each record's payload as it read it, as `__source.bytes`: its batches are
     /// payloads, which transform decodes into its record by its format. A source that does not hands over its
     /// record's columns.
@@ -945,7 +951,20 @@ impl SourceMeta {
         if self.raw_record() {
             let values = text.iter().map(|t| Some(t.as_ref().as_bytes()));
             batch.put(crate::core::batch::SLOT_RAW, str_column(pool, values), pool);
-        } else if !self.reads_bytes() {
+        } else if let (Format::Avro, Some(writers)) = (self.format, writers) {
+            let payloads: Vec<&[u8]> = self.read_bytes_each(records).map(Option::unwrap_or_default).collect();
+            let read = crate::io::avro::decode(&self.record, writers, payloads.iter().copied(), pool);
+            for (i, column) in read.columns.into_iter().enumerate() {
+                batch.put(record_slot(i), column, pool);
+            }
+            let (mut unread, mut failed) = (read.unread.iter().peekable(), read.failed.iter().peekable());
+            for row in 0..records.len() as u32 {
+                let why = unread.next_if(|(r, _)| *r == row).map(|(_, why)| why.as_str());
+                let fields = std::iter::from_fn(|| failed.next_if(|(r, _, _)| *r == row).map(|(_, f, v)| (*f, v)));
+                self.note_read(&mut noted, row, why, fields);
+            }
+            writer = read.newest;
+        } else if self.stored_as_fields() {
             let (chunk, rows) = chunk_rows(records);
             for (i, (_, ty)) in self.record.iter().enumerate() {
                 let column = match &chunk {
@@ -961,20 +980,6 @@ impl SourceMeta {
                     self.note_read(&mut noted, at as u32, None, failed.map(|(_, f, v)| (*f, v)));
                 }
             }
-        } else if self.format == Format::Avro {
-            let payloads: Vec<&[u8]> = self.read_bytes_each(records).map(Option::unwrap_or_default).collect();
-            let writers = writers.expect("an Avro source's batch is decoded with its writers' schemas");
-            let read = crate::io::avro::decode(&self.record, writers, payloads.iter().copied(), pool);
-            for (i, column) in read.columns.into_iter().enumerate() {
-                batch.put(record_slot(i), column, pool);
-            }
-            let (mut unread, mut failed) = (read.unread.iter().peekable(), read.failed.iter().peekable());
-            for row in 0..records.len() as u32 {
-                let why = unread.next_if(|(r, _)| *r == row).map(|(_, why)| why.as_str());
-                let fields = std::iter::from_fn(|| failed.next_if(|(r, _, _)| *r == row).map(|(_, f, v)| (*f, v)));
-                self.note_read(&mut noted, row, why, fields);
-            }
-            writer = read.newest;
         }
         let mut repaired = Vec::new();
         for i in 0..self.source.len() {
@@ -4231,6 +4236,20 @@ mod tests {
             )]))
             .unwrap_err();
         assert!(err.contains("`__source.bytes`"), "{err}");
+    }
+
+    /// An Avro source's stored record is read as the fields it was shown with: the writer's schema its payload names
+    /// is only the worker's.
+    #[test]
+    fn an_avro_sources_stored_record_reads_as_its_fields() {
+        let meta = SourceMeta::KAFKA
+            .decoding_avro(vec![("id".into(), DataType::I64)])
+            .unwrap();
+        let shown = serde_json::json!({"id": 1}).as_object().unwrap().clone();
+        let records = meta
+            .read_table(&pasted_from(&[(&shown, &crate::io::SourceFields::new())]))
+            .unwrap();
+        assert_eq!(meta.record_object(&records[0]), shown);
     }
 
     /// A stored record is read as its source reads: a payload source's must be one `_raw` text, and a typed source's may

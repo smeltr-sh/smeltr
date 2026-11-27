@@ -31,7 +31,7 @@ impl SourceMeta {
             row,
         });
         let sources: Vec<crate::io::SourceFields> = rows.clone().map(|cells| cells.under("__source")).collect();
-        if !self.reads_bytes() {
+        if self.stored_as_fields() {
             let chunk = crate::io::RecordChunk::from_cells(&self.record, &table.columns, &table.rows)?;
             let chunk = std::sync::Arc::new(chunk);
             return Ok((sources.iter().enumerate())
