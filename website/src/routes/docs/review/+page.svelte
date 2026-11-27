@@ -87,6 +87,6 @@
   </p>
   <p>
     See the <a href="/docs/operations#changes">rollback procedure</a> or the
-    <a href="/docs/upgrade#executable">executable downgrade procedure</a>.
+    <a href="/docs/upgrade#downgrade">executable downgrade procedure</a>.
   </p>
 </GuideLayout>

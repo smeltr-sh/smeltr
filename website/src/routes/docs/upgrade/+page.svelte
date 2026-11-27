@@ -49,7 +49,7 @@
       closing the window.
     </li>
   </ul>
-  <p>
+  <p id="downgrade">
     An older build starts on the leader’s upgraded data unless the newer build changed it in a way
     the older one cannot read. Then the older leader refuses to start and says why: restore the
     pre-upgrade artifact and its matching backup together. Restoring older configuration can also

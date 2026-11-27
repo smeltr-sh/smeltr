@@ -155,7 +155,7 @@
   </ol>
   <p>
     Do not rewrite the worker's local configuration manually. A configuration rollback is different
-    from <a href="/docs/upgrade#executable">downgrading the executable</a>.
+    from <a href="/docs/upgrade#downgrade">downgrading the executable</a>.
   </p>
   <h2 id="outages">Leader outages and revoked workers</h2>
   <p>
