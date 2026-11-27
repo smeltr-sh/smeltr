@@ -19,7 +19,7 @@ at dots into paths; `kv`, `grok` and `csv` do by default, `json` does not.
 A record whose keys contradict after splitting keeps the last in record
 order and carries an exception. `a.b`, `a["b"]`, `at(a, "b")` and
 `a.at("b")` are one read of one path, and a bare name is `$["name"]`: `$` is
-the record, the root object. Nesting happens once, at serialization.
+the record, the root object. Nesting happens once, at encoding.
 
 ```text
   record                          columns
@@ -79,7 +79,7 @@ another.
 What reads bytes as bytes takes them: `length` counts bytes, `md5`, `sha1`,
 `sha256` and `sha512` hash either, `==` and `!=` compare two, and a fold's
 `+` joins bytes to bytes, never to text. Bytes have one spelling as text,
-base64, wherever they become text without a form named: the serializer,
+base64, wherever they become text without a form named: the encoder,
 `toString`, `as str`, a template literal, `join`, and a field's text, such as an
 Elasticsearch index read from a `bytes` field. `toString(b, form)` names the
 form, `"base64"`, `"hex"` or `"binary"`, and `parseBytes(text, form)` reads
@@ -127,7 +127,7 @@ a null side is false. A field compares by value. A condition is `bool`: an
 of `!`, `&&` and `||`. Any other type there is a compile error; there is no
 truthiness. Null reads false: an `if` runs its `else`, a ternary takes its
 second branch, and a guarded write leaves the value from before it. Whether
-nulls appear in output is the serializer's decision. `x == null`,
+nulls appear in output is the encoder's decision. `x == null`,
 `x != null`, `isNull(x)` and `x ?? y` compile on a `variant`, since they
 read presence, not content; `x ?? y` is a variant.
 
@@ -235,7 +235,7 @@ appears.
                     │                    └─ refused ─► null + exception
                     no
                     ▼
-                                  unclaimed fields  ── read only where open ──► serializer
+                                  unclaimed fields  ── read only where open ──► encoder
 ```
 
 ## What a parser and a lookup write
@@ -445,7 +445,7 @@ switch (c) { case "a": x = 1; break; default: x = 0; }
   may hold is taken out on the rows selected.
 - `o.b = null` over the object `o.b` nulls each of its fields and keeps
   them at their types, so `o.b.c` reads null and a whole read of `o` still
-  has a type. The serializer leaves the empty object out.
+  has a type. The encoder leaves the empty object out.
 - `move(from, to)` is `let t = from; delete(from); to = t;`. At the top level
   it rebinds and emits nothing, as a Rename does. Inside an `if` it clears a
   bound `from` on the rows selected.
@@ -528,7 +528,7 @@ hold, as `key = a.key` would, so the rows it skips keep theirs; an `a` that may
 hold other keys is a compile error there.
 `y = o` gives `y` the fields and
 unclaimed fields of `o`. A whole read of an object is the value its fields and
-unclaimed fields make, and the serializer nests them the same way.
+unclaimed fields make, and the encoder nests them the same way.
 
 A `struct` is a value whose shape the compiler knows: a whole read of an
 object, an object literal, an element of an array whose element type is
@@ -536,7 +536,7 @@ declared. A field a spread lays over another meets it as a ternary's branches
 do. A path read under it has the leaf's type. A `variant` is a value whose
 shape only the row knows: a blend or a member of a variant. It holds a
 value of any type, a `datetime`, a `duration` and `bytes` among them. A
-variant is assigned, renamed, copied, spread, serialized and tested for null,
+variant is assigned, renamed, copied, spread, encoded and tested for null,
 and a path read under it is a variant too.
 Every other use is a compile error that names the type to give it,
 `name: type = name`, which converts it by the table above. Neither exists where the data has
@@ -604,7 +604,7 @@ arrived, and a wrong one is found where a read of it is given a type. A
 function's parameter of a closed object type given an open value is a compile
 error; a conversion to a closed type closes it.
 
-`keys(o)` is the object's keys on each row, in the order the serializer
+`keys(o)` is the object's keys on each row, in the order the encoder
 writes them: each field that holds a value, then, where `o` is open, its
 unclaimed keys no field has. `entries(o)` pairs each key with its value, as
 `{key, value}`, so the values meet as one type, a variant where `o` is
@@ -639,4 +639,4 @@ on, whatever the local's value binds. A local's name has no dot.
 The [compiler](compiler.md) checks a pipeline's types against these rules and
 turns what it means into instructions. The
 [columnar data model](columnar-data-model.md) holds the values, and the
-serializer writes them out.
+encoder writes them out.

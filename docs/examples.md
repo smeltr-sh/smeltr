@@ -95,7 +95,7 @@ Out:
 
 The second row's `json(log)` is an exception inside the `try`; the `catch`
 clears it and keeps the text as the message, so the row carries no exception. `app` is null
-there, so `log` and `trace` hold only nulls, and the serializer leaves an
+there, so `log` and `trace` hold only nulls, and the encoder leaves an
 object with nothing in it out.
 
 ## 3. Key-value syslog (FortiGate)
@@ -337,7 +337,7 @@ Out:
 ```
 
 A capture the matched pattern lacks is null (`acl` on the first row,
-`src_xlated_ip` on the second), and the serializer leaves out an object
+`src_xlated_ip` on the second), and the encoder leaves out an object
 with nothing in it, so `rule` and `source.nat` appear only where the
 pattern captured them.
 

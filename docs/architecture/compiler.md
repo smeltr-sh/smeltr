@@ -72,7 +72,7 @@ are the key's other keys. A parser's slots are its declared fields, so a
 record key a step reads is a field its parser declares, and a declared object
 is its leaves. A parser that discovers keys lays every other key into the
 unclaimed fields of the deepest object at its name. The plan carries the tree
-to the serializer, which writes each object's fields over its unclaimed
+to the encoder, which writes each object's fields over its unclaimed
 fields, so a step that writes a name claims the record's key of that name. No
 guard reaches the unclaimed fields, so a dynamic parser under a guard is a
 compile error.

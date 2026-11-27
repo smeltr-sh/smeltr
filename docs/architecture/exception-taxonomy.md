@@ -119,7 +119,7 @@ same rows meet the same routes, so it is decided before any pipeline runs. A
 block on failed or unprocessable rows is the same: the same rows fail the same
 way. A block on refused rows releases once the destination takes them. The fix for a refusal
 is usually the destination's own, and nothing tells the worker it is done, so
-the refused rows are sent again until they land. A source blocked
+the refused records are sent again until they are delivered. A source blocked
 by rows it cannot deliver anywhere, with no rows refused or held, releases once
 the destination takes records again. A blocked source reports which of these
 holds it, so its warning says what will release it.
