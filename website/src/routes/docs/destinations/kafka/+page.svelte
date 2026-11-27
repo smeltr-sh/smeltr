@@ -74,10 +74,11 @@
     </dd>
     <dt><strong>Slower than the network allows</strong></dt>
     <dd>
-      Check the brokers' <a
-        href="https://kafka.apache.org/documentation/#brokerconfigs_socket.receive.buffer.bytes"
+      We recommend setting the brokers' <a
+        href="https://kafka.apache.org/44/configuration/broker-configs/#brokerconfigs_socket.receive.buffer.bytes"
         ><code>socket.receive.buffer.bytes</code></a
-      >.
+      >
+      to <code>-1</code>.
     </dd>
   </dl>
 
