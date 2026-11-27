@@ -2,8 +2,8 @@
 //! answer: it gives up on a request refused whole, and reads each item of one it answers to learn which documents were
 //! created. So each answer must be shaped as Elasticsearch's, item by item, and each document an item says was created
 //! must arrive once, as it was sent, filed under the index, id and pipeline its action or its request names. A receiver
-//! holds no stored document and keeps no index, so it creates every `index` and `create` of an object, whatever index
-//! and id it names.
+//! holds no stored document and keeps no index, so it creates every `index` and `create`, whatever its document holds
+//! and whatever index and id it names.
 //!
 //! Each seed opens a receiver under settings an operator could save and sends it random requests, to every path it
 //! serves and to paths beside them: bulk bodies of every action, whole or spoiled, under every way of presenting a
@@ -228,7 +228,7 @@ const ACTIONS: &[(&str, &str)] = &[
     ("delete", "delete"),
 ];
 
-/// Document lines Elasticsearch does not index.
+/// Document lines that are not a JSON object, which a receiver takes as sent as it takes any other.
 const NOT_OBJECTS: &[&[u8]] = &[
     b"[1,2]",
     b"\"text\"",
@@ -581,7 +581,18 @@ fn action(
         id: id.map(str::to_string),
         failed,
     };
+    let taken = |raw| Taken {
+        raw,
+        index: index.clone(),
+        id: id.map(str::to_string),
+        pipeline: own_pipeline.or(query_pipeline).map(str::to_string),
+    };
     match label {
+        "index of a document not an object" | "create of a document not an object" => {
+            let document = String::from_utf8_lossy(rng.pick(NOT_OBJECTS));
+            lines.line(rng, document.as_bytes());
+            (item(None), Some(taken(document.into_owned())))
+        }
         "index of an object" | "create of an object" => {
             let around = rng.chance(5);
             if around {
@@ -592,25 +603,14 @@ fn action(
                 false => object(rng, 0),
             };
             lines.line(rng, document.as_bytes());
-            let taken = Taken {
-                raw: document,
-                index: index.clone(),
-                id: id.map(str::to_string),
-                pipeline: own_pipeline.or(query_pipeline).map(str::to_string),
-            };
-            (item(None), Some(taken))
+            (item(None), Some(taken(document)))
         }
         "update" => {
             let document = format!(r#"{{"doc":{}}}"#, object(rng, 1));
             lines.line(rng, document.as_bytes());
             (item(Some("illegal_argument_exception")), None)
         }
-        "delete" => (item(Some("illegal_argument_exception")), None),
-        _ => {
-            let document = *rng.pick(NOT_OBJECTS);
-            lines.line(rng, document);
-            (item(Some("document_parsing_exception")), None)
-        }
+        _ => (item(Some("illegal_argument_exception")), None),
     }
 }
 
