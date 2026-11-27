@@ -16,8 +16,9 @@
 >
   <h1>Review and deploy</h1>
   <p>
-    Deployment publishes configuration to <code>main</code>. It is complete only when the intended
-    workers are running it.
+    Review the branch diff, test results, and affected routes before publishing configuration to
+    <code>main</code>. Then confirm that the intended workers loaded the commit and that a real
+    record reaches its destination.
   </p>
   <p>
     <a href="/docs/git/configuration">How Git versions configuration and workers follow main →</a>
@@ -36,7 +37,7 @@
   </ol>
   <h2 id="check">Review the evidence</h2>
   <ul class="checklist">
-    <li>The diff (the comparison with the deployed version) contains only intended edits.</li>
+    <li>The diff against <code>main</code> contains only intended edits.</li>
     <li>Preview output has the intended fields and types, and the tests pass.</li>
     <li>You have checked affected routes and destinations.</li>
     <li>Samples and changes contain no exposed credentials.</li>
@@ -66,14 +67,10 @@
       <thead><tr><th>Evidence</th><th>What it proves</th></tr></thead>
       <tbody>
         <tr><td>Commit on main</td><td>Configuration was published</td></tr>
-        <tr
-          ><td>Recent heartbeat</td><td
-            >Worker recently contacted the leader; check the running commit separately</td
-          ></tr
-        >
+        <tr><td>Recent heartbeat</td><td>Worker recently contacted the leader</td></tr>
         <tr
           ><td>Worker Commit matches deployed main</td><td
-            >Worker reports running that configuration; also compare it with the commit you deployed</td
+            >Worker reports running the published configuration</td
           ></tr
         >
         <tr
@@ -89,7 +86,7 @@
     fleet-wide impact before confirming; verify worker adoption afterward.
   </p>
   <p>
-    See <a href="/docs/operations#changes">the rollback procedure</a>. A configuration rollback is
-    not a binary downgrade.
+    See the <a href="/docs/operations#changes">rollback procedure</a> or the
+    <a href="/docs/upgrade#executable">executable downgrade procedure</a>.
   </p>
 </GuideLayout>
