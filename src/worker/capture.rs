@@ -36,7 +36,7 @@ use crate::io::SourceRecord;
 use crate::plan::compile::parse;
 use crate::plan::compile::{compile_patterns, ingest_fields};
 use crate::plan::resolve::{ResourceBuilder, SymbolTable, resolve};
-use crate::plan::topology::{Decoded, Entry, SourceMeta};
+use crate::plan::topology::{DecodedBatch, Entry, SourceMeta};
 
 /// A compiled filter, or nothing when the invitation carried none.
 #[derive(Debug)]
@@ -84,7 +84,7 @@ impl Filter {
     /// them. All of them when there is no filter.
     ///
     /// A row the filter errors on is not kept: a capture that cannot say a record matched must not claim it did.
-    pub fn keeps(&self, decoded: &Decoded) -> Vec<bool> {
+    pub fn keeps(&self, decoded: &DecodedBatch) -> Vec<bool> {
         let rows = decoded.batch.rows();
         let Some(ir) = &self.ir else {
             return vec![true; rows];
@@ -670,7 +670,7 @@ impl Captures {
     /// Called from a transform thread on the batch it is about to run. `decoded` is the batch's records as their
     /// source's `meta` declares them: what a filter reads and a captured record carries. The batch is already
     /// decoded, so a capture never decodes twice.
-    pub fn tap(&self, source: &str, records: &[SourceRecord], meta: &SourceMeta, decoded: &Decoded) {
+    pub fn tap(&self, source: &str, records: &[SourceRecord], meta: &SourceMeta, decoded: &DecodedBatch) {
         let watching: Vec<(String, u64)> = {
             let mut sessions = self.sessions.lock();
             sessions
@@ -700,7 +700,7 @@ impl Captures {
         shown: &mut HashSet<u64>,
         records: &[SourceRecord],
         meta: &SourceMeta,
-        decoded: &Decoded,
+        decoded: &DecodedBatch,
         why: &[String],
     ) {
         let watching = self.owed(shown, |s| s.reads(source));
@@ -717,7 +717,7 @@ impl Captures {
     }
 
     /// Offer records to one admission of a session, for the cold path, which polls a source of its own.
-    pub fn offer(&self, admitted: &Admitted, records: &[SourceRecord], meta: &SourceMeta, decoded: &Decoded) {
+    pub fn offer(&self, admitted: &Admitted, records: &[SourceRecord], meta: &SourceMeta, decoded: &DecodedBatch) {
         self.fill(
             &admitted.invitation.session,
             admitted.admission,
@@ -741,7 +741,7 @@ impl Captures {
         admission: u64,
         records: &[SourceRecord],
         meta: &SourceMeta,
-        decoded: &Decoded,
+        decoded: &DecodedBatch,
         why: Option<&[String]>,
     ) {
         let filter = {
@@ -763,7 +763,7 @@ impl Captures {
         let own = (filter.meta != *meta).then(|| {
             filter
                 .meta
-                .decode(records, Some(&decoded.raw(meta)), Some(&filter.source), &mut pool)
+                .decode(records, Some(&decoded.raw(meta)), decoded.writers.as_ref(), Some(&filter.source), &mut pool)
         });
         let rows: Vec<Option<CapturedRow>> = {
             let decoded = own.as_ref().unwrap_or(decoded);
@@ -780,7 +780,7 @@ impl Captures {
         let Some(s) = admitted_session(&mut sessions, session, admission) else {
             return;
         };
-        if let Some(writer) = records.iter().rev().find_map(|r| r.chunk.avro_writers().last()) {
+        if let Some(writer) = &decoded.writer {
             s.read_with(writer);
         }
         // A record polled before the reader saw this capture had its headers left behind. Kept, it would say it had
@@ -975,7 +975,7 @@ fn source_columns(meta: &SourceMeta) -> Vec<CaptureColumn> {
 
 /// Row `row` of `decoded` as a row of `source_columns(meta)`: its fields from its record object, a value that failed
 /// its type as the source spelled it, then its `__source` fields from `source`, the row's `__source` object.
-fn source_row(meta: &SourceMeta, decoded: &Decoded, row: usize, source: &crate::io::SourceFields) -> CapturedRow {
+fn source_row(meta: &SourceMeta, decoded: &DecodedBatch, row: usize, source: &crate::io::SourceFields) -> CapturedRow {
     let mut values = record_values(meta.record(), &decoded.record_object(meta, row));
     let mut failed = Vec::new();
     // What decoding noted against a field of the record, with the value as read: a value that is not its field's
@@ -1422,7 +1422,7 @@ pub fn run_cold_capture(
             at: RawAt::cold(admitted),
         }));
         let metrics = crate::metrics::MetricsHandle::new(registry.clone(), CAPTURE_LABEL);
-        drive(&cold, source.as_mut(), &kind.meta(), &metrics, None);
+        drive(&cold, source.as_mut(), &kind.meta(), kind.avro_writers(), &metrics, None);
         return;
     }
     let meta = kind.meta();
@@ -1446,6 +1446,7 @@ pub fn run_cold_capture(
     // A metrics or logs source reads the process this runs in: the runtime when one was running as the capture
     // arrived, the supervisor otherwise.
     let subjects = captures.deployed.lock().clone();
+    let writers = kind.avro_writers();
     let mut source = match crate::io::build_source(&kind, registry, &subjects, &secrets, None) {
         Ok(source) => source,
         Err(e) => {
@@ -1459,17 +1460,18 @@ pub fn run_cold_capture(
             return;
         }
     };
-    drive(&cold, source.as_mut(), &meta, &metrics, None);
+    drive(&cold, source.as_mut(), &meta, writers, &metrics, None);
 }
 
 /// Poll `source` into `cold`'s session until the session closes or a deployment starts reading the source. A session
 /// that reads its source itself (`CaptureInvitation::reads_source_itself`) reads on whatever is deployed. An SQL Run
 /// passes `run`, and ends once `run` says it has read all it reads; a connection error ends it with that as the
-/// reason.
+/// reason. `writers` are the schemas an Avro source's payloads name.
 fn drive<S: crate::io::Source + ?Sized>(
     cold: &Cold,
     source: &mut S,
     meta: &SourceMeta,
+    writers: Option<Arc<crate::io::avro::Writers>>,
     metrics: &crate::metrics::MetricsHandle,
     run: Option<fn(&S) -> bool>,
 ) {
@@ -1512,7 +1514,7 @@ fn drive<S: crate::io::Source + ?Sized>(
         // The decode ingest would have done, with this source's own encoding: a captured record is text, however it
         // was captured.
         let mut pool = BufferPool::new();
-        let decoded = meta.decode(&records, None::<&[&str]>, Some(&cold.config.id), &mut pool);
+        let decoded = meta.decode(&records, None::<&[&str]>, writers.as_ref(), Some(&cold.config.id), &mut pool);
         // Labeled by the source's own name rather than a positional id, which `Subjects::resolve` leaves as it is:
         // the source may be in no deployment.
         metrics.incr(
@@ -1678,7 +1680,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         declares_none.then(|| meta.clone()),
     );
     let metrics = crate::metrics::MetricsHandle::new(registry.clone(), CAPTURE_LABEL);
-    drive(cold, &mut source, &meta, &metrics, Some(SqlSource::read_once));
+    drive(cold, &mut source, &meta, None, &metrics, Some(SqlSource::read_once));
 }
 
 /// A session this worker reads a source of its own for, and the source as it reads it (`cold_source_config`). Built
@@ -1698,7 +1700,7 @@ impl Cold<'_> {
         self.captures.served(self.admitted)
     }
 
-    fn offer(&self, records: &[SourceRecord], meta: &SourceMeta, decoded: &Decoded) {
+    fn offer(&self, records: &[SourceRecord], meta: &SourceMeta, decoded: &DecodedBatch) {
         self.captures.offer(self.admitted, records, meta, decoded)
     }
 
@@ -1759,9 +1761,9 @@ mod tests {
         })
     }
     /// Runs `read` over `records` decoded as those of a Kafka source named `orders`, each with its text of `text`.
-    fn decoded<T>(records: &[SourceRecord], text: &[&str], read: impl FnOnce(&Decoded) -> T) -> T {
+    fn decoded<T>(records: &[SourceRecord], text: &[&str], read: impl FnOnce(&DecodedBatch) -> T) -> T {
         let mut pool = BufferPool::new();
-        let decoded = SourceMeta::KAFKA.decode(records, Some(text), Some("orders"), &mut pool);
+        let decoded = SourceMeta::KAFKA.decode(records, Some(text), None, Some("orders"), &mut pool);
         let out = read(&decoded);
         decoded.batch.reclaim(&mut pool);
         out
@@ -1786,7 +1788,8 @@ mod tests {
     /// The first of `records` as `source_row` shows it, with no `__source` object.
     fn first_row(meta: &SourceMeta, records: &[SourceRecord]) -> CapturedRow {
         let mut pool = BufferPool::new();
-        let decoded = meta.decode(records, None::<&[&str]>, None, &mut pool);
+        let writers = Arc::default();
+        let decoded = meta.decode(records, None::<&[&str]>, Some(&writers), None, &mut pool);
         let row = source_row(meta, &decoded, 0, &crate::io::SourceFields::new());
         decoded.batch.reclaim(&mut pool);
         row
@@ -2269,11 +2272,14 @@ mod tests {
     #[test]
     fn a_session_reports_the_fields_of_the_avro_schema_it_read_with() {
         let writer = |text: &str| Arc::new(crate::io::avro::Parsed::new(text, &[]).unwrap());
-        let read = |base: i64, writer: &Arc<crate::io::avro::Parsed>| {
-            let mut out = records(base, &["one"]);
-            let chunk = Arc::try_unwrap(crate::io::RecordChunk::of_bytes("one")).ok().unwrap();
-            out[0].chunk = Arc::new(chunk.read_with(vec![writer.clone()]));
-            out
+        // A batch of one record, decoded as an Avro source's last payload was read with `writer`.
+        let offer = |captures: &Captures, s: &Admitted, base: i64, writer: &Arc<crate::io::avro::Parsed>| {
+            let records = records(base, &["one"]);
+            let mut pool = BufferPool::new();
+            let mut decoded = SourceMeta::KAFKA.decode(&records, Some(&["one"]), None, Some("orders"), &mut pool);
+            decoded.writer = Some(writer.clone());
+            captures.offer(s, &records, &SourceMeta::KAFKA, &decoded);
+            decoded.batch.reclaim(&mut pool);
         };
         let a = writer(r#"{"type":"record","name":"A","fields":[{"name":"id","type":"long"}]}"#);
         let b = writer(r#"{"type":"record","name":"B","fields":[{"name":"n","type":"string"}]}"#);
@@ -2281,17 +2287,17 @@ mod tests {
         let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 3, 1_000_000, 60)]).remove(0);
 
-        offer(&captures, &s1, &read(0, &a), &["one"]);
+        offer(&captures, &s1, 0, &a);
         assert_eq!(names(&captures.progress("w1")[0]), ["id"]);
         assert!(captures.progress("w1").is_empty(), "nothing new");
-        offer(&captures, &s1, &read(1, &a), &["one"]);
+        offer(&captures, &s1, 1, &a);
         assert_eq!(
             names(&captures.progress("w1")[0]),
             ["id"],
             "a report carries the fields it holds"
         );
 
-        offer(&captures, &s1, &read(2, &b), &["one"]);
+        offer(&captures, &s1, 2, &b);
         assert!(!captures.open(&s1), "hit its match count");
         assert_eq!(names(&captures.finished("w1")[0]), ["n"], "the newest schema's");
     }
@@ -2299,13 +2305,11 @@ mod tests {
     /// A payload that did not read is captured with why, in its record's first field.
     #[test]
     fn a_payload_that_did_not_read_is_captured_with_why() {
-        let meta = SourceMeta::KAFKA.declaring(vec![("id".into(), DataType::I64)]).unwrap();
-        let id = crate::core::column::Column::empty(DataType::I64, 1);
-        let chunk = crate::io::RecordChunk::new(vec![id], Vec::new()).with_unread(vec![(0, "no schema 9".to_string())]);
-        let unread = SourceRecord::read(Arc::new(chunk), 0, &crate::io::SourceFields::new());
+        let meta = SourceMeta::KAFKA.decoding_avro(vec![("id".into(), DataType::I64)]).unwrap();
+        let unread = records(0, &["\0\0\0\0\x09"]);
 
-        let row = first_row(&meta, &[unread]);
-        assert_eq!(row.values[0], "no schema 9");
+        let row = first_row(&meta, &unread);
+        assert!(row.values[0].as_str().unwrap().contains("schema 9"), "{:?}", row.values[0]);
         assert_eq!(row.failed, [0]);
     }
 

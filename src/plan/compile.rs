@@ -4936,7 +4936,7 @@ mod tests {
     #[test]
     fn a_name_the_source_does_not_declare_is_said_so() {
         let meta = SourceMeta::KAFKA
-            .declaring_open(vec![("f".into(), DataType::Str)])
+            .decoding_avro(vec![("f".into(), DataType::Str)])
             .unwrap();
         let error = |body: &str| compile(&code_pipeline(body), &meta).expect_err(body)[0].message.clone();
         assert_eq!(

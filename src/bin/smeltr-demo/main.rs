@@ -503,7 +503,7 @@ async fn capture_filter(State(service): State<Service>, Json(body): Json<Capture
                 Err(e) => return Envelope::refused(Refusal::invalid(e)),
             };
             let mut pool = smeltr::core::buffer::BufferPool::new();
-            let decoded = meta.decode(&read.records, Some(&read.texts), Some(&source.id), &mut pool);
+            let decoded = meta.decode(&read.records, Some(&read.texts), None, Some(&source.id), &mut pool);
             let kept = filter.keeps(&decoded);
             decoded.batch.reclaim(&mut pool);
             Envelope::ok(Kept {

@@ -37,7 +37,7 @@ use crate::plan::compile::Plan;
 use crate::plan::config::{Answer, Payload};
 use crate::plan::exec;
 use crate::plan::output::{RaisedIn, answer_rows, tag_column, tag_or_not};
-use crate::plan::topology::{CompiledRoute, CompiledTopology, Decoded, Placement, SourceMeta, route_masks};
+use crate::plan::topology::{CompiledRoute, CompiledTopology, DecodedBatch, Placement, SourceMeta, route_masks};
 
 /// The block reason for a destination that stopped taking records. The cause is quoted: a missing topic, an unreachable
 /// broker and a full queue are three different fixes.
@@ -324,8 +324,10 @@ pub struct Lane {
     /// The id the author gave this source, which is what a capture names. `None` on the single-source tick driver:
     /// that is not a deployment, and a capture only ever reaches one.
     pub source_name: Option<String>,
-    /// What this source's records carry, and how their bytes become `_raw`'s text; the ingest batch is built from it.
+    /// What this source's records carry, and how their payloads are decoded.
     pub meta: SourceMeta,
+    /// The writers' schemas an Avro source's payloads name, which its batches are decoded with.
+    pub writers: Option<Arc<crate::io::avro::Writers>>,
     /// Batches this source's reader has polled and no transform thread has taken.
     pub batches: Handoff,
     /// Every destination reachable from this source: what its batches are dispatched to, and what its reader waits on.
@@ -344,6 +346,7 @@ impl Lane {
         source_id: SourceId,
         source_name: Option<String>,
         meta: SourceMeta,
+        writers: Option<Arc<crate::io::avro::Writers>>,
         batches: Handoff,
         destinations: Vec<DestId>,
         reports: Reports,
@@ -352,6 +355,7 @@ impl Lane {
             source_id,
             source_name,
             meta,
+            writers,
             batches,
             destinations: Mutex::new(destinations),
             reports,
@@ -431,7 +435,7 @@ impl Lane {
         let records: Vec<SourceRecord> = held.blocking.iter().map(|(i, _)| held.records[*i].clone()).collect();
         let why: Vec<String> = held.blocking.iter().map(|(_, why)| why.clone()).collect();
         let mut pool = BufferPool::new();
-        let decoded = self.meta.decode(&records, None::<&[&str]>, Some(name), &mut pool);
+        let decoded = self.meta.decode(&records, None::<&[&str]>, self.writers.as_ref(), Some(name), &mut pool);
         captures.tap_held(name, &mut held.shown, &records, &self.meta, &decoded, &why);
         decoded.batch.reclaim(&mut pool);
     }
@@ -686,6 +690,7 @@ impl Worker {
             source_id,
             None,
             topology.meta_for(source_id),
+            None,
             Handoff::new(),
             destinations.iter().map(|d| d.id).collect(),
             reports,
@@ -1643,7 +1648,7 @@ impl Transform {
         let routed = buffer::catch_over_budget(|| {
             let mut decoded = lane
                 .meta
-                .decode(slice, None::<&[&str]>, lane.source_name.as_deref(), pool);
+                .decode(slice, None::<&[&str]>, lane.writers.as_ref(), lane.source_name.as_deref(), pool);
             let masks = {
                 let mut ctx = Ctx::at(pool, &mut errors, now);
                 route_masks(&self.topology.routes, lane.source_id, &mut decoded.batch, &mut ctx)
@@ -1930,7 +1935,7 @@ impl Transform {
     /// delivers to, or dropped (design doc, Exception taxonomy). Counted either way, because a source silently matching
     /// nothing is what this exists to make visible. Block never gets here: `run_attempt` stops the batch before any
     /// pipeline runs.
-    fn place_unmatched(&self, lane: &Lane, slice: &[SourceRecord], decoded: &Decoded, taken: &[u64], out: &mut Output) {
+    fn place_unmatched(&self, lane: &Lane, slice: &[SourceRecord], decoded: &DecodedBatch, taken: &[u64], out: &mut Output) {
         let unmatched = (slice.len() - bits::popcount(taken)) as u64;
         if unmatched == 0 {
             return;
@@ -1955,7 +1960,7 @@ impl Transform {
         docs: Serialized,
         route: usize,
         meta: &SourceMeta,
-        decoded: &Decoded,
+        decoded: &DecodedBatch,
         delivered: &mut HashSet<(u32, DestId)>,
     ) {
         // Destination id -> position in `destinations`, so the per-row loop visits only the destinations a row goes
@@ -2214,7 +2219,7 @@ impl Transform {
         let mut pool = BufferPool::new();
         let decoded = lane
             .meta
-            .decode(records, None::<&[&str]>, lane.source_name.as_deref(), &mut pool);
+            .decode(records, None::<&[&str]>, lane.writers.as_ref(), lane.source_name.as_deref(), &mut pool);
         let rows: Vec<usize> = (0..records.len()).collect();
         self.place_delivered(out, targets, &decoded, &rows, lane, DROPPED_UNPROCESSABLE);
         decoded.batch.reclaim(&mut pool);
@@ -2230,7 +2235,7 @@ impl Transform {
         &self,
         out: &mut Output,
         targets: &[DestId],
-        decoded: &Decoded,
+        decoded: &DecodedBatch,
         rows: &[usize],
         lane: &Lane,
         dropped: &'static str,
@@ -2239,7 +2244,7 @@ impl Transform {
         // The record no pipeline ran on, `{_raw: str}`, as columns: cut once, for every target that reads them. Only a
         // payload source's record has that type; a typed record gets no columns, so a Parquet target refuses it.
         let mut raw: Option<Arc<Chunk>> = None;
-        let raw_record = lane.meta.decodes();
+        let raw_record = lane.meta.raw_record();
         for &to in targets {
             if !self.destinations.iter().any(|d| d.id == to) {
                 out.outcomes.drop_rows(dropped, rows.len() as u64);
@@ -2962,7 +2967,7 @@ struct Ingest<'a> {
     records: &'a [SourceRecord],
     meta: &'a SourceMeta,
     /// The records' columns, as routing read them.
-    decoded: &'a mut Decoded,
+    decoded: &'a mut DecodedBatch,
     /// Whether nothing reads `decoded` after this route, so it takes its columns: no later route, and no row left
     /// unmatched.
     last: bool,
@@ -2986,7 +2991,7 @@ struct Senders<'a> {
 /// Row `row` of `decoded` in the form `payload` names, for a row no pipeline made: the record as it arrived, the
 /// document a pipeline with no steps would write for it, or one of that document's fields. `None` for a field the
 /// record does not have.
-fn source_form(payload: &Payload, meta: &SourceMeta, decoded: &Decoded, row: usize) -> Option<Vec<u8>> {
+fn source_form(payload: &Payload, meta: &SourceMeta, decoded: &DecodedBatch, row: usize) -> Option<Vec<u8>> {
     match payload {
         Payload::Bytes { field } => decoded.field_bytes(meta, row, field),
         Payload::Record => Some(decoded.record_json(meta, row)),
@@ -3760,7 +3765,7 @@ pub fn preview_routes_at(
             let mut errors = ErrorSink::new();
 
             let masks = buffer::catch_over_budget(|| {
-                let mut decoded = meta.decode(slice, Some(&texts[row..row + 1]), Some(source_name), &mut pool);
+                let mut decoded = meta.decode(slice, Some(&texts[row..row + 1]), None, Some(source_name), &mut pool);
                 let masks = {
                     let mut ctx = Ctx::at(&mut pool, &mut errors, now);
                     route_masks(&topology.routes, source, &mut decoded.batch, &mut ctx)
@@ -4355,7 +4360,7 @@ mod tests {
         let fields = crate::io::SourceFields::new();
         let records = meta.read_table(&pasted_from(&[(&object, &fields)])).unwrap();
         let mut pool = BufferPool::new();
-        let typed = meta.decode(&records, None::<&[&str]>, None, &mut pool);
+        let typed = meta.decode(&records, None::<&[&str]>, None, None, &mut pool);
         let form = |payload: Payload| source_form(&payload, &meta, &typed, 0).map(|v| String::from_utf8(v).unwrap());
 
         assert_eq!(form(Payload::Record).as_deref(), Some(r#"{"id":7,"name":"a"}"#));
@@ -4368,7 +4373,7 @@ mod tests {
         );
 
         let bytes = crate::io::SourceRecord::read(crate::io::RecordChunk::of_bytes(b"line"), 0, &fields);
-        let line = SourceMeta::KAFKA.decode(&[bytes], None::<&[&str]>, None, &mut pool);
+        let line = SourceMeta::KAFKA.decode(&[bytes], None::<&[&str]>, None, None, &mut pool);
         let raw = |payload: Payload| {
             source_form(&payload, &SourceMeta::KAFKA, &line, 0).map(|v| String::from_utf8(v).unwrap())
         };

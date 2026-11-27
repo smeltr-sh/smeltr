@@ -1318,7 +1318,7 @@ impl SqlFieldDto {
         kind: crate::plan::topology::SourceMeta,
         fields: &[SqlFieldDto],
     ) -> Result<crate::plan::topology::SourceMeta, String> {
-        kind.declaring_open(SqlFieldDto::record(fields)?)
+        kind.decoding_avro(SqlFieldDto::record(fields)?)
     }
 
     fn record(fields: &[SqlFieldDto]) -> Result<Vec<(String, crate::core::column::DataType)>, String> {

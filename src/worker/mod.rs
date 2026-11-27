@@ -1220,6 +1220,7 @@ fn spawn_reader(
         source_id,
         Some(source_name.to_string()),
         topology.meta_for(source_id),
+        kind.avro_writers(),
         crate::handoff::Handoff::watched(shared.ready.clone(), depth.lane * depth.batch_bytes),
         destinations.clone(),
         reports,

@@ -136,6 +136,17 @@ pub struct SourceMeta {
     source: &'static [(&'static str, DataType)],
     /// How a byte source's payload becomes `_raw`'s text (`format::encoding`).
     encoding: Encoding,
+    /// How its payloads are decoded into its record.
+    format: Format,
+}
+
+/// How a source's payloads are laid out, and so how transform decodes them into its record.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Format {
+    /// Text, read in the source's text encoding into `_raw`.
+    Text,
+    /// Confluent-framed Avro, read with the writer's schema each names (`io::avro::decode`).
+    Avro,
 }
 
 /// The entries of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
@@ -510,6 +521,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: KAFKA_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an Event Hubs record carries: a Kafka record's fields, with the event hub as its topic.
@@ -518,6 +530,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: KAFKA_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a metrics record carries: its source's name and kind, and the topic it is stamped with.
@@ -526,6 +539,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: METRICS_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a logs record carries, which is the same.
@@ -534,6 +548,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: LOGS_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an SQS/S3 record carries: the object it was read from, and its record number there.
@@ -542,6 +557,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a Listing/S3 record carries: the same as an SQS/S3 record.
@@ -550,6 +566,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a Listing/GCS record carries: the same as an SQS/S3 record.
@@ -558,6 +575,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a Listing/Azure Blob record carries: the same, with the container as its bucket.
@@ -566,6 +584,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an SFTP record carries: the same, with the directory as its bucket and the path under it as its key.
@@ -574,6 +593,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a Queue/Azure Blob record carries: the same, with the container as its bucket.
@@ -582,6 +602,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a Pub/Sub/GCS record carries: the same.
@@ -590,6 +611,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an HTTP API record carries: the address of the page it was read from.
@@ -598,6 +620,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: API_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an Okta System Log record carries: the same.
@@ -606,6 +629,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: API_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a PostgreSQL source's record carries before it declares its fields, which every one does.
@@ -614,6 +638,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: SQL_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a MySQL or MariaDB source's record carries before it declares its fields, which every one does.
@@ -622,6 +647,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: SQL_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an HTTP receiver's record carries: the address of the sender that delivered it.
@@ -630,6 +656,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: RECEIVER_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a HEC receiver's record carries: its sender's address, and what the sender filed its event under.
@@ -638,6 +665,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: HEC_RECEIVER_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an S2S receiver's record carries: its forwarder's address, and what the forwarder filed its event under.
@@ -646,6 +674,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: HEC_RECEIVER_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an Elasticsearch receiver's record carries: a document, its sender's address, and what its action named.
@@ -654,6 +683,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: ELASTIC_RECEIVER_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What a socket receiver carries: a message's bytes, and its sender's address.
@@ -662,6 +692,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: RECEIVER_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an OTLP receiver of logs carries: a log record, its sender's address, and its resource and scope.
@@ -670,6 +701,7 @@ impl SourceMeta {
         record: OTLP_LOG,
         source: OTLP_RECEIVER_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an OTLP receiver of traces carries: a span, its sender's address, and its resource and scope.
@@ -678,6 +710,7 @@ impl SourceMeta {
         record: OTLP_SPAN,
         source: OTLP_RECEIVER_FIELDS,
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// What an OTLP receiver of `signal` carries: a log record, a metric's data point or a span, its sender's address,
@@ -691,6 +724,7 @@ impl SourceMeta {
                 record: otlp_metric_point(),
                 source: OTLP_RECEIVER_FIELDS,
                 encoding: Encoding::Auto,
+                format: Format::Text,
             },
             Signal::Traces => SourceMeta::OTLP_TRACES,
         }
@@ -704,6 +738,7 @@ impl SourceMeta {
             record: prometheus_record(),
             source: PROMETHEUS_RECEIVER_FIELDS,
             encoding: Encoding::Auto,
+            format: Format::Text,
         }
     }
 
@@ -743,6 +778,7 @@ impl SourceMeta {
         record: PAYLOAD_RECORD,
         source: &[(SOURCE_BYTES, DataType::Bytes)],
         encoding: Encoding::Auto,
+        format: Format::Text,
     };
 
     /// This meta with `record` as its record's fields in place of `_raw`, and without `__source.bytes`. A field's name is a path, as a pipeline
@@ -755,10 +791,15 @@ impl SourceMeta {
         self.declare(record, |_| false)
     }
 
-    /// `declaring`, the record open (`opened`): an Avro record's. It may declare no field, and keeps every top-level
-    /// field then.
-    pub fn declaring_open(self, record: Vec<(String, DataType)>) -> Result<SourceMeta, String> {
-        Ok(self.declare(record, |_| false)?.opened())
+    /// This meta reading each payload as Avro into `record`, open (`opened`). It may declare no field, and keeps
+    /// every top-level field then. Its batches are payloads, so it keeps `__source.bytes`.
+    pub fn decoding_avro(self, record: Vec<(String, DataType)>) -> Result<SourceMeta, String> {
+        let source = self.source;
+        Ok(SourceMeta {
+            source,
+            format: Format::Avro,
+            ..self.declare(record, |_| false)?.opened()
+        })
     }
 
     /// This meta with its record open: every top-level field of a payload no declared field claims is kept, as the
@@ -865,7 +906,7 @@ impl SourceMeta {
     /// none.
     pub fn with_encoding(self, encoding: Encoding) -> SourceMeta {
         match encoding {
-            _ if !self.reads_bytes() => self,
+            _ if !self.reads_text() => self,
             Encoding::None => SourceMeta {
                 record: std::borrow::Cow::Borrowed(&[]),
                 encoding,
@@ -880,13 +921,24 @@ impl SourceMeta {
         self.encoding
     }
 
-    /// Whether this source's record is its payload decoded, `_raw`: it reads bytes and decodes them.
-    pub fn decodes(&self) -> bool {
-        self.reads_bytes() && !self.record.is_empty()
+    /// How this source's payloads are decoded.
+    pub fn format(&self) -> Format {
+        self.format
     }
 
-    /// Whether this source hands over each record's payload as it read it, as `__source.bytes`. Its chunk is then
-    /// one `bytes` column, the payloads, and its record is `_raw`, each payload decoded with the source's encoding.
+    /// Whether this source's record is `_raw`: each payload read as text in the source's text encoding.
+    pub fn raw_record(&self) -> bool {
+        self.reads_text() && !self.record.is_empty()
+    }
+
+    /// Whether this source's payloads are text.
+    fn reads_text(&self) -> bool {
+        self.reads_bytes() && self.format == Format::Text
+    }
+
+    /// Whether this source hands over each record's payload as it read it, as `__source.bytes`: its batches are
+    /// payloads, which transform decodes into its record by its format. A source that does not hands over its
+    /// record's columns.
     pub fn reads_bytes(&self) -> bool {
         self.source.iter().any(|(name, _)| *name == SOURCE_BYTES)
     }
@@ -1010,58 +1062,60 @@ impl SourceMeta {
 }
 
 impl SourceMeta {
-    /// Put this meta's columns over `records` into `batch`: every field of the record, and each `__source` field
-    /// `wanted` names by its index. `text` is each record's payload decoded, read where the source `reads_bytes`;
-    /// `source` is what `__source.name` reads.
+    /// Put this meta's columns over `records` into `batch`: every field of the record, and every `__source` field: a
+    /// route condition may test any of them before a pipeline is chosen. `text` is each record's payload decoded, read where the record is `_raw`;
+    /// `writers` holds the schemas an Avro source's payloads name; `source` is what `__source.name` reads.
     ///
     /// Returns each value ingest could not take as it came, as its row, its slot, how, and the value as read: a
-    /// `__source` value repaired to valid UTF-8, or a record value that is not its field's type and is null.
+    /// `__source` value repaired to valid UTF-8, a payload that does not decode, or a record value that is not its
+    /// field's type and is null. With them, the writer's schema an Avro source's last payload was read with.
     pub fn ingest<T: AsRef<str>>(
         &self,
         batch: &mut Batch,
         records: &[crate::io::SourceRecord],
         text: &[T],
+        writers: Option<&crate::io::avro::Writers>,
         source: Option<&str>,
-        wanted: impl Fn(usize) -> bool,
         pool: &mut crate::core::buffer::BufferPool,
-    ) -> Vec<(u32, crate::core::id::SlotId, ExceptionKind, Option<String>)> {
+    ) -> (Vec<Noted>, Option<std::sync::Arc<crate::io::avro::Parsed>>) {
         let mut noted = Vec::new();
-        if self.decodes() {
+        let mut writer = None;
+        if self.raw_record() {
             let values = text.iter().map(|t| Some(t.as_ref().as_bytes()));
             batch.put(crate::core::batch::SLOT_RAW, str_column(pool, values), pool);
         } else if !self.reads_bytes() {
-            let fields = &self.record;
             let (chunk, rows) = chunk_rows(records);
-            let slot_of = |field: usize| crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field);
-            for (i, (_, ty)) in fields.iter().enumerate() {
-                let slot = slot_of(i);
+            for (i, (_, ty)) in self.record.iter().enumerate() {
                 let column = match &chunk {
                     Some(chunk) => chunk.column(i).gather(pool, &rows),
                     None => Column::empty(ty.clone(), 0),
                 };
-                batch.put(slot, column, pool);
+                batch.put(record_slot(i), column, pool);
             }
             if let Some(chunk) = &chunk {
                 for (at, &row) in rows.iter().enumerate() {
-                    // A payload that did not read has no field of its own to blame, so its record's first holds it.
-                    if let Some(why) = chunk.unread(row) {
-                        let kind = ExceptionKind::Unparsable;
-                        noted.push((at as u32, slot_of(0), kind, Some(why.to_string())));
-                        continue;
-                    }
                     let from = chunk.failed().partition_point(|(r, _, _)| *r < row);
-                    for (_, field, value) in chunk.failed()[from..].iter().take_while(|(r, _, _)| *r == row) {
-                        let kind = ExceptionKind::UnparsableField {
-                            to: fields[*field].1.clone(),
-                        };
-                        let slot = slot_of(*field);
-                        noted.push((at as u32, slot, kind, Some(value.clone())));
-                    }
+                    let failed = chunk.failed()[from..].iter().take_while(|(r, _, _)| *r == row);
+                    self.note_read(&mut noted, at as u32, None, failed.map(|(_, f, v)| (*f, v)));
                 }
             }
+        } else if self.format == Format::Avro {
+            let payloads: Vec<&[u8]> = self.read_bytes_each(records).map(Option::unwrap_or_default).collect();
+            let writers = writers.expect("an Avro source's batch is decoded with its writers' schemas");
+            let read = crate::io::avro::decode(&self.record, writers, payloads.iter().copied(), pool);
+            for (i, column) in read.columns.into_iter().enumerate() {
+                batch.put(record_slot(i), column, pool);
+            }
+            let (mut unread, mut failed) = (read.unread.iter().peekable(), read.failed.iter().peekable());
+            for row in 0..records.len() as u32 {
+                let why = unread.next_if(|(r, _)| *r == row).map(|(_, why)| why.as_str());
+                let fields = std::iter::from_fn(|| failed.next_if(|(r, _, _)| *r == row).map(|(_, f, v)| (*f, v)));
+                self.note_read(&mut noted, row, why, fields);
+            }
+            writer = read.newest;
         }
         let mut repaired = Vec::new();
-        for i in (0..self.source.len()).filter(|i| wanted(*i)) {
+        for i in 0..self.source.len() {
             let slot = self.source_slot(i);
             batch.put(slot, self.column(i, records, source, pool, &mut repaired), pool);
             noted.extend(
@@ -1070,8 +1124,35 @@ impl SourceMeta {
                     .map(|row| (row, slot, ExceptionKind::InvalidUtf8, None)),
             );
         }
-        noted
+        (noted, writer)
     }
+
+    /// Notes row `row`'s payload that did not read, and why, or each value of its that is not its field's type, by
+    /// the field's index, as the payload spelled it.
+    fn note_read<'v>(
+        &self,
+        noted: &mut Vec<Noted>,
+        row: u32,
+        unread: Option<&str>,
+        failed: impl Iterator<Item = (usize, &'v String)>,
+    ) {
+        // A payload that did not read has no field of its own to blame, so its record's first holds it.
+        if let Some(why) = unread {
+            noted.push((row, record_slot(0), ExceptionKind::Unparsable, Some(why.to_string())));
+            return;
+        }
+        for (field, value) in failed {
+            let kind = ExceptionKind::UnparsableField {
+                to: self.record[field].1.clone(),
+            };
+            noted.push((row, record_slot(field), kind, Some(value.clone())));
+        }
+    }
+}
+
+/// The slot of the record's field `field`.
+fn record_slot(field: usize) -> crate::core::id::SlotId {
+    crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field)
 }
 
 /// What decoding could not take as it came: the row, the slot, the kind of exception, and the value as read.
@@ -1079,7 +1160,7 @@ pub type Noted = (u32, crate::core::id::SlotId, ExceptionKind, Option<String>);
 
 /// A batch's records as columns, decoded once. Routing reads them, each route's batch takes its own, and whatever
 /// shows a record as it arrived reads it here.
-pub struct Decoded {
+pub struct DecodedBatch {
     /// The prefix column `__live`, primed all-true, a column for each field of the record, and every `__source` field
     /// the source declares.
     pub batch: Batch,
@@ -1087,18 +1168,25 @@ pub struct Decoded {
     pub noted: Vec<Noted>,
     /// What decoding a payload's text repaired or guessed, by row.
     pub repairs: Vec<(u32, ExceptionKind)>,
+    /// The writers' schemas an Avro source's payloads were decoded with.
+    pub writers: Option<std::sync::Arc<crate::io::avro::Writers>>,
+    /// Of them, the one its last payload that read was read with.
+    pub writer: Option<std::sync::Arc<crate::io::avro::Parsed>>,
 }
 
 impl SourceMeta {
-    /// `records` as columns. Each payload is decoded with the source's encoding into `_raw`, unless `text` already
-    /// holds it decoded, as a sample's does. `source` is what `__source.name` reads.
+    /// `records` as columns. Each payload is decoded by the source's format: as text in its text encoding into
+    /// `_raw`, unless `text` already holds that, as a sample's does; or as Avro with the schemas in `writers`.
+    /// `source` is what `__source.name` reads.
     pub fn decode<T: AsRef<str>>(
         &self,
         records: &[crate::io::SourceRecord],
         text: Option<&[T]>,
+        writers: Option<&std::sync::Arc<crate::io::avro::Writers>>,
         source: Option<&str>,
         pool: &mut crate::core::buffer::BufferPool,
-    ) -> Decoded {
+    ) -> DecodedBatch {
+        let (writers, of) = (writers.cloned(), writers.map(|w| &**w));
         let rows = records.len();
         let layout: Vec<DataType> = ingest_fields(self).into_iter().map(|(_, t)| t).collect();
         let mut batch = Batch::new(&layout, rows, 0);
@@ -1107,30 +1195,36 @@ impl SourceMeta {
         batch.put(SLOT_LIVE, live, pool);
 
         let mut repairs = Vec::new();
-        // Every declared field, not just what one plan reads: a route condition may test any of them before a
-        // pipeline is chosen.
-        let noted = match text {
-            Some(text) => self.ingest(&mut batch, records, text, source, |_| true, pool),
+        let (noted, writer) = match text {
+            Some(text) => self.ingest(&mut batch, records, text, of, source, pool),
             None => {
                 let mut text = Vec::with_capacity(rows);
-                for (row, read) in self.read_bytes_each(records).enumerate() {
-                    let decoded = self.encoding.decode(read.unwrap_or_default());
-                    if decoded.replaced {
-                        repairs.push((row as u32, ExceptionKind::InvalidUtf8));
+                if self.raw_record() {
+                    for (row, read) in self.read_bytes_each(records).enumerate() {
+                        let decoded = self.encoding.decode(read.unwrap_or_default());
+                        if decoded.replaced {
+                            repairs.push((row as u32, ExceptionKind::InvalidUtf8));
+                        }
+                        if let Some(guess) = decoded.guessed {
+                            repairs.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
+                        }
+                        text.push(decoded.text);
                     }
-                    if let Some(guess) = decoded.guessed {
-                        repairs.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
-                    }
-                    text.push(decoded.text);
                 }
-                self.ingest(&mut batch, records, &text, source, |_| true, pool)
+                self.ingest(&mut batch, records, &text, of, source, pool)
             }
         };
-        Decoded { batch, noted, repairs }
+        DecodedBatch {
+            batch,
+            noted,
+            repairs,
+            writers,
+            writer,
+        }
     }
 }
 
-impl Decoded {
+impl DecodedBatch {
     /// Puts the record's fields and each `__source` field `wanted` names into `batch`, a route's. They are copied, or
     /// moved when `last` says nothing reads them here again. Returns what was noted against the slots it put.
     pub fn give(
@@ -1201,7 +1295,7 @@ impl Decoded {
     /// Each record's `_raw`, or no text for a record that has none.
     pub fn raw(&self, meta: &SourceMeta) -> Vec<&str> {
         let rows = self.batch.rows();
-        if !meta.decodes() {
+        if !meta.raw_record() {
             return vec![""; rows];
         }
         let text = self
@@ -1490,6 +1584,16 @@ impl SourceKind {
         }
     }
 
+    /// The writers' schemas its payloads name, where it reads them as Avro: shared by the source and transform.
+    pub fn avro_writers(&self) -> Option<std::sync::Arc<crate::io::avro::Writers>> {
+        let avro = match self {
+            SourceKind::Kafka(k) => k.avro.as_ref(),
+            SourceKind::Objects(o) => o.avro.as_ref(),
+            _ => None,
+        };
+        avro.map(|a| a.writers.clone())
+    }
+
     /// The address a receiver listens on: every worker of the group binds it, and its supervisor holds it across a
     /// deploy. `None` for a kind that reaches out.
     pub fn listens(&self) -> Option<Listen> {
@@ -1580,9 +1684,10 @@ pub struct AvroRead {
     /// Where a stream's payloads are Confluent-framed: the registry holding each writer's schema. `None` for an
     /// object, a container file holding its own.
     pub registry: Option<SchemaRegistry>,
-    /// What a record carries: the record each payload is read into, and its source's `__source` fields but its
-    /// bytes.
+    /// What a record carries: the record each payload is read into, and its source's `__source` fields.
     pub meta: SourceMeta,
+    /// The writers' schemas the source has met, which transform decodes its payloads with.
+    pub writers: std::sync::Arc<crate::io::avro::Writers>,
 }
 
 /// Operator-supplied librdkafka properties, already split by whether the value is a credential. `credentials` maps a
@@ -4009,7 +4114,7 @@ mod tests {
         let mut errors = ErrorSink::new();
         let mut batch = Batch::new(&layout, records.len(), 0);
         let texts = vec![""; records.len()];
-        meta.ingest(&mut batch, records, &texts, None, |_| true, &mut pool);
+        meta.ingest(&mut batch, records, &texts, None, None, &mut pool);
         let mut live = Column::alloc(&mut pool, &DataType::Bool, records.len());
         bits::fill_valid(live.bool_mut().unwrap().values, records.len());
         batch.put(SLOT_LIVE, live, &mut pool);
@@ -4106,7 +4211,7 @@ mod tests {
         };
         let mut pool = crate::core::buffer::BufferPool::new();
         let one = std::slice::from_ref(&record);
-        let decoded = SourceMeta::KAFKA.decode(one, None::<&[&str]>, None, &mut pool);
+        let decoded = SourceMeta::KAFKA.decode(one, None::<&[&str]>, None, None, &mut pool);
         assert_eq!(SourceMeta::KAFKA.read_bytes(&record), Some(&read[..]));
         assert_eq!(
             decoded.field_bytes(&SourceMeta::KAFKA, 0, SOURCE_BYTES),
@@ -4120,7 +4225,7 @@ mod tests {
             .unwrap();
         assert_eq!(typed.read_bytes(&record), None);
         assert_eq!(typed.field_type(SOURCE_BYTES), None);
-        let decoded = typed.decode(one, None::<&[&str]>, None, &mut pool);
+        let decoded = typed.decode(one, None::<&[&str]>, None, None, &mut pool);
         assert_eq!(decoded.field_bytes(&typed, 0, SOURCE_BYTES), None);
         assert_eq!(decoded.field_bytes(&typed, 0, "payload"), Some(read));
         decoded.batch.reclaim(&mut pool);
@@ -4151,7 +4256,7 @@ mod tests {
             .iter()
             .position(|(n, _)| *n == SOURCE_BYTES)
             .unwrap();
-        let noted = meta.ingest(&mut batch, &records, &["caf\u{fffd}"], None, |i| i == at, &mut pool);
+        let (noted, _) = meta.ingest(&mut batch, &records, &["caf\u{fffd}"], None, None, &mut pool);
 
         assert!(noted.is_empty(), "{noted:?}");
         let column = batch.get(meta.source_slot(at));
@@ -4179,7 +4284,7 @@ mod tests {
         }];
         let meta = SourceMeta::KAFKA.with_encoding(Encoding::None);
         assert!(meta.record.is_empty());
-        assert!(meta.reads_bytes() && !meta.decodes());
+        assert!(meta.reads_bytes() && !meta.raw_record());
         assert_eq!(meta.field_type("_raw"), None);
         assert_eq!(meta.field_type(SOURCE_BYTES), Some(DataType::Bytes));
         assert_eq!(SourceMeta::KAFKA.with_encoding(Encoding::Auto), SourceMeta::KAFKA);
@@ -4200,13 +4305,13 @@ mod tests {
             .iter()
             .position(|(n, _)| *n == SOURCE_BYTES)
             .unwrap();
-        let noted = meta.ingest(&mut batch, &records, &[""], None, |i| i == at, &mut pool);
+        let (noted, _) = meta.ingest(&mut batch, &records, &[""], None, None, &mut pool);
         assert!(noted.is_empty(), "{noted:?}");
         assert_eq!(batch.get(meta.source_slot(at)).varlen().unwrap().get(0), &read[..]);
         batch.reclaim(&mut pool);
 
         assert_eq!(meta.record_json(&records[0]), b"{}");
-        let decoded = meta.decode(&records, None::<&[&str]>, None, &mut pool);
+        let decoded = meta.decode(&records, None::<&[&str]>, None, None, &mut pool);
         assert_eq!(decoded.record_text(&meta, 0, "_raw"), None);
         assert_eq!(decoded.field_bytes(&meta, 0, SOURCE_BYTES), Some(read));
         decoded.batch.reclaim(&mut pool);
@@ -4227,7 +4332,7 @@ mod tests {
             let meta = SourceMeta::of_columns(&case.table.columns).unwrap();
             let read = crate::leader::preview::read_sample(&meta, &case.table).unwrap();
             let mut pool = crate::core::buffer::BufferPool::new();
-            let decoded = meta.decode(&read.records, Some(&read.texts), None, &mut pool);
+            let decoded = meta.decode(&read.records, Some(&read.texts), None, None, &mut pool);
             let records: Vec<_> = (0..read.records.len())
                 .map(|row| decoded.record_object(&meta, row))
                 .collect();

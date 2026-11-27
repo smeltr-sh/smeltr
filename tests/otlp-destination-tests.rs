@@ -107,7 +107,7 @@ pub fn carried(signal: Signal, records: &[SourceRecord]) -> Vec<OwnedRecord> {
     for batch in records.chunk_by(|a, b| Arc::ptr_eq(&a.chunk, &b.chunk)) {
         let mut columns = Batch::new(&plan.slot_layout, batch.len(), 0);
         let none: &[&str] = &[];
-        meta.ingest(&mut columns, batch, none, Some("in"), |_| true, &mut env.pool);
+        meta.ingest(&mut columns, batch, none, None, Some("in"), &mut env.pool);
         rows.extend(env.run(&plan, &mut columns).into_iter().map(|value| OwnedRecord {
             value,
             payload: Payload::Record,
@@ -292,7 +292,7 @@ fn a_pipeline_writes_under_a_points_buckets() {
     let mut env = Env::new();
     let mut columns = Batch::new(&plan.slot_layout, received.len(), 0);
     let none: &[&str] = &[];
-    meta.ingest(&mut columns, &received, none, Some("in"), |_| true, &mut env.pool);
+    meta.ingest(&mut columns, &received, none, None, Some("in"), &mut env.pool);
     let rows = env.run_json(&plan, &mut columns);
     assert_eq!(
         rows[0]["positive"],

@@ -1497,12 +1497,19 @@ fn commit(source: &mut dyn Source, records: &[SourceRecord]) -> Result<(), Strin
 /// An Avro record is its record object as JSON, whose keys `serde_json` writes in order.
 fn check_records(c: &ObjectSourceConfig, records: &[SourceRecord], objects: &[Object]) -> Result<(), String> {
     let mut got: BTreeMap<String, Vec<(i32, i64, Vec<u8>)>> = BTreeMap::new();
-    for r in records {
-        let bytes = match &c.avro {
-            Some(avro) => {
-                let json = avro.meta.record_json(r);
+    // Decoded as transform decodes them.
+    let mut pool = smeltr::core::buffer::BufferPool::new();
+    let decoded = (c.avro.as_ref()).map(|avro| {
+        let batch = (avro.meta).decode(records, None::<&[&str]>, Some(&avro.writers), None, &mut pool);
+        let json: Vec<Vec<u8>> = (0..records.len()).map(|row| batch.record_json(&avro.meta, row)).collect();
+        batch.batch.reclaim(&mut pool);
+        json
+    });
+    for (row, r) in records.iter().enumerate() {
+        let bytes = match &decoded {
+            Some(json) => {
                 let value: Value =
-                    serde_json::from_slice(&json).map_err(|e| format!("a record that is no JSON: {e}"))?;
+                    serde_json::from_slice(&json[row]).map_err(|e| format!("a record that is no JSON: {e}"))?;
                 serde_json::to_vec(&value).unwrap()
             }
             None => r.bytes().ok_or("a record with no bytes")?.to_vec(),
@@ -2012,7 +2019,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
                 MAX_RECORD_BYTES,
             )
             .map_err(|e| format!("no source: {e:?}"))?;
-            Ok(Box::new(reading(source, avro.as_ref())?) as Box<dyn Source>)
+            Ok(Box::new(reading(source, avro.as_ref())) as Box<dyn Source>)
         };
         let backend = Backend {
             stores,
@@ -2040,17 +2047,15 @@ fn in_memory(
         MAX_RECORD_BYTES,
     )
     .map_err(|e| format!("no source: {e:?}"))?;
-    Ok(Box::new(reading(source, c.avro.as_ref())?))
+    Ok(Box::new(reading(source, c.avro.as_ref())))
 }
 
 /// `source`, reading Avro where `avro` says, as `object_source::open` builds it.
-fn reading(source: ObjectSource, avro: Option<&smeltr::plan::topology::AvroRead>) -> Result<ObjectSource, String> {
-    Ok(match avro {
-        Some(avro) => source.reading_avro(
-            smeltr::io::avro::AvroReader::new(avro, None, &Default::default()).map_err(|e| format!("{e:?}"))?,
-        ),
+fn reading(source: ObjectSource, avro: Option<&smeltr::plan::topology::AvroRead>) -> ObjectSource {
+    match avro {
+        Some(avro) => source.reading_avro(avro.writers.clone()),
         None => source,
-    })
+    }
 }
 
 // -- the live fuzzers -------------------------------------------------------------------------------------------

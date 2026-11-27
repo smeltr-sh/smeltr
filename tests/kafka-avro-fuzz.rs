@@ -515,6 +515,28 @@ fn secrets() -> HeldSecrets {
     secrets
 }
 
+/// `records` decoded as transform decodes them, with the writers' schemas in `writers`: each one's record as the
+/// document a pipeline with no steps writes for it, and why its payload did not read, where it did not.
+fn decoded(
+    meta: &SourceMeta,
+    writers: &Arc<smeltr::io::avro::Writers>,
+    records: &[SourceRecord],
+) -> Vec<(Value, Option<String>)> {
+    let mut pool = smeltr::core::buffer::BufferPool::new();
+    let batch = meta.decode(records, None::<&[&str]>, Some(writers), None, &mut pool);
+    let rows = (0..records.len())
+        .map(|row| {
+            let unread = batch.noted.iter().find(|(r, _, kind, _)| {
+                *r as usize == row && matches!(kind, smeltr::core::error::ExceptionKind::Unparsable)
+            });
+            let record = serde_json::from_slice(&batch.record_json(meta, row)).unwrap_or_default();
+            (record, unread.and_then(|(_, _, _, why)| why.clone()))
+        })
+        .collect();
+    batch.batch.reclaim(&mut pool);
+    rows
+}
+
 /// What the source reads of `row`, written from `text`: each declared field it has, as `record_json` writes it, and
 /// each top-level field no declared field claims, `_raw` among them, nulls left out.
 fn expected(draw: &Draw, row: &[Value], text: &str) -> Value {
@@ -743,6 +765,7 @@ fn seed(
 
     // Read.
     let mut source = KafkaSource::new(&source_config, &secrets).map_err(|e| fail(format!("does not open: {e:?}")))?;
+    let writers = source_config.avro.as_ref().expect("an Avro source").writers.clone();
     if faults.busy_source {
         registry.unwrap().fail(1);
     }
@@ -760,13 +783,13 @@ fn seed(
         }
         match source.poll_batch(100, 1 << 20, Duration::from_millis(100)) {
             Ok(records) => {
-                for r in records {
+                let rows = decoded(&meta, &writers, &records);
+                for (r, (row, why)) in records.into_iter().zip(rows) {
                     commit.insert(TopicPartition::new(Arc::clone(&r.topic), r.partition), r.offset);
-                    if let Service::EventHubs(_) = service {
-                        let row: Value = serde_json::from_slice(&meta.record_json(&r)).unwrap_or_default();
-                        if r.chunk.unread(r.row).is_some() || !row["id"].as_i64().is_some_and(mine) {
-                            continue;
-                        }
+                    if let Service::EventHubs(_) = service
+                        && (why.is_some() || !row["id"].as_i64().is_some_and(mine))
+                    {
+                        continue;
                     }
                     read.push(r);
                 }
@@ -783,10 +806,9 @@ fn seed(
     }
     let mut got: BTreeMap<i64, Value> = BTreeMap::new();
     let mut unread_got = Vec::new();
-    for r in &read {
-        let row: Value = serde_json::from_slice(&meta.record_json(r)).map_err(|e| e.to_string())?;
-        if let Some(why) = r.chunk.unread(r.row) {
-            unread_got.push(why.to_string());
+    for (row, why) in decoded(&meta, &writers, &read) {
+        if let Some(why) = why {
+            unread_got.push(why);
             if row != json!({}) {
                 return Err(fail(format!("a payload that did not read read as {row}")));
             }

@@ -387,7 +387,7 @@ pub struct KafkaSource {
     /// The broker's latest word on this source's commits: `Ok` once one landed or was dropped as stale, the refusal
     /// otherwise. `commit` answers with it, so a refusal is reported on every call until a later commit lands.
     commit_verdict: Result<(), KafkaError>,
-    /// How its payloads read, where they are Avro.
+    /// Where it asks for the writers' schemas its payloads name, where they are Avro.
     avro: Option<crate::io::avro::AvroReader>,
 }
 
@@ -791,10 +791,7 @@ impl Source for KafkaSource {
             state = slot.arrived.wait_timeout(state, remaining).0;
         }
         drop(state);
-        Ok(match &self.avro {
-            Some(avro) if !taken.is_empty() => avro.read(taken),
-            _ => taken,
-        })
+        Ok(taken)
     }
 
     /// Pauses every partition this source owns, and each one the group assigns while blocked. The client keeps

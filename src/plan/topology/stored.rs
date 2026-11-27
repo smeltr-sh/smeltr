@@ -13,7 +13,7 @@ impl SourceMeta {
     /// `record` as the document a pipeline with no steps would write for it, decoded on its own.
     pub fn record_json(&self, record: &crate::io::SourceRecord) -> Vec<u8> {
         let mut pool = crate::core::buffer::BufferPool::new();
-        let decoded = self.decode(std::slice::from_ref(record), None::<&[&str]>, None, &mut pool);
+        let decoded = self.decode(std::slice::from_ref(record), None::<&[&str]>, None, None, &mut pool);
         let json = decoded.record_json(self, 0);
         decoded.batch.reclaim(&mut pool);
         json
@@ -52,10 +52,10 @@ impl SourceMeta {
                         return Err(format!("record {}'s `__source.bytes` is not base64", i + 1));
                     }
                 }
-                (None, Ok(Some(serde_json::Value::String(raw)))) if self.decodes() => {
+                (None, Ok(Some(serde_json::Value::String(raw)))) if self.raw_record() => {
                     payload.extend_from_slice(raw.as_bytes())
                 }
-                _ if self.decodes() => {
+                _ if self.raw_record() => {
                     return Err(format!(
                         "record {} has neither a `_raw` text nor base64 `__source.bytes`, and its source reads bytes",
                         i + 1
@@ -121,7 +121,7 @@ impl SourceMeta {
     }
 }
 
-impl Decoded {
+impl DecodedBatch {
     /// Each row's `__source` object, as `SourceMeta::objects` gives it.
     pub fn source_objects(&self, meta: &SourceMeta) -> Vec<crate::io::SourceFields> {
         let columns = (0..meta.source.len()).map(|field| self.batch.peek(meta.source_slot(field)));
