@@ -472,7 +472,12 @@ impl Pacing {
         let bytes = bytes as u64;
         // The batch departs when its handoff begins, so the handoff is spent from its own pacing delay.
         let departed = self.next_send_time.max(began);
-        self.next_send_time = departed + Duration::from_secs_f64(bytes as f64 / self.pacing_rate.max(1.0));
+        // A thread that waits for the pacing rate wakes late, and a late send is never made up: so the lateness comes
+        // off the next gap, up to half of it, as Linux's TCP pacing takes OS jitter into account
+        // (`tcp_update_skb_after_send`).
+        let gap = Duration::from_secs_f64(bytes as f64 / self.pacing_rate.max(1.0));
+        let late = began.saturating_duration_since(self.next_send_time);
+        self.next_send_time = departed + gap - (gap / 2).min(late);
         let send_time = departed.max(now);
         if self.inflight == 0 {
             self.first_send_time = send_time;
@@ -1292,7 +1297,8 @@ mod tests {
     /// besides, and each acknowledgment seen up to `late` after it lands (cycling through that span), as an egress
     /// thread that polls between pops sees it. The source has a batch whenever asked, or offers `offered` bytes a
     /// second. A destination with a `limit` asks to be sent less for each batch sent while more than that was out.
-    /// Handing a batch over takes `handoff`, which the egress thread spends before it can send the next.
+    /// Handing a batch over takes `handoff`, which the egress thread spends before it can send the next. A wait for
+    /// the pacing rate ends `wake_late` after it was due, as a timed wait on a condition variable does.
     #[derive(Clone, Copy)]
     struct Path {
         capacity: f64,
@@ -1301,6 +1307,7 @@ mod tests {
         offered: Option<f64>,
         limit: Option<u64>,
         handoff: Duration,
+        wake_late: Duration,
     }
 
     impl Path {
@@ -1312,6 +1319,7 @@ mod tests {
                 offered: None,
                 limit: None,
                 handoff: Duration::ZERO,
+                wake_late: Duration::ZERO,
             }
         }
     }
@@ -1365,7 +1373,7 @@ mod tests {
                             self.send();
                             continue;
                         }
-                        Gate::Wait(d) => next = next.min(self.now + d),
+                        Gate::Wait(d) => next = next.min(self.now + d + self.path.wake_late),
                         Gate::Full => {}
                     }
                 } else {
@@ -1703,6 +1711,29 @@ mod tests {
         assert!(
             rate < 1.3 * GIB && rate > 0.8 * GIB,
             "the rate follows the link: {rate}"
+        );
+    }
+
+    /// A batch due every 0.92 ms on an 80 ms path, and each wait for it ending 200 µs late: without the late send's
+    /// credit the flow carries 84% of the link.
+    #[test]
+    fn waking_late_for_the_pacing_rate_costs_no_throughput() {
+        let capacity = BATCH as f64 / 0.00092;
+        let mut carried = [0.0; 2];
+        for (i, late) in [Duration::ZERO, Duration::from_micros(200)].into_iter().enumerate() {
+            let path = Path {
+                wake_late: late,
+                ..Path::new(capacity, Duration::from_millis(80))
+            };
+            let mut s = Sim::new(BATCH, 1024 * MIB, path);
+            s.run_to(20.0);
+            carried[i] = s.throughput(5.0, 20.0) / capacity;
+        }
+        assert!(
+            carried[1] > carried[0] - 0.01,
+            "waking late carries what waking on time does: {:.3} vs {:.3}",
+            carried[1],
+            carried[0]
         );
     }
 
