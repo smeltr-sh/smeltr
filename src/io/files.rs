@@ -1,11 +1,11 @@
-//! The file destination: data files that stay open across batches, written into object storage in a [`FileFormat`]
-//! and handed to a [`Committer`], each batch acknowledged once the commit that holds its last row lands. An object
-//! store destination is one, in any format, whose committer only names its files; each table format (Iceberg, Delta) is a
+//! The file destination: data files that stay open across batches, written into object storage in a [`FileFormat`] and
+//! handed to a [`Committer`], each batch acknowledged once the commit that holds its last row succeeds. An object store
+//! destination is one, in any format, whose committer only names its files; each table format (Iceberg, Delta) is a
 //! committer that records them in the table.
 //!
 //! ```mermaid
 //! flowchart LR
-//!   E[egress thread<br/>deliver] -->|Job: batch, rows by partition| W[writer thread]
+//!   E[egress thread<br/>send] -->|Job: batch, rows by partition| W[writer thread]
 //!   W -->|one partition's rows| N[encoder threads]
 //!   N -->|encoded bytes| U[put, or multipart upload<br/>object_store]
 //!   W -->|on interval, buffer or barrier:<br/>every encoder closes its files| C[Committer::commit files]
@@ -20,7 +20,7 @@
 //! only when every one it has is behind and a core of the worker's thread limit is free, so a partition's rows may go
 //! to several files.
 //!
-//! A row is refused only at `deliver`: it is `unfit`, the partitioner refuses it, or the format does not admit it (for
+//! A row is refused only at `send`: it is `unfit`, the partitioner refuses it, or the format does not admit it (for
 //! Parquet: it carries no columns, names a part the destination has no schema for, or its chunk is not its part's
 //! schema). After that a failure is of a file or the commit, and transient: open uploads are aborted, closed files
 //! are deleted, best effort, `poll_completions` answers the error once and egress hands every in-flight batch over
@@ -81,7 +81,7 @@ pub fn open_file_bytes(parts_in_flight: usize) -> usize {
 pub const BACKOFF_MIN: Duration = Duration::from_millis(200);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
 
-/// Jobs the egress thread may hand over before `deliver` waits for the writer.
+/// Jobs the egress thread may hand over before `send` waits for the writer.
 const JOB_QUEUE: usize = 4;
 
 /// What a commit leaves free of the egress budget: room for the batch egress is handing over and the jobs queued
@@ -1474,8 +1474,8 @@ fn upload_taken(file: &mut OpenFile) -> Result<(), String> {
     file.upload.write(bytes)
 }
 
-/// Runs one store call on `runtime`, for at most `after`: a store that stops answering fails the destination rather than
-/// holding the writer, and egress behind it, for good.
+/// Runs one store call on `runtime`, for at most `after`: a store that stops answering fails the destination rather
+/// than holding the writer, and egress behind it, for good.
 pub(crate) fn wait<T, E: std::fmt::Display>(
     runtime: &tokio::runtime::Runtime,
     after: Duration,

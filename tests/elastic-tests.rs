@@ -332,7 +332,7 @@ fn answered(responses: &[Result<(u16, &str), &str>]) -> (ScriptedTransport, Arc<
 }
 
 /// Hand `rows` over as one batch. These destinations have no senders, so the batch is posted and answered before
-/// `deliver` returns.
+/// `send` returns.
 fn deliver(
     d: &mut HttpDestination<Elastic, ScriptedTransport>,
     rows: &[OutgoingRecord<'_>],
@@ -455,8 +455,8 @@ fn a_rejection_index_survives_a_retry_compaction() {
 /// action/document pair after it would be read against the wrong partner -- a whole request misfiled, from one
 /// record. Refused at hand-over, which is where the destination gets to look at it.
 ///
-/// Reachable because a row can be delivered without a pipeline: an unmatched destination and the poison DLQ hand over the
-/// record's own bytes, and a multi-line record is ordinary.
+/// Reachable because a row can be delivered without a pipeline: an unmatched destination and the poison DLQ hand over
+/// the record's own bytes, and a multi-line record is ordinary.
 #[test]
 fn a_document_holding_a_newline_is_refused_rather_than_breaking_the_request() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);

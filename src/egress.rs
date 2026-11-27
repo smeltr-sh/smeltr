@@ -1,9 +1,9 @@
 //! The egress stage: one thread per destination, owning that destination's client and draining a bounded queue every
-//! reader pushes to. Readers reach it through [`EgressHandle`], itself a [`Destination`], so transform's deliver/poll
+//! reader pushes to. Readers reach it through [`EgressHandle`], itself a [`Destination`], so transform's send/poll
 //! cycle does not know where the work runs.
 //!
-//! Retry belongs here. A unit is kept until its batch is acknowledged and re-sent from here on a delivery failure; a
-//! reader carries offsets and nothing else, and feels an outage only through the queue filling.
+//! Retry belongs here. A delivery unit is kept until its batch is acknowledged and re-sent from here on a delivery
+//! failure; a reader carries offsets and nothing else, and feels an outage only through the queue filling.
 //!
 //! A full queue never holds the thread offering to it. The offer is refused at once, the batch stays parked on its
 //! lane, and the transform pool goes on serving every other lane; the queue wakes the pool when room returns. A
@@ -14,7 +14,7 @@
 //!
 //! A destination set to block keeps what it refuses here too, and sends it again on a clock of its own: the fix for a
 //! refusal is usually on the destination's side, which tells nobody when it is done. Each refusal goes back with its
-//! document, so a reader whose destination sends refusals to a DLQ has what to send.
+//! record, so a reader whose destination sends refusals to a DLQ has what to send.
 
 pub mod pacing;
 
@@ -34,7 +34,7 @@ use crate::metrics::MetricsHandle;
 use crate::worker::capture::{Captures, HeldAt};
 use pacing::{Completion, Pacer};
 
-/// Which reader a unit came from, and where its completion goes.
+/// Which reader a delivery unit came from, and where its completion goes.
 type ReaderId = u64;
 
 /// A batch sent and not yet acknowledged: refusals seen so far, and the rows, kept for a re-send.
@@ -51,14 +51,14 @@ struct DeliveryUnit {
     batch: BatchId,
     rows: Vec<OwnedRecord>,
     bytes: usize,
-    /// Set on the rows of a batch this destination refused and keeps, being sent again. Boxed: a unit is offered by
-    /// value, and most units are never held.
+    /// Set on the rows of a batch this destination refused and keeps, being sent again. Boxed: a delivery unit is
+    /// offered by value, and most delivery units are never held.
     held: Option<Box<Held>>,
     /// Refusals of the batch's other rows, which are not sent again, reported with the batch once it completes: the
-    /// ones a held unit's transport kept no document for, and the ones answered before part of the batch failed.
+    /// ones a held delivery unit's transport kept no record for, and the ones answered before part of the batch failed.
     carried: Vec<Rejection>,
-    /// Set once the unit failed to land: the wait before this attempt, doubling up to [`RETRY_MAX`]. The destination
-    /// is not recovered while any unit has one.
+    /// Set once the delivery unit was not delivered: the wait before this attempt, doubling up to [`RETRY_MAX`]. The
+    /// destination is not recovered while any delivery unit has one.
     retry: Option<Duration>,
 }
 
@@ -66,7 +66,7 @@ struct DeliveryUnit {
 struct Held {
     /// The wait before this attempt; the next one waits twice as long, up to `HELD_RETRY_MAX`.
     backoff: Duration,
-    /// Why the destination refused each of the unit's rows, in row order.
+    /// Why the destination refused each of the delivery unit's rows, in row order.
     why: Vec<String>,
     /// The capture admissions the rows have been shown to: a capture at this destination sees them once.
     shown: HashSet<u64>,
@@ -89,7 +89,8 @@ enum Report {
 #[derive(Default)]
 struct QueueState {
     delivery_units: VecDeque<DeliveryUnit>,
-    /// Queued plus sent-but-unacknowledged. Taking a unit off the queue does not free it; acknowledging the batch does.
+    /// Queued plus sent-but-unacknowledged. Taking a delivery unit off the queue does not free it; acknowledging the
+    /// batch does.
     bytes: usize,
     /// What of `bytes` is above the reserve, and so borrowed from the [`QueuePool`].
     borrowed: usize,
@@ -109,11 +110,11 @@ struct Queue {
     most: usize,
     /// The least a paced queue's budget is, one batch, once the queue is paced.
     paced: OnceLock<usize>,
-    /// A source asked for room this queue did not have, since the last pop. The pacing model's mark that the link,
-    /// not the source, bounded what the next unit's sample measures: at steady state the queue is often empty with
+    /// A source asked for room this queue did not have, since the last pop. The pacing model's mark that the link, not
+    /// the source, bounded what the next delivery unit's sample measures: at steady state the queue is often empty with
     /// everything in flight, so a backlog alone would read a full link as a quiet source.
     pressed: AtomicBool,
-    /// Signaled when a unit arrives, or on close.
+    /// Signaled when a delivery unit arrives, or on close.
     work: Condvar,
     /// The transform pool's wake-up, signaled when bytes are freed: a lane parked on this queue is the pool's to run
     /// again, and nothing else tells it room came back.
@@ -273,7 +274,7 @@ impl Lend {
     }
 }
 
-/// Why an offer was not taken. A refused unit comes back with its rows, which are the caller's to drop.
+/// Why an offer was not taken. A refused delivery unit comes back with its rows, which are the caller's to drop.
 enum Refused {
     NoRoom(DeliveryUnit),
     Closed,
@@ -297,8 +298,8 @@ impl Queue {
         }
     }
 
-    /// Whether `bytes` more would fit. An empty queue takes anything: a unit larger than the whole budget goes in
-    /// alone, borrowing what it must, and the cap stops a second joining it. A closed queue answers yes so the offer
+    /// Whether `bytes` more would fit. An empty queue takes anything: a delivery unit larger than the whole budget goes
+    /// in alone, borrowing what it must, and the cap stops a second joining it. A closed queue answers yes so the offer
     /// reaches the refusal that says so.
     fn has_room(&self, bytes: usize) -> bool {
         let st = self.state.lock();
@@ -318,10 +319,10 @@ impl Queue {
         room
     }
 
-    /// Whether the source is pressing on this queue: it was refused room since the last pop. Units waiting behind
-    /// the one popped are not enough: they wait on this thread, with the budget not yet full, and a sample taken
-    /// then says how fast this thread hands batches over, not how fast the link carries them. Consumed: the mark is
-    /// the next unit's.
+    /// Whether the source is pressing on this queue: it was refused room since the last pop. Delivery units waiting
+    /// behind the one popped are not enough: they wait on this thread, with the budget not yet full, and a sample taken
+    /// then says how fast this thread hands batches over, not how fast the link carries them. Consumed: the mark is the
+    /// next delivery unit's.
     fn pressing(&self) -> bool {
         self.pressed.swap(false, Ordering::Relaxed)
     }
@@ -340,7 +341,7 @@ impl Queue {
     }
 
     /// Borrow what one more sender holds, if the pool lends it: the destination asks before it spawns one past
-    /// those it started with. Refused, the sender is not spawned and the pool is contended, as for a unit.
+    /// those it started with. Refused, the sender is not spawned and the pool is contended, as for a delivery unit.
     fn take_sender(&self) -> bool {
         let (Some(lend), Some(&bytes)) = (self.lend.get(), self.sender_bytes.get()) else {
             return true;
@@ -369,8 +370,8 @@ impl Queue {
         self.state.lock().bytes
     }
 
-    /// Queue `unit` if it fits, now. Never waits: the caller holds a transform thread, and a queue that is full is
-    /// full for as long as the destination is slow, which is not this thread's to wait out.
+    /// Queue `delivery_unit` if it fits, now. Never waits: the caller holds a transform thread, and a queue that is
+    /// full is full for as long as the destination is slow, which is not this thread's to wait out.
     fn offer(&self, delivery_unit: DeliveryUnit) -> Result<(), Refused> {
         let mut st = self.state.lock();
         if st.closed {
@@ -398,7 +399,7 @@ impl Queue {
         Ok(())
     }
 
-    /// Next unit, waiting at most `timeout` for one.
+    /// Next delivery unit, waiting at most `timeout` for one.
     fn pop(&self, timeout: Duration) -> Popped {
         let mut st = self.state.lock();
         if let Some(u) = st.delivery_units.pop_front() {
@@ -463,7 +464,7 @@ impl Queue {
 }
 
 enum Popped {
-    /// A unit, and whether the source was pressing on the queue: refused room since the last.
+    /// A delivery unit, and whether the source was pressing on the queue: refused room since the last.
     Work(DeliveryUnit, bool),
     Idle,
     Closed,
@@ -575,8 +576,9 @@ impl Egress {
         self
     }
 
-    /// Keep what the destination refuses and send it again, completing a batch only once it lands: the destination is
-    /// set to block. Otherwise a refusal goes back with the batch's completion, for the reader's side to answer.
+    /// Keep what the destination refuses and send it again, completing a batch only once it is delivered: the
+    /// destination is set to block. Otherwise a refusal goes back with the batch's completion, for the reader's side to
+    /// answer.
     pub fn holding_refusals(self) -> Egress {
         self.queue.holds_refusals.store(true, Ordering::Relaxed);
         self
@@ -623,8 +625,8 @@ impl Drop for Egress {
     }
 }
 
-/// Backoff bounds between re-sends of a unit the destination would not take: short enough to clear a blip, capped so an
-/// outage settles into a slow retry.
+/// Backoff bounds between re-sends of a delivery unit the destination would not take: short enough to clear a blip,
+/// capped so an outage settles into a slow retry.
 const RETRY_MIN: Duration = Duration::from_millis(50);
 const RETRY_MAX: Duration = Duration::from_secs(5);
 
@@ -649,13 +651,13 @@ fn run(
     // The destination's own batch ids, mapped back to the reader's.
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
     let mut next_local: BatchId = 0;
-    // Units to send again, each with when: ones that failed to land, and refused rows kept.
+    // Delivery units to send again, each with when: ones that were not delivered, and refused rows kept.
     let mut again: Vec<(Instant, DeliveryUnit)> = Vec::new();
     let mut backoff = RETRY_MIN;
     // When the stall was last logged; `None` while the destination is healthy.
     let mut stalled: Option<Instant> = None;
     // Whether the client's own report of no reachable broker is what last marked this destination down. A failed send
-    // takes the stall over, so only a landed send clears it, not a broker coming back.
+    // takes the stall over, so only a send that succeeded clears it, not a broker coming back.
     let mut cut_off = false;
     // Written on change, not every pass: the loop turns on POLL_INTERVAL whether or not anything moved.
     let mut reported: Option<usize> = None;
@@ -685,8 +687,8 @@ fn run(
             }
             pacer = Some(Pacer::new(floor, queue, metrics, id));
         }
-        // Here, not only where the queue is polled: a unit that keeps failing is re-sent forever without asking for new
-        // work.
+        // Here, not only where the queue is polled: a delivery unit that keeps failing is re-sent forever without
+        // asking for new work.
         if queue.is_closed() {
             break;
         }
@@ -714,7 +716,7 @@ fn run(
             next_local += 1;
             // A re-send is never the source's doing: it counts as the link's.
             let app_limited = !pressing;
-            // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
+            // Borrowed: the delivery unit is kept until acknowledged, to send again or to hand a refused row back.
             let delivered = destination.send(local, Cow::Borrowed(&delivery_unit.rows));
             tracing::trace!(
                 name: "delivered", target: "destinations",
@@ -731,7 +733,7 @@ fn run(
                 },
                 "a destination was handed a batch"
             );
-            // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
+            // Once the destination has taken it: a Kafka producer at its bound holds `send` until it has room,
             // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
             let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
             let paced = pacer
@@ -742,7 +744,7 @@ fn run(
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    // This unit alone: the ones in flight are answered for by `poll_completions`.
+                    // This delivery unit alone: the ones in flight are answered for by `poll_completions`.
                     again.push(failed(delivery_unit));
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
@@ -750,7 +752,7 @@ fn run(
                 }
                 // Nothing will report it later, so report it now.
                 Ok((Dispatched::Complete, rejections)) => {
-                    // The destination is up, if not yet for every unit.
+                    // The destination is up, if not yet for every delivery unit.
                     if failing(&owner, &again) {
                         backoff = RETRY_MIN;
                     } else {
@@ -773,7 +775,7 @@ fn run(
                 // against a batch. Handed to the transport is not delivered: `Dispatched::InFlight` means only that, so
                 // healthy is not reported here. A transport that will not talk to its destination at all still hands
                 // every batch off this way -- `poll_completions` is what tells the two apart, once the batch either
-                // lands or times out.
+                // is delivered or times out.
                 Ok((Dispatched::InFlight, rejections)) => {
                     owner.insert(
                         local,
@@ -801,9 +803,10 @@ fn run(
         // Every pass, idle or not -- see `POLL_INTERVAL`.
         match destination.poll_completions() {
             Ok(done) => {
-                // A batch that landed beside one that failed does not clear the stall, nor does it wait on the failed
-                // one: that waits its own `retry`. The destination recovers once every unit that failed has landed.
-                let (mut failures, mut landed) = (false, false);
+                // A batch that was delivered beside one that failed does not clear the stall, nor does it wait on the
+                // failed one: that waits its own `retry`. The destination recovers once every delivery unit that failed
+                // is delivered.
+                let (mut failures, mut any_delivered) = (false, false);
                 for c in done {
                     let Some(mut owed) = owner.remove(&c.batch) else {
                         continue;
@@ -835,7 +838,7 @@ fn run(
                         again.push(failed(rest));
                         continue;
                     }
-                    landed = true;
+                    any_delivered = true;
                     if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
                         p.completed(
                             queue,
@@ -858,15 +861,15 @@ fn run(
                 if failures {
                     cut_off = false;
                 }
-                if landed {
-                    // The destination is up, if not yet for every unit.
+                if any_delivered {
+                    // The destination is up, if not yet for every delivery unit.
                     if failures || failing(&owner, &again) {
                         backoff = RETRY_MIN;
                     } else {
                         clear_stall(metrics, id, name, &mut stalled, &mut backoff);
                     }
                 } else if failures {
-                    // Nothing landed: the destination is down as a whole, so it backs off as a whole.
+                    // Nothing was delivered: the destination is down as a whole, so it backs off as a whole.
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                 }
@@ -916,9 +919,9 @@ fn run(
     abandon(returns, &owner, &again);
 }
 
-/// A unit the destination has answered for. Each refusal gets its document back. A destination set to block keeps the
-/// rows it refused and sends them again after a wait, reporting the batch only once they land; any other refusal goes
-/// back with the batch's completion.
+/// A delivery unit the destination has answered for. Each refusal gets its record back. A destination set to block
+/// keeps the rows it refused and sends them again after a wait, reporting the batch only once they are delivered; any
+/// other refusal goes back with the batch's completion.
 fn finish(
     queue: &Queue,
     returns: &Returns,
@@ -993,7 +996,7 @@ fn finish(
         refusals.push(r);
     }
     let bytes = crate::io::held_bytes(&rows);
-    // The rest of the batch landed; what is kept still counts against the queue until it does too.
+    // The rest of the batch was delivered; what is kept still counts against the queue until it does too.
     queue.release(delivery_unit.bytes.saturating_sub(bytes));
     report(
         returns,
@@ -1027,9 +1030,9 @@ fn show_held<'a>(captures: &Captures, name: &str, delivery_units: impl Iterator<
     }
 }
 
-/// What of `unit` did not land, as a unit of its own to send again: the rows `undelivered` names, in the batch's order.
-/// The rows that landed are counted delivered and their bytes go back to the queue; the refusals answered so far are
-/// carried, with their documents, to the batch's completion.
+/// What of `delivery_unit` was not delivered, as a delivery unit of its own to send again: the rows `undelivered`
+/// names, in the batch's order. The rows that were delivered are counted and their bytes go back to the queue; the
+/// refusals answered so far are carried, with their records, to the batch's completion.
 fn remainder(
     queue: &Queue,
     metrics: &MetricsHandle,
@@ -1041,17 +1044,17 @@ fn remainder(
     // In the batch's order: each of its requests named its own.
     let mut kept: Vec<usize> = undelivered.to_vec();
     kept.sort_unstable();
-    let mut landed = vec![true; delivery_unit.rows.len()];
+    let mut delivered = vec![true; delivery_unit.rows.len()];
     for &i in kept.iter().chain(rejections.iter().map(|r| &r.doc)) {
-        if let Some(at) = landed.get_mut(i) {
+        if let Some(at) = delivered.get_mut(i) {
             *at = false;
         }
     }
     let (count, bytes) = delivery_unit
         .rows
         .iter()
-        .zip(&landed)
-        .filter(|(_, landed)| **landed)
+        .zip(&delivered)
+        .filter(|(_, delivered)| **delivered)
         .fold((0u64, 0u64), |(n, b), (row, _)| (n + 1, b + row.sent_bytes() as u64));
     note_delivered(metrics, id, count, bytes);
     for mut r in rejections {
@@ -1076,14 +1079,14 @@ fn remainder(
     }
 }
 
-/// `unit`, which failed to land, to be sent again once its own wait is over. Each failure doubles the wait.
+/// `delivery_unit`, which was not delivered, to be sent again once its own wait is over. Each failure doubles the wait.
 fn failed(mut delivery_unit: DeliveryUnit) -> (Instant, DeliveryUnit) {
     let retry = delivery_unit.retry.map_or(RETRY_MIN, |r| (r * 2).min(RETRY_MAX));
     delivery_unit.retry = Some(retry);
     (Instant::now() + retry, delivery_unit)
 }
 
-/// Whether a unit that failed to land is still out or waiting to be sent again.
+/// Whether a delivery unit that was not delivered is still out or waiting to be sent again.
 fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, DeliveryUnit)]) -> bool {
     owner.values().any(|o| o.delivery_unit.retry.is_some()) || again.iter().any(|(_, u)| u.retry.is_some())
 }
@@ -1154,7 +1157,7 @@ fn note_cut_off(
     backoff: &mut Duration,
 ) {
     match error {
-        // On `stalled`, not `cut_off`: a landed send clears the stall while the client may still say it reaches
+        // On `stalled`, not `cut_off`: a send that succeeded clears the stall while the client may still say it reaches
         // nothing. A cut-off stall is told again once its log is due; a failed send's is told by its retries.
         Some(e) if stalled.is_none() || (*cut_off && stall_log_due(*stalled)) => {
             *cut_off = true;
@@ -1293,7 +1296,7 @@ fn note_delivered(metrics: &MetricsHandle, id: DestId, rows: u64, bytes: u64) {
 }
 
 /// Mark the destination healthy again. Called before the batch is reported: a reader released by that report may read
-/// the gauge, and it must not see the stalled value of a send that has already landed.
+/// the gauge, and it must not see the stalled value of a send that has already succeeded.
 fn clear_stall(metrics: &MetricsHandle, id: DestId, name: &str, stalled: &mut Option<Instant>, backoff: &mut Duration) {
     *backoff = RETRY_MIN;
     let label = id.to_string();
@@ -1314,8 +1317,8 @@ fn report(returns: &Returns, reader: ReaderId, r: Report) {
     }
 }
 
-/// One reader's view of one destination: `deliver` hands a batch to the egress thread as one unit, `poll_completions`
-/// reads what came back. It holds no rows between calls.
+/// One reader's view of one destination: `send` hands a batch to the egress thread as one delivery unit,
+/// `poll_completions` reads what came back. It holds no rows between calls.
 pub struct EgressHandle {
     reader: ReaderId,
     queue: Arc<Queue>,
@@ -1353,7 +1356,7 @@ impl EgressHandle {
 }
 
 impl Destination for EgressHandle {
-    /// Queues the rows as one unit. Refuses nothing itself: the destination answers on the acknowledgment.
+    /// Queues the rows as one delivery unit. Refuses nothing itself: the destination answers on the acknowledgment.
     fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         // A batch with nothing for this destination stays off the queue.
         if rows.is_empty() {
@@ -1374,7 +1377,7 @@ impl Destination for EgressHandle {
                 self.outstanding += 1;
                 Dispatched::InFlight
             }
-            // The rows go with the unit: the batch is re-run whole when room returns.
+            // The rows go with the delivery unit: the batch is re-run whole when room returns.
             Err(Refused::NoRoom(delivery_unit)) => Dispatched::NoRoom {
                 bytes: delivery_unit.bytes,
             },
@@ -1566,7 +1569,7 @@ mod tests {
             Popped::Work(_, pressed) => pressed,
             _ => panic!("a delivery unit was queued"),
         };
-        // A quiet source: one unit, nothing refused, nothing behind it.
+        // A quiet source: one delivery unit, nothing refused, nothing behind it.
         assert!(queue.offer(delivery_unit(4)).is_ok());
         assert!(!pressed(queue.pop(Duration::ZERO)));
         // Everything in flight, the queue empty, and the source asks for room it does not get: the link is full.

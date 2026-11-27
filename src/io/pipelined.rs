@@ -1,5 +1,5 @@
 //! Turning a blocking one-shot delivery into a pipelined one: a destination implements one blocking
-//! [`Sender::send_one`] and [`Pool`] supplies `deliver`/`poll_completions` around it.
+//! [`Sender::send_one`] and [`Pool`] supplies `send`/`poll_completions` around it.
 //!
 //! A pool, not one background thread: a single thread makes the call non-blocking but still serializes the round trips,
 //! so throughput stays at `1/round-trip`. Overlapping round trips is what moves it.
@@ -23,7 +23,7 @@ use crate::io::{BatchCompletion, BatchId, IoError, Rejection, Undelivered};
 
 /// What one delivery attempt produced.
 pub struct Delivered {
-    /// Documents the destination examined and refused. Not an error: see `Destination::deliver`.
+    /// Records the destination examined and refused. Not an error: see `Destination::send`.
     pub rejections: Vec<Rejection>,
     /// The destination asked to be sent less (429, 503, a per-item `es_rejected_execution_exception`). Reported rather
     /// than inferred from timing: a slow cluster and a throttled one call for opposite responses.
@@ -46,9 +46,9 @@ pub trait Sender: Send + 'static {
 /// chance to be reused.
 const IDLE: Duration = Duration::from_millis(100);
 
-/// Jobs waiting for a sender. A queue under a condvar rather than a channel, so every idle sender waits at once and each
-/// notices on its own that it has gone idle; a shared channel receiver lets one sender wait while the rest queue on its
-/// lock.
+/// Jobs waiting for a sender. A queue under a condvar rather than a channel, so every idle sender waits at once and
+/// each notices on its own that it has gone idle; a shared channel receiver lets one sender wait while the rest queue
+/// on its lock.
 struct Jobs<J> {
     waiting: Mutex<(VecDeque<(BatchId, J)>, bool)>,
     arrived: Condvar,
