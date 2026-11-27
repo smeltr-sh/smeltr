@@ -772,7 +772,7 @@ fn drive(d: &mut dyn Destination, batches: Vec<(u64, Vec<OwnedRecord>, Then)>, i
             Dispatched::InFlight => {
                 waiting.insert(batch);
             }
-            Dispatched::Complete => {}
+            Dispatched::Complete { .. } => {}
             Dispatched::NoRoom { .. } => panic!("batch {batch} found no room"),
         }
         match then {

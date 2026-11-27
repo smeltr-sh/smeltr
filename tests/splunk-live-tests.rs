@@ -78,7 +78,7 @@ fn open(config: SplunkHecDestinationConfig, token: &str) -> Box<dyn Destination>
 /// Hands `rows` over as one batch and waits for its outcome.
 fn deliver(d: &mut dyn Destination, rows: Vec<OwnedRecord>) -> Result<Vec<Rejection>, IoError> {
     let (dispatched, mut refused) = d.deliver(1, Cow::Owned(rows))?;
-    if dispatched == Dispatched::Complete {
+    if matches!(dispatched, Dispatched::Complete { .. }) {
         return Ok(refused);
     }
     let done = wait_for("the batch to finish", Duration::from_secs(90), || {

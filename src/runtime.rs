@@ -1267,7 +1267,7 @@ impl Transform {
             self.metrics
                 .incr("smeltr_flushes_total", &[("destination", dest_label.as_str())], 1);
         }
-        if dispatched == Dispatched::Complete || !refused.is_empty() {
+        if matches!(dispatched, Dispatched::Complete { .. }) || !refused.is_empty() {
             self.owe(lane, batch, dest);
             self.answer_refusals(lane, batch, dest, refused);
         }
@@ -1511,7 +1511,7 @@ impl Transform {
                 continue;
             }
             match handle.deliver(s.batch, Cow::Owned(rows)) {
-                Ok((dispatched @ (Dispatched::InFlight | Dispatched::Complete), refused)) => {
+                Ok((dispatched @ (Dispatched::InFlight | Dispatched::Complete { .. }), refused)) => {
                     reports.send(Report::Owes {
                         batch: s.batch,
                         dest: dlq,

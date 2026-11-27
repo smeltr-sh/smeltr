@@ -156,7 +156,7 @@ fn round_trip(signal: Signal, export: &Value, items: usize, compression: Compres
     let delivered = std::thread::spawn(move || {
         let mut d = HttpDestination::new(transport, Otlp::new(&config));
         d.deliver(0, Cow::Owned(rows)).map(|(dispatched, refused)| {
-            assert_eq!(dispatched, Dispatched::Complete);
+            assert!(matches!(dispatched, Dispatched::Complete { .. }));
             refused.into_iter().map(|r| r.reason).collect::<Vec<_>>()
         })
     });

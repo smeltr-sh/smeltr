@@ -442,9 +442,8 @@ fn deliver<T: Transport>(
     rows: Vec<OwnedRecord>,
 ) -> Result<Vec<Rejection>, IoError> {
     let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
-    assert_eq!(
-        dispatched,
-        Dispatched::Complete,
+    assert!(
+        matches!(dispatched, Dispatched::Complete { .. }),
         "a destination of no senders answers before it returns"
     );
     Ok(refused)

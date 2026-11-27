@@ -1234,8 +1234,9 @@ pub struct Undelivered {
 /// What [`Destination::deliver`] did with a batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dispatched {
-    /// Acknowledged before `deliver` returned; no completion follows.
-    Complete,
+    /// Acknowledged before `deliver` returned; no completion follows. `throttled`: the destination asked to be sent
+    /// less while delivering it, as [`BatchCompletion::throttled`].
+    Complete { throttled: bool },
     /// Handed to the transport. The batch's id comes back from [`Destination::poll_completions`] once it is
     /// acknowledged.
     InFlight,
@@ -1770,7 +1771,7 @@ pub mod fake {
                 r.record = rows.get(r.doc).cloned();
                 rejections.push(r);
             }
-            Ok((Dispatched::Complete, rejections))
+            Ok((Dispatched::Complete { throttled: false }, rejections))
         }
 
         fn flush(&mut self) -> Result<(), IoError> {
