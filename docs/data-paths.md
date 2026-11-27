@@ -90,7 +90,7 @@ A record's exceptions are its exceptions, each of a kind in one category. The `e
 flowchart TD
   A["The route's pipeline runs"] --> B{"The record's strongest answer"}
   B -- "ignore, or no mark" --> N["The deliver rules pick destinations"]
-  B -- tag --> T["Set the tag field. The record is a record"]
+  B -- tag --> T["Set the tag field. The record is placed like any other"]
   T --> N
   B -- drop --> D["Count smeltr_rows_dropped_total, reason exception"]
   B -- deliver --> V["Set the tag field. Send it to each destination named, in its own format, in place of the deliver rules"]

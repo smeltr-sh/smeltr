@@ -76,7 +76,7 @@ that raised it, its kind and its message. One raised reading the record names
 no step. The field is `smeltr.exception` unless the group names another, and a
 route may name its own. Its shape is fixed, so a destination's schema types
 each of its fields. It is written over whatever that record holds there,
-a field the pipeline binds or a scalar on its path included. A tagged record is a record: nothing but
+a field the pipeline binds or a scalar on its path included. A tagged record is placed like any other: nothing but
 delivery rules decides where it goes. A rule reads the record as it will be sent:
 the tag field is the tag on a tagged record, and on any other whatever the record
 holds there. A batch runs every record to the end.
