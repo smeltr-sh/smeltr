@@ -565,8 +565,18 @@ impl<M: Model> Sim<M> {
     }
 }
 
+/// The port, with the experimental cycle timer set from `SMELTR_SIM_CYCLE_TIMER` (seconds) if it is.
+fn seeded(ceiling: usize, rng: u64) -> Pacing {
+    let mut p = Pacing::seeded(BATCH, ceiling, Instant::now(), rng);
+    p.cycle_timer = std::env::var("SMELTR_SIM_CYCLE_TIMER")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(Duration::from_secs_f64);
+    p
+}
+
 fn new_model() -> New {
-    New(Pacing::seeded(BATCH, CEILING, Instant::now(), 7))
+    New(seeded(CEILING, 7))
 }
 
 fn old_model() -> Old {
@@ -871,13 +881,7 @@ fn sweep_a_capacity_drop() {
                 buffer,
                 ..Path::new(GIB, 20)
             };
-            let mut new = Sim::new(
-                path(),
-                vec![(
-                    New(Pacing::seeded(BATCH, ceiling, Instant::now(), 7)),
-                    Source::Backlogged,
-                )],
-            );
+            let mut new = Sim::new(path(), vec![(New(seeded(ceiling, 7)), Source::Backlogged)]);
             let mut old = Sim::new(
                 path(),
                 vec![(Old(old::Pacing::new(BATCH, ceiling)), Source::Backlogged)],
@@ -943,12 +947,7 @@ fn trace(name: &str, path: Path, flows: usize, from: f64, to: f64, step: f64) {
     let mut s = Sim::new(
         path,
         (0..flows)
-            .map(|i| {
-                (
-                    New(Pacing::seeded(BATCH, CEILING, Instant::now(), 7 + i as u64)),
-                    Source::Backlogged,
-                )
-            })
+            .map(|i| (New(seeded(CEILING, 7 + i as u64)), Source::Backlogged))
             .collect(),
     );
     s.run_to(from);
@@ -1121,12 +1120,7 @@ fn refusals_reported_late_or_at_once() {
             let mut new = Sim::new(
                 path.clone(),
                 (0..flows)
-                    .map(|i| {
-                        (
-                            New(Pacing::seeded(BATCH, CEILING, Instant::now(), 7 + i as u64)),
-                            Source::Backlogged,
-                        )
-                    })
+                    .map(|i| (New(seeded(CEILING, 7 + i as u64)), Source::Backlogged))
                     .collect(),
             );
             let mut old = Sim::new(path, (0..flows).map(|_| (old_model(), Source::Backlogged)).collect());
@@ -1202,7 +1196,7 @@ fn how_long_a_lasting_capacity_drop_takes_to_recover() {
     const LASTS: f64 = 600.0;
     for ceiling in [CEILING, 64 * MIB] {
         for after in [0.5, 0.33, 0.2, 0.1] {
-            let model = || New(Pacing::seeded(BATCH, ceiling, Instant::now(), 7));
+            let model = || New(seeded(ceiling, 7));
             let mut fresh = Sim::new(Path::new(after * GIB, 20), vec![(model(), Source::Backlogged)]);
             fresh.run_to(60.0);
             let steady = fresh.queued(20.0, 60.0);

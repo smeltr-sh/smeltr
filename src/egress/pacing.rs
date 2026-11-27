@@ -262,6 +262,10 @@ pub struct Pacing {
     next_round_delivered: u64,
     max_bw_filter: MaxFilter,
     cycle_count: u64,
+    /// Experiment: when the last ProbeBW cycle ended, and how long one may run before the max_bw filter's window
+    /// moves on regardless. `None` is the draft.
+    cycle_ended_at: Instant,
+    pub(super) cycle_timer: Option<Duration>,
     max_bw: f64,
     bw_shortterm: f64,
     bw: f64,
@@ -341,6 +345,8 @@ impl Pacing {
             next_round_delivered: 0,
             max_bw_filter: MaxFilter::default(),
             cycle_count: 0,
+            cycle_ended_at: now,
+            cycle_timer: None,
             max_bw: 0.0,
             bw_shortterm: f64::INFINITY,
             bw: 0.0,
@@ -546,6 +552,15 @@ impl Pacing {
         let interval = send_elapsed.max(ack_elapsed);
         if self.lifetime_min_rtt.is_none_or(|m| interval >= m) && !interval.is_zero() {
             rs.delivery_rate = rs.delivered as f64 / interval.as_secs_f64();
+        }
+
+        // Experiment: the max_bw window moves on once a cycle has run `cycle_timer` without ending.
+        if let Some(timer) = self.cycle_timer
+            && self.full_bw_reached
+            && now.saturating_duration_since(self.cycle_ended_at) >= timer
+        {
+            self.cycle_count += 1;
+            self.cycle_ended_at = now;
         }
 
         // UpdateModelAndState.
@@ -980,6 +995,7 @@ impl Pacing {
             self.is_bw_probe_stopping = false;
             if self.state.is_probe_bw() && !rs.is_app_limited {
                 self.cycle_count += 1;
+                self.cycle_ended_at = self.delivered_time;
             }
             if self.state.is_probe_bw() && self.prev_probe_precautionary && !self.prev_probe_too_high {
                 self.start_probe_bw_refill();
