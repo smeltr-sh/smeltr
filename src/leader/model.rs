@@ -521,7 +521,7 @@ impl Client {
     }
 
     /// `request` in the provider's terms, and what it answered.
-    async fn send(&self, request: Request<'_>) -> Result<Value, Failed> {
+    async fn send(&self, request: Request<'_>) -> Result<Value, EndpointError> {
         let Endpoint {
             provider,
             model,
@@ -581,7 +581,7 @@ impl Client {
         url: &str,
         mut body: Value,
         heard: Option<Heard<'_>>,
-    ) -> Result<Value, Failed> {
+    ) -> Result<Value, EndpointError> {
         let Some(heard) = heard else {
             return post(call, url, &body).await;
         };
@@ -819,18 +819,18 @@ fn streamed_error(error: &Value) -> String {
 
 /// Why asking an endpoint failed. Each holds what a person is told.
 #[derive(Debug)]
-enum Failed {
+enum EndpointError {
     /// The endpoint answered with this status, which is not a success.
     Answered(reqwest::StatusCode, String),
     /// It was not reached, or its answer could not be read.
     Unread(String),
 }
 
-impl Failed {
+impl EndpointError {
     /// Whether the endpoint answered 400 because of the compaction setting the request carried, which the caller then
     /// asks again without. Only the answer's own text says so: it names `compact` or `context_management`.
     fn refused_compaction(&self) -> bool {
-        let Failed::Answered(reqwest::StatusCode::BAD_REQUEST, why) = self else {
+        let EndpointError::Answered(reqwest::StatusCode::BAD_REQUEST, why) = self else {
             return false;
         };
         let why = why.to_ascii_lowercase();
@@ -838,16 +838,16 @@ impl Failed {
     }
 }
 
-impl From<String> for Failed {
+impl From<String> for EndpointError {
     fn from(why: String) -> Self {
-        Failed::Unread(why)
+        EndpointError::Unread(why)
     }
 }
 
-impl From<Failed> for String {
-    fn from(failed: Failed) -> Self {
+impl From<EndpointError> for String {
+    fn from(failed: EndpointError) -> Self {
         match failed {
-            Failed::Answered(_, why) | Failed::Unread(why) => why,
+            EndpointError::Answered(_, why) | EndpointError::Unread(why) => why,
         }
     }
 }
@@ -980,7 +980,7 @@ pub fn check_endpoint(url: &str) -> Result<(), String> {
 }
 
 /// POST `body` to `url` and read the answer, to [`MAX_ANSWER`].
-async fn post(request: reqwest::RequestBuilder, url: &str, body: &Value) -> Result<Value, Failed> {
+async fn post(request: reqwest::RequestBuilder, url: &str, body: &Value) -> Result<Value, EndpointError> {
     send_json(json_body(request, body), url).await
 }
 
@@ -991,7 +991,7 @@ fn json_body(request: reqwest::RequestBuilder, body: &Value) -> reqwest::Request
 }
 
 /// Send `request` to `url` and read the answer, to [`MAX_ANSWER`].
-async fn send_json(request: reqwest::RequestBuilder, url: &str) -> Result<Value, Failed> {
+async fn send_json(request: reqwest::RequestBuilder, url: &str) -> Result<Value, EndpointError> {
     let answer = outbound::read(sent(request, url).await?, MAX_ANSWER)
         .await
         .map_err(|e| format!("{url}: {e}"))?;
@@ -999,7 +999,7 @@ async fn send_json(request: reqwest::RequestBuilder, url: &str) -> Result<Value,
 }
 
 /// Send `request` to `url`, and its answer unread when it succeeded, or what its refusal says.
-async fn sent(request: reqwest::RequestBuilder, url: &str) -> Result<reqwest::Response, Failed> {
+async fn sent(request: reqwest::RequestBuilder, url: &str) -> Result<reqwest::Response, EndpointError> {
     let response = request
         .send()
         .await
@@ -1011,7 +1011,7 @@ async fn sent(request: reqwest::RequestBuilder, url: &str) -> Result<reqwest::Re
     let answer = outbound::read(response, MAX_ANSWER)
         .await
         .map_err(|e| format!("{url}: {e}"))?;
-    Err(Failed::Answered(status, refusal(url, status, &answer)))
+    Err(EndpointError::Answered(status, refusal(url, status, &answer)))
 }
 
 /// What `url` refusing with `status` and `answer` says. The provider's own sentence says what is wrong: a bad key,
