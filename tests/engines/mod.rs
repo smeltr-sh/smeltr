@@ -828,6 +828,14 @@ impl Broker {
                     // A deleted output topic frees its tmpfs at once rather than a minute later, by when the next
                     // run's output would fill it.
                     .args(["-e", "KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=0"])
+                    // Kafka's own 100 KiB receive buffer caps each connection, at about half a LAN producer's rate
+                    // and a tenth of it 80 ms away; -1 lets the OS size both buffers to the path.
+                    .args([
+                        "-e",
+                        "KAFKA_SOCKET_RECEIVE_BUFFER_BYTES=-1",
+                        "-e",
+                        "KAFKA_SOCKET_SEND_BUFFER_BYTES=-1",
+                    ])
                     .arg("apache/kafka:4.4.0");
                 Container::run(docker, &name, None)
             })

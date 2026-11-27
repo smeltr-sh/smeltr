@@ -1089,12 +1089,23 @@ fn network_image() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
+/// A port nothing holds, and one this process has not handed out before: what it hands out is bound only later, by a
+/// container, so the OS may offer the same free port again in the meantime.
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    // A panic while the set is held leaves it whole, so a poisoned lock still guards good data.
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 /// The worker-local credentials the declarations name, as the worker's environment holds them.
