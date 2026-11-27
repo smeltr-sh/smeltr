@@ -766,18 +766,22 @@ impl Slot {
         Ok(())
     }
 
-    /// The oldest record in the inbox, taken out. Draining a full inbox to half its cap lets its partitions fetch
-    /// again.
+    /// The oldest record in the inbox, taken out.
     pub(super) fn take(&self, consumer: &BaseConsumer<Routes>, state: &mut SlotState) -> Option<SourceRecord> {
         let p = state.inbox.pop_front()?;
         state.bytes -= p.size();
+        self.resume_if_drained(consumer, state);
+        Some(p)
+    }
+
+    /// Draining a full inbox to half its cap lets its partitions fetch again.
+    fn resume_if_drained(&self, consumer: &BaseConsumer<Routes>, state: &mut SlotState) {
         if state.full && state.bytes <= self.cap / 2 {
             state.full = false;
             if let Err(e) = self.sync(consumer, state) {
                 tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
             }
         }
-        Some(p)
     }
 
     /// Drops what the inbox holds and seeks each partition it came from back to its oldest record, so the client
@@ -820,12 +824,7 @@ impl Slot {
             .inbox
             .retain(|r| !sought.contains(&(r.topic.to_string(), r.partition)));
         state.bytes = state.inbox.iter().map(SourceRecord::size).sum();
-        if state.full && state.bytes <= self.cap / 2 {
-            state.full = false;
-            if let Err(e) = self.sync(consumer, state) {
-                tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
-            }
-        }
+        self.resume_if_drained(consumer, state);
     }
 
     /// The reader asked for records or kept its membership. Answers whether that brings a stalled source back.
@@ -1351,12 +1350,7 @@ impl ConsumerContext for Routes {
             if state.inbox.len() != before {
                 state.bytes = state.inbox.iter().map(SourceRecord::size).sum();
                 // Drained by the revoke rather than by its reader, which may now have nothing to take.
-                if state.full && state.bytes <= slot.cap / 2 {
-                    state.full = false;
-                    if let Err(e) = slot.sync(consumer, &state) {
-                        tracing::warn!(name: "pause", target: "sources", error = %e, "could not resume a drained source");
-                    }
-                }
+                slot.resume_if_drained(consumer, &mut state);
             }
             state.revoked.push(key);
             drop(state);
