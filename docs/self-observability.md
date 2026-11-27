@@ -77,12 +77,12 @@ timestamps, and one exemplar.
 
 The key is the call site and a chosen subset of its fields, never the
 rendered text — a message naming a row number renders differently for
-every row and is one event. Distinct keys per window are capped, with a
+every record and is one event. Distinct keys per window are capped, with a
 catch-all beyond the cap.
 
 Occupancy is then proportional to the number of distinct events rather
 than to throughput, which is what bounds the buffer under a fault that
-would otherwise emit per row.
+would otherwise emit per record.
 
 ## The leader holds a rollup and asks for detail
 
@@ -136,7 +136,7 @@ closes an existing defect and must precede a second self-observability
 pipeline.
 
 Bounded storage and coalescing land together. A store without
-coalescing is drowned by the first per-row fault; coalescing without a
+coalescing is drowned by the first per-record fault; coalescing without a
 store has nowhere to put what it summarized.
 
 `SystemLogs` follows, after the leader's in-process preview worker is
