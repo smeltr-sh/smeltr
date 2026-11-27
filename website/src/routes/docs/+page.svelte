@@ -26,11 +26,16 @@
   <section id="what-is-smeltr">
     <h2>What is Smeltr?</h2>
     <p class="lede">
-      Smeltr reads logs, metrics, and events, filters or transforms them, and sends the results to
-      your storage and analysis tools.
+      Smeltr is self-hosted data pipeline software for logs, metrics, and events. It combines a
+      browser-based pipeline editor with a processing engine. It sits between the systems that
+      produce the data and the systems that store or analyze it.
     </p>
 
-    <h3>Example pipeline</h3>
+    <h3>What it does</h3>
+    <p>
+      Smeltr can filter and reshape records before delivering them. A route for application logs
+      might work like this.
+    </p>
     <ol>
       <li><strong>Source.</strong> Read application logs from Kafka.</li>
       <li><strong>Pipeline.</strong> Drop routine health checks and standardize field names.</li>
