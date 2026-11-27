@@ -111,7 +111,9 @@
 
   <h2 id="connections">Connect your data systems</h2>
   <p>
-    If you have a test Kafka broker, follow <a href="/docs/first-pipeline">Your first pipeline</a>
+    If you have a test Kafka broker, follow <a href="/docs/first-pipeline"
+      >Build your first pipeline</a
+    >
     to deploy a route and verify delivery. To use your own systems, choose a connector from
     <a href="/docs/sources">Sources</a> and <a href="/docs/destinations">Destinations</a>. Check
     network access from the worker hosts and set up any
