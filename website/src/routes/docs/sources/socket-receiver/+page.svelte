@@ -109,7 +109,7 @@ EOF`;
     <li>
       <strong><code>syslog</code></strong>: syslog's own framing (RFC 6587). A message that starts
       with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or
-      where <code>lineBreaker</code> cuts it. See the
+      where <code>lineBreaker</code> ends it. See the
       <a href="/docs/sources/syslog-receiver">syslog receiver</a>.
     </li>
   </ul>

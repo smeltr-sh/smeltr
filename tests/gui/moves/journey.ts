@@ -1,6 +1,6 @@
-// What an administrator does, from a fresh install to rows flowing and back, as moves the journey fuzzer
+// What an administrator does, from a fresh install to records flowing and back, as moves the journey fuzzer
 // (`specs/journey-fuzz.spec.ts`) strings together. Each move is done through the GUI, by role and label, and then
-// checked against what is true outside the page: the leader's API, the worker it started, the rows at the sink.
+// checked against what is true outside the page: the leader's API, the worker it started, the records at the sink.
 // `World` is what the moves so far have left the leader holding; a move is offered only when it makes sense there.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -3939,7 +3939,7 @@ export const MOVES: readonly Move[] = [
 ];
 
 /** How much more a move the journey has not made yet, or one on the way to it, is drawn than one it has. Both
- * weigh the same, so the long way to rows flowing is taken as readily as a move that is one step away. */
+ * weigh the same, so the long way to records flowing is taken as readily as a move that is one step away. */
 const UNMADE = 16;
 
 /** Draws the next move the world allows, or `null` when none does. A move not in `made` is drawn first, and then

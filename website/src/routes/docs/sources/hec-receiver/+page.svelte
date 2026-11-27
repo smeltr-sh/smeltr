@@ -52,7 +52,7 @@ service:
   <h1>HEC receiver</h1>
   <p class="lede">
     Takes what Splunk HTTP Event Collector (HEC) clients send to its port, at Splunk's paths. It
-    answers each request once every destination has its events.
+    answers each request once every destination has its records.
   </p>
   <p>
     OpenTelemetry Collectors, Fluent Bit, Vector, logging libraries and Splunk forwarders' <code
@@ -185,13 +185,13 @@ service:
   <h2 id="answers">What it answers</h2>
   <p>
     The receiver answers in HEC's JSON, <code>{'{"text": ..., "code": ...}'}</code>. The receiver
-    answers success only once every destination has the request's events, so a sender that retries
+    answers success only once every destination has the request's records, so a sender that retries
     an unanswered request loses nothing.
   </p>
   <dl>
     <dt><strong>200</strong>, code <code>0</code></dt>
     <dd>
-      <code>{'{"text":"Success","code":0}'}</code>: every destination has the request's events.
+      <code>{'{"text":"Success","code":0}'}</code>: every destination has the request's records.
     </dd>
     <dt><strong>503</strong>, code <code>9</code>, with <code>Retry-After</code></dt>
     <dd>

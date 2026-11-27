@@ -111,8 +111,8 @@
   <p>
     The source reads through the namespace's Kafka endpoint, as the
     <a href="/docs/sources/kafka">Kafka source</a> does, over TLS, signed in with the connection string,
-    the service principal or the host's identity. Smeltr commits the consumer group's progress as it delivers
-    events, so a restarted worker resumes where its group left off.
+    the service principal or the host's identity. Smeltr commits the consumer group's progress as the
+    records it read are delivered, so a restarted worker resumes where its group left off.
   </p>
   <p>
     Event Hubs keeps events only for the hub's retention period, so a group that falls further

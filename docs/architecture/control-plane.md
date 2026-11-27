@@ -120,7 +120,7 @@ progress the leader kept: what was delivered since is delivered again. A leader 
 every stored holder as heard at its own start. A holder that cannot reach the
 leader keeps reading, as every worker keeps running its deployment, so a
 partition between the two can leave two readers until it heals. That costs
-duplicates, never lost rows. A hold that moves opens or closes one reader
+duplicates, never lost records. A hold that moves opens or closes one reader
 inside the running deployment and restarts nothing else.
 
 Progress belongs to a source in its group at the place it reads. The leader
@@ -254,12 +254,12 @@ state the system has no way to reach rather than one it tries to avoid.
 
 Only a worker ever opens a connection to a broker or cluster.
 On the leader's invitation a worker taps a source's batches as transform takes them, or reads a source
-without advancing it where the source supports that, or taps the rows its
+without advancing it where the source supports that, or taps the records its
 pipelines finish for a destination, into a bounded buffer. Every capture takes
-a filter, read where it taps: the record as it arrived at a source, the row as
+a filter, read where it taps: the record as it arrived at a source, the record as
 its pipeline finished it at a destination. A capture of a source a block holds
 is shown the records that blocked, once, each with why. So is a capture at a
-destination the rows it refused and keeps, whatever its filter. A capture of a stream source
+destination the records it refused and keeps, whatever its filter. A capture of a stream source
 starts where it asks, at the latest unless it names another start; one that
 names another start reads the source itself on every worker, a worker whose
 deployment already reads the source included. For a source, the leader runs the
@@ -274,10 +274,10 @@ request, from invitation to end, is a **capture**. A worker
 fills its buffer only while the leader still wants the capture from it. A
 credential lent for a capture stays only while the capture is wanted from that
 worker or the worker's answer to it is still owed. What the leader holds for
-one capture has a fixed ceiling, however many workers answer. Rows a block
+one capture has a fixed ceiling, however many workers answer. Records a block
 holds fill it before any other, and a capture does not end on its total
-before every worker that held such rows when it opened has reported. A worker
-holding them takes no other row for the capture, and reports nothing, until it
+before every worker that held such records when it opened has reported. A worker
+holding them takes no other record for the capture, and reports nothing, until it
 has shown them. Once a capture
 is over at the leader, what the leader holds of it is final. What it holds,
 saved, is a **sample**: a bundle file on the branch it was saved to, which
@@ -327,12 +327,12 @@ info, marked as such. The views that judge health leave info out, so none of
 them counts it as trouble.
 
 A blocked source warns by what holds it, because each releases differently:
-rows only a new config lets through, rows a destination refused, or a
+records only a new config lets through, records a destination refused, or a
 destination not taking records. The last releases on its own once the
 destination is back, so it is a warning where the other two are failures.
 
-A source reading fewer rows than it normally does warns, and one reading more
-raises info. Its rows are judged at four widths, the last 5 minutes, 30 minutes,
+A source reading fewer records than it normally does warns, and one reading more
+raises info. Its records are judged at four widths, the last 5 minutes, 30 minutes,
 6 hours and 24 hours, and at a fifth, the gap. At each of the four, the usual
 window is the same window near the same time of day on the newest seven days of
 the source's kind that have one, within the last four weeks; a source whose
@@ -341,19 +341,19 @@ days has no usual window and is not judged there. The range is the usual window
 scaled by how far that width's learned windows strayed from theirs, a week of
 them for the short widths and four weeks for the long, and widened by the
 source's preset. A width judges a source only where its usual window holds ten
-rows, so a busy source is judged at every width and a sparse one at the long
+records, so a busy source is judged at every width and a sparse one at the long
 ones. The gap judges every source that has been watched four weeks and has had a
-quiet spell, whatever its widths do: how long the source has gone without a row,
+quiet spell, whatever its widths do: how long the source has gone without a record,
 against half again the longest quiet spell it made in the past year, or, until a
 year has been watched, the longest so far plus what a year would likely add. A
 source too sparse for any width is judged by the gap alone. A source warns once
 some width reads below its range for as many readings in a row as its preset
 requires, or once its silence passes that limit, and the warning holds until
 some width judges the source and none reads it below its range, or, where only
-the gap judges it, until the first row after it began that ends a quiet spell
-the gap read below. Rows above normal are judged at 30 minutes alone.
+the gap judges it, until the first record after it began that ends a quiet spell
+the gap read below. Records above normal are judged at 30 minutes alone.
 
-A source whose rows differ by weekday, such as an office's working days against
+A source whose records differ by weekday, such as an office's working days against
 its weekend, is judged against days of its own kind. Its days start at its
 quietest hour, so that one day holds one day's traffic in whatever time zone it
 keeps. Its kinds are none, the weekdays split in two, or each weekday its own,
@@ -361,10 +361,10 @@ and a split is kept only where it predicted each of the last four weeks, held
 out in turn, better than no split did. A window that reaches into the day
 before, as a Monday's 24 hours reach into Sunday, is learned only from windows
 on days whose day before was of the same kind as that day before. For an office,
-a Monday learns from Mondays. A source is judged once it has a week of rows, so
+a Monday learns from Mondays. A source is judged once it has a week of records, so
 its first weekend is learned before it can warn, and its days are told apart
 once it has four weeks. Its kinds are learned again each day. A watched sender's
-days are told apart the same way, from its own rows.
+days are told apart the same way, from its own records.
 
 A source's preset sets how soon a drop warns against how often a brief dip does:
 how much wider than its learned spread the range is, and how many readings in a
@@ -389,14 +389,14 @@ takes its width to show is judged against the normal before it, and is not
 taught to that normal while it unfolds. Days not learned are passed over, not
 counted, so a lasting drop is still judged against the days before it. It keeps
 warning until the source reads inside its range again or an editor says
-otherwise. A window with more rows is learned, so more rows become the new
+otherwise. A window with more records is learned, so more records become the new
 normal. A source with too little history has no normal yet. A source that is
 held, unreachable or on a silent worker is not judged, because a warning that
 names the cause is already up. After that warning ends, the source is not judged
 at a width while that width's window still contains the stop and the catch-up
 after it. The leader keeps for a year when each warning about a source was up
-and why it began: the width whose rows fell below its range, with the rows and
-range then, or how long the source had gone without a row. So the warning's end
+and why it began: the width whose records fell below its range, with the records and
+range then, or how long the source had gone without a record. So the warning's end
 is known across a restart, and the gap learns a year of quiet spells less those
 that warned. The Status page ranks sources by how far each is from the same
 normal.
@@ -407,18 +407,18 @@ outage: the warning turns into info until it ends, stays on the Issues page for
 everyone, and is not learned. Normal marks it normal: the warning turns into
 info and is learned whole. A warning nobody marked stays a warning, and is not
 learned. Reset history forgets what the source read before now, so it has no
-normal until it has a week of rows again. The source's History tab on the Map
-charts its rows against its range. It lists the source's warnings of the past
+normal until it has a week of records again. The source's History tab on the Map
+charts its records against its range. It lists the source's warnings of the past
 year, including the one that is up, and the source's longest quiet spells, each
 shown Normal when it is learned and Outage when it is not. It says when a new
 source is not yet judged, when every day of its week is judged alike, and how
-long the source may go without a row before it warns. Each warning says why it
-began and opens on the rows around it: at the width whose rows fell below its
+long the source may go without a record before it warns. Each warning says why it
+began and opens on the records around it: at the width whose records fell below its
 range, or, for a warning a quiet spell raised, as the History chart draws them.
-Pointing at a warning a width raised, on the chart, draws that width's rows and
+Pointing at a warning a width raised, on the chart, draws that width's records and
 range over the chart. The warning that is up can be marked from its row on the
 Issues page too. A mark names a warning by when it began, so every page marks
-the same warning. A window that contains rows of a warning marked Normal is
+the same warning. A window that contains records of a warning marked Normal is
 learned without waiting a width. So marking the warning that is up Normal
 teaches the level the source reads now, and the warning ends once that normal is
 learned, within the hour. The leader keeps each mark, with who made it.
@@ -428,29 +428,29 @@ field of the source's records, such as a firewall's name, or of its stream key
 (Observability, Streams). The leader sums what workers count in each five-minute
 bucket and writes the bucket once it ends, into a day row for each field and
 each value: the buckets the field was counted in, the buckets the value held a
-row in, and for a watched sender the rows it held in each. A bucket's count of
-rows takes one to three bytes of the day row, so four weeks of one sender's rows
+record in, and for a watched sender the records it held in each. A bucket's count of
+records takes one to three bytes of the day row, so four weeks of one sender's records
 take 10 to 30 kilobytes.
 
 ```mermaid
 flowchart LR
-  W[workers: rows by value of each field] --> B[leader: each five-minute bucket, written once it ends]
-  B --> D[a day row per field and per value: its buckets, and a watched sender's rows in each]
+  W[workers: records by value of each field] --> B[leader: each five-minute bucket, written once it ends]
+  B --> D[a day row per field and per value: its buckets, and a watched sender's records in each]
   D -- once a day --> P{sent steadily on seven days in a row}
   P -- yes: watched --> J[judged at the four widths against its own normal]
-  D -- a watched sender's rows --> J
+  D -- a watched sender's records --> J
   J -- below its range at a width, as many readings in a row as its preset requires --> X[Senders below normal]
 ```
 
 Each day the leader picks which values to watch: a value is watched once it went
-no more than an hour without a row, counting only the time its field was
+no more than an hour without a record, counting only the time its field was
 counted, on each of seven days in a row, and it stays watched for a week after.
 A field that held one value names no sender, and neither does one that passed
 its cap of values on a worker. The pick reads the last two weeks of day rows. A
-watched sender keeps its rows from the day it is picked, in day rows kept for
+watched sender keeps its records from the day it is picked, in day rows kept for
 the four weeks its normal is learned from. A value the pick stops watching loses
-its rows, and its day rows once no pick reads them. A newly watched sender is
-judged once it has a week of rows.
+its records, and its day rows once no pick reads them. A newly watched sender is
+judged once it has a week of records.
 
 A watched sender is judged at the four widths, below normal only and never by
 the gap, at the preset picked for its source's senders. That preset is Quiet
@@ -458,7 +458,7 @@ until an editor picks another on the Senders tab: each sender warns on its own,
 so a source with many senders has that many chances for a dip to warn. It is
 judged only where its field was counted, so a field that a pipeline change takes
 out leaves its senders unjudged rather than all below, and so does a bucket the
-leader lost to a restart. It is not judged while its source warns that its rows
+leader lost to a restart. It is not judged while its source warns that its records
 are below normal or that it is blocked, refused, waiting or unreachable, nor on
 the reading its source crosses: the source's own warning says more. Senders of
 one source that cross on one reading raise one warning that names them, and a

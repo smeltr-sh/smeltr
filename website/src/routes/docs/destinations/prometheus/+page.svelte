@@ -176,7 +176,7 @@
     request go oldest first.
   </p>
   <p>
-    The destination sends one request at a time, and each lands before the next is sent, so a
+    The destination sends one request at a time, and each is delivered before the next is sent, so a
     series' samples arrive in order.
   </p>
 
@@ -200,8 +200,8 @@
         >
         <tr
           ><th scope="row">400, 409, 413, 422</th><td
-            >splits the request in halves and sends each. Halves the store takes land; a sample it
-            still refuses on its own, the destination refuses alone.</td
+            >splits the request in halves and sends each. Halves the store takes are delivered; a
+            sample it still refuses on its own, the destination refuses alone.</td
           ></tr
         >
         <tr

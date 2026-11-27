@@ -156,8 +156,8 @@
         >
         <tr
           ><th scope="row">400, 413, 422</th><td
-            >splits the request in halves and sends each. Halves the service takes land; a record it
-            still refuses on its own, the destination refuses alone. <a
+            >splits the request in halves and sends each. Halves the service takes are delivered; a
+            record it still refuses on its own, the destination refuses alone. <a
               href="/docs/delivery#refused">Choose what happens to it →</a
             ></td
           ></tr
