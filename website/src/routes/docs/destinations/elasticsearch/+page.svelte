@@ -75,8 +75,8 @@
         >
         <tr
           ><th scope="row">index</th><td
-            >Replaces the document with that ID. Two copies sent close together can land in either
-            order, so either can end up kept.</td
+            >Replaces the document with that ID. Two copies sent close together can be delivered in
+            either order, so either can end up kept.</td
           ></tr
         >
       </tbody>
@@ -89,7 +89,7 @@
     <a
       href="https://www.elastic.co/docs/manage-data/data-store/data-streams/time-series-data-stream-tsds"
       >time series data stream</a
-    > takes no ID of its own, so a row sent to one needs a null ID.
+    > takes no ID of its own, so a record sent to one needs a null ID.
   </p>
 
   <h2 id="verify">Verify</h2>
