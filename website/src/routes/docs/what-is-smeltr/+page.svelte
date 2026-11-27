@@ -6,7 +6,6 @@
   const sections = [
     { id: 'editor', title: 'Leader pipeline editor' },
     { id: 'fleet', title: 'Leader and workers' },
-    { id: 'worker', title: 'Inside a worker' },
     { id: 'does', title: 'What it does' },
     { id: 'run', title: 'How you run it' },
   ];
@@ -26,10 +25,7 @@
   <EditorScreenshot />
 
   <h2 id="fleet">Leader and workers</h2>
-  <WorkflowDiagram kind="workerFleet" />
-
-  <h2 id="worker">Inside a worker</h2>
-  <WorkflowDiagram kind="dataPath" />
+  <WorkflowDiagram kind="system" />
 
   <h2 id="does">What it does</h2>
   <p>
