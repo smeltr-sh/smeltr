@@ -44,17 +44,13 @@
   <section class="flow-section" id="where-it-fits" aria-labelledby="fit-heading">
     <div class="section-intro centered">
       <h2 id="fit-heading">What is Smeltr?</h2>
-      <p>
-        Smeltr runs on your infrastructure, between the systems that produce logs, metrics, and
-        events and the tools that store or analyze them. For example, read from Kafka or receive
-        syslog, drop records you don't need, and standardize fields before sending the results to
-        Elasticsearch, Amazon S3, or both.
-      </p>
+      <p>Smeltr is fast, self-hosted telemetry pipeline software.</p>
     </div>
     <HomeDataFlow />
     <p class="connection-links">
       <a href="/siem-costs">Cut SIEM costs →</a>
       <a href="/one-schema">Put every source in one schema →</a>
+      <a href="/docs/what-is-smeltr">More about what Smeltr is →</a>
     </p>
   </section>
 
