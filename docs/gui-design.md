@@ -2,7 +2,7 @@
 
 The GUI is the authoring surface; the JSON bundle is its output. The leader
 links the same compiler and executor a worker does and runs a pipeline in
-process against pasted or captured rows, the same path a live record takes
+process against pasted or captured records, the same path a live record takes
 as a batch of length one. No worker is involved in editing or previewing.
 The visual language is `gui-frontend/STYLE_GUIDE.md`.
 
@@ -52,7 +52,7 @@ search cannot reach past the cut.
 ## The map
 
 The map is the running topology, one band per group, laid out left to right
-as rows travel: sources, then pipelines, then destinations. Sources run in
+as records travel: sources, then pipelines, then destinations. Sources run in
 name order; a pipeline or destination sits level with what it connects to,
 so lines cross as little as they can. Lines show what connects to what and
 nothing else. Every reading -- rate, buffer fill, lag
@@ -83,11 +83,11 @@ graph LR
 A source→pipeline line is a route; a pipeline→destination line is a
 delivery rule on that route. Route and delivery lines always draw.
 
-A fallback line carries a row its path could not finish. Fallback lines
+A fallback line carries a record its path could not finish. Fallback lines
 draw only on a selected path that can take them, and they are dashed:
 a dash means fallback. There are three.
 
-- **Unmatched**, in the warning color: a source→destination line for a row
+- **Unmatched**, in the warning color: a source→destination line for a record
   no route claimed, taking the deployment's unmatched destination with no
   pipeline in between.
 - **Poison**, in the error color: a source→destination line for a batch
@@ -100,7 +100,7 @@ An unmatched line is drawn from the configuration, since the path exists
 whether or not anything is on it right now. A poison line is drawn from
 traffic: every source can panic on a batch, so configuration says "all of
 them", and a line from each of them converging on one node says nothing.
-Where unmatched rows block or drop there is no destination, so there is no
+Where unmatched records block or drop there is no destination, so there is no
 line to draw. A blocked source carries its warning badge; a source dropping
 them shows the count in its panel.
 
@@ -122,8 +122,8 @@ at their heads, with how many each holds, so a card carries only what is its
 own: its name beside the glyph of the system behind it; a second line naming
 that system, or how many routes run through a pipeline, with a `shared` tag
 when it comes from `shared/`; and one reading line, its rate beside a
-source's unmatched rows or lag, or a destination's busiest buffer. A source
-whose rows no route claims says how many a second, whatever the deployment
+source's unmatched records or lag, or a destination's busiest buffer. A source
+whose records no route claims says how many a second, whatever the deployment
 does with them. A destination's card has a
 buffer bar along its foot. What a reading means is in `?` help, not on the
 card.
@@ -218,18 +218,18 @@ this path** hides everything off the selection's path, keeping the other
 copies of a shared selection.
 
 Counts are one object at a time, over a recent window, and each kind
-answers in the shape its own content has. A source's rows split across
+answers in the shape its own content has. A source's records split across
 its routes, so each route carries its share, beside the share that
-matched no route. A pipeline's rows do not split, they narrow: its steps are a
+matched no route. A pipeline's records do not split, they narrow: its steps are a
 list in the order they run, each with what it dropped and what it cost. A
-destination's rows only arrive, so it is a tally, and refusals broken out
+destination's records only arrive, so it is a tally, and refusals broken out
 by the source that sent them -- the only part of its traffic that can be
 traced back, since what arrived is counted against the destination alone.
 
 Of those, only what matched no route is exact. A route's share is what
 its condition matched, which is the most it can have delivered; a
-pipeline can drop a row afterward and a delivery rule can decline it.
-Every route sees every row, so the shares can sum past everything the
+pipeline can drop a record afterward and a delivery rule can decline it.
+Every route sees every record, so the shares can sum past everything the
 source read. The view says so rather than normalizing them into a total
 that adds up.
 
@@ -268,7 +268,7 @@ map is a smaller graph, not the same graph with holes.
 With nothing selected, the panel's place holds a **Needs attention** list:
 every warning the control plane's catalog names on an object the map draws
 or on its group, under the catalog's own name for it, and each object's own
-worst reading -- backpressure, a buffer near capacity, rows no route takes,
+worst reading -- backpressure, a buffer near capacity, records no route takes,
 stale readings. Failures come first, then warnings, then stale readings. A
 condition added to the catalog appears here with nothing on the map to
 change. A full buffer behind a failure on the same object is that failure's
@@ -285,11 +285,11 @@ nothing wrong starts folded; any group folds.
 The Routes page is a card per source, holding every route that reads it.
 Routes have no order, so the list has none to change. A route is a branch of
 its source's card: its condition, its pipeline, then its delivery rules out to
-destinations. Splitting a source's rows between pipelines is two routes, each
+destinations. Splitting a source's records between pipelines is two routes, each
 with its condition. The source is read once, and each pipeline runs over the
-rows its condition takes.
+records its condition takes.
 
-A card of one route to one destination is a line, left to right the way rows
+A card of one route to one destination is a line, left to right the way records
 travel, since that is the common route. A second destination or a second
 pipeline turns it top to bottom, and so does anything one line cannot show: a
 destination brought on and not yet wired, or a condition that sends nowhere.
@@ -354,7 +354,7 @@ with a destination for the same reason; a route added from the + beside
 The map shows what arrives that no route takes, and Build is where it is
 routed, with the editors smeltr already has. A source's unrouted-stream
 warning (Observability, Streams) draws its card, and its panel lists the
-streams the warning names, each with + Add route, and rows filed under no
+streams the warning names, each with + Add route, and records filed under no
 stream with + Add route for the whole source.
 
 ```mermaid
@@ -391,12 +391,12 @@ column names from it, and a Drop step ahead of the Parser takes out that
 row, which a source sends once per file. Records that arrive as fields need
 none. A Parser's fields are declared from the capture the way the workspace
 proposes them, and they are the starting point the author edits, with the
-captured rows beside it.
+captured records beside it.
 
 ## The workspace
 
 A pipeline is edited with its steps on one side and the selected sample and
-the rows it produces on the other, recomputed as the author types, so
+the records it produces on the other, recomputed as the author types, so
 previewing is not an action anyone takes. Which side gets the room changes
 with the work, so the split is a divider that drags, with snap points,
 rather than a mode to choose.
@@ -426,14 +426,14 @@ field neither held, retyping one they got wrong, dropping one they do not
 want. Production stands in for the sample where none is chosen. Four
 rules hold. The inference is a suggestion, never a silent write, since a
 declared type pins behavior. It signals the weak spots: a field absent
-from some rows, one whose rows disagree about its type. It
+from some records, one whose records disagree about its type. It
 reports shapes the builder cannot represent as "declare it in the raw JSON"
 rather than dropping them. The inference is not reimplemented in
 TypeScript: a second copy of the type table would drift from the one that
 runs.
 
 A **static** parser needs no sample at all, so the author never types a
-name. Its fields are known before any row: grok's are its captures, in
+name. Its fields are known before any record: grok's are its captures, in
 capture order, and CSV's are its ordered column table, which the workspace
 fills in from the configuration. Every field shows the one type it is
 stored at, which is the type it runs at. A field is first typed when it is
@@ -451,7 +451,7 @@ left out, and says how many.
 
 A Remove step shows the record before it as a tree, from the data dictionary
 of a preview of the steps ahead of it, the same preview the step diff runs:
-the fields the compiler types, and with a sample the keys only its rows know.
+the fields the compiler types, and with a sample the keys only its records know.
 Each field and object is ticked while it is kept. Unticking an object removes
 everything under it, so its fields show struck through with their ticks
 locked, and the step names the object alone. Its search, Remove all and Keep
@@ -515,8 +515,8 @@ flowchart LR
 Every object's editor but a route's card (Routes) opens with one folded
 line of what a change to it reaches (A5): what is downstream of it, and the groups that run it. Upstream
 appears only where the object holds an implicit contract on fields, since a
-change can break against it there: a pipeline lists the sources whose rows it
-processes, and a destination the pipelines whose rows it writes.
+change can break against it there: a pipeline lists the sources whose records it
+processes, and a destination the pipelines whose records it writes.
 
 ```mermaid
 flowchart LR
@@ -567,9 +567,9 @@ row it writes is a field. A field's example shows in its own column when any
 field has one.
 
 A pipeline names what it produces in the editor's Produces row, and a
-destination what it accepts on its own form. Where the rows do not fit, the
+destination what it accepts on its own form. Where the records do not fit, the
 editor says so at the step that wrote the field, and gives each field a
-schema requires and the rows lack a column of its own, with the type to write
+schema requires and the records lack a column of its own, with the type to write
 it as, and lists it in the Fields menu. Review lists it under its
 Schemas tab and counts it in the dock, and none of it blocks a save or a
 deploy.
