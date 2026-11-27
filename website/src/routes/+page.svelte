@@ -44,7 +44,10 @@
   <section class="flow-section" id="where-it-fits" aria-labelledby="fit-heading">
     <div class="section-intro centered">
       <h2 id="fit-heading">What is Smeltr?</h2>
-      <p>Smeltr is fast, self-hosted telemetry pipeline software.</p>
+      <p>
+        Smeltr is self-hosted telemetry pipeline software. A Rust backend does the work; you build
+        and manage pipelines in your browser.
+      </p>
     </div>
     <HomeDataFlow />
     <p class="connection-links">
