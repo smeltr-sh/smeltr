@@ -1501,7 +1501,9 @@ fn check_records(c: &ObjectSourceConfig, records: &[SourceRecord], objects: &[Ob
     let mut pool = smeltr::core::buffer::BufferPool::new();
     let decoded = (c.avro.as_ref()).map(|avro| {
         let batch = (avro.meta).decode(records, None::<&[&str]>, Some(&avro.writers), None, &mut pool);
-        let json: Vec<Vec<u8>> = (0..records.len()).map(|row| batch.record_json(&avro.meta, row)).collect();
+        let json: Vec<Vec<u8>> = (0..records.len())
+            .map(|row| batch.record_json(&avro.meta, row))
+            .collect();
         batch.batch.reclaim(&mut pool);
         json
     });

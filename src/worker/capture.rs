@@ -761,9 +761,13 @@ impl Captures {
         // session's declaration has them.
         let mut pool = BufferPool::new();
         let own = (filter.meta != *meta).then(|| {
-            filter
-                .meta
-                .decode(records, Some(&decoded.raw(meta)), decoded.writers.as_ref(), Some(&filter.source), &mut pool)
+            filter.meta.decode(
+                records,
+                Some(&decoded.raw(meta)),
+                decoded.writers.as_ref(),
+                Some(&filter.source),
+                &mut pool,
+            )
         });
         let rows: Vec<Option<CapturedRow>> = {
             let decoded = own.as_ref().unwrap_or(decoded);
@@ -1422,7 +1426,14 @@ pub fn run_cold_capture(
             at: RawAt::cold(admitted),
         }));
         let metrics = crate::metrics::MetricsHandle::new(registry.clone(), CAPTURE_LABEL);
-        drive(&cold, source.as_mut(), &kind.meta(), kind.avro_writers(), &metrics, None);
+        drive(
+            &cold,
+            source.as_mut(),
+            &kind.meta(),
+            kind.avro_writers(),
+            &metrics,
+            None,
+        );
         return;
     }
     let meta = kind.meta();
@@ -1514,7 +1525,13 @@ fn drive<S: crate::io::Source + ?Sized>(
         // The decode ingest would have done, with this source's own encoding: a captured record is text, however it
         // was captured.
         let mut pool = BufferPool::new();
-        let decoded = meta.decode(&records, None::<&[&str]>, writers.as_ref(), Some(&cold.config.id), &mut pool);
+        let decoded = meta.decode(
+            &records,
+            None::<&[&str]>,
+            writers.as_ref(),
+            Some(&cold.config.id),
+            &mut pool,
+        );
         // Labeled by the source's own name rather than a positional id, which `Subjects::resolve` leaves as it is:
         // the source may be in no deployment.
         metrics.incr(
@@ -2305,11 +2322,17 @@ mod tests {
     /// A payload that did not read is captured with why, in its record's first field.
     #[test]
     fn a_payload_that_did_not_read_is_captured_with_why() {
-        let meta = SourceMeta::KAFKA.decoding_avro(vec![("id".into(), DataType::I64)]).unwrap();
+        let meta = SourceMeta::KAFKA
+            .decoding_avro(vec![("id".into(), DataType::I64)])
+            .unwrap();
         let unread = records(0, &["\0\0\0\0\x09"]);
 
         let row = first_row(&meta, &unread);
-        assert!(row.values[0].as_str().unwrap().contains("schema 9"), "{:?}", row.values[0]);
+        assert!(
+            row.values[0].as_str().unwrap().contains("schema 9"),
+            "{:?}",
+            row.values[0]
+        );
         assert_eq!(row.failed, [0]);
     }
 

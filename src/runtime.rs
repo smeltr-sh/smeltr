@@ -436,7 +436,9 @@ impl Lane {
         let records: Vec<SourceRecord> = held.blocking.iter().map(|(i, _)| held.records[*i].clone()).collect();
         let why: Vec<String> = held.blocking.iter().map(|(_, why)| why.clone()).collect();
         let mut pool = BufferPool::new();
-        let decoded = self.meta.decode(&records, None::<&[&str]>, self.writers.as_ref(), Some(name), &mut pool);
+        let decoded = self
+            .meta
+            .decode(&records, None::<&[&str]>, self.writers.as_ref(), Some(name), &mut pool);
         captures.tap_held(name, &mut held.shown, &records, &self.meta, &decoded, &why);
         decoded.batch.reclaim(&mut pool);
     }
@@ -1650,9 +1652,13 @@ impl Transform {
         // Routing, every route's pipeline and every delivery rule read the same `now()`, the one a split carries over.
         let now = attempt.now.unwrap_or_else(DateTime::now);
         let routed = buffer::catch_over_budget(|| {
-            let mut decoded = lane
-                .meta
-                .decode(slice, None::<&[&str]>, lane.writers.as_ref(), lane.source_name.as_deref(), pool);
+            let mut decoded = lane.meta.decode(
+                slice,
+                None::<&[&str]>,
+                lane.writers.as_ref(),
+                lane.source_name.as_deref(),
+                pool,
+            );
             let masks = {
                 let mut ctx = Ctx::at(pool, &mut errors, now);
                 route_masks(&self.topology.routes, lane.source_id, &mut decoded.batch, &mut ctx)
@@ -1940,7 +1946,14 @@ impl Transform {
     /// delivers to, or dropped (design doc, Exception taxonomy). Counted either way, because a source silently matching
     /// nothing is what this exists to make visible. Block never gets here: `run_attempt` stops the batch before any
     /// pipeline runs.
-    fn place_unmatched(&self, lane: &Lane, slice: &[SourceRecord], decoded: &DecodedBatch, taken: &[u64], out: &mut Output) {
+    fn place_unmatched(
+        &self,
+        lane: &Lane,
+        slice: &[SourceRecord],
+        decoded: &DecodedBatch,
+        taken: &[u64],
+        out: &mut Output,
+    ) {
         let unmatched = (slice.len() - bits::popcount(taken)) as u64;
         if unmatched == 0 {
             return;
@@ -2222,9 +2235,13 @@ impl Transform {
     /// Puts `records`, a batch no pipeline finished, in `out` for `targets` as they arrived, decoding them here.
     fn place_arrived(&self, out: &mut Output, targets: &[DestId], records: &[SourceRecord], lane: &Lane) {
         let mut pool = BufferPool::new();
-        let decoded = lane
-            .meta
-            .decode(records, None::<&[&str]>, lane.writers.as_ref(), lane.source_name.as_deref(), &mut pool);
+        let decoded = lane.meta.decode(
+            records,
+            None::<&[&str]>,
+            lane.writers.as_ref(),
+            lane.source_name.as_deref(),
+            &mut pool,
+        );
         let rows: Vec<usize> = (0..records.len()).collect();
         self.place_delivered(out, targets, &decoded, &rows, lane, DROPPED_UNPROCESSABLE);
         decoded.batch.reclaim(&mut pool);

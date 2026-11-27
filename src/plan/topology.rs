@@ -52,6 +52,17 @@ fn object_prefix(key: &[u8]) -> std::borrow::Cow<'_, str> {
 }
 
 impl SourceMeta {
+    /// A source of `kind` whose payloads are text, in the text encoding it detects.
+    const fn new(kind: &'static str, record: RecordFields, source: &'static [(&'static str, DataType)]) -> SourceMeta {
+        SourceMeta {
+            kind,
+            record,
+            source,
+            encoding: Encoding::Auto,
+            format: Format::Text,
+        }
+    }
+
     /// What its kind files `record` under, for the leader to tell one stream reaching a source from another
     /// (`heartbeat::UnmatchedStreams`): a HEC or S2S sender's sourcetype, an Elasticsearch sender's index, an
     /// object's bucket and directory prefix (`object_prefix`), and otherwise the record's topic, which a receiver
@@ -516,202 +527,71 @@ const SQL_FIELDS: &[(&str, DataType)] = &[
 impl SourceMeta {
     /// What a Kafka record carries. Also what a pipeline no route reaches is checked against, so an unrouted pipeline
     /// is never rejected for a field the source a future route names would have supplied.
-    pub const KAFKA: SourceMeta = SourceMeta {
-        kind: "kafka",
-        record: PAYLOAD_RECORD,
-        source: KAFKA_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const KAFKA: SourceMeta = SourceMeta::new("kafka", PAYLOAD_RECORD, KAFKA_FIELDS);
 
     /// What an Event Hubs record carries: a Kafka record's fields, with the event hub as its topic.
-    pub const EVENT_HUBS: SourceMeta = SourceMeta {
-        kind: "eventHubs",
-        record: PAYLOAD_RECORD,
-        source: KAFKA_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const EVENT_HUBS: SourceMeta = SourceMeta::new("eventHubs", PAYLOAD_RECORD, KAFKA_FIELDS);
 
     /// What a metrics record carries: its source's name and kind, and the topic it is stamped with.
-    pub const METRICS: SourceMeta = SourceMeta {
-        kind: "metrics",
-        record: PAYLOAD_RECORD,
-        source: METRICS_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const METRICS: SourceMeta = SourceMeta::new("metrics", PAYLOAD_RECORD, METRICS_FIELDS);
 
     /// What a logs record carries, which is the same.
-    pub const LOGS: SourceMeta = SourceMeta {
-        kind: "logs",
-        record: PAYLOAD_RECORD,
-        source: LOGS_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const LOGS: SourceMeta = SourceMeta::new("logs", PAYLOAD_RECORD, LOGS_FIELDS);
 
     /// What an SQS/S3 record carries: the object it was read from, and its record number there.
-    pub const S3_SQS: SourceMeta = SourceMeta {
-        kind: "s3Sqs",
-        record: PAYLOAD_RECORD,
-        source: OBJECT_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const S3_SQS: SourceMeta = SourceMeta::new("s3Sqs", PAYLOAD_RECORD, OBJECT_FIELDS);
 
     /// What a Listing/S3 record carries: the same as an SQS/S3 record.
-    pub const S3_LIST: SourceMeta = SourceMeta {
-        kind: "s3List",
-        record: PAYLOAD_RECORD,
-        source: OBJECT_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const S3_LIST: SourceMeta = SourceMeta::new("s3List", PAYLOAD_RECORD, OBJECT_FIELDS);
 
     /// What a Listing/GCS record carries: the same as an SQS/S3 record.
-    pub const GCS_LIST: SourceMeta = SourceMeta {
-        kind: "gcsList",
-        record: PAYLOAD_RECORD,
-        source: OBJECT_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const GCS_LIST: SourceMeta = SourceMeta::new("gcsList", PAYLOAD_RECORD, OBJECT_FIELDS);
 
     /// What a Listing/Azure Blob record carries: the same, with the container as its bucket.
-    pub const AZURE_BLOB_LIST: SourceMeta = SourceMeta {
-        kind: "azureBlobList",
-        record: PAYLOAD_RECORD,
-        source: OBJECT_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const AZURE_BLOB_LIST: SourceMeta = SourceMeta::new("azureBlobList", PAYLOAD_RECORD, OBJECT_FIELDS);
 
     /// What an SFTP record carries: the same, with the directory as its bucket and the path under it as its key.
-    pub const SFTP: SourceMeta = SourceMeta {
-        kind: "sftp",
-        record: PAYLOAD_RECORD,
-        source: OBJECT_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const SFTP: SourceMeta = SourceMeta::new("sftp", PAYLOAD_RECORD, OBJECT_FIELDS);
 
     /// What a Queue/Azure Blob record carries: the same, with the container as its bucket.
-    pub const AZURE_BLOB_QUEUE: SourceMeta = SourceMeta {
-        kind: "azureBlobQueue",
-        record: PAYLOAD_RECORD,
-        source: OBJECT_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const AZURE_BLOB_QUEUE: SourceMeta = SourceMeta::new("azureBlobQueue", PAYLOAD_RECORD, OBJECT_FIELDS);
 
     /// What a Pub/Sub/GCS record carries: the same.
-    pub const GCS_PUB_SUB: SourceMeta = SourceMeta {
-        kind: "gcsPubSub",
-        record: PAYLOAD_RECORD,
-        source: OBJECT_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const GCS_PUB_SUB: SourceMeta = SourceMeta::new("gcsPubSub", PAYLOAD_RECORD, OBJECT_FIELDS);
 
     /// What an HTTP API record carries: the address of the page it was read from.
-    pub const HTTP_API: SourceMeta = SourceMeta {
-        kind: "httpApi",
-        record: PAYLOAD_RECORD,
-        source: API_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const HTTP_API: SourceMeta = SourceMeta::new("httpApi", PAYLOAD_RECORD, API_FIELDS);
 
     /// What an Okta System Log record carries: the same.
-    pub const OKTA_LOGS: SourceMeta = SourceMeta {
-        kind: "oktaLogs",
-        record: PAYLOAD_RECORD,
-        source: API_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const OKTA_LOGS: SourceMeta = SourceMeta::new("oktaLogs", PAYLOAD_RECORD, API_FIELDS);
 
     /// What a PostgreSQL source's record carries before it declares its fields, which every one does.
-    pub const POSTGRES: SourceMeta = SourceMeta {
-        kind: "postgres",
-        record: PAYLOAD_RECORD,
-        source: SQL_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const POSTGRES: SourceMeta = SourceMeta::new("postgres", PAYLOAD_RECORD, SQL_FIELDS);
 
     /// What a MySQL or MariaDB source's record carries before it declares its fields, which every one does.
-    pub const MYSQL: SourceMeta = SourceMeta {
-        kind: "mysql",
-        record: PAYLOAD_RECORD,
-        source: SQL_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const MYSQL: SourceMeta = SourceMeta::new("mysql", PAYLOAD_RECORD, SQL_FIELDS);
 
     /// What an HTTP receiver's record carries: the address of the sender that delivered it.
-    pub const HTTP_RECEIVER: SourceMeta = SourceMeta {
-        kind: "httpReceiver",
-        record: PAYLOAD_RECORD,
-        source: RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const HTTP_RECEIVER: SourceMeta = SourceMeta::new("httpReceiver", PAYLOAD_RECORD, RECEIVER_FIELDS);
 
     /// What a HEC receiver's record carries: its sender's address, and what the sender filed its event under.
-    pub const HEC_RECEIVER: SourceMeta = SourceMeta {
-        kind: "hecReceiver",
-        record: PAYLOAD_RECORD,
-        source: HEC_RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const HEC_RECEIVER: SourceMeta = SourceMeta::new("hecReceiver", PAYLOAD_RECORD, HEC_RECEIVER_FIELDS);
 
     /// What an S2S receiver's record carries: its forwarder's address, and what the forwarder filed its event under.
-    pub const S2S_RECEIVER: SourceMeta = SourceMeta {
-        kind: "s2sReceiver",
-        record: PAYLOAD_RECORD,
-        source: HEC_RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const S2S_RECEIVER: SourceMeta = SourceMeta::new("s2sReceiver", PAYLOAD_RECORD, HEC_RECEIVER_FIELDS);
 
     /// What an Elasticsearch receiver's record carries: a document, its sender's address, and what its action named.
-    pub const ELASTIC_RECEIVER: SourceMeta = SourceMeta {
-        kind: "elasticReceiver",
-        record: PAYLOAD_RECORD,
-        source: ELASTIC_RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const ELASTIC_RECEIVER: SourceMeta =
+        SourceMeta::new("elasticReceiver", PAYLOAD_RECORD, ELASTIC_RECEIVER_FIELDS);
 
     /// What a socket receiver carries: a message's bytes, and its sender's address.
-    pub const SOCKET_RECEIVER: SourceMeta = SourceMeta {
-        kind: "socketReceiver",
-        record: PAYLOAD_RECORD,
-        source: RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const SOCKET_RECEIVER: SourceMeta = SourceMeta::new("socketReceiver", PAYLOAD_RECORD, RECEIVER_FIELDS);
 
     /// What an OTLP receiver of logs carries: a log record, its sender's address, and its resource and scope.
-    pub const OTLP_LOGS: SourceMeta = SourceMeta {
-        kind: "otlpReceiver",
-        record: OTLP_LOG,
-        source: OTLP_RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const OTLP_LOGS: SourceMeta = SourceMeta::new("otlpReceiver", OTLP_LOG, OTLP_RECEIVER_FIELDS);
 
     /// What an OTLP receiver of traces carries: a span, its sender's address, and its resource and scope.
-    pub const OTLP_TRACES: SourceMeta = SourceMeta {
-        kind: "otlpReceiver",
-        record: OTLP_SPAN,
-        source: OTLP_RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const OTLP_TRACES: SourceMeta = SourceMeta::new("otlpReceiver", OTLP_SPAN, OTLP_RECEIVER_FIELDS);
 
     /// What an OTLP receiver of `signal` carries: a log record, a metric's data point or a span, its sender's address,
     /// and its resource and scope.
@@ -719,13 +599,7 @@ impl SourceMeta {
         match signal {
             Signal::Logs => SourceMeta::OTLP_LOGS,
             // A data point's record holds arrays and structs, which no `const` can build.
-            Signal::Metrics => SourceMeta {
-                kind: "otlpReceiver",
-                record: otlp_metric_point(),
-                source: OTLP_RECEIVER_FIELDS,
-                encoding: Encoding::Auto,
-                format: Format::Text,
-            },
+            Signal::Metrics => SourceMeta::new("otlpReceiver", otlp_metric_point(), OTLP_RECEIVER_FIELDS),
             Signal::Traces => SourceMeta::OTLP_TRACES,
         }
     }
@@ -733,13 +607,7 @@ impl SourceMeta {
     /// What a Prometheus receiver's record carries: one sample or native histogram, and its sender's address.
     // Its record holds arrays and structs, which no `const` can build.
     pub fn prometheus_receiver() -> SourceMeta {
-        SourceMeta {
-            kind: "prometheusReceiver",
-            record: prometheus_record(),
-            source: PROMETHEUS_RECEIVER_FIELDS,
-            encoding: Encoding::Auto,
-            format: Format::Text,
-        }
+        SourceMeta::new("prometheusReceiver", prometheus_record(), PROMETHEUS_RECEIVER_FIELDS)
     }
 
     /// The kind `__source.type` names, or `None` for a kind no source has.
@@ -773,13 +641,7 @@ impl SourceMeta {
     }
 
     /// A source whose records carry nothing beyond their payload.
-    pub const NONE: SourceMeta = SourceMeta {
-        kind: "",
-        record: PAYLOAD_RECORD,
-        source: &[(SOURCE_BYTES, DataType::Bytes)],
-        encoding: Encoding::Auto,
-        format: Format::Text,
-    };
+    pub const NONE: SourceMeta = SourceMeta::new("", PAYLOAD_RECORD, &[(SOURCE_BYTES, DataType::Bytes)]);
 
     /// This meta with `record` as its record's fields in place of `_raw`, and without `__source.bytes`. A field's name is a path, as a pipeline
     /// writes one (`user.name`, `labels["a.b"]`). Err for no fields, a name the engine keeps for itself (`__live`,

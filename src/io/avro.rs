@@ -38,8 +38,8 @@ use arrow_schema::{DataType as Arrow, Fields, Schema as ArrowSchema, SchemaRef};
 use self::registry::{Registry, Unread};
 use crate::core::column::DataType;
 use crate::core::variant::{self, Encoded};
-use crate::io::values::{self, Value};
 use crate::io::IoError;
+use crate::io::values::{self, Value};
 use crate::plan::topology::{AvroRead, HeldSecrets, SchemaRegistry, Tls};
 
 /// The byte a framed payload starts with.
@@ -344,7 +344,9 @@ fn read_one<'s>(
             false => match held {
                 Ok(Some((value, schema))) => Ok(to_value(value, schema, names)),
                 Ok(None) => Ok(Value::Null),
-                Err((below, value, schema)) => values::at(&to_value(value, schema, names), below).map_err(values::spell),
+                Err((below, value, schema)) => {
+                    values::at(&to_value(value, schema, names), below).map_err(values::spell)
+                }
             },
         }
     });

@@ -39,7 +39,12 @@ fn reader(url: &str, fields: &[(&str, DataType)]) -> (AvroReader, SourceMeta) {
 /// `payloads` decoded into `meta`'s record with the schemas `reader` asked for, as transform decodes them.
 fn read(reader: &AvroReader, meta: &SourceMeta, payloads: &[Vec<u8>]) -> Read {
     let mut pool = crate::core::buffer::BufferPool::new();
-    decode(meta.record(), &reader.writers, payloads.iter().map(Vec::as_slice), &mut pool)
+    decode(
+        meta.record(),
+        &reader.writers,
+        payloads.iter().map(Vec::as_slice),
+        &mut pool,
+    )
 }
 
 /// `value` written with `schema`, framed as `id`.
@@ -666,8 +671,16 @@ fn a_read_names_the_schema_its_last_payload_that_read_was_read_with() {
         let mut pool = crate::core::buffer::BufferPool::new();
         read.columns.into_iter().for_each(|c| c.reclaim(&mut pool));
         let newest = read.newest.unwrap();
-        fields_of(&newest).into_iter().map(|f| f.name).collect::<Vec<_>>().join(",")
+        fields_of(&newest)
+            .into_iter()
+            .map(|f| f.name)
+            .collect::<Vec<_>>()
+            .join(",")
     };
     assert_eq!(names(&[pa.clone(), pb.clone()]), "id,n");
-    assert_eq!(names(&[pb, pa, b"not avro".to_vec()]), "id", "a row that does not read names no schema");
+    assert_eq!(
+        names(&[pb, pa, b"not avro".to_vec()]),
+        "id",
+        "a row that does not read names no schema"
+    );
 }
