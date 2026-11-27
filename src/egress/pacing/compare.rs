@@ -1191,3 +1191,77 @@ fn trace_a_limit_coming_back() {
         }
     }
 }
+
+/// A capacity drop that lasts: 1 GiB/s, 20 ms, the bottleneck dropping at 30 s and staying down for 600 s, no
+/// buffer limit. Recovered is the first time after the drop from which the queue at the bottleneck, averaged over
+/// each following 5 s, stays within 1.5 times (plus a batch) what a fresh flow keeps queued on the dropped path.
+#[test]
+#[ignore = "a sweep for a person to read: cargo nextest run --lib egress::pacing::compare --run-ignored only --no-capture"]
+fn how_long_a_lasting_capacity_drop_takes_to_recover() {
+    const DROP: f64 = 30.0;
+    const LASTS: f64 = 600.0;
+    for ceiling in [CEILING, 64 * MIB] {
+        for after in [0.5, 0.33, 0.2, 0.1] {
+            let model = || New(Pacing::seeded(BATCH, ceiling, Instant::now(), 7));
+            let mut fresh = Sim::new(Path::new(after * GIB, 20), vec![(model(), Source::Backlogged)]);
+            fresh.run_to(60.0);
+            let steady = fresh.queued(20.0, 60.0);
+            let path = Path {
+                capacity: vec![(0.0, GIB), (DROP, after * GIB)],
+                ..Path::new(GIB, 20)
+            };
+            let mut s = Sim::new(path, vec![(model(), Source::Backlogged)]);
+            s.run_to(DROP + LASTS);
+            let end = DROP + LASTS;
+            let bound = 1.5 * steady + BATCH as f64;
+            let mut recovered = None;
+            let mut t = DROP;
+            while t + 5.0 <= end {
+                let mut later = t;
+                let mut holds = true;
+                while later + 5.0 <= end {
+                    if s.queued(later, later + 5.0) > bound {
+                        holds = false;
+                        break;
+                    }
+                    later += 5.0;
+                }
+                if holds {
+                    recovered = Some(t - DROP);
+                    break;
+                }
+                t += 1.0;
+            }
+            println!(
+                "\n## ceiling {:>4} MiB, drop to {after:.2} at {DROP} s for {LASTS} s: fresh flow queues {:.1} MiB; recovered (queue <= {:.1} MiB from then on) after {}",
+                ceiling / MIB,
+                mib(steady),
+                mib(bound),
+                recovered.map_or("never".to_string(), |r| format!("{r:.0} s")),
+            );
+            let mut t = DROP;
+            while t < end {
+                let to = (t + 30.0).min(end);
+                let (p50, p99) = s.latency(t, to);
+                println!(
+                    "  {:>4.0}-{:>4.0} s  thru {:>5.0} MiB/s  queued {:>6.1} MiB  lat p50/p99 {:>6.0}/{:>6.0} ms",
+                    t - DROP,
+                    to - DROP,
+                    mib(s.throughput(None, t, to)),
+                    mib(s.queued(t, to)),
+                    p50,
+                    p99,
+                );
+                t = to;
+            }
+            let p = &s.flows[0].model.0;
+            println!(
+                "  at the end: {:?} max_bw {:.0} MiB/s min_rtt {:?} cycle {}",
+                p.state,
+                mib(p.max_bw),
+                p.min_rtt,
+                p.cycle_count
+            );
+        }
+    }
+}
