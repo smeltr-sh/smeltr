@@ -150,6 +150,10 @@
 </DocsLayout>
 
 <style>
+  header,
+  section {
+    max-width: 60rem;
+  }
   header {
     padding: 0.5rem 0 1.5rem;
   }
@@ -162,7 +166,6 @@
   }
   p {
     color: var(--ink);
-    max-width: 45rem;
   }
   section {
     padding: 1.5rem 0;
