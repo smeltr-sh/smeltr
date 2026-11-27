@@ -118,7 +118,11 @@ It hands over a batch only while the congestion window has room for it, or
 nothing is in flight, and the pacing rate allows it. The window is never over
 the destination's limit and never under three batches; the queue's
 budget is the window and one batch ready behind it. An answer that asks to be
-sent less (429, 503, or a full queue) counts as loss.
+sent less (429, 503, or a full queue) counts as loss. Its rows come back to
+egress as soon as it is answered and go again after the wait the destination
+asked for, so the model hears a throttle within the round trip that drew it, as
+TCP hears a loss. A destination that delivers a batch in order waits a throttle
+out itself, since its rows cannot go back behind those after them.
 
 A full queue refuses a batch at once and never holds the thread that offered
 it. The refused batch waits and transform passes over that source until the

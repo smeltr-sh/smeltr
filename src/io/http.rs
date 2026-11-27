@@ -386,7 +386,12 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
     fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
         group.bytes = 0;
-        let mut round = Round::new(self.stall_after, self.subject.clone(), self.said.clone());
+        let mut round = Round::new(
+            self.stall_after,
+            self.subject.clone(),
+            self.said.clone(),
+            OnThrottle::WaitOut,
+        );
         let delivered = deliver(&self.protocol, &mut self.transport, group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         delivered?;
@@ -415,10 +420,23 @@ struct Round {
     said: Arc<Said>,
     /// Whether this round has said the service asked it to slow down.
     throttle_said: bool,
+    /// What a throttled answer does to the round: see [`OnThrottle`].
+    on_throttle: OnThrottle,
+}
+
+/// What a round does with the rows of an answer that asks to be sent less.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OnThrottle {
+    /// Ends the round with them undelivered, so egress sends them again after the wait the service asked for and the
+    /// pacing model hears the throttle within the round trip that drew it, as TCP hears a loss.
+    HandBack,
+    /// Waits the throttle out and sends them again within the round: a batch delivered in order cannot have rows go
+    /// back behind those after them.
+    WaitOut,
 }
 
 impl Round {
-    fn new(stall_after: Duration, subject: Arc<str>, said: Arc<Said>) -> Round {
+    fn new(stall_after: Duration, subject: Arc<str>, said: Arc<Said>, on_throttle: OnThrottle) -> Round {
         Round {
             stall_after,
             deadline: Instant::now() + stall_after,
@@ -428,6 +446,7 @@ impl Round {
             subject,
             said,
             throttle_said: false,
+            on_throttle,
         }
     }
 }
@@ -551,6 +570,19 @@ fn deliver<P: Protocol, T: Transport>(
             continue;
         }
         round.throttled = true;
+        if round.on_throttle == OnThrottle::HandBack {
+            let wait = response.asked_wait().unwrap_or(Duration::ZERO);
+            say_throttled(protocol, &response, round);
+            round.waited += wait;
+            return Err(IoError::throttled(
+                format!(
+                    "{}: asked to be sent less, so {} document(s) go again",
+                    protocol.name(),
+                    group.pending.len()
+                ),
+                wait,
+            ));
+        }
 
         // The service's own `Retry-After`, where longer than the backoff, and never past the deadline.
         let nap = response
@@ -560,13 +592,18 @@ fn deliver<P: Protocol, T: Transport>(
         if nap.is_zero() {
             continue;
         }
-        if !round.throttle_said {
-            round.throttle_said = true;
-            crate::debug_when!(round.said.throttled.lock().due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
-        }
+        say_throttled(protocol, &response, round);
         std::thread::sleep(nap);
         round.waited += nap;
         backoff = (backoff * 2).min(Duration::from_secs(5));
+    }
+}
+
+/// Says once a round, at debug once every [`crate::logs::RELOG_EVERY`], that the service asked to be sent less.
+fn say_throttled<P: Protocol>(protocol: &P, response: &Response, round: &mut Round) {
+    if !round.throttle_said {
+        round.throttle_said = true;
+        crate::debug_when!(round.said.throttled.lock().due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
     }
 }
 
@@ -610,7 +647,12 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
     type Job = Group<P::Item>;
 
     fn send_one(&mut self, mut group: Group<P::Item>) -> pipelined::Delivered {
-        let mut round = Round::new(self.stall_after, self.subject.clone(), self.said.clone());
+        let mut round = Round::new(
+            self.stall_after,
+            self.subject.clone(),
+            self.said.clone(),
+            OnThrottle::HandBack,
+        );
         let delivered = deliver(&self.protocol, &mut self.transport, &mut group, &mut round);
         Throttle::note(&self.throttle, round.waited);
         pipelined::Delivered {

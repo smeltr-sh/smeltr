@@ -7,9 +7,9 @@
 //! The pool sets no limit of its own. What is in flight is bounded by the egress queue in front of it, which holds
 //! the pacing target (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
 //! a batch's side by side, and reports the batch once its last request is answered. It spawns a sender when every one
-//! it has is busy, up to the sender count; the configured figure is how many it starts with. A destination that asks
-//! to be sent less (429) is obeyed by the sender that was asked, which waits out the backoff, and its completion says
-//! it was throttled, so the model caps what it holds below what was in flight then. Not for Kafka: librdkafka
+//! it has is busy, up to the sender count; the configured figure is how many it starts with. A request the destination
+//! asks to be sent less (429) is answered at once with its rows undelivered and the wait the destination asked for,
+//! so egress sends them again after it and the model counts them lost within the round trip that drew it. Not for Kafka: librdkafka
 //! pipelines on its own threads.
 
 use crate::sync::{Condvar, Mutex};
@@ -240,7 +240,13 @@ impl<S: Sender> Pool<S> {
         answers.throttled |= outcome.throttled;
         if let Some(more) = outcome.undelivered {
             match &mut answers.undelivered {
-                Some(u) => u.rows.extend(more.rows),
+                Some(u) => {
+                    u.rows.extend(more.rows);
+                    // A failure outranks a throttle: the batch's rows wait out a stall, not a service that answered.
+                    if u.error.throttled_wait().is_some() && more.error.throttled_wait().is_none() {
+                        u.error = more.error;
+                    }
+                }
                 None => answers.undelivered = Some(more),
             }
         }

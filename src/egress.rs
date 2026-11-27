@@ -821,13 +821,19 @@ fn run(
                     );
                     owed.rejections.extend(c.rejections);
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
-                        note_stall(metrics, id, name, &undelivered.error, &mut stalled);
-                        failures = true;
+                        // A throttle is an answer: the service is up and asked for less, which the pacing model
+                        // answers by counting the rows lost.
+                        let throttled = undelivered.error.throttled_wait();
+                        if throttled.is_none() {
+                            note_stall(metrics, id, name, &undelivered.error, &mut stalled);
+                            failures = true;
+                        }
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
                         if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
                             p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes));
                         }
-                        again.push(failed(rest));
+                        let (at, rest) = failed(rest);
+                        again.push((throttled.map_or(at, |wait| at.max(Instant::now() + wait)), rest));
                         continue;
                     }
                     landed = true;

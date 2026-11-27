@@ -1293,6 +1293,50 @@ fn only_the_rows_that_did_not_land_are_sent_again() {
     assert_eq!(dest.units().len(), 3, "nothing else was sent again");
 }
 
+/// Rows the service asked to be sent less of go again once the wait it asked for is over, and only they. A throttle is
+/// an answer, so the destination is not stalled for it.
+#[test]
+fn throttled_rows_go_again_after_the_wait_without_a_stall() {
+    let registry = Arc::new(Metrics::new());
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    );
+    let mut h = egress.handle();
+    hand(
+        &mut h,
+        1,
+        &[OutgoingRecord::new(b"landed"), OutgoingRecord::new(b"busy")],
+    );
+    let first = wait_for("the batch to reach the destination", timeout(), || {
+        dest.units().first().map(|u| u.0)
+    })
+    .unwrap();
+    const WAIT: Duration = Duration::from_millis(300);
+    let throttled = std::time::Instant::now();
+    dest.throttle_rows(first, vec![1], WAIT);
+    let again = wait_for("the busy row to go again", timeout(), || dest.units().get(1).cloned()).unwrap();
+    assert!(
+        throttled.elapsed() >= WAIT,
+        "not before the wait: {:?}",
+        throttled.elapsed()
+    );
+    assert_eq!(again.1, vec![b"busy".to_vec()], "and only it");
+    let stalls = registry.snapshot().into_iter().find_map(|s| match s.value {
+        smeltr::metrics::MetricValue::Counter(v) if s.key.name == "smeltr_destination_stalls_total" => Some(v),
+        _ => None,
+    });
+    assert_eq!(stalls, None, "a throttle is no stall");
+    dest.complete(again.0);
+    let done = completions_within(&mut h, timeout());
+    assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1]);
+}
+
 /// A batch the destination would not take is sent again alone: the batch already in flight stays with the destination
 /// and is answered for once, not sent again.
 #[test]
