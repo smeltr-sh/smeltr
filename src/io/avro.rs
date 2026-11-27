@@ -165,11 +165,12 @@ impl Writers {
     /// The id `schema` is framed with: the one of an equal schema already here, or a new one. For payloads no registry
     /// numbers, as a container file's values are.
     pub fn intern(&self, schema: Arc<Parsed>) -> u32 {
-        let canonical = schema.schema.canonical_form();
+        // Its own text, not its canonical form, which leaves out the logical types a value is decoded by.
+        let text = serde_json::to_string(&schema.schema).ok();
         let mut by_id = self.by_id.write();
         let same = by_id.iter().find(|(_, held)| {
             held.as_ref()
-                .is_ok_and(|held| held.schema.canonical_form() == canonical)
+                .is_ok_and(|held| serde_json::to_string(&held.schema).ok() == text)
         });
         if let Some((&id, _)) = same {
             return id;
