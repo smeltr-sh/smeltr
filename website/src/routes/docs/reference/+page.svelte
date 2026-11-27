@@ -47,7 +47,7 @@
   <p>
     Protect leader state and secrets encryption keys, plus worker identity, credentials and trust
     files. See <a href="/docs/backup-recovery">Backup and recovery</a>. Use the startup reference
-    for the version you received: settings can change between deliveries, and documentation for
+    for the version you received: settings can change between versions, and documentation for
     another version may not match your artifact.
   </p>
   <h2 id="settings">Settings</h2>

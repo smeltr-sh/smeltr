@@ -3449,7 +3449,7 @@
       "name": "_raw",
       "type": "str",
       "setBy": "source",
-      "what": "The text the source received, decoded with the source's `encoding`. A parser reads it. The destination delivers it with the record unless a step sets it to `null`. A source whose `encoding` is `none` gives no `_raw`."
+      "what": "The text the source received, decoded with the source's `encoding`. A parser reads it. The destination sends it with the record unless a step sets it to `null`. A source whose `encoding` is `none` gives no `_raw`."
     },
     {
       "name": "__source.name",
@@ -3509,7 +3509,7 @@
       "name": "__source.remote",
       "type": "str",
       "setBy": "source",
-      "what": "The address of the sender that delivered the record to a receiver."
+      "what": "The address of the sender that sent the record to a receiver."
     },
     {
       "name": "__source.host",
