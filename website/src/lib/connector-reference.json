@@ -5139,7 +5139,7 @@
             "type": "string",
             "absent": "`__destination.id`",
             "examples": ["event.id", "request_id"],
-            "what": "The row field each document's ID is read from. A row with no ID gets one Elasticsearch generates."
+            "what": "The record field each document's ID is read from. A record with no ID gets one Elasticsearch generates."
           },
           {
             "name": "inFlight",
