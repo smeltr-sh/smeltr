@@ -1,38 +1,13 @@
 <script lang="ts">
-  import diagrams from '#lib/workflow-diagrams.json';
+  import { diagrams, type DiagramNode } from '#lib/workflow-diagrams.ts';
   import { diagramGlyphs } from '#lib/diagram-glyphs.ts';
-  type Diagram = {
-    title: string;
-    description: string;
-    caption: string;
-    layouts: {
-      width: number;
-      height: number;
-      nodes: {
-        x: number;
-        y: number;
-        w: number;
-        title: string;
-        detail: string[];
-        role?: string;
-        stacked?: boolean;
-        joined?: boolean;
-      }[];
-      paths: string[];
-      controlPaths?: string[];
-      storagePaths?: string[];
-      boundaries?: { x: number; y: number; w: number; h: number; label: string }[];
-      labels: { x: number; y: number; text: string }[];
-    }[];
-  };
   let { kind }: { kind: keyof typeof diagrams } = $props();
   const uid = $props.id();
-  const diagram: Diagram = $derived(diagrams[kind]);
+  const diagram = $derived(diagrams[kind]);
 
-  type Node = Diagram['layouts'][number]['nodes'][number];
   /** A node's outline. A `joined` node continues the node just above it, so the corners where they meet are square
    * and the two read as one box with a divider. */
-  function outline(node: Node, nodes: Node[]): string {
+  function outline(node: DiagramNode, nodes: DiagramNode[]): string {
     const { x, y, w } = node;
     const h = 80;
     const top = node.joined ? 0 : 8;
@@ -67,7 +42,7 @@
             <path d="M0 0L10 5L0 10Z" fill="var(--accent)" />
           </marker>
         </defs>
-        {#each layout.boundaries ?? [] as boundary (boundary.label)}
+        {#each layout.boundaries as boundary (boundary.label)}
           <rect
             class="boundary"
             x={boundary.x}
@@ -80,10 +55,10 @@
             >{boundary.label}</text
           >
         {/each}
-        {#each layout.storagePaths ?? [] as path (path)}
+        {#each layout.storagePaths as path (path)}
           <path d={path} class="storage-link" />
         {/each}
-        {#each layout.controlPaths ?? [] as path (path)}
+        {#each layout.controlPaths as path (path)}
           <path d={path} class="connection control" marker-end={`url(#${uid}-${index}-arrow)`} />
         {/each}
         {#each layout.paths as path (path)}
