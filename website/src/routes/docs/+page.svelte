@@ -26,21 +26,29 @@
   <section id="what-is-smeltr">
     <h2>What is Smeltr?</h2>
     <p class="lede">
-      Smeltr is a self-hosted stream processing tool for logs, metrics, and events. It sits between
-      the systems that produce telemetry and the systems that store or analyze it.
+      Smeltr reads logs, metrics, and events, filters or transforms them, and sends the results to
+      your storage and analysis tools.
+    </p>
+
+    <h3>Example pipeline</h3>
+    <ol>
+      <li><strong>Source.</strong> Read application logs from Kafka.</li>
+      <li><strong>Pipeline.</strong> Drop routine health checks and standardize field names.</li>
+      <li>
+        <strong>Destinations.</strong> Send the remaining logs to Elasticsearch for search and Amazon
+        S3 for archiving.
+      </li>
+    </ol>
+
+    <h3>How you run it</h3>
+    <p>
+      You run Smeltr on your own infrastructure. The <strong>leader</strong> provides a browser
+      interface to build pipelines, test them on sample records, and review changes.
+      <strong>Workers</strong> run those pipelines and move records directly from sources to destinations.
     </p>
     <p>
-      A route connects a source to a pipeline and one or more destinations. The pipeline can parse
-      records, standardize or enrich fields, and drop records you do not need. For example, read
-      application logs from Kafka, drop routine health checks, and send the remaining records to
-      Elasticsearch for search and Amazon S3 for archiving.
-    </p>
-    <p>
-      The <strong>leader</strong> hosts the browser interface for building pipelines, testing them
-      on captured records, and reviewing configuration changes. Approved changes are deployed as Git
-      commits. <strong>Workers</strong> fetch the deployed commit, run the pipelines, and connect directly
-      to sources and destinations. Each worker reports the commit it is running. You can run both roles
-      on one host or place workers on separate hosts near the systems they connect to.
+      Workers load the deployed configuration from Git and report which commit they're running. You
+      can verify that a rollout reached the intended workers or roll back to an earlier commit.
     </p>
     <p><a href="/docs/getting-started#overview">See the leader and worker diagram</a>.</p>
   </section>
