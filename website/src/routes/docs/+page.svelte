@@ -2,6 +2,7 @@
   import DocsLayout from '#lib/components/DocsLayout.svelte';
 
   const sections = [
+    { id: 'what-is-smeltr', title: 'What is Smeltr?' },
     { id: 'start', title: 'Get started' },
     { id: 'workflow', title: 'Build and deploy pipelines' },
     { id: 'manual', title: 'Operate Smeltr' },
@@ -22,16 +23,17 @@
     <h1>Smeltr documentation</h1>
   </header>
 
+  <section id="what-is-smeltr">
+    <h2>What is Smeltr?</h2>
+    <p>
+      Smeltr is data engineering pipeline telemetry software written in Rust for Linux and Windows.
+    </p>
+    <p><a href="/docs/what-is-smeltr">What is Smeltr?</a></p>
+  </section>
+
   <section id="start" aria-labelledby="start-heading">
     <h2 id="start-heading">Get started</h2>
     <ul class="topics">
-      <li>
-        <a href="/docs/what-is-smeltr">What is Smeltr?</a>
-        <p>
-          Smeltr is data engineering pipeline telemetry software written in Rust for Linux and
-          Windows.
-        </p>
-      </li>
       <li>
         <a href="/docs/getting-started">Set up Smeltr</a>
         <p>
