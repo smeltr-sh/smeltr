@@ -23,10 +23,9 @@
 //!
 //! What the draft says of packets, this says of batches, and where that forces a reading it is this:
 //!
-//! - A packet is a TCP segment, C.SMSS, since every destination is reached over TCP. A batch is the send quantum,
-//!   the aggregate handed down whole, as TSO hands a burst of segments to the NIC: it cannot be split, so the
-//!   quantum is the batch size the worker cut. The offload budget is TCP's, three quanta, and a batch goes whenever
-//!   nothing is in flight, however small cwnd is.
+//! - A packet is a batch: egress hands over and hears back about nothing smaller. So C.SMSS and the send quantum are
+//!   both the batch size the worker cut, and every count the draft makes in packets is a count of batches. The
+//!   offload budget is TCP's, three quanta.
 //! - Each batch is acknowledged on its own, as with selective acknowledgments, so C.has_selective_acks holds and
 //!   each lost batch is one loss event.
 //! - Loss is the bytes of a batch that failed and goes back to be sent again, and of one the destination answered
@@ -36,7 +35,7 @@
 //! - The destination's share of the worker's memory pool, or the buffer it states, bounds what it may hold as a
 //!   receiver's window does: the sender holds to the lesser of it and cwnd, and a link the share holds back reads as
 //!   the bottleneck, not as a source with nothing to send (the draft's receiver flow control limits).
-//! - The initial window is RFC 6928's ten segments, within the share.
+//! - The initial window is ten batches, within the share.
 //!
 //! The egress queue holds the window and one batch ready behind it, so the next batch is made while the last is on
 //! the wire.
@@ -55,11 +54,9 @@ const LOSS_THRESH: f64 = 0.02;
 const BETA: f64 = 0.7;
 /// BBR.Headroom: the share of inflight_longterm left free for other flows while cruising.
 const HEADROOM: f64 = 0.15;
-/// C.SMSS: a TCP segment's payload on a 1500-byte path with timestamps.
-const SMSS: f64 = 1448.0;
-/// BBR.MinPipeCwnd, in segments.
+/// BBR.MinPipeCwnd, in packets.
 const MIN_PIPE_CWND: f64 = 4.0;
-/// C.InitialCwnd, in segments: RFC 6928's initial window.
+/// C.InitialCwnd, in packets.
 const INITIAL_CWND: f64 = 10.0;
 /// The offload budget, in send quanta: TCP's three.
 const OFFLOAD_BUDGET: f64 = 3.0;
@@ -217,7 +214,7 @@ struct RateSample {
 /// The BBR model and sender state for one destination.
 #[derive(Debug)]
 pub struct Pacing {
-    /// C.SMSS.
+    /// C.SMSS: one batch.
     smss: f64,
     /// C.send_quantum: one batch.
     send_quantum: f64,
@@ -312,7 +309,7 @@ impl Pacing {
     }
 
     fn seeded(batch: usize, ceiling: usize, now: Instant, rng: u64) -> Pacing {
-        let (smss, send_quantum) = (SMSS, batch.max(1) as f64);
+        let (smss, send_quantum) = (batch.max(1) as f64, batch.max(1) as f64);
         let mut p = Pacing {
             smss,
             send_quantum,
@@ -1523,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn a_product_under_one_batch_keeps_the_offload_budget_on_the_wire() {
+    fn a_product_under_one_batch_keeps_the_least_window_on_the_wire() {
         // 1 ms at 100 MiB/s: a tenth of a batch.
         let mut s = Sim::new(
             BATCH,
@@ -1532,8 +1529,8 @@ mod tests {
         );
         s.run_to(5.0);
         assert!(
-            s.p.target() >= 3 * BATCH,
-            "the offload budget is three batches: {}",
+            s.p.target() >= 4 * BATCH,
+            "BBR.MinPipeCwnd is four packets, and a packet is a batch: {}",
             s.p.target()
         );
         let carried = s.throughput(3.0, 5.0);
