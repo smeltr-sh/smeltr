@@ -253,7 +253,7 @@ state the system has no way to reach rather than one it tries to avoid.
 ## Sampling
 
 Only a worker ever opens a connection to a broker or cluster.
-On the leader's invitation a worker taps its live ingest, or reads a source
+On the leader's invitation a worker taps a source's batches as transform takes them, or reads a source
 without advancing it where the source supports that, or taps the rows its
 pipelines finish for a destination, into a bounded buffer. Every capture takes
 a filter, read where it taps: the record as it arrived at a source, the row as

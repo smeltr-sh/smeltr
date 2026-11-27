@@ -21,7 +21,7 @@ fn pipeline(body: Vec<Step>) -> PipelineConfig {
         id: 0,
         name: "test".into(),
         body,
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),
@@ -406,14 +406,14 @@ fn reserved_slots_come_first_then_the_sources_own_fields() {
     let p = ok(vec![json("")]);
     assert_eq!(p.provenance[SLOT_LIVE].name, "__live");
     assert_eq!(p.provenance[SLOT_RAW].name, "_raw");
-    assert_eq!(p.slot_layout[..RAW_SLOTS], raw_layout()[..]);
+    assert_eq!(p.slot_layout.as_slice()[..RAW_SLOTS], raw_layout()[..]);
     for (i, (name, ty)) in smeltr::plan::topology::SourceMeta::KAFKA
         .source_fields()
         .iter()
         .enumerate()
     {
-        assert_eq!(p.provenance[RAW_SLOTS + i].name, *name, "source field {i}");
-        assert_eq!(p.slot_layout[RAW_SLOTS + i], *ty, "source field {i}");
+        assert_eq!(p.provenance.as_slice()[RAW_SLOTS + i].name, *name, "source field {i}");
+        assert_eq!(p.slot_layout.as_slice()[RAW_SLOTS + i], *ty, "source field {i}");
     }
 }
 

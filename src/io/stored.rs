@@ -289,7 +289,7 @@ impl RecordChunk {
                     Some(v) => {
                         let mut encoded = Vec::new();
                         put_variant(&mut encoded, v);
-                        values::from_variant(&encoded)
+                        values::from_variant(crate::core::variant::Encoded::check(&encoded))
                     }
                     None => Value::Null,
                 })

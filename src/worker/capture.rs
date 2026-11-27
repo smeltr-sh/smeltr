@@ -41,7 +41,7 @@ use crate::plan::topology::{Entry, SourceMeta};
 #[derive(Debug)]
 pub struct Filter {
     ir: Option<Ir>,
-    patterns: Vec<crate::core::ctx::CompiledPattern>,
+    patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
     meta: SourceMeta,
     /// The captured source's name, what `__source.name` reads.
     source: String,
@@ -73,7 +73,7 @@ impl Filter {
     fn none(meta: SourceMeta, source: &str) -> Filter {
         Filter {
             ir: None,
-            patterns: Vec::new(),
+            patterns: Default::default(),
             meta,
             source: source.to_string(),
         }

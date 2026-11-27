@@ -783,6 +783,11 @@ connector-speed: live-up
 engine-speed:
     cargo test --profile optimized --test connector-speed -- --ignored --exact engines::speed --nocapture
 
+# Build the benchmarks: they are `test = false` targets, which no check builds.
+[doc("Build every benchmark.")]
+build-benches: need-rust (need "jq" "Install jq: it lists the benchmarks.")
+    cargo build $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "smeltr") | .targets[] | select(.kind == ["test"] and .test == false) | "--test " + .name')
+
 # Stop the live services and the Kerberos and TLS brokers, and discard their
 # data. A line that fails, for a rig that is not up or a Docker that is not
 # running, does not stop the rest. The Kerberos and TLS rigs are bash scripts,

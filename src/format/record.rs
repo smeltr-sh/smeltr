@@ -4,10 +4,11 @@
 
 use std::borrow::Cow;
 
-use crate::core::column::{Column, DataType, Fixed, VarLen};
+use crate::core::column::{Column, DataType, Fixed, VarLen, VariantRows};
 use crate::core::id::SlotId;
 use crate::core::keys::Keys;
 use crate::core::variant;
+use crate::core::variant::Encoded;
 use crate::format::json::write_json_string;
 use crate::plan::tree::{self, Node};
 
@@ -42,7 +43,7 @@ pub(crate) enum Field<'a> {
 pub(crate) enum Unclaimed<'a> {
     None,
     /// A slot's column: a variant object per row.
-    Slot(VarLen<'a>),
+    Slot(VariantRows<'a>),
     /// The value the parent's unclaimed fields hold at this object's key: an object `with_field` made on the way to
     /// its name, over a key the record may hold already.
     Inherit,
@@ -107,13 +108,13 @@ impl<'a> Object<'a> {
 
     /// What `own`, this object's unclaimed fields on a row, hold at `key`: the value the object under `key` inherits.
     /// None where a rename took the key away.
-    pub(crate) fn member<'r>(&self, own: Option<&'r [u8]>, key: &str) -> Option<&'r [u8]> {
+    pub(crate) fn member<'r>(&self, own: Option<Encoded<'r>>, key: &str) -> Option<Encoded<'r>> {
         own.filter(|_| !self.removed.iter().any(|k| k == key))
             .and_then(|v| variant::member(v, key))
     }
 
     /// The unclaimed fields' value on `row`, where `inherited` is what the parent's hold at this object's key.
-    pub(crate) fn unclaimed_at<'r>(&'r self, row: usize, inherited: Option<&'r [u8]>) -> Option<&'r [u8]> {
+    pub(crate) fn unclaimed_at<'r>(&'r self, row: usize, inherited: Option<Encoded<'r>>) -> Option<Encoded<'r>> {
         match &self.unclaimed {
             Unclaimed::None => None,
             Unclaimed::Slot(v) => v.validity.is_valid(row).then(|| v.get(row)),
@@ -257,7 +258,7 @@ impl<'a> RecordView<'a> {
         let segs: Vec<Cow<str>> = tree::segments(name).collect();
         let segs: Vec<&str> = segs.iter().map(AsRef::as_ref).collect();
         let mut at = &self.root;
-        let mut inherited: Option<&[u8]> = None;
+        let mut inherited: Option<Encoded> = None;
         for (i, seg) in segs.iter().enumerate() {
             let own = at.unclaimed_at(row, inherited);
             match at.field(seg) {
@@ -284,7 +285,7 @@ impl<'a> RecordView<'a> {
 /// What `RecordView::at` found.
 pub(crate) enum At<'r> {
     Leaf(&'r Column),
-    Unclaimed(&'r [u8]),
+    Unclaimed(Encoded<'r>),
 }
 
 // ---------------------------------------------------------------------------

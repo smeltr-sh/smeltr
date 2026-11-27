@@ -5,7 +5,7 @@
 
 use crate::core::column::DataType;
 use crate::core::error::{Category, ExceptionKind};
-use crate::core::id::{DestId, FunctionId};
+use crate::core::id::{ById, DestId, FunctionId};
 use crate::plan::parse_call::split_dots_default;
 
 #[derive(Clone, Debug)]
@@ -16,7 +16,7 @@ pub struct PipelineConfig {
     /// Each step's own string id, indexed by the `FunctionId` `config_file::load` assigned it -- stable across a
     /// `call` step's inlining, where the position a `FunctionId` counts is not. Every step left once calls are inlined
     /// takes a `FunctionId` and an entry here, an `if` included.
-    pub step_ids: Vec<String>,
+    pub step_ids: ById<FunctionId, String>,
     /// The bundle's lookup tables, by id, for a `lookup` in code to name. `Err` says why a table's source does not
     /// resolve; a lookup naming it reports that.
     pub lookup_tables: std::collections::HashMap<String, Result<LookupSource, String>>,
@@ -29,10 +29,7 @@ pub struct PipelineConfig {
 impl PipelineConfig {
     /// The `FunctionId` of the step the file names `id`: what `step_ids` holds at it.
     pub fn function_id(&self, id: &str) -> Option<FunctionId> {
-        self.step_ids
-            .iter()
-            .position(|s| s == id)
-            .and_then(|i| FunctionId::try_from(i).ok())
+        self.step_ids.entries().find(|(_, s)| *s == id).map(|(f, _)| f)
     }
 }
 

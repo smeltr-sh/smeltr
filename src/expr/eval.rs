@@ -14,9 +14,9 @@ use crate::core::ctx::Ctx;
 use crate::core::error::Read;
 use crate::expr::ast::Value;
 use crate::expr::ir::{Ir, IrKind, Layer};
-use crate::ops::arrayops::{Piece, build_from_pieces};
 use crate::ops::logic::take_met;
 use crate::ops::objectops::ObjectOp;
+use crate::ops::pieces::{Piece, build_from_pieces};
 use crate::ops::{BinOp, OpKernel, UnOp, convert, table};
 
 /// A borrow of a batch column or an owned intermediate.
@@ -286,7 +286,7 @@ fn unclaimed_of(col: &Column, rows: usize, ctx: &mut Ctx) -> Column {
     let mut b = StrBuilder::new(ctx.pool, VarType::Variant, rows);
     for row in 0..rows {
         match v.validity.is_valid(row).then(|| v.get(row)) {
-            Some(bytes) if crate::core::variant::is_object(bytes) => b.push_grow(ctx.pool, bytes),
+            Some(v) if crate::core::variant::is_object(v) => b.push_encoded(ctx.pool, v),
             _ => b.push_null(),
         }
     }

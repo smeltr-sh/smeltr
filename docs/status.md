@@ -67,7 +67,7 @@ document's systems.
 | Socket receiver (`socketReceiver`), TCP, TLS and UDP, framed by lines, a length prefix, a fixed size or syslog's own framing (Runtime stages, Config plane, Security) | built, on the framer the object sources share (`io::framing`); delivery is best-effort, as syslog and the other socket protocols have no acknowledgement. With `syslog` framing the GUI names it a syslog receiver, and format version 2 brings a version 1 `syslogReceiver` to it. Its live fuzzer drives our own misbehaving sender (`tests/live/socket-sender`). Every receiver caps the connections it holds over TCP, closing the one idle longest, if it has idled long enough, when a new one arrives over the cap, with an optional cap per receiver, an optional cap per sender and an optional idle timeout (`io::connections`). The receivers of a worker share one cap, its open-file limit less a reserve, and a worker raises its soft open-file limit to its hard one when it starts, and times out a stalled TLS handshake. The HTTP receivers also time out a request's headers |
 | Elasticsearch receiver (`elasticReceiver`), the Bulk API (Runtime stages, Config plane, Security) | built. Not built: `update` and `delete`, the single-document paths such as `/{index}/_doc`, `filter_path` |
 | Single-worker sources: holds and progress (Control plane, Runtime stages) | built (`worker::held`, `leader::holds`) |
-| Text encoding at ingest, `auto` detection (Runtime stages) | built |
+| Decoding a source's text encoding, `auto` detection (Columnar data model) | built |
 | The record object, `RecordFields`, `SourceMeta` (Runtime stages, Compiler) | built. No source declares typed fields yet, and a Parquet destination refuses a typed record no pipeline ran on. The ack direction (per-source nack, non-Kafka commit shapes) is not built |
 
 ### Runtime
@@ -75,6 +75,7 @@ document's systems.
 | area | status |
 |---|---|
 | Delivery: routes, exception answers, `Unmatched`/`Unprocessable`/`Refused` (Runtime stages) | built |
+| Only transform touches a row (Runtime stages) | not built. A receiver cuts a request into records on the thread that received it, and the OTLP and Prometheus receivers decode in their reader. The object source decompresses and cuts on its fetch threads. A reader reads each record's offset and size. Egress delivers row by row on its own thread, and a file destination also encodes on threads of its own |
 | Reader/transform split, `Lane`s (Runtime stages) | built |
 | Egress: one thread per destination behind a `bufferBytes` queue (Runtime stages) | built |
 | A destination paced to its link, `egress::pacing`, and the pool's equal shares while queues contend (Runtime stages) | built |

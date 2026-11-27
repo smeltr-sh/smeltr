@@ -13,13 +13,14 @@
 //! decline it afterward. Every route sees every row, so the shares can sum past the rows polled. That is a fact
 //! about routing, not an error to reconcile, and a reader is told rather than shown a total that looks wrong.
 
+use crate::core::time::millis;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::config_file::LoadedSystem;
-use crate::core::id::SourceId;
+use crate::core::id::{ById, FunctionId, SourceId};
 use crate::heartbeat::{MetricSampleDto, MetricValueDto};
 use crate::plan::config::{FunctionKind, Step};
 
@@ -329,7 +330,7 @@ pub fn build(
     let point_ms = chart_point_ms(window);
     let now_ms = super::warnings::now_millis();
     // From the start of the point the window begins in, so the chart's first point is read whole.
-    let since_ms = (now_ms - window.as_millis() as i64).div_euclid(point_ms) * point_ms;
+    let since_ms = (now_ms - millis(window)).div_euclid(point_ms) * point_ms;
     let totals = |metric: &str| match series_store {
         None => Vec::new(),
         Some(store) => totals_by_subject(store, metric, point_ms, since_ms),
@@ -343,7 +344,7 @@ pub fn build(
         group: group.to_string(),
         kind,
         id: id.to_string(),
-        window_millis: window.as_millis() as i64,
+        window_millis: millis(window),
         bucket_millis: point_ms,
         now_millis: now_ms,
         source: None,
@@ -380,7 +381,12 @@ pub fn build(
                 expected: series_store
                     .map(|store| {
                         let subject = throughput::Subject::source(group, id);
-                        throughput::expected_over(store, subject, since_ms, now_ms, point_ms, &live.learning)
+                        let drawn = throughput::Drawn {
+                            since_ms,
+                            now_ms,
+                            point_ms,
+                        };
+                        throughput::expected_over(store, subject, drawn, &live.learning)
                     })
                     .transpose()
                     .unwrap_or_else(|e| {
@@ -499,19 +505,19 @@ fn pipeline_stats(
 /// skipped at compile (`plan::compile`), but both take a `FunctionId` and a place in `step_ids`, so listing that
 /// directly would show a reader steps that cost nothing because they do not exist at runtime.
 fn running_steps(system: &LoadedSystem, index: usize) -> Vec<String> {
-    fn walk(steps: &[Step], step_ids: &[String], out: &mut Vec<String>) {
+    fn walk(steps: &[Step], step_ids: &ById<FunctionId, String>, out: &mut Vec<String>) {
         for step in steps {
             match step {
                 Step::Function(f) => {
                     if !f.disabled
                         && !matches!(f.kind, FunctionKind::Comment { .. })
-                        && let Some(id) = step_ids.get(f.id.index())
+                        && let Some(id) = step_ids.get(f.id)
                     {
                         out.push(id.clone());
                     }
                 }
                 Step::If { id, then, else_, .. } => {
-                    if let Some(step) = step_ids.get(id.index()) {
+                    if let Some(step) = step_ids.get(*id) {
                         out.push(step.clone());
                     }
                     walk(then, step_ids, out);

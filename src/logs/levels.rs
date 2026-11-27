@@ -220,6 +220,7 @@ mod tests {
         // Each talks to no outside service.
         const NONE: &[&str] = &[
             "avro",
+            "batch_wait",
             "csv",
             "line_breaker",
             "lines",

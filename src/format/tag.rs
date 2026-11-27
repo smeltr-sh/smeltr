@@ -12,7 +12,7 @@ use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::keys::Keys;
 use crate::core::tally::TagCounts;
-use crate::core::variant::{self, Value};
+use crate::core::variant::{self, Encoded, EncodedBuf, Value};
 use crate::format::typed::Failed;
 use crate::ops::timeparse::{is_epoch_count, reads_as_time};
 
@@ -138,8 +138,8 @@ impl<B: BorrowMut<Vec<u8>>> Emit for Bytes<B> {
 }
 
 /// Write the value `b` encodes (`core::variant`) into `out`. A null writes nothing.
-pub fn emit(b: &[u8], out: &mut impl Emit) {
-    match variant::read(b) {
+pub fn emit(v: Encoded, out: &mut impl Emit) {
+    match variant::read(v) {
         Value::Null => {}
         Value::Array(items) => {
             let count = items.len();
@@ -161,7 +161,7 @@ pub fn emit(b: &[u8], out: &mut impl Emit) {
             }
             out.end_object(count, false);
         }
-        _ => out.scalar(&decode(b).expect("a scalar")),
+        _ => out.scalar(&decode(v).expect("a scalar")),
     }
 }
 
@@ -196,6 +196,14 @@ pub fn encode(tag: &Tag<'_>, out: &mut Vec<u8>) {
         Tag::Bytes(b) => variant::put_bytes(out, b),
         Tag::Array(_) | Tag::Object(_) => encode_container(tag, out),
     }
+}
+
+/// `tag`'s encoding, as a value whose text is known to be UTF-8.
+pub(crate) fn encoded(tag: &Tag<'_>) -> EncodedBuf {
+    let mut out = Vec::new();
+    encode(tag, &mut out);
+    // SAFETY: `encode` writes a tag's strings and keys, each a `str`, and moves them only whole.
+    unsafe { EncodedBuf::unchecked(out) }
 }
 
 /// `encode` for an array or an object, out of line: `encode` inlines into the walk's loops for the scalars.
@@ -234,9 +242,9 @@ fn repeats(fields: &[(Cow<'_, str>, Tag<'_>)]) -> bool {
     fields.iter().any(|(key, _)| keys.insert(key.as_ref(), ()).is_err())
 }
 
-/// The value `b` holds, as a tag borrowing its text. `None` for a null.
-pub fn decode(b: &[u8]) -> Option<Tag<'_>> {
-    Some(match variant::read(b) {
+/// The value `v` holds, as a tag borrowing its text. `None` for a null.
+pub fn decode(v: Encoded<'_>) -> Option<Tag<'_>> {
+    Some(match variant::read(v) {
         Value::Null => return None,
         Value::Bool(v) => Tag::Bool(v),
         Value::I64(v) => Tag::I64(v),
@@ -261,7 +269,7 @@ pub fn decode_column(col: &Column, ty: &DataType, now: i64, pool: &mut BufferPoo
     use crate::format::typed::Cell;
     let rows = col.len();
     let one = match col.constant_value() {
-        Some(Scalar::Variant(value)) => Some(value.as_slice()),
+        Some(Scalar::Variant(value)) => Some(value.get()),
         _ => None,
     };
     let values = (0..rows).map(|row| match (one, col.variant()) {
@@ -299,7 +307,7 @@ pub fn row_tag(col: &Column, row: usize) -> Option<Tag<'_>> {
             Scalar::Bytes(v) => Tag::Bytes(Cow::Borrowed(v)),
             Scalar::DateTime(v) => Tag::DateTime(*v),
             Scalar::Duration(v) => Tag::Duration(*v),
-            Scalar::Variant(v) => return decode(v),
+            Scalar::Variant(v) => return decode(v.get()),
         });
     }
     if !col.is_valid(row) {
@@ -312,9 +320,7 @@ pub fn row_tag(col: &Column, row: usize) -> Option<Tag<'_>> {
         DataType::F64 => Tag::F64(col.f64().ok()?.values[row]),
         DataType::Duration => Tag::Duration(col.duration().ok()?.values[row]),
         DataType::DateTime => Tag::DateTime(col.datetime().ok()?.values[row]),
-        DataType::Str => Tag::Str(Cow::Borrowed(
-            std::str::from_utf8(col.var().ok()?.get(row)).expect("a str column is UTF-8"),
-        )),
+        DataType::Str => Tag::Str(Cow::Borrowed(col.str().ok()?.get(row))),
         DataType::Bytes => Tag::Bytes(Cow::Borrowed(col.var().ok()?.get(row))),
         DataType::Variant => return decode(col.variant().ok()?.get(row)),
         DataType::Array(_) => {
@@ -400,10 +406,10 @@ pub(crate) fn stringify_scalar<'a>(tag: &'a Tag<'_>) -> Cow<'a, str> {
     }
 }
 
-/// The encoded container `b` as JSON text.
-pub(crate) fn json_text(b: &[u8]) -> String {
+/// The encoded container `v` as JSON text.
+pub(crate) fn json_text(v: Encoded) -> String {
     let mut out = Vec::new();
-    if !crate::format::json::write_variant(b, &mut out) {
+    if !crate::format::json::write_variant(v, &mut out) {
         out.extend_from_slice(b"{}");
     }
     String::from_utf8(out).expect("JSON text")
@@ -515,7 +521,7 @@ mod tests {
         let mut buf = Vec::new();
         encode(&tag, &mut buf);
         assert_eq!(
-            decode(&buf),
+            decode(Encoded::check(&buf)),
             Some(tag),
             "an integer stays an integer and a float a float"
         );
@@ -527,7 +533,7 @@ mod tests {
         let mut buf = Vec::new();
         encode(&tag, &mut buf);
         assert_eq!(
-            decode(&buf),
+            decode(Encoded::check(&buf)),
             Some(object_tag(vec![("a", Tag::I64(3)), ("b", Tag::I64(2))]))
         );
     }

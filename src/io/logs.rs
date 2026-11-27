@@ -179,7 +179,7 @@ fn millis(event: &Event) -> i64 {
     event
         .timestamp
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .map(crate::core::time::millis)
         .unwrap_or_default()
 }
 

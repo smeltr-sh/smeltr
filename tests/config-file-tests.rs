@@ -4,7 +4,7 @@
 
 use smeltr::config_file::{load_bundle_dir, load_str};
 use smeltr::core::batch::{Batch, RAW_SLOTS, SLOT_LIVE, SLOT_RAW, raw_layout};
-use smeltr::core::id::DestId;
+use smeltr::core::id::{DestId, Id, SlotId};
 
 /// `__source.offset` for a Kafka source: third of the three fields it declares.
 const SLOT_OFFSET: usize = RAW_SLOTS + 2;
@@ -722,7 +722,7 @@ fn a_route_regex_condition_actually_matches_real_raw_bytes() {
     for (i, v) in offset.i64_mut().unwrap().values.iter_mut().enumerate() {
         *v = i as i64;
     }
-    batch.put(SLOT_OFFSET, offset, &mut pool);
+    batch.put(SlotId::at(SLOT_OFFSET), offset, &mut pool);
 
     let mut b = StrBuilder::new(&mut pool, VarType::Bytes, docs.len());
     b.reserve(&mut pool, docs.iter().map(|d| d.len()).sum());

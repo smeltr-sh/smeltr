@@ -53,7 +53,7 @@ fn pipeline(id: usize, body: Vec<Step>) -> PipelineConfig {
         id,
         name: format!("pipeline-{id}"),
         body,
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),
@@ -1692,7 +1692,7 @@ fn a_dropped_failed_row_is_counted_once_across_a_retry() {
 #[test]
 fn a_pipeline_set_to_block_blocks_the_source() {
     let mut p = pipeline(0, vec![code(0, "status: i64; Object.assign($, json(_raw));")]);
-    p.step_ids = vec!["parse".to_string()];
+    p.step_ids = vec!["parse".to_string()].into();
     let src = FakeSource::new([record(r#"{"status":200}"#, 0, 0), record("[1,2,3]", 1, 0)]);
     let mut w = worker(failing(Answer::Block), vec![p], &src);
     let dest = FakeDestination::new();
@@ -1848,7 +1848,7 @@ fn a_delivered_row_reaches_its_target_and_not_the_deliver_rules() {
                 code(1, "ratio = 100 / status;"),
             ],
         );
-        p.step_ids = vec!["parse".to_string(), "ratio".to_string()];
+        p.step_ids = vec!["parse".to_string(), "ratio".to_string()].into();
         let routes = answering_kind(&[(ExceptionKind::DivideByZero, deliver(&[DestId::new(1)]))]);
         // The failed row first, so its target's set is interned before the healthy row's.
         let src = FakeSource::new([record(r#"{"status": 0}"#, 0, 0), record(r#"{"status":2}"#, 1, 0)]);
@@ -3357,37 +3357,27 @@ fn a_failed_delivery_is_re_sent_and_only_then_committed() {
     w.add_destination(target_with(DestId::new(0), stage.handle(), Answer::Drop));
 
     tick(&mut w).unwrap();
-    for _ in 0..200 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("the batch to reach the destination", Duration::from_secs(5), || {
+        !dest.outstanding().is_empty()
+    });
     assert!(src.committed().is_empty(), "unacknowledged");
 
     // A second `send` of the same row is the proof of the re-send.
     let sent_before = dest.sent();
     dest.fail_next_poll("connection reset");
-    for _ in 0..400 {
-        if dest.sent() > sent_before && !dest.outstanding().is_empty() {
-            break;
-        }
+    wait_until("the batch to be sent again", Duration::from_secs(5), || {
         let _ = tick(&mut w);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(dest.sent() > sent_before, "re-sent, not left to sit");
+        dest.sent() > sent_before && !dest.outstanding().is_empty()
+    });
     assert!(src.committed().is_empty(), "still undelivered");
 
     for b in dest.outstanding() {
         dest.complete(b);
     }
-    for _ in 0..200 {
+    wait_until("the source to commit", Duration::from_secs(5), || {
         let _ = tick(&mut w);
-        if !src.committed().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        !src.committed().is_empty()
+    });
     assert_eq!(
         src.committed().iter().flat_map(|m| m.values().copied()).max(),
         Some(7),
@@ -3857,14 +3847,11 @@ fn a_blocking_destination_blocks_the_source_until_its_refused_row_lands() {
 
     let _ = tick(&mut w);
     let mut saw_blocked = false;
-    for _ in 0..600 {
+    wait_until("the source to commit", Duration::from_secs(10), || {
         let _ = tick(&mut w);
         saw_blocked |= src.is_blocked();
-        if !src.committed().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        !src.committed().is_empty()
+    });
     assert!(saw_blocked, "blocked while the row was refused");
     assert_eq!(src.committed().len(), 1, "committed once it landed");
     assert!(!src.is_blocked(), "resumed on its own");
@@ -3900,12 +3887,9 @@ fn a_batch_waiting_for_room_is_handed_over_without_running_again() {
     let one = |w: &mut Worker| w.tick(1, 1 << 20, Duration::from_millis(1));
 
     one(&mut w).unwrap();
-    for _ in 0..500 {
-        if !dest.outstanding().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_until("the batch to reach the destination", Duration::from_secs(5), || {
+        !dest.outstanding().is_empty()
+    });
     let first = dest.outstanding()[0];
     one(&mut w).unwrap();
     assert_eq!(
@@ -3915,17 +3899,13 @@ fn a_batch_waiting_for_room_is_handed_over_without_running_again() {
     );
 
     dest.complete(first);
-    for _ in 0..500 {
+    wait_until("both batches to be committed", Duration::from_secs(5), || {
         let _ = one(&mut w);
         if let Some(&second) = dest.outstanding().first() {
             dest.complete(second);
         }
-        if src.committed().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(src.committed().len(), 2, "both landed");
+        src.committed().len() == 2
+    });
     assert_eq!(
         counter(&w, "smeltr_tick_batches_total", &[("source", "0")]),
         Some(2),

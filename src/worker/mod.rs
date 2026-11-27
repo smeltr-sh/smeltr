@@ -15,6 +15,7 @@
 //! Every thread in one process belongs to the one group named in `WorkerConfig::group_id`, which is why the
 //! leader's answer is one policy for the process rather than one directive per thread.
 
+use crate::core::time::millis;
 use crate::sync::{Condvar, Mutex};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -817,8 +818,8 @@ fn hold_running(repo_dir: &Path, commit: &str) {
 /// How long one poll blocks before the thread checks `stop`.
 pub const TICK_TIMEOUT: Duration = Duration::from_millis(500);
 /// Rows in one batch, whichever of this and [`TICK_MAX_BYTES`] is reached first. A source hands over what is ready
-/// rather than wait to fill a batch (a receiver waits a moment for [`LEAST_BATCH_BYTES`]), so this binds only under
-/// load.
+/// rather than wait to fill a batch (one whose records wait in memory waits a moment for [`LEAST_BATCH_BYTES`]), so
+/// this binds only under load.
 pub(crate) const TICK_MAX_ROWS: usize = 4000;
 
 /// Raw bytes in one batch, whatever the row size.
@@ -1397,7 +1398,7 @@ fn deploy(
                     .pipelines
                     .iter()
                     .find(|p| p.id == i)
-                    .map(|p| p.step_ids.clone())
+                    .map(|p| p.step_ids.to_vec())
                     .unwrap_or_default()
             })
             .collect(),
@@ -4915,7 +4916,7 @@ fn ledger_file_name(key: &heartbeat::SourceKey, epoch: u64) -> String {
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+        .map_or(0, millis)
 }
 
 /// Capped exponential backoff with jitter, so a fleet that all failed on one commit does not retry in step.
@@ -5712,9 +5713,9 @@ mod tests {
             deliver: vec![CompiledDeliverRule {
                 when: None,
                 to,
-                compiled_patterns: Vec::new(),
+                compiled_patterns: Default::default(),
             }],
-            compiled_patterns: Vec::new(),
+            compiled_patterns: Default::default(),
             on_exception: Default::default(),
         };
         let mut topology = CompiledTopology {

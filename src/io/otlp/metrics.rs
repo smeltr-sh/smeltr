@@ -1412,7 +1412,7 @@ mod tests {
             panic!("a value is a variant")
         };
         assert!(
-            matches!(variant::read(value), variant::Value::I64(-4)),
+            matches!(variant::read(variant::Encoded::check(value)), variant::Value::I64(-4)),
             "an int value stays an int"
         );
         for (_, filed) in &read {

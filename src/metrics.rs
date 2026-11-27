@@ -2,6 +2,7 @@
 //! per-thread [`MetricsHandle`], read through cursors, one per subscriber. Writes are per batch or per instruction,
 //! never per row. [`MetricsSource`] reads it back as an ordinary `Source`.
 
+use crate::core::time::millis;
 use crate::sync::Mutex;
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -501,10 +502,7 @@ impl Source for MetricsSource {
         }
         self.last_drain = Some(Instant::now());
 
-        let ts_millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let ts_millis = SystemTime::now().duration_since(UNIX_EPOCH).map(millis).unwrap_or(0);
 
         // Samples past `max_rows`/`max_bytes` stay owed: a cursor moves past only what a batch carries.
         let mut out = crate::io::RecordChunkBuilder::new();

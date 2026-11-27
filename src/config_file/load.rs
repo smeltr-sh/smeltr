@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::core::column::DataType;
 use crate::core::error::{Category, ExceptionKind};
-use crate::core::id::{DestId, FunctionId, SourceId};
+use crate::core::id::{ById, DestId, FunctionId, SourceId};
 use crate::ops::timeparse;
 use crate::plan::config::{
     Answer, CsvConfig, DeclaredField, FunctionConfig, FunctionKind, GrokConfig, KvConfig, LookupAt, LookupFile,
@@ -997,13 +997,12 @@ fn to_pipeline(
     maps: &IdMaps,
 ) -> Result<PipelineConfig, String> {
     let in_pipeline = |e: String| format!("pipeline {:?}: {e}", dto.name);
-    let mut next_function_id = 0;
     let mut held_step_ids = HashSet::new();
-    let mut step_ids = Vec::new();
+    let mut step_ids = ById::new();
     for call_id in call_ids {
         hold_step_id(call_id, &mut held_step_ids).map_err(in_pipeline)?;
     }
-    let body = to_steps(steps, &mut next_function_id, &mut step_ids, &mut held_step_ids, maps).map_err(in_pipeline)?;
+    let body = to_steps(steps, &mut step_ids, &mut held_step_ids, maps).map_err(in_pipeline)?;
     Ok(PipelineConfig {
         id,
         name: dto.name.clone(),
@@ -1207,14 +1206,13 @@ fn step_id(step: &StepDto) -> &str {
 
 fn to_steps(
     steps: &[StepDto],
-    next_id: &mut u32,
-    step_ids: &mut Vec<String>,
+    step_ids: &mut ById<FunctionId, String>,
     held_step_ids: &mut HashSet<String>,
     maps: &IdMaps,
 ) -> Result<Vec<Step>, String> {
     steps
         .iter()
-        .map(|s| to_step(s, next_id, step_ids, held_step_ids, maps))
+        .map(|s| to_step(s, step_ids, held_step_ids, maps))
         .collect()
 }
 
@@ -1223,8 +1221,7 @@ fn to_steps(
 /// step that owns `FunctionId f`.
 fn to_step(
     dto: &StepDto,
-    next_id: &mut u32,
-    step_ids: &mut Vec<String>,
+    step_ids: &mut ById<FunctionId, String>,
     held_step_ids: &mut HashSet<String>,
     maps: &IdMaps,
 ) -> Result<Step, String> {
@@ -1236,10 +1233,10 @@ fn to_step(
             r#else,
         } => {
             return Ok(Step::If {
-                id: claim_step_id(id, next_id, step_ids, held_step_ids)?,
+                id: claim_step_id(id, step_ids, held_step_ids)?,
                 cond: condition.clone(),
-                then: to_steps(then, next_id, step_ids, held_step_ids, maps)?,
-                else_: to_steps(r#else, next_id, step_ids, held_step_ids, maps)?,
+                then: to_steps(then, step_ids, held_step_ids, maps)?,
+                else_: to_steps(r#else, step_ids, held_step_ids, maps)?,
             });
         }
         StepDto::Comment { id, text } => (id, None, false, FunctionKind::Comment { text: text.clone() }),
@@ -1366,7 +1363,7 @@ fn to_step(
         }
     };
 
-    let id = claim_step_id(step_id, next_id, step_ids, held_step_ids)?;
+    let id = claim_step_id(step_id, step_ids, held_step_ids)?;
     Ok(Step::Function(FunctionConfig {
         id,
         filter,
@@ -1378,15 +1375,11 @@ fn to_step(
 /// The next `FunctionId`, for the step `step_id` names. Refused when `step_id` is already held.
 fn claim_step_id(
     step_id: &str,
-    next_id: &mut u32,
-    step_ids: &mut Vec<String>,
+    step_ids: &mut ById<FunctionId, String>,
     held_step_ids: &mut HashSet<String>,
 ) -> Result<FunctionId, String> {
     hold_step_id(step_id, held_step_ids)?;
-    let id = FunctionId::new(*next_id);
-    *next_id += 1;
-    step_ids.push(step_id.to_string());
-    Ok(id)
+    Ok(step_ids.push(step_id.to_string()))
 }
 
 /// Marks `step_id` as held. Refused when it already is.

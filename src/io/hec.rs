@@ -169,7 +169,7 @@ fn envelope(r: &mut Reader, n: usize) -> Result<(Vec<u8>, Filed), Invalid> {
         filed.push((TIME.to_string(), micros.to_string().into_bytes()));
     }
     match fields {
-        Some(fields) if crate::core::variant::is_object(&fields) => filed.push((FIELDS.to_string(), fields)),
+        Some(fields) if fields[0] == crate::core::variant::OBJECT => filed.push((FIELDS.to_string(), fields)),
         Some(fields) if fields[0] != crate::core::variant::NULL => {
             return Err(Invalid::at(15, "Error in handling indexed fields", n));
         }
@@ -409,7 +409,7 @@ mod tests {
     fn indexed_fields_are_carried_as_a_variant() {
         let read = all(r#"{"event":"e","fields":{"env":"prod","tags":["a","b"]}}"#).unwrap();
         let (_, encoded) = read[0].1.iter().find(|(k, _)| k == FIELDS).unwrap();
-        let env = crate::core::variant::member(encoded, "env").unwrap();
+        let env = crate::core::variant::member(crate::core::variant::Encoded::check(encoded), "env").unwrap();
         assert!(matches!(
             crate::core::variant::read(env),
             crate::core::variant::Value::Str("prod")

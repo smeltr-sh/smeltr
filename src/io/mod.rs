@@ -1,5 +1,5 @@
-//! `Source` and `Destination`: the boundary the runtime is built against (design doc, Runtime stages: "Sources,
-//! destinations, routes"). `kafka`, `logs`, `http` (with `elastic`, `splunk` and `http_post` its protocols) and
+//! `Source` and `Destination`: the boundary the runtime is built against (design doc, Runtime stages: Source,
+//! Destination). `kafka`, `logs`, `http` (with `elastic`, `splunk` and `http_post` its protocols) and
 //! `objects` (on the file destination, `files`) are the live implementations; `fake` serves every test that needs no
 //! broker.
 
@@ -17,6 +17,7 @@ use std::time::Duration;
 pub mod api;
 pub mod app_sign_in;
 pub mod avro;
+mod batch_wait;
 pub mod client_credentials;
 pub mod connections;
 pub mod csv;
@@ -354,7 +355,7 @@ impl RecordChunkBuilder {
             let mut home = self.home.lock();
             let bytes = self.size - self.at.iter().map(|at| headers_size(&at.3)).sum::<usize>();
             (home.rows, home.bytes) = (self.at.len(), bytes);
-            let column = self.raw.finish_growing(&mut home.pool);
+            let column = self.raw.finish_growing();
             // Frees what the polls before outgrew: the next poll reserves its room up front.
             home.pool.trim();
             column

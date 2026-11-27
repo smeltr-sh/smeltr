@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use smeltr::config_file::KafkaSourceDto;
 use smeltr::core::buffer::MemoryBudget;
-use smeltr::core::id::{DestId, FunctionId, SourceId};
+use smeltr::core::id::{ById, DestId, FunctionId, SourceId};
 use smeltr::egress::Egress;
 use smeltr::handoff::{Handed, Handoff, Ready, Report, reports};
 use smeltr::io::fake::{AsyncDestination, FakeSource};
@@ -54,7 +54,7 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
         id: 0,
         name: "pipeline-0".into(),
         body: vec![code(0, "Object.assign($, json(_raw));")],
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),
@@ -90,6 +90,7 @@ fn two_lanes_to(
     dests: Vec<DestinationTarget>,
     to: [Vec<DestId>; 2],
 ) -> (Transform, Vec<Arc<Lane>>, Vec<smeltr::handoff::Acks>) {
+    let to: ById<SourceId, Vec<DestId>> = Vec::from(to).into();
     let routes: Vec<RouteConfig> = [SourceId::new(0), SourceId::new(1)]
         .into_iter()
         .map(|source| RouteConfig {
@@ -98,7 +99,7 @@ fn two_lanes_to(
             source,
             cond: None,
             pipeline: 0,
-            deliver: deliver_to(&to[source.index()]),
+            deliver: deliver_to(&to[source]),
             on_exception: Default::default(),
         })
         .collect();
@@ -106,7 +107,7 @@ fn two_lanes_to(
         id: 0,
         name: "pipeline-0".into(),
         body: vec![code(0, "Object.assign($, json(_raw));")],
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),
@@ -123,7 +124,7 @@ fn two_lanes_to(
             Some(format!("source-{source_id}")),
             topology.meta_for(source_id),
             Handoff::watched(ready.clone(), 8_000_000),
-            to[source_id.index()].clone(),
+            to[source_id].clone(),
             tx,
         )));
         acks.push(rx);
@@ -302,13 +303,7 @@ fn a_lane_waiting_on_a_full_destination_leaves_the_pool_to_the_others() {
         "a full queue is not waited on: {:?}",
         started.elapsed()
     );
-    for _ in 0..200 {
-        if slow.outstanding().len() == 1 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(slow.outstanding().len(), 1, "the first batch went out alone");
+    until("the first batch to go out alone", || slow.outstanding().len() == 1);
     assert!(
         !acks[0].drain().iter().any(|r| matches!(r, Report::Block(..))),
         "a wait is not a block until it has lasted"
@@ -705,7 +700,7 @@ fn pipeline(id: usize, body: &str) -> PipelineConfig {
         id,
         name: format!("pipeline-{id}"),
         body: vec![code(0, body)],
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),
