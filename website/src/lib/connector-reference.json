@@ -130,7 +130,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -138,7 +138,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -408,7 +408,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -416,7 +416,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -751,7 +751,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -759,7 +759,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -1080,7 +1080,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -1088,7 +1088,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -1354,7 +1354,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -1362,7 +1362,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -1682,7 +1682,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -1690,7 +1690,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -1966,7 +1966,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -1974,7 +1974,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -2240,7 +2240,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -2248,7 +2248,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -2472,7 +2472,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["utf-8"],
-            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8`, `utf-16le` or `shift_jis`.",
+            "what": "How a record's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8`, `utf-16le` or `shift_jis`.",
             "values": [
               {
                 "value": "auto",
@@ -2480,7 +2480,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every record as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every record as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",
@@ -4130,7 +4130,7 @@
             "type": "string",
             "default": "auto",
             "examples": ["none"],
-            "what": "How a message's bytes become `_raw`'s text: `auto`, `none`, or the WHATWG label of a text encoding other than `replacement`, such as `utf-8` or `windows-1252`. A binary protocol takes `none`.",
+            "what": "How a message's bytes become `_raw`'s text: `auto`, `none`, or a text encoding's name, such as `utf-8` or `windows-1252`. A binary protocol takes `none`.",
             "values": [
               {
                 "value": "auto",
@@ -4138,7 +4138,7 @@
               },
               {
                 "value": "utf-8",
-                "what": "Decodes every message as UTF-8, as any other label decodes as its own text encoding. Bytes that do not decode become U+FFFD."
+                "what": "Decodes every message as UTF-8, as any other name decodes as its own text encoding. Bytes that do not decode become U+FFFD."
               },
               {
                 "value": "none",

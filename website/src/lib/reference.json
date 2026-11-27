@@ -454,7 +454,7 @@
         {
           "name": "encode",
           "signature": "text.encode(encoding)",
-          "summary": "The text's bytes in the text encoding named, by the labels `decode` takes. `\"auto\"` names no text encoding to write. A character the text encoding cannot spell makes the result null and throws a `CoercionRefused` exception.",
+          "summary": "The text's bytes in the text encoding named, by the names `decode` takes. `\"auto\"` names no text encoding to write. A character the text encoding cannot spell makes the result null and throws a `CoercionRefused` exception.",
           "examples": [
             {
               "expr": "\"café\".encode(\"latin1\").toString(\"hex\")",
@@ -480,7 +480,7 @@
         {
           "name": "decode",
           "signature": "bytes.decode(encoding)",
-          "summary": "Reads bytes as text in the text encoding named: a WHATWG label such as `\"utf-8\"`, `\"utf-16le\"` or `\"latin1\"`, or `\"auto\"`, which detects as a source's `encoding` does. Bytes that do not decode become U+FFFD. A text encoding it does not know is null and throws a `CoercionRefused` exception.",
+          "summary": "Reads bytes as text in the text encoding named, such as `\"utf-8\"`, `\"utf-16le\"` or `\"latin1\"`, or `\"auto\"`, which detects as a source's `encoding` does. Bytes that do not decode become U+FFFD. A text encoding it does not know is null and throws a `CoercionRefused` exception.",
           "examples": [
             {
               "expr": "\"6361 66e9\".replaceAll(/ /, \"\").parseBytes(\"hex\").decode(\"latin1\")",
