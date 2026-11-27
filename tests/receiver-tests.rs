@@ -2353,8 +2353,8 @@ fn base64(text: &str) -> String {
 const BEARER: &str = "Authorization: Bearer s3cret\r\n";
 
 /// A bulk request is answered once every document it takes is committed, with an item per action in the order sent:
-/// each `index` or `create` of a JSON object created, filed under the index, id and pipeline it names or its path and
-/// query name, and every other action refused by itself.
+/// each `index` or `create` created, its document taken as sent and filed under the index, id and pipeline it names
+/// or its path and query name, and every other action refused by itself.
 #[test]
 fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
     let at = free_loopback();
@@ -2377,9 +2377,16 @@ fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
     );
     let sent = std::thread::spawn(move || elastic(at, "POST", "/web/_bulk?pipeline=tidy", BEARER, body.as_bytes()));
 
-    let records = poll_until(&mut source, 2);
+    let records = poll_until(&mut source, 3);
     let raw: Vec<&[u8]> = records.iter().map(|r| r.bytes().unwrap()).collect();
-    assert_eq!(raw, [br#"{"message":"one"}"#.as_slice(), br#"{"message":"two","n":2}"#]);
+    assert_eq!(
+        raw,
+        [
+            br#"{"message":"one"}"#.as_slice(),
+            br#"{"message":"two","n":2}"#,
+            br#""not an object""#
+        ]
+    );
     let meta = smeltr::plan::topology::SourceMeta::ELASTIC_RECEIVER;
     let objects = meta.objects(&records, Some("es"));
     assert_eq!(objects[0]["index"], "logs");
@@ -2418,7 +2425,7 @@ fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
         .collect();
     assert_eq!(
         statuses,
-        [("index", 201), ("create", 201), ("delete", 400), ("index", 400)]
+        [("index", 201), ("create", 201), ("delete", 400), ("index", 201)]
     );
     assert_eq!(items[0]["index"]["_id"], "a1");
     assert!(
