@@ -1682,7 +1682,10 @@ mod tests {
         assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter landed");
         assert_eq!(p.lost, 0, "a failure is no congestion");
         assert!(p.recovery.is_none(), "and starts no recovery");
-        assert!(p.min_rtt.is_some(), "what landed was acknowledged: a round trip was sampled");
+        assert!(
+            p.min_rtt.is_some(),
+            "what landed was acknowledged: a round trip was sampled"
+        );
     }
 
     #[test]
@@ -1727,7 +1730,11 @@ mod tests {
     fn the_max_filter_keeps_the_best_within_its_window() {
         let mut f = MaxFilter::default();
         assert_eq!(f.update(2, 0, 10.0), 10.0);
-        assert_eq!(f.update(2, 1, 5.0), 10.0, "the best stands within the window: its slot and the next");
+        assert_eq!(
+            f.update(2, 1, 5.0),
+            10.0,
+            "the best stands within the window: its slot and the next"
+        );
         assert_eq!(f.update(2, 2, 4.0), 5.0, "and lapses past it to the next best");
         assert_eq!(f.update(2, 3, 3.0), 4.0);
     }
