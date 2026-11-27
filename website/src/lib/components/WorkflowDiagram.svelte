@@ -215,7 +215,6 @@
     color: var(--ink);
     font-size: 0.9rem;
     line-height: 1.6;
-    max-width: 68ch;
   }
   @container (max-width: 45rem) {
     .wide {
