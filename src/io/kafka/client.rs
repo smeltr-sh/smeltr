@@ -398,8 +398,8 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 clients.note_cluster(routes, cluster);
             }
         }
-        // The first poll waits for a record; the rest take only what librdkafka already holds, up to a batch's rows,
-        // so a reader is handed a fetch's records together rather than its first few, and records arriving as fast as
+        // The first poll waits for a record; the rest take only what librdkafka already holds, up to a batch's rows
+        // and until a source's inbox would be full, so a reader is handed a fetch's records together rather than its first few, and records arriving as fast as
         // they are drained still reach it.
         let mut drain = Drain::new(routes);
         let mut wait = CLIENT_POLL;
@@ -408,8 +408,7 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 // The timeout, or an event the client handled on the way: a rebalance, a commit's answer, an error.
                 None => break None,
                 Some(Ok(msg)) => {
-                    drain.push(&msg);
-                    if drain.rows >= crate::worker::TICK_MAX_ROWS {
+                    if drain.push(&msg) || drain.rows >= crate::worker::TICK_MAX_ROWS {
                         break None;
                     }
                 }
@@ -454,6 +453,9 @@ struct Drained {
     slot: Arc<Slot>,
     /// Whether these records were copied with their headers.
     keep_headers: bool,
+    /// What the inbox had left before its cap when the pass met this source. Its reader only takes bytes out, so
+    /// the pass ends once `records` fill it: the hand-off then pauses the source, as a record routed alone would.
+    room: usize,
     records: crate::io::RecordChunkBuilder,
 }
 
@@ -468,8 +470,15 @@ impl<'r> Drain<'r> {
         }
     }
 
-    /// Copies `msg` into the chunk of the source reading its topic.
-    fn push(&mut self, msg: &impl Message) {
+    /// Copies `msg` into the chunk of the source reading its topic. Answers whether that source's room is filled,
+    /// which ends the pass.
+    fn push(&mut self, msg: &impl Message) -> bool {
+        // A fetch that returned a real record proves this broker is reachable. The other proof, a completed
+        // assignment, clears from `Routes::post_rebalance`. Cleared at the pass's first record, before its later
+        // polls, so an error one of them reports stands.
+        if self.rows == 0 {
+            self.routes.clear_error();
+        }
         self.rows += 1;
         // Read once: each read of a message's topic measures and checks the name again.
         let topic = msg.topic();
@@ -478,7 +487,7 @@ impl<'r> Drain<'r> {
             None => self.meet(topic),
         };
         let Some(at) = at else {
-            return;
+            return false;
         };
         let source = &mut self.sources[at];
         source.records.push_stamped(
@@ -489,14 +498,15 @@ impl<'r> Drain<'r> {
             headers_of(msg, source.keep_headers),
             msg.timestamp().to_millis().and_then(|millis| millis.checked_mul(1000)),
         );
+        source.records.size() >= source.room
     }
 
     /// The source reading `topic`, looked up once a pass, and its name for the topic.
     fn meet(&mut self, topic: &str) -> (Arc<str>, Option<usize>) {
         let found = self.routes.slot_for(topic).map(|slot| {
-            let (name, keep_headers) = {
+            let (name, keep_headers, room) = {
                 let state = slot.lock();
-                (slot.intern(&state, topic), state.keep_headers)
+                (slot.intern(&state, topic), state.keep_headers, slot.cap.saturating_sub(state.bytes))
             };
             let at = match self.sources.iter().position(|s| Arc::ptr_eq(&s.slot, &slot)) {
                 Some(at) => at,
@@ -504,6 +514,7 @@ impl<'r> Drain<'r> {
                     self.sources.push(Drained {
                         slot,
                         keep_headers,
+                        room,
                         records: crate::io::RecordChunkBuilder::new(),
                     });
                     self.sources.len() - 1
@@ -523,11 +534,6 @@ impl<'r> Drain<'r> {
     /// needs waking ([`BatchWait::arrived`]), for the caller to wake.
     fn hand_off(self, consumer: &BaseConsumer<Routes>) -> Vec<Arc<Slot>> {
         let routes = self.routes;
-        if self.rows > 0 {
-            // A fetch that returned a real record proves this broker is reachable. The other proof, a completed
-            // assignment, clears from `Routes::post_rebalance`.
-            routes.clear_error();
-        }
         // A revoke inside the pass's polls took partitions some of its records came from: theirs to the new owner.
         let revoked = routes.0.revokes.load(Ordering::Acquire) != self.revokes;
         let mut woken = Vec::new();
@@ -535,6 +541,7 @@ impl<'r> Drain<'r> {
             slot,
             keep_headers,
             records,
+            ..
         } in self.sources
         {
             if records.is_empty() {
@@ -1872,6 +1879,36 @@ mod tests {
         assert_eq!(state.bytes, 1, "the inbox counts only what it kept");
     }
 
+    /// An error reported by a poll after the pass's first record stands through the hand-off.
+    #[test]
+    fn an_error_reported_later_in_a_pass_stands() {
+        let routes = Routes::default();
+        let slot = Arc::new(Slot::new(&config(&["a"]), 0));
+        routes.attach(&slot);
+        let consumer: BaseConsumer<Routes> = ClientConfig::new().create_with_context(routes.clone()).unwrap();
+        routes.error(KafkaError::Subscription("before".into()), "before");
+        let mut drain = Drain::new(&routes);
+        drain.push(&message(0, 1, 1));
+        assert_eq!(routes.last_error(), None, "a record clears the error before it");
+        routes.error(KafkaError::Subscription("after".into()), "after");
+        drain.push(&message(0, 2, 1));
+        drain.hand_off(&consumer);
+        assert!(routes.last_error().is_some_and(|e| e.contains("after")));
+    }
+
+    /// A pass ends once a source's records fill what its inbox had left before its cap, however few rows it took, so
+    /// large records cannot run the inbox past its cap before the hand-off pauses the source.
+    #[test]
+    fn a_pass_ends_once_a_source_fills_its_inbox() {
+        let routes = Routes::default();
+        let slot = Arc::new(Slot::new(&config(&["a"]), 0));
+        routes.attach(&slot);
+        slot.lock().bytes = slot.cap - 10;
+        let mut drain = Drain::new(&routes);
+        assert!(!drain.push(&message(0, 1, 5)), "room is left");
+        assert!(drain.push(&message(0, 2, 5)), "the inbox is full");
+    }
+
     /// Headers asked for while a pass copied records without them: the client fetches those again, as it does the
     /// inbox's (`Slot::refetch`), and the reader takes nothing until it has.
     #[test]
@@ -1899,7 +1936,9 @@ mod tests {
         let consumer: BaseConsumer<Routes> = ClientConfig::new().create_with_context(routes.clone()).unwrap();
         let pass = |records: &[rdkafka::message::OwnedMessage]| {
             let mut drain = Drain::new(&routes);
-            records.iter().for_each(|r| drain.push(r));
+            for r in records {
+                drain.push(r);
+            }
             !drain.hand_off(&consumer).is_empty()
         };
 
