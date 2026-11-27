@@ -38,6 +38,11 @@
 //!   receiver's window does: the sender holds to the lesser of it and cwnd, and a link the share holds back reads as
 //!   the bottleneck, not as a source with nothing to send (the draft's receiver flow control limits).
 //! - The initial window is ten batches, within the share.
+//! - A ProbeBW cycle that runs [`MAX_BW_CYCLE_TIMER`] without ending ends the max_bw filter's slot all the same. The
+//!   draft counts the filter's window in cycles and a cycle mostly in round trips, and leaves a fall in capacity to
+//!   loss. Under TCP a slower network is never loss here, only longer round trips, so without this a link that
+//!   narrows behind a deep enough queue keeps its old max_bw for good: the round trips it stretches keep the cycle
+//!   from ending.
 //!
 //! The egress queue holds the window and one batch ready behind it, so the next batch is made while the last is on
 //! the wire.
@@ -78,6 +83,9 @@ const PACING_MARGIN_PERCENT: f64 = 1.0;
 
 /// BBR.MaxBwFilterLen, in ProbeBW cycles.
 const MAX_BW_FILTER_LEN: u64 = 2;
+/// The longest a ProbeBW cycle runs before the max_bw filter moves to its next slot regardless. A cycle on a healthy
+/// path ends well inside it, so it acts only once round trips have stretched past what the draft's cycle allows.
+const MAX_BW_CYCLE_TIMER: Duration = Duration::from_secs(10);
 /// BBR.ExtraAckedFilterLen, in round trips.
 const EXTRA_ACKED_FILTER_LEN: u64 = 10;
 /// BBR.MinRTTFilterLen.
@@ -262,6 +270,8 @@ pub struct Pacing {
     next_round_delivered: u64,
     max_bw_filter: MaxFilter,
     cycle_count: u64,
+    /// When the max_bw filter last moved to its next slot.
+    cycle_ended_at: Instant,
     max_bw: f64,
     bw_shortterm: f64,
     bw: f64,
@@ -341,6 +351,7 @@ impl Pacing {
             next_round_delivered: 0,
             max_bw_filter: MaxFilter::default(),
             cycle_count: 0,
+            cycle_ended_at: now,
             max_bw: 0.0,
             bw_shortterm: f64::INFINITY,
             bw: 0.0,
@@ -546,6 +557,10 @@ impl Pacing {
         let interval = send_elapsed.max(ack_elapsed);
         if self.lifetime_min_rtt.is_none_or(|m| interval >= m) && !interval.is_zero() {
             rs.delivery_rate = rs.delivered as f64 / interval.as_secs_f64();
+        }
+
+        if self.full_bw_reached && now.saturating_duration_since(self.cycle_ended_at) >= MAX_BW_CYCLE_TIMER {
+            self.advance_max_bw_filter(now);
         }
 
         // UpdateModelAndState.
@@ -890,7 +905,7 @@ impl Pacing {
         if !self.full_bw_reached {
             return;
         }
-        if self.adapt_long_term_model(rs) {
+        if self.adapt_long_term_model(rs, now) {
             return;
         }
         match self.state {
@@ -974,12 +989,12 @@ impl Pacing {
     }
 
     /// AdaptLongTermModel: whether it decided a state transition.
-    fn adapt_long_term_model(&mut self, rs: &RateSample) -> bool {
+    fn adapt_long_term_model(&mut self, rs: &RateSample, now: Instant) -> bool {
         if self.is_bw_probe_stopping && self.round_start {
             self.check_probe_loss = false;
             self.is_bw_probe_stopping = false;
             if self.state.is_probe_bw() && !rs.is_app_limited {
-                self.cycle_count += 1;
+                self.advance_max_bw_filter(now);
             }
             if self.state.is_probe_bw() && self.prev_probe_precautionary && !self.prev_probe_too_high {
                 self.start_probe_bw_refill();
@@ -998,6 +1013,11 @@ impl Pacing {
             }
         }
         false
+    }
+
+    fn advance_max_bw_filter(&mut self, now: Instant) {
+        self.cycle_count += 1;
+        self.cycle_ended_at = now;
     }
 
     fn is_time_to_probe_bw(&mut self, now: Instant) -> bool {
@@ -1645,6 +1665,26 @@ mod tests {
             s.p.target() / MIB
         );
         let carried = s.throughput(60.0, 120.0) / GIB;
+        assert!(carried > 0.09, "the link stays full: {carried:.3} GiB/s");
+    }
+
+    /// A link that narrows behind a deep queue, with nothing ever refused: no loss reaches the model, and the queue
+    /// stretches each round trip until a cycle cannot end by them. The cycle timer still ages the old rate out, and
+    /// the window comes back down to the narrower link.
+    #[test]
+    fn a_link_that_narrows_without_loss_brings_the_model_down_within_a_few_cycle_timers() {
+        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
+        s.run_to(30.0);
+        s.path.capacity = 0.1 * GIB;
+        s.run_to(120.0);
+        let rate = s.p.rate() / GIB;
+        assert!(rate < 0.15, "the rate falls to the link: {rate:.2} GiB/s");
+        assert!(
+            s.p.target() <= 16 * BATCH,
+            "the window comes back down: {} MiB",
+            s.p.target() / MIB
+        );
+        let carried = s.throughput(90.0, 120.0) / GIB;
         assert!(carried > 0.09, "the link stays full: {carried:.3} GiB/s");
     }
 
