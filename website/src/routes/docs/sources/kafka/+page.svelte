@@ -112,10 +112,10 @@
     </dd>
     <dt><strong>Slower than the network allows</strong></dt>
     <dd>
-      A Kafka broker limits each connection's send buffer to 100 KiB unless told otherwise, and that
-      caps what each connection can carry, so one consumer fetches less, most of all over a long
-      round trip. Set the brokers' <code>socket.send.buffer.bytes</code> to <code>-1</code> and restart
-      them, so the operating system sizes it.
+      Check the brokers' <a
+        href="https://kafka.apache.org/documentation/#brokerconfigs_socket.send.buffer.bytes"
+        ><code>socket.send.buffer.bytes</code></a
+      >.
     </dd>
   </dl>
 
