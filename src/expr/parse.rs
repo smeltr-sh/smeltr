@@ -10,7 +10,7 @@ use crate::plan::tree;
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct ParseError {
     /// Covers the token at fault, so an editor can underline it.
-    span: Span,
+    pub(crate) span: Span,
     pub(crate) message: String,
 }
 

@@ -11,6 +11,7 @@ const error = (message: string, more: Partial<ApiError> = {}): ApiError => ({
   item: null,
   field: null,
   rule: null,
+  span: null,
   message,
   ...more,
 });

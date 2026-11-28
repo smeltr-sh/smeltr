@@ -6,6 +6,55 @@ export function quotedTokens(message: string): string[] {
 
 const WORD = /[A-Za-z0-9_$]/;
 
+/** Where an error is in a field's text, in UTF-8 bytes, as the compiler counts (`CompileError::span`). */
+export interface ByteSpan {
+  start: number;
+  end: number;
+}
+
+/** How many UTF-16 units, as a string counts, the first `bytes` UTF-8 bytes of `text` take. */
+function unitsOf(text: string, bytes: number): number {
+  return new TextDecoder().decode(new TextEncoder().encode(text).slice(0, bytes)).length;
+}
+
+/** `text` cut into runs, the part `span` covers marked. An empty span, as where the text ends too soon, marks the
+ * character at it, or the last one where it is past the text. The runs join back into `text`. */
+export function spanRuns(text: string, span: ByteSpan): { text: string; mark: boolean }[] {
+  return unitRuns(text, unitsOf(text, span.start), unitsOf(text, span.end));
+}
+
+/** `spanRuns` for `laid`, `text` laid out in lines: the layout changes only white space, so a place in `text` is
+ * the one in `laid` with as many non-white-space characters before it. */
+export function laidSpanRuns(
+  text: string,
+  laid: string,
+  span: ByteSpan,
+): { text: string; mark: boolean }[] {
+  const ink = (s: string, to: number) => s.slice(0, to).replace(/\s/g, '').length;
+  const at = (n: number, skip: boolean) => {
+    let i = 0;
+    for (; i < laid.length && n > 0; i++) if (!/\s/.test(laid[i])) n--;
+    while (skip && i < laid.length && /\s/.test(laid[i])) i++;
+    return i;
+  };
+  const start = at(ink(text, unitsOf(text, span.start)), true);
+  return unitRuns(laid, start, Math.max(start, at(ink(text, unitsOf(text, span.end)), false)));
+}
+
+function unitRuns(text: string, start: number, end: number): { text: string; mark: boolean }[] {
+  const last = text.replace(/\s+$/, '').length;
+  if (last === 0) return [];
+  if (end <= start) {
+    start = Math.min(start, last - 1);
+    end = start + 1;
+  }
+  return [
+    { text: text.slice(0, start), mark: false },
+    { text: text.slice(start, end), mark: true },
+    { text: text.slice(end), mark: false },
+  ].filter((r) => r.text.length > 0);
+}
+
 /** Whether `token` stands at `i` in `text` as a whole name, not inside a
  * longer one: `x` in `x = 1`, never in `max`. */
 function standsAt(text: string, token: string, i: number): boolean {

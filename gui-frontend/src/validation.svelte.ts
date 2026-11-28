@@ -83,6 +83,12 @@ export class Validation {
     return messages.length > 0 ? messages.join('\n') : null;
   }
 
+  /** Where in one field's text its first error the compiler places is, or null. */
+  span(id: string, field: string, rule: number | null = null): ApiError['span'] {
+    const key = keyOf(id, field, rule);
+    return this.placed.find((e) => keyOfError(e) === key && e.span)?.span ?? null;
+  }
+
   /** An edit to a field: its errors no longer describe it. */
   edited(id: string, field: string, rule: number | null = null): void {
     this.#pending?.push(() => this.edited(id, field, rule));

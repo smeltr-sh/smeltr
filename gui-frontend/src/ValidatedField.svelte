@@ -58,7 +58,15 @@
   } from '../../website/src/lib/highlight/highlight';
   import { wrapCondition, wrapWords } from './conditionWrap';
   import type { Attachment } from 'svelte/attachments';
-  import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
+  import {
+    fieldError,
+    holdsName,
+    laidSpanRuns,
+    markRuns,
+    quotedTokens,
+    spanRuns,
+    type ByteSpan,
+  } from './errorMarks';
   import { formatCode, type DotAnswer } from './api';
   import { beginReconcile, endReconcile } from './owedAnswers';
   import { producedSchemas } from './producedSchemas.svelte';
@@ -83,6 +91,7 @@
     errors = [],
     warnings = [],
     forced = null,
+    at = null,
     placeholder = '',
     ariaLabel = '',
     autocomplete = null,
@@ -108,6 +117,8 @@
      * stays as the fallback for everything that arrives as a step-level
      * message with no more specific place to go. */
     forced?: string | null;
+    /** Where in the text the error `forced` is, as the compiler places it: only that part is marked. */
+    at?: ByteSpan | null;
     placeholder?: string;
     ariaLabel?: string;
     autocomplete?: 'condition' | 'assignment' | 'code' | 'grok' | null;
@@ -234,21 +245,26 @@
           .flatMap(quotedTokens)
           .filter((t) => !KEYWORDS.has(t) && !LITERALS.has(t) && holdsName(value, t)),
   );
+  let placed = $derived(colored && forced !== null && at !== null ? at : null);
   let runs = $derived(
-    named.length > 0
-      ? markRuns(value + '\n', named)
-      : colored && warned.length > 0
-        ? markRuns(value + '\n', warned)
-        : [],
+    placed
+      ? spanRuns(value + '\n', placed)
+      : named.length > 0
+        ? markRuns(value + '\n', named)
+        : colored && warned.length > 0
+          ? markRuns(value + '\n', warned)
+          : [],
   );
   let whole = $derived(!!matched && runs.length === 0);
   // Laid out, the text breaks before its operators: the names are marked where they land in its lines.
   let restRuns = $derived(
-    named.length > 0
-      ? markRuns(restText, named)
-      : colored && warned.length > 0
-        ? markRuns(restText, warned)
-        : [],
+    placed
+      ? laidSpanRuns(value, restText, placed)
+      : named.length > 0
+        ? markRuns(restText, named)
+        : colored && warned.length > 0
+          ? markRuns(restText, warned)
+          : [],
   );
   // A name box has no painted copy to mark a run in, so a warning that names it marks all of it, as an error does.
   let wholeWarn = $derived(!colored && warned.length > 0);

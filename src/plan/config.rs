@@ -6,6 +6,7 @@
 use crate::core::column::DataType;
 use crate::core::error::{Category, ExceptionKind};
 use crate::core::id::{ById, DestId, FunctionId};
+use crate::expr::ast::Span;
 use crate::plan::parse_call::split_dots_default;
 
 #[derive(Clone, Debug)]
@@ -566,6 +567,11 @@ pub struct CompileError {
     /// The route's delivery rule whose `when` this came from, by its position in the route's own list. `None` on a
     /// route's error means its own condition.
     pub rule: Option<u32>,
+    /// The step's setting whose text this came from, by its name in the file: `filter`, `condition`, `body` or
+    /// `expr`. `None` for a route's error, whose `rule` says which text, and for a step's error that is about no one text.
+    pub(crate) field: Option<&'static str>,
+    /// The part of that text at fault, so an editor can underline it. `None` where the compiler cannot place it.
+    pub(crate) span: Option<Span>,
     pub message: String,
 }
 
@@ -577,12 +583,19 @@ impl CompileError {
             assignment_index: None,
             route: None,
             rule: None,
+            field: None,
+            span: None,
             message: crate::expr::inline::user_names(&message.into()).into_owned(),
         }
     }
 
     pub(crate) fn in_pipeline(mut self, id: usize) -> Self {
         self.pipeline = Some(id);
+        self
+    }
+
+    pub(crate) fn at(mut self, span: Option<Span>) -> Self {
+        self.span = span;
         self
     }
 }

@@ -383,7 +383,7 @@ fn literal(s: &str) -> String {
 }
 
 /// Sets every span in `stmt` to `span`, the call's, so an error in the expansion points at the call.
-fn at_span(stmt: &mut Stmt, span: Span) {
+pub(crate) fn at_span(stmt: &mut Stmt, span: Span) {
     fn expr(e: &mut Expr, span: Span) {
         e.span = span;
         for c in e.children_mut() {

@@ -154,6 +154,8 @@
    * heuristic's fallback, kept for every error `assignmentIndex` cannot
    * place any more precisely than "somewhere in this step". */
   let stepErrorMessages = $derived(stepErrors.map((e) => e.message));
+  /** The step's first error the compiler places in its setting `field`, with where in the text it is. */
+  const placedIn = (field: string) => stepErrors.find((e) => e.field === field && e.span);
   let stepWarningMessages = $derived([
     ...new Set((warningsByStep.get(step) ?? []).map((e) => e.message)),
   ]);
@@ -583,6 +585,8 @@
             bind:value={step.condition}
             errors={stepErrorMessages}
             warnings={stepWarningMessages}
+            forced={placedIn('condition')?.message ?? null}
+            at={placedIn('condition')?.span ?? null}
             autocomplete="condition"
             ask={askAt?.({ step: step.id })}
             wrap
@@ -715,6 +719,8 @@
                 bind:value={step.filter}
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
+                forced={placedIn('filter')?.message ?? null}
+                at={placedIn('filter')?.span ?? null}
                 autocomplete="condition"
                 ask={askAt?.({ step: step.id })}
                 wrap
@@ -755,6 +761,7 @@
                       errors={stepErrorMessages}
                       warnings={stepWarningMessages}
                       forced={assignmentError?.message ?? null}
+                      at={assignmentError?.span ?? null}
                       autocomplete="assignment"
                       ask={askAt?.({ step: step.id })}
                     />
@@ -786,6 +793,8 @@
                 bind:value={step.body}
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
+                forced={placedIn('body')?.message ?? null}
+                at={placedIn('body')?.span ?? null}
                 autocomplete="code"
                 ask={askAt?.({ step: step.id })}
               />
@@ -797,6 +806,8 @@
                 bind:value={step.condition}
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
+                forced={placedIn('condition')?.message ?? null}
+                at={placedIn('condition')?.span ?? null}
                 autocomplete="condition"
                 ask={askAt?.({ step: step.id })}
                 wrap

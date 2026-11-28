@@ -36,7 +36,8 @@ const MAX_INLINE_DEPTH: usize = 32;
 const MAX_INLINED_CALLS: usize = 10_000;
 
 pub struct InlineError {
-    pub span: Span,
+    /// The code at fault, where the statement that holds it has a place.
+    pub span: Option<Span>,
     pub(crate) message: String,
 }
 
@@ -220,7 +221,7 @@ fn check_fields(ty: &DataType, value: Expr, site: &str, prefix: &str) -> Result<
         let path = tree::join(prefix, &k);
         let Some((_, t)) = fields.iter().find(|(n, _)| tree::spell(n) == k) else {
             return Err(InlineError {
-                span: v.span,
+                span: Some(v.span),
                 message: format!("{site} has a field `{path}` its type does not name"),
             });
         };
@@ -414,30 +415,30 @@ fn check_reserved_names(stmts: &[Stmt]) -> Result<(), InlineError> {
 }
 
 /// The first name under `RESERVED_PREFIXES` in `stmts`, arrows' bodies included.
-fn reserved_name(stmts: &[Stmt]) -> Option<(String, Span)> {
+fn reserved_name(stmts: &[Stmt]) -> Option<(String, Option<Span>)> {
     let bad = |n: &str| RESERVED_PREFIXES.iter().any(|p| n.starts_with(p));
     Stmt::find_map(stmts, &|_| true, &mut |stmt| {
-        let (names, span): (Vec<&String>, Span) = match stmt {
-            Stmt::Let { name, value } => (vec![name], value.span),
-            Stmt::Assign { target, value, .. } | Stmt::IndexAssign { target, value, .. } => (vec![target], value.span),
-            Stmt::For { var, iterable, .. } => (vec![var], iterable.span),
-            Stmt::Declare { name, .. } => (vec![name], Span::default()),
-            Stmt::Function { name, function } => {
-                (std::iter::once(name).chain(&function.params).collect(), Span::default())
+        let (names, span): (Vec<&String>, Option<Span>) = match stmt {
+            Stmt::Let { name, value } => (vec![name], Some(value.span)),
+            Stmt::Assign { target, value, .. } | Stmt::IndexAssign { target, value, .. } => {
+                (vec![target], Some(value.span))
             }
-            Stmt::Delete { names, span, .. } => (names.iter().collect(), *span),
-            Stmt::Unroll { field, span, .. } => (vec![field], *span),
-            Stmt::Try { catches, .. } => (catches.iter().filter_map(|c| c.0.as_ref()).collect(), Span::default()),
-            _ => (Vec::new(), Span::default()),
+            Stmt::For { var, iterable, .. } => (vec![var], Some(iterable.span)),
+            Stmt::Declare { name, .. } => (vec![name], None),
+            Stmt::Function { name, function } => (std::iter::once(name).chain(&function.params).collect(), None),
+            Stmt::Delete { names, span, .. } => (names.iter().collect(), Some(*span)),
+            Stmt::Unroll { field, span, .. } => (vec![field], Some(*span)),
+            Stmt::Try { catches, .. } => (catches.iter().filter_map(|c| c.0.as_ref()).collect(), None),
+            _ => (Vec::new(), None),
         };
         if let Some(name) = names.into_iter().find(|n| bad(n)) {
             return Some((name.clone(), span));
         }
         stmt.exprs().into_iter().find_map(|e| {
             e.find_map(&mut |e| match &e.kind {
-                ExprKind::Field(n) | ExprKind::Call { name: n, .. } if bad(n) => Some((n.clone(), e.span)),
+                ExprKind::Field(n) | ExprKind::Call { name: n, .. } if bad(n) => Some((n.clone(), Some(e.span))),
                 ExprKind::Arrow(f) => match f.params.iter().find(|p| bad(p)) {
-                    Some(p) => Some((p.clone(), e.span)),
+                    Some(p) => Some((p.clone(), Some(e.span))),
                     None => reserved_name(&f.body),
                 },
                 _ => None,
@@ -447,7 +448,7 @@ fn reserved_name(stmts: &[Stmt]) -> Option<(String, Span)> {
 }
 
 /// Refuses a built-in's name for a pipeline's own function, declared or `let`-bound.
-fn own_name(name: &str, span: Span) -> Result<(), InlineError> {
+fn own_name(name: &str, span: Option<Span>) -> Result<(), InlineError> {
     if !resolve::is_builtin(name) {
         return Ok(());
     }
@@ -465,11 +466,11 @@ fn collect(stmts: &[Stmt], out: &mut Scope, own: bool) -> Result<(), InlineError
             continue;
         };
         if own {
-            own_name(name, Span::default())?;
+            own_name(name, None)?;
         }
         if out.contains_key(name) {
             return Err(InlineError {
-                span: Span::default(),
+                span: None,
                 message: format!("function `{name}` is declared more than once"),
             });
         }
@@ -491,7 +492,7 @@ fn collect(stmts: &[Stmt], out: &mut Scope, own: bool) -> Result<(), InlineError
 fn check_body(body: &[Stmt], what: &str) -> Result<(), InlineError> {
     if body.iter().any(|s| matches!(s, Stmt::Function { .. })) {
         return Err(InlineError {
-            span: Span::default(),
+            span: None,
             message: format!(
                 "{what} declares a nested function -- declare it at the top level of the code block instead"
             ),
@@ -504,7 +505,7 @@ fn check_body(body: &[Stmt], what: &str) -> Result<(), InlineError> {
     }) {
         let word = if to == Region::Trip { "continue" } else { "break" };
         return Err(InlineError {
-            span,
+            span: Some(span),
             message: format!("`{word}` is only valid inside a loop"),
         });
     }
@@ -597,7 +598,7 @@ impl Inliner {
         let expanded = stmts.iter().try_for_each(|stmt| match stmt {
             Stmt::Function { .. } => Ok(()),
             Stmt::Return(e) => Err(InlineError {
-                span: e.span,
+                span: Some(e.span),
                 message: "`return` is only valid inside a `function` body".into(),
             }),
             _ => self.stmt(stmt, &mut out),
@@ -613,7 +614,7 @@ impl Inliner {
             Stmt::While { cond, body, .. } => {
                 if !assigns_anything(body) {
                     return Err(InlineError {
-                        span: cond.span,
+                        span: Some(cond.span),
                         message: "a `while` body that assigns nothing can never change its \
                                   own condition, so the loop either runs zero times or \
                                   forever -- assign something the condition reads"
@@ -626,7 +627,7 @@ impl Inliner {
             Stmt::Let { name, value } => match self.function_value(value)? {
                 // `name` holds the function from here on: nothing runs, and nothing is written.
                 Some(bound) => {
-                    own_name(name, value.span)?;
+                    own_name(name, Some(value.span))?;
                     self.scopes
                         .last_mut()
                         .expect("a block's scope")
@@ -666,10 +667,10 @@ impl Inliner {
     /// is one thing.
     fn refuse_function_name(&self, stmt: &Stmt) -> Result<(), InlineError> {
         let (name, span) = match stmt {
-            Stmt::Let { name, value } => (name, value.span),
-            Stmt::Assign { target, value, .. } | Stmt::IndexAssign { target, value, .. } => (target, value.span),
-            Stmt::Declare { name, .. } => (name, Span::default()),
-            Stmt::For { var, iterable, .. } => (var, iterable.span),
+            Stmt::Let { name, value } => (name, Some(value.span)),
+            Stmt::Assign { target, value, .. } | Stmt::IndexAssign { target, value, .. } => (target, Some(value.span)),
+            Stmt::Declare { name, .. } => (name, None),
+            Stmt::For { var, iterable, .. } => (var, Some(iterable.span)),
             _ => return Ok(()),
         };
         let head = tree::head(name);
@@ -705,7 +706,7 @@ impl Inliner {
             }
             ExprKind::Arrow(_) => {
                 return Err(InlineError {
-                    span,
+                    span: Some(span),
                     message: "a function is a value only where it is called, passed to a function, or bound with \
                               `let`"
                         .into(),
@@ -713,7 +714,7 @@ impl Inliner {
             }
             ExprKind::Field(n) if self.user_function(n) => {
                 return Err(InlineError {
-                    span,
+                    span: Some(span),
                     message: format!("`{n}` is a function: call it, pass it to a function, or bind it with `let`"),
                 });
             }
@@ -874,7 +875,10 @@ impl Inliner {
         } else {
             unpack::pack_function(args, span)
         };
-        let function = function.map_err(|message| InlineError { span, message })?;
+        let function = function.map_err(|message| InlineError {
+            span: Some(span),
+            message,
+        })?;
         let id = self.tmp(f);
         let bound = Bound {
             function: Rc::new(function),
@@ -926,7 +930,7 @@ impl Inliner {
         let f = Rc::clone(&bound.function);
         if self.active.len() >= MAX_INLINE_DEPTH {
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!(
                     "calls nest more than {MAX_INLINE_DEPTH} deep at `{name}`; inlining \
                      multiplies, so this would expand without bound"
@@ -936,13 +940,13 @@ impl Inliner {
         self.inlined += 1;
         if self.inlined > MAX_INLINED_CALLS {
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!("more than 10,000 calls inlined at `{name}`"),
             });
         }
         if args.len() != f.params.len() {
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!("`{name}` takes {} argument(s), found {}", f.params.len(), args.len()),
             });
         }
@@ -978,7 +982,7 @@ impl Inliner {
         if self.active.iter().any(|(k, _)| *k == key) {
             let chain: Vec<&str> = self.active.iter().map(|(_, n)| n.as_str()).chain([name]).collect();
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!(
                     "`{name}` calls itself ({}) -- recursion has no bounded expansion, so it \
                      cannot be inlined",
@@ -993,6 +997,10 @@ impl Inliner {
         };
         let holds = |n: &str| params.contains_key(n) || scopes.iter().any(|s| s.contains_key(n));
         let mut body = f.body.clone();
+        // The prelude's code is not code the author wrote, so an error in it points at the call.
+        if bound.scopes.is_none() && PRELUDE_FUNCTIONS.contains(&bound.id.as_str()) {
+            body.iter_mut().for_each(|stmt| unpack::at_span(stmt, span));
+        }
         let locals = self.rename_body(&mut body, &renames, &holds);
         if let Some(bad) = declared_local(&f.body, &|n| renames.contains_key(n) || locals.contains(n)) {
             let what = if f.params.iter().any(|p| p == tree::head(bad)) {
@@ -1001,7 +1009,7 @@ impl Inliner {
                 "a local"
             };
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!("`{bad}` is {what} of `{name}`: its type is its signature's or its value's"),
             });
         }
@@ -1026,7 +1034,7 @@ impl Inliner {
         let value = self.function_value(arg)?;
         if value.is_some() && ty.is_some() {
             return Err(InlineError {
-                span: arg.span,
+                span: Some(arg.span),
                 message: format!("argument `{param}` of `{name}` has a type, so it takes a value, not a function"),
             });
         }
@@ -1089,13 +1097,13 @@ impl Inliner {
         } = (*bound.function).clone();
         if args.len() != params.len() {
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!("`{name}` takes {} argument(s), found {}", params.len(), args.len()),
             });
         }
         if let Some(bad) = non_tail_self_call(&body, name) {
             return Err(InlineError {
-                span: bad,
+                span: Some(bad),
                 message: format!(
                     "`{name}` calls itself somewhere other than in tail position. A recursive \
                      function here is compiled as a loop, which only works when the call is \
@@ -1123,7 +1131,7 @@ impl Inliner {
             if let Some(value) = self.function_argument(name, param, ty.as_ref(), arg)? {
                 if !invariant[idx] {
                     return Err(InlineError {
-                        span: arg.span,
+                        span: Some(arg.span),
                         message: format!("`{param}` is a function, so `{name}` must pass it to itself unchanged"),
                     });
                 }
@@ -1144,7 +1152,7 @@ impl Inliner {
             .collect();
         if let Some(bad) = declared_local(&body, &|n| renames.contains_key(n)) {
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!("`{bad}` is a parameter of `{name}`: its type is in the signature"),
             });
         }
@@ -1244,7 +1252,7 @@ impl Inliner {
     ) -> Result<Expr, InlineError> {
         let Some((last, leading)) = body.split_last() else {
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!("`{name}` has an empty body, so a call to it has no value"),
             });
         };
@@ -1273,7 +1281,7 @@ impl Inliner {
                 })
             }
             _ => Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!(
                     "`{name}` must end in `return <expr>;` (or an `if`/`else` where both \
                      branches do) -- a call has to have a value"
@@ -1306,7 +1314,7 @@ impl Inliner {
             null_shape(&returns, ret_ty.unwrap_or(&DataType::Null), span)
         } else {
             return Err(InlineError {
-                span,
+                span: Some(span),
                 message: format!(
                     "`{name}` returns an object literal from one `return` and something else from another; with \
                      an early return every `return` must be an object literal, or none"
@@ -1499,7 +1507,10 @@ fn must_return(name: &str, body: &[Stmt], span: Span) -> Result<(), InlineError>
              branches do) -- a call has to have a value"
         )
     };
-    Err(InlineError { span, message })
+    Err(InlineError {
+        span: Some(span),
+        message,
+    })
 }
 
 fn always_returns(stmts: &[Stmt]) -> bool {
@@ -1695,5 +1706,23 @@ fn rename_expr(e: &mut Expr, map: &HashMap<String, String>) {
     }
     for c in e.children_mut() {
         rename_expr(c, map);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The prelude's code is not code the author wrote: a call of `map` expands to it at the call's place, inside the
+    /// author's text, so an error in it underlines the call.
+    #[test]
+    fn the_prelude_expands_at_the_call() {
+        let src = "y = [1].map(x => x);";
+        let out = expand(&parse::parse_block(src).unwrap()).unwrap_or_else(|e| panic!("{}", e.message));
+        let past_the_text = Stmt::find_map(&out, &|_| true, &mut |s| {
+            (s.exprs().into_iter())
+                .find_map(|e| e.find_map(&mut |e| (e.span.end as usize > src.len()).then_some(e.span)))
+        });
+        assert_eq!(past_the_text, None);
     }
 }

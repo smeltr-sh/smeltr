@@ -147,6 +147,30 @@ test('a refused route is marked on its condition, which the error bar opens its 
   await expect(card.locator(':scope > .head')).not.toContainText('error');
 });
 
+test('a parse error underlines only the text the parser stopped at', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  const on = '?branch=work';
+  await api.put(`/api/areas/shared/sources${on}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${on}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/routes${on}`, [
+    { id: 'r1', source: 'm1', condition: 'true', pipeline: 'p', deliver: [] },
+  ]);
+
+  await goto(admin, leader, '#/build/routes');
+  await admin.getByRole('button', { name: /^m1/ }).first().click();
+  const condition = admin.getByRole('textbox', { name: 'takes rows where', exact: true });
+  await condition.fill('name == "up" && value >) ');
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(condition).toHaveAttribute('aria-invalid', 'true');
+  await expect(admin.locator('.box.cond .squiggle')).toHaveText([')']);
+});
+
 test('a refused delivery condition keeps its mark on its own rule as the rules change', async ({
   admin,
   api,

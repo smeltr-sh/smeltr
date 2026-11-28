@@ -6,7 +6,7 @@ use crate::core::column::DataType;
 use crate::ops::{BinOp, UnOp};
 
 /// Byte offsets into the source text.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, serde::Serialize)]
 pub struct Span {
     pub(crate) start: u32,
     pub(crate) end: u32,
