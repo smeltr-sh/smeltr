@@ -89,7 +89,9 @@ pub(crate) fn stream_codec_bytes(codec: Compression) -> usize {
 /// rather than counted, once for each level and block.
 pub(crate) fn zstd_bytes(level: i32, block: Option<usize>) -> usize {
     use zstd::zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer, zstd_sys::ZSTD_EndDirective};
-    static ASKED: Mutex<Vec<((i32, Option<usize>), usize)>> = Mutex::new(Vec::new());
+    /// A level and block zstd was asked about.
+    type Asked = (i32, Option<usize>);
+    static ASKED: Mutex<Vec<(Asked, usize)>> = Mutex::new(Vec::new());
     if let Some(&(_, bytes)) = ASKED.lock().iter().find(|(asked, _)| *asked == (level, block)) {
         return bytes;
     }
