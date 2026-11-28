@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::harness::fake::FakeDestination;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::io::Source;
-use smeltr::io::fake::FakeDestination;
 use smeltr::metrics::{Metrics, MetricsHandle, MetricsSource, MetricsSourceConfig};
 use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, PipelineConfig, Step};
 use smeltr::plan::topology::{DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology_with};

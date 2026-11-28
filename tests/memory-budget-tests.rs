@@ -5,11 +5,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::harness::fake::{FakeDestination, FakeSource};
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::error::ExceptionKind;
 use smeltr::core::id::{DestId, SourceId};
 use smeltr::io::SourceRecord;
-use smeltr::io::fake::{FakeDestination, FakeSource};
 use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
 use smeltr::plan::config::{Answer, PipelineConfig, Step};
 use smeltr::plan::topology::{DeliverRule, RouteConfig, compile_topology};

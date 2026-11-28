@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::harness::fake::{AsyncDestination, FakeSource};
 use smeltr::config_file::KafkaSourceDto;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::{ById, DestId, FunctionId, SourceId};
 use smeltr::egress::Egress;
 use smeltr::handoff::{Handed, Handoff, Ready, Report, reports};
-use smeltr::io::fake::{AsyncDestination, FakeSource};
 use smeltr::io::{SourceRecord, TopicPartition};
 use smeltr::metrics::{Metrics, MetricsHandle};
 use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, PipelineConfig, Step};
