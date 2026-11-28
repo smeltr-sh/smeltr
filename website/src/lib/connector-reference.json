@@ -4572,9 +4572,9 @@
       {
         "name": "compressionLevel",
         "type": "integer",
-        "absent": "the codec's default: 6 for gzip, 3 for zstd",
-        "examples": [9],
-        "what": "How hard the codec works: a higher level is slower and compresses more. gzip takes 1 to 9 and zstd 1 to 22. snappy, lz4 and none take no level."
+        "absent": "the codec's default: 1 for gzip (6 in a parquet file), 3 for zstd",
+        "examples": [3],
+        "what": "How hard the codec works: a higher level is slower and compresses more. gzip takes 0 to 3, or 1 to 9 in a parquet file, and zstd 1 to 22. snappy, lz4 and none take no level."
       },
       {
         "name": "inFlight",
@@ -5575,9 +5575,9 @@
           {
             "name": "compressionLevel",
             "type": "integer",
-            "absent": "gzip's default, 6",
-            "examples": [9],
-            "what": "How hard gzip works: a higher level is slower and compresses more. 1 to 9; none takes no level."
+            "absent": "gzip's default, 1",
+            "examples": [3],
+            "what": "How hard gzip works, from 0, the fastest, to 3, the smallest output. Only gzip takes a level."
           },
           {
             "name": "inFlight",
@@ -6007,9 +6007,9 @@
           {
             "name": "compressionLevel",
             "type": "integer",
-            "absent": "gzip's default, 6",
-            "examples": [9],
-            "what": "How hard gzip works: a higher level is slower and compresses more. 1 to 9; none takes no level."
+            "absent": "gzip's default, 1",
+            "examples": [3],
+            "what": "How hard gzip works, from 0, the fastest, to 3, the smallest output. Only gzip takes a level."
           },
           {
             "name": "inFlight",
