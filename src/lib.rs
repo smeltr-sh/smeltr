@@ -3,18 +3,23 @@
 #[cfg(test)]
 extern crate self as smeltr;
 
-pub mod commit;
+mod commit;
 pub mod config_file;
 pub mod core;
-pub mod cpu_cache;
+mod cpu_cache;
 pub mod crypto;
 pub mod egress;
 pub mod embedded;
 pub mod enrollment_code;
 pub mod expr;
+// The library's tests use only part of this file and `tests/harness` all of it, so a library build would warn of
+// what only the harness uses.
+#[cfg(test)]
+#[allow(dead_code)]
+mod fake;
 pub mod format;
 #[cfg(test)]
-pub mod fuzz;
+mod fuzz;
 pub mod handoff;
 pub mod heartbeat;
 pub mod io;
@@ -28,7 +33,7 @@ pub mod plan;
 pub mod process;
 #[cfg(test)]
 mod releases;
-pub mod resources;
+mod resources;
 pub mod runtime;
 pub mod schema;
 pub mod startup_config;

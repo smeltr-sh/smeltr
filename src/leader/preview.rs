@@ -79,46 +79,46 @@ pub struct PreviewRequest {
 pub struct ShownCut {
     /// Leaf names, as the records grid names its columns. `None` keeps every field the rows hold.
     #[serde(default)]
-    pub fields: Option<Vec<String>>,
+    fields: Option<Vec<String>>,
     /// By `RowOut::row`.
-    pub rows: Vec<u32>,
+    rows: Vec<u32>,
 }
 
 /// A capture filter's text, and the destination, by its id, it would run at.
 #[derive(serde::Deserialize)]
 pub struct CaptureFilterRequest {
-    pub text: String,
-    pub destination: String,
+    text: String,
+    destination: String,
 }
 
 /// The routes delivering to a destination a capture filter there passes over, each with why: it does not compile
 /// against that route's output (`runtime`). `reads` is how many it runs on.
 #[derive(Default, serde::Serialize)]
-pub struct CaptureFilterCheck {
-    pub reads: usize,
-    pub skips: Vec<RouteSkip>,
+struct CaptureFilterCheck {
+    reads: usize,
+    skips: Vec<RouteSkip>,
 }
 
 #[derive(serde::Serialize)]
-pub struct RouteSkip {
+struct RouteSkip {
     /// The route's name (`LoadedSystem::route_names`).
-    pub route: String,
-    pub error: String,
+    route: String,
+    error: String,
 }
 
 /// A `.` an author has just typed: the expression's text, the dot's byte offset in it, and where the expression sits,
 /// which decides what its names read.
 #[derive(serde::Deserialize)]
 pub struct AfterDotRequest {
-    pub text: String,
-    pub dot: usize,
-    pub at: DotAt,
+    text: String,
+    dot: usize,
+    at: DotAt,
 }
 
 /// Where an expression sits: its names read the record as it is there.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DotAt {
+enum DotAt {
     /// At the start of a step of the request's pipeline, by the step's id.
     Step(String),
     /// A source's record as it arrives, by the source's id: a route's condition, or a capture filter at the source.
@@ -132,28 +132,28 @@ pub enum DotAt {
 /// What may follow a `.`: the type of what it follows where it sits, as the engine spells it, an object's fields, and
 /// each function a call there may name. `ty` is absent where it does not resolve.
 #[derive(serde::Serialize)]
-pub struct AfterDot {
+struct AfterDot {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ty: Option<String>,
-    pub fields: Vec<(String, String)>,
-    pub methods: Vec<plan::dot::Method>,
+    ty: Option<String>,
+    fields: Vec<(String, String)>,
+    pub(crate) methods: Vec<plan::dot::Method>,
 }
 
 /// A field a schema the pipeline produces types otherwise than the rows hold it: what its warning says, the field's
 /// path, and the type the schemas agree on, which a declaration of it can take.
 #[derive(Debug, serde::Serialize)]
-pub struct SchemaFix {
-    pub message: String,
-    pub path: String,
+struct SchemaFix {
+    message: String,
+    path: String,
     #[serde(rename = "type")]
-    pub ty: config_file::DataTypeDto,
+    pub(crate) ty: config_file::DataTypeDto,
 }
 
 #[derive(Default, serde::Serialize)]
 pub struct Preview {
     pub stage: Option<&'static str>,
     /// Every pipeline name in the config, even on a compile failure.
-    pub pipeline_names: Vec<String>,
+    pipeline_names: Vec<String>,
     pub rows: Vec<RowOut>,
     /// How many rows there were before the request's filter. Absent with no filter.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,9 +161,9 @@ pub struct Preview {
     /// What each parser step produced, in the order they ran, for an editor proposing a declaration. Recorded as
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub parsers: Vec<ParserOut>,
+    parsers: Vec<ParserOut>,
     /// Each grok step's fields, as the pipeline types them, by step id. Empty when the pipeline did not compile.
-    pub parsed_fields: BTreeMap<String, Vec<config_file::FieldDto>>,
+    pub(crate) parsed_fields: BTreeMap<String, Vec<config_file::FieldDto>>,
     /// The dictionary of what the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
@@ -175,7 +175,7 @@ pub struct Preview {
     pub schema_findings: u32,
     /// The warnings a field's declared type answers, each with that type.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fixes: Vec<SchemaFix>,
+    fixes: Vec<SchemaFix>,
     /// The fields the schemas the pipeline produces require or recommend and its rows lack, which the editor shows
     /// as columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -183,13 +183,13 @@ pub struct Preview {
     /// The answer to `PreviewRequest::after_dot`. Absent where the dot follows no value: it is in a string, a comment
     /// or a number.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub after_dot: Option<AfterDot>,
+    after_dot: Option<AfterDot>,
     /// The answer to `PreviewRequest::capture_filter`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub capture_filter: Option<CaptureFilterCheck>,
+    capture_filter: Option<CaptureFilterCheck>,
     /// Answers `PreviewRequest::as_sample`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub as_sample: Option<crate::heartbeat::CaptureBatch>,
+    as_sample: Option<crate::heartbeat::CaptureBatch>,
     /// What these rows make of `PreviewRequest::test`: the run on screen is the test's run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<config_file::Verdict>,
@@ -199,7 +199,7 @@ pub struct Preview {
 /// absent with no sample.
 #[derive(serde::Serialize)]
 pub struct DictionaryOut {
-    pub compiled: Dictionary,
+    compiled: Dictionary,
     pub sampled: Option<Dictionary>,
 }
 
@@ -207,11 +207,11 @@ pub struct DictionaryOut {
 #[derive(serde::Serialize)]
 pub struct Dictionary {
     pub fields: Vec<(String, String)>,
-    pub elasticsearch: serde_json::Value,
+    elasticsearch: serde_json::Value,
 }
 
 impl Dictionary {
-    pub fn of(record: &crate::core::column::DataType) -> Self {
+    fn of(record: &crate::core::column::DataType) -> Self {
         Dictionary {
             fields: plan::dictionary::fields(record),
             elasticsearch: crate::io::elastic_mapping::mapping(record, &Default::default()),
@@ -223,31 +223,31 @@ impl Dictionary {
 /// introduced them.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ParserOut {
-    pub fields: Vec<FieldOut>,
+struct ParserOut {
+    fields: Vec<FieldOut>,
 }
 
 /// One field the parse produced. `present` of `rows` is coverage; `kinds` is what the rows disagreed about, and is
 /// why `suggested` is what it is.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FieldOut {
-    pub name: String,
+struct FieldOut {
+    name: String,
     /// Whether a declaration already named it.
-    pub declared: bool,
+    declared: bool,
     /// A declared field's type, or the declaration an undeclared field's values suggest, spelled as a declaration
     /// spells it.
-    pub suggested: String,
-    pub rows: u32,
-    pub present: u32,
+    suggested: String,
+    rows: u32,
+    present: u32,
     /// Every kind the rows held, largest first, as (type, rows). One entry is a field they agreed on.
-    pub kinds: Vec<(String, u32)>,
+    kinds: Vec<(String, u32)>,
     /// Rows that would not coerce to a declared type. Zero unless `declared`.
     #[serde(skip_serializing_if = "is_zero")]
-    pub failed: u32,
+    failed: u32,
     /// Rows whose value read as a time (`TagCounts::times`): every present row is a field to declare a `datetime`.
     #[serde(skip_serializing_if = "is_zero")]
-    pub times: u32,
+    times: u32,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -322,8 +322,8 @@ pub struct RowOut {
 #[derive(serde::Serialize)]
 pub struct ExceptionOut {
     /// The answer the exception's kind takes: `ignore`, `tag`, `drop`, `deliver` or `block`.
-    pub answer: &'static str,
-    pub message: String,
+    pub(crate) answer: &'static str,
+    pub(crate) message: String,
     /// The step that raised it, by id. Absent for one raised reading the record, before any step.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
@@ -372,10 +372,10 @@ pub struct RoutePreview {
     /// `route_pipelines`.
     pub route_names: Vec<String>,
     /// Destination names by id.
-    pub destination_names: HashMap<DestId, String>,
+    destination_names: HashMap<DestId, String>,
     /// The answer to `Unmatched`, with each destination by its author's id. Absent only on failure.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unmatched: Option<config_file::AnswerDto>,
+    unmatched: Option<config_file::AnswerDto>,
     pub rows: Vec<RoutePreviewRow>,
     /// What this run made of the test the request names (`RoutePreviewRequest::test`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,39 +384,39 @@ pub struct RoutePreview {
 
 #[derive(serde::Serialize)]
 pub struct RoutePreviewRow {
-    pub row: usize,
+    row: usize,
     /// Every route whose condition selected this record.
-    pub matched: Vec<usize>,
+    matched: Vec<usize>,
     /// What each matched route made of it.
     pub through: Vec<RoutePreviewThrough>,
     /// Why this record stopped short, where it did: `PreviewedRow::refused`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub refused: Option<String>,
+    refused: Option<String>,
 }
 
 #[derive(serde::Serialize)]
 pub struct RoutePreviewThrough {
-    pub route: usize,
+    route: usize,
     /// What this route made of the record. More than one when the pipeline unrolls an array; none when it was
     /// dropped or blocked.
     pub documents: Vec<RoutePreviewDocument>,
-    pub exceptions: Vec<RoutePreviewException>,
+    exceptions: Vec<RoutePreviewException>,
     /// The joined answer to them: `ignore`, `tag`, `drop`, `deliver` or `block`.
-    pub answer: &'static str,
+    answer: &'static str,
 }
 
 #[derive(serde::Serialize)]
-pub struct RoutePreviewException {
-    pub kind: &'static str,
-    pub message: String,
+struct RoutePreviewException {
+    kind: &'static str,
+    message: String,
 }
 
 #[derive(serde::Serialize)]
 pub struct RoutePreviewDocument {
     pub document: String,
-    pub destinations: Vec<DestId>,
+    destinations: Vec<DestId>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub destination: std::collections::BTreeMap<&'static str, String>,
+    destination: std::collections::BTreeMap<&'static str, String>,
 }
 
 /// A sample's records as a source's meta reads them.

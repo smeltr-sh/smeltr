@@ -13,18 +13,18 @@ pub use super::sqlite_store::Store;
 
 /// A worker's Bearer credential, as its hash. The raw token exists only in the response to the `POST /api/worker/enroll` call
 /// that issued it.
-pub struct WorkerCredentialRecord {
-    pub worker_id: String,
-    pub token_hash: String,
-    pub revoked: bool,
+pub(crate) struct WorkerCredentialRecord {
+    pub(crate) worker_id: String,
+    pub(crate) token_hash: String,
+    pub(crate) revoked: bool,
     /// Whether it has ever authenticated a request. Until it has, a retry of the enrollment that issued it may
     /// replace it: the worker may never have received it.
-    pub used: bool,
+    pub(crate) used: bool,
     /// The kind of the enrollment code that brought this worker in.
-    pub kind: WorkerKind,
+    pub(crate) kind: WorkerKind,
     /// When an enrollment code brought it in, in epoch milliseconds. `None` for a worker enrolled before enrollment
     /// codes recorded it.
-    pub enrolled_at: Option<i64>,
+    pub(crate) enrolled_at: Option<i64>,
 }
 
 /// What a worker being gone means to the leader. The enrollment code that brings a worker in decides it, and the worker
@@ -40,14 +40,14 @@ pub enum WorkerKind {
 
 impl WorkerKind {
     /// The spelling used in the database and the API.
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             WorkerKind::Permanent => "permanent",
             WorkerKind::Ephemeral => "ephemeral",
         }
     }
 
-    pub fn parse(s: &str) -> Option<WorkerKind> {
+    pub(crate) fn parse(s: &str) -> Option<WorkerKind> {
         match s {
             "permanent" => Some(WorkerKind::Permanent),
             "ephemeral" => Some(WorkerKind::Ephemeral),
@@ -59,7 +59,7 @@ impl WorkerKind {
 /// Where a secret's value lives. Declared once, when the secret is created, and never changed: moving a value
 /// between hosts and the leader is creating a different secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Custody {
+pub(crate) enum Custody {
     /// The worker's own environment, read at deploy time as it always has been. The leader knows the name and
     /// nothing else, which is how an operator declines to hand it a credential.
     WorkerLocal,
@@ -69,14 +69,14 @@ pub enum Custody {
 
 impl Custody {
     /// The spelling used in the database, the API and a bundle.
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Custody::WorkerLocal => "worker-local",
             Custody::LeaderStored => "leader-stored",
         }
     }
 
-    pub fn parse(s: &str) -> Option<Custody> {
+    pub(crate) fn parse(s: &str) -> Option<Custody> {
         match s {
             "worker-local" => Some(Custody::WorkerLocal),
             "leader-stored" => Some(Custody::LeaderStored),
@@ -87,22 +87,22 @@ impl Custody {
 
 /// What a certificate this leader issued is issued for, and what each renewal issues it for again.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Issued {
+pub(crate) struct Issued {
     /// The DNS names and IP addresses it covers.
-    pub names: Vec<String>,
+    pub(crate) names: Vec<String>,
     /// How long each version is valid, in days. Never past the leader's authority.
-    pub validity_days: i64,
+    pub(crate) validity_days: i64,
 }
 
 impl Issued {
-    pub fn validity(&self) -> std::time::Duration {
+    pub(crate) fn validity(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.validity_days.max(1) as u64 * 24 * 60 * 60)
     }
 }
 
 /// How the leader keeps a certificate up to date on its own: an entry with one is never replaced by an upload.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Kept {
+pub(crate) enum Kept {
     /// Issued under the leader's own authority, and issued again the same way.
     Issued(Issued),
     /// Ordered over ACME, under the `acme.*` settings, and ordered again under them.
@@ -112,7 +112,7 @@ pub enum Kept {
 /// What the leader knows about a secret. Never its value.
 pub struct SecretRecord {
     pub name: String,
-    pub description: String,
+    pub(crate) description: String,
     /// Whether this is a certificate's private key, with the certificate's public chain kept beside each version.
     /// Listed on the Certificates page rather than with the secrets.
     pub certificate: bool,
@@ -130,14 +130,14 @@ pub struct StoredValue {
     /// The number a bundle quotes to run this value, and nothing else runs in its place.
     pub version: i64,
     /// When it was stored, in epoch milliseconds.
-    pub set_at: i64,
+    pub(crate) set_at: i64,
     /// Whether the leader's current key opens it. `false` is a credential the fleet cannot obtain -- the same fact
     /// as an unset environment variable, and it takes the same path.
-    pub usable: bool,
+    pub(crate) usable: bool,
 }
 
 impl SecretRecord {
-    pub fn custody(&self) -> Custody {
+    pub(crate) fn custody(&self) -> Custody {
         match self.versions.is_empty() {
             false => Custody::LeaderStored,
             true => Custody::WorkerLocal,
@@ -145,7 +145,7 @@ impl SecretRecord {
     }
 
     /// The newest version, which is what a reference written today quotes. `None` for worker-local custody.
-    pub fn current(&self) -> Option<&StoredValue> {
+    pub(crate) fn current(&self) -> Option<&StoredValue> {
         self.versions.last()
     }
 }
@@ -155,7 +155,7 @@ impl SecretRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyStanding {
     /// Where the leader reads the key from.
-    pub path: std::path::PathBuf,
+    pub(crate) path: std::path::PathBuf,
     pub key: KeyState,
     /// Every value whose newest copy the key cannot open, by name: what an admin enters again.
     pub unopenable: Vec<Unopenable>,
@@ -188,7 +188,7 @@ pub enum Unopenable {
 impl KeyStanding {
     /// Whether the key is gone or wrong. While it is, nothing is sealed: a value sealed now would be sealed under a
     /// key the restored one cannot open, or written beside values the leader can no longer read.
-    pub fn broken(&self) -> bool {
+    pub(crate) fn broken(&self) -> bool {
         matches!(self.key, KeyState::Missing | KeyState::Mismatched { .. })
     }
 
@@ -237,7 +237,7 @@ impl AuthSource {
         }
     }
 
-    pub fn parse(s: &str) -> Option<AuthSource> {
+    pub(crate) fn parse(s: &str) -> Option<AuthSource> {
         match s {
             "local" => Some(AuthSource::Local),
             "oidc" => Some(AuthSource::Oidc),
@@ -269,15 +269,14 @@ pub struct UserRecord {
 /// `password_hash` is a PHC string: it carries the algorithm and the parameters it was written with, so raising
 /// the work factor leaves every stored hash verifiable and rehashing is a decision taken per login.
 pub struct LocalCredentialRecord {
-    pub user_id: String,
-    pub username: String,
-    pub password_hash: String,
+    pub(crate) user_id: String,
+    pub(crate) password_hash: String,
     /// The account's generation as of this hash. Read with it rather than after it, so a verifier and the
     /// generation a session would quote for it cannot come from either side of a reset.
-    pub generation: i64,
+    pub(crate) generation: i64,
     /// The account holds a password it did not choose -- from bootstrap, a reset, or an administrator creating it.
     /// Its session may do nothing but change that password.
-    pub must_change: bool,
+    pub(crate) must_change: bool,
 }
 
 /// Something that happened to an account, kept for the operator who has to answer what changed and who did it.
@@ -295,7 +294,7 @@ pub struct SecurityEvent {
     pub target: String,
     pub outcome: String,
     /// The request this row answers for, which writing it marks as recorded.
-    pub recorded: Recorded,
+    pub(crate) recorded: Recorded,
 }
 
 /// Whether what one request did has been recorded: an audit row written, or a commit signed, for its [`Actor`].
@@ -311,7 +310,7 @@ impl Recorded {
         Recorded(Some(Default::default()))
     }
 
-    pub fn mark(&self) {
+    pub(crate) fn mark(&self) {
         if let Some(flag) = &self.0 {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -353,16 +352,16 @@ impl Actor {
     pub const SYSTEM_ID: &'static str = "system";
     /// Whoever has the leader's host and its data directory. Bootstrap and recovery run as this rather than
     /// fabricating a person who did not ask for them.
-    pub const HOST_ID: &'static str = "host";
+    pub(crate) const HOST_ID: &'static str = "host";
     /// A request that carried no session. Only a refused sign-in is recorded this way; nothing anonymous reaches
     /// a mutation.
-    pub const ANONYMOUS_ID: &'static str = "anonymous";
+    pub(crate) const ANONYMOUS_ID: &'static str = "anonymous";
 
     pub fn system() -> Actor {
         Actor::reserved(Actor::SYSTEM_ID, "smeltr-leader")
     }
 
-    pub fn host() -> Actor {
+    pub(crate) fn host() -> Actor {
         Actor::reserved(Actor::HOST_ID, "smeltr-host")
     }
 
@@ -472,13 +471,13 @@ pub struct OidcSignIn<'a> {
 /// The identity an OIDC account signs in as, and what its provider last said about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OidcIdentityRecord {
-    pub issuer: String,
+    pub(crate) issuer: String,
     pub subject: String,
     /// The groups claim as of the last sign-in or refresh, which the roles of the same names give access by.
     pub groups: Vec<String>,
     /// What the provider called the person at the last sign-in or refresh: their email, else their preferred username.
     pub login: Option<String>,
-    pub last_sign_in: i64,
+    pub(crate) last_sign_in: i64,
 }
 
 /// One key an account holds, as its roster shows it.
@@ -535,28 +534,28 @@ pub struct ConversationRecord {
 /// a route answers it at (`envelope::Refusal`).
 #[derive(Debug)]
 pub struct StoreError {
-    pub kind: ErrorKind,
+    pub(crate) kind: ErrorKind,
     pub message: String,
 }
 
 impl StoreError {
-    pub fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(message: impl Into<String>) -> Self {
         StoreError::of(ErrorKind::Failed, message)
     }
 
-    pub fn conflict(message: impl Into<String>) -> Self {
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
         StoreError::of(ErrorKind::Conflict, message)
     }
 
-    pub fn not_found(message: impl Into<String>) -> Self {
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
         StoreError::of(ErrorKind::NotFound, message)
     }
 
-    pub fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         StoreError::of(ErrorKind::Invalid, message)
     }
 
-    pub fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
+    fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
         StoreError {
             kind,
             message: message.into(),
@@ -651,21 +650,21 @@ pub struct NewEnrollmentCode {
 
 /// An enrollment code as the roster shows it. Never carries the hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnrollmentCodeRecord {
-    pub id: String,
-    pub fingerprint: String,
-    pub group_id: String,
-    pub minted_by: String,
-    pub minted_at: i64,
-    pub expires_at: Option<i64>,
-    pub max_uses: Option<i64>,
-    pub kind: WorkerKind,
-    pub uses: i64,
+pub(crate) struct EnrollmentCodeRecord {
+    pub(crate) id: String,
+    pub(crate) fingerprint: String,
+    pub(crate) group_id: String,
+    pub(crate) minted_by: String,
+    pub(crate) minted_at: i64,
+    pub(crate) expires_at: Option<i64>,
+    pub(crate) max_uses: Option<i64>,
+    pub(crate) kind: WorkerKind,
+    pub(crate) uses: i64,
     /// The workers this enrollment code brought in, oldest first. When an enrollment code leaks, this is the list to
     /// revoke.
-    pub used_by: Vec<String>,
+    pub(crate) used_by: Vec<String>,
     /// When an operator withdrew it, where one did.
-    pub withdrawn_at: Option<i64>,
+    pub(crate) withdrawn_at: Option<i64>,
 }
 
 /// An enrollment code that can still bring a worker in, carrying only what deciding about one needs.
@@ -674,11 +673,11 @@ pub struct EnrollmentCodeRecord {
 /// reads each one's workers back in a query of its own. A rotation is watched on a poll a couple of seconds apart, and
 /// that is a scan it should not repeat.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsableEnrollmentCode {
-    pub id: String,
-    pub group_id: String,
+pub(crate) struct UsableEnrollmentCode {
+    pub(crate) id: String,
+    pub(crate) group_id: String,
     /// The root a worker taking it pins. Empty where the leader that minted it had no authority of its own.
-    pub fingerprint: String,
+    pub(crate) fingerprint: String,
 }
 
 /// What became of a worker presenting an enrollment code.
@@ -687,7 +686,7 @@ pub struct UsableEnrollmentCode {
 /// whether a secret it already holds is known here, which is worth far less than an operator being told to mint
 /// another rather than hunting a leader that is answering correctly.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Spend {
+pub(crate) enum Spend {
     Spent {
         code_id: String,
         /// The root it was minted against, as the leader wrote it down. What a caller re-reading the authority
@@ -720,9 +719,9 @@ pub enum Spend {
 /// Who holds a single-worker source in one group, and where it resumes. Its ledger is read on its own
 /// ([`Store::ledger_page`]), since it can be far larger.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceHold {
-    pub holder: String,
-    pub cursor: Option<String>,
+pub(crate) struct SourceHold {
+    pub(crate) holder: String,
+    pub(crate) cursor: Option<String>,
 }
 
 /// One hold as the map reports it: who holds a source at one place in one group, and how many items its ledger
@@ -732,16 +731,16 @@ pub struct HeldSource {
     pub group: String,
     pub key: SourceKey,
     pub holder: String,
-    pub ledger_entries: u64,
+    pub(crate) ledger_entries: u64,
 }
 
 /// A warning an alert channel was told of (`leader::alerts`).
 #[derive(Debug, Clone, PartialEq)]
-pub struct AlertTold {
-    pub channel: String,
+pub(crate) struct AlertTold {
+    pub(crate) channel: String,
     /// The warning's key, which names it across looks.
-    pub warning: String,
-    pub told_at: i64,
+    pub(crate) warning: String,
+    pub(crate) told_at: i64,
     /// The warning as told, as JSON, so that its clearing can say what cleared.
-    pub body: String,
+    pub(crate) body: String,
 }

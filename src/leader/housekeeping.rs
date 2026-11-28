@@ -14,7 +14,7 @@ pub async fn run(state: AppState) {
 
 /// Everything periodic that is due at `now_ms`. Each part keeps its own schedule, so calling this more often costs
 /// only the checks.
-pub async fn tick(state: &AppState, now_ms: i64) {
+pub(crate) async fn tick(state: &AppState, now_ms: i64) {
     forget::sweep(state, now_ms).await;
     if state.registry.prune_due(now_ms, PRUNE_PROGRESS_EVERY) {
         let state = state.clone();

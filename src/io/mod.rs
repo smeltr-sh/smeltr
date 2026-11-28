@@ -15,24 +15,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub mod api;
-pub mod app_sign_in;
+mod app_sign_in;
 pub mod avro;
 mod batch_wait;
-pub mod client_credentials;
+pub(crate) mod client_credentials;
 pub mod connections;
-pub mod csv;
+mod csv;
 pub mod delta;
-pub mod discovery;
+pub(crate) mod discovery;
 pub mod elastic;
 pub mod elastic_mapping;
 pub mod elastic_nodes;
 mod elastic_receiver;
-pub mod entra;
+pub(crate) mod entra;
 pub mod files;
 pub mod framing;
-pub mod hec;
+mod gzip;
+pub(crate) mod hec;
 pub mod http;
-pub mod http_api;
+mod http_api;
 pub mod http_post;
 pub mod iceberg;
 pub mod kafka;
@@ -41,20 +42,20 @@ pub mod lines;
 pub mod listing;
 pub mod logs;
 pub mod mysql;
-pub mod oauth;
+mod oauth;
 pub mod object_source;
 pub mod objects;
-pub mod okta;
+mod okta;
 pub mod otlp;
-pub mod pacer;
+mod pacer;
 pub mod parquet;
-pub mod parquet_variant;
+mod parquet_variant;
 pub mod pipelined;
 pub mod postgres;
 pub mod prometheus;
 pub mod pubsub;
 pub mod raw;
-pub mod reads;
+mod reads;
 pub mod receiver;
 pub mod remote_write;
 pub mod s2s;
@@ -68,10 +69,10 @@ pub mod sql_source;
 pub mod sqs;
 pub mod storage_queue;
 mod stored;
-pub mod table;
+mod table;
 pub mod trust;
 pub mod values;
-pub mod vended;
+mod vended;
 
 pub use stored::{Cells, RecordObject, SourceFields, raw_object, unclaimed_of, value_at};
 
@@ -109,7 +110,7 @@ pub fn build_source(
 }
 
 /// Leave to spawn one more sender: see [`Destination::lend_senders`].
-pub type Lend = Box<dyn FnMut() -> bool + Send>;
+type Lend = Box<dyn FnMut() -> bool + Send>;
 
 /// Opens `kind` as a live destination. `records` is what it writes, route by route, which only a Parquet destination
 /// needs (`CompiledTopology::records`). Every kind is compiled into every build, so any binary can run any bundle.
@@ -165,7 +166,7 @@ impl SourceRecord {
     }
 
     /// The bytes of what this record read: its own row's values, not the whole chunk it points into.
-    pub fn read_size(&self) -> usize {
+    pub(crate) fn read_size(&self) -> usize {
         self.chunk.row_size(self.row as usize)
     }
 
@@ -186,7 +187,7 @@ impl SourceRecord {
 /// Point `records` at chunks of their own rows only, where they share a chunk with records not among them: a record
 /// kept past its batch would otherwise keep its whole poll in memory. Records that are every row of their chunk keep
 /// it, and records that shared a chunk share the new one.
-pub fn own_rows(records: &mut [SourceRecord]) {
+pub(crate) fn own_rows(records: &mut [SourceRecord]) {
     let mut chunks: Vec<(Arc<RecordChunk>, Vec<usize>)> = Vec::new();
     for (i, record) in records.iter().enumerate() {
         match chunks.iter_mut().find(|(c, _)| Arc::ptr_eq(c, &record.chunk)) {
@@ -208,7 +209,7 @@ pub fn own_rows(records: &mut [SourceRecord]) {
 }
 
 /// The bytes `headers` hold, as `SourceRecord::size` counts them.
-pub fn headers_size(headers: &Option<Vec<(String, Vec<u8>)>>) -> usize {
+fn headers_size(headers: &Option<Vec<(String, Vec<u8>)>>) -> usize {
     headers.iter().flatten().map(|(k, v)| k.len() + v.len()).sum()
 }
 
@@ -285,7 +286,7 @@ impl RecordChunkBuilder {
     }
 
     /// A record as `push` takes it, stamped by its source at `time`, in microseconds since the epoch.
-    pub fn push_stamped(
+    pub(crate) fn push_stamped(
         &mut self,
         raw: &[u8],
         offset: i64,
@@ -314,12 +315,13 @@ impl RecordChunkBuilder {
     }
 
     /// The bytes of the records pushed, as `SourceRecord::size` counts each.
-    pub fn size(&self) -> usize {
+    fn size(&self) -> usize {
         self.size
     }
 
     /// Take back the record last pushed: its bytes, and its offset, partition, topic and headers.
-    pub fn pop(&mut self) -> Option<(Vec<u8>, ReadAt)> {
+    #[cfg(test)]
+    pub(crate) fn pop(&mut self) -> Option<(Vec<u8>, ReadAt)> {
         let at = self.at.pop()?;
         self.time.pop();
         let raw = self.raw.last().to_vec();
@@ -346,7 +348,7 @@ impl RecordChunkBuilder {
     }
 
     /// The records pushed, in order, as one chunk, without where each was read.
-    pub fn into_chunk(self) -> RecordChunk {
+    fn into_chunk(self) -> RecordChunk {
         self.split().0
     }
 
@@ -371,13 +373,13 @@ impl RecordChunkBuilder {
 }
 
 /// The rows of a chunk cut where its records arrived, which its source's reader hands out in order.
-pub(crate) struct ChunkRows {
+struct ChunkRows {
     chunk: Arc<RecordChunk>,
     at: usize,
 }
 
 impl ChunkRows {
-    pub(crate) fn new(chunk: RecordChunk) -> ChunkRows {
+    fn new(chunk: RecordChunk) -> ChunkRows {
         ChunkRows {
             chunk: Arc::new(chunk),
             at: 0,
@@ -385,26 +387,26 @@ impl ChunkRows {
     }
 
     /// The row taken next.
-    pub(crate) fn at(&self) -> usize {
+    fn at(&self) -> usize {
         self.at
     }
 
-    pub(crate) fn is_done(&self) -> bool {
+    fn is_done(&self) -> bool {
         self.at == self.chunk.len()
     }
 
     /// What the next row holds.
-    pub(crate) fn next_size(&self) -> usize {
+    fn next_size(&self) -> usize {
         self.chunk.row_size(self.at)
     }
 
     /// What the rows not yet taken hold.
-    pub(crate) fn untaken(&self) -> usize {
+    fn untaken(&self) -> usize {
         (self.at..self.chunk.len()).map(|row| self.chunk.row_size(row)).sum()
     }
 
     /// Takes the next row.
-    pub(crate) fn take(&mut self) -> (Arc<RecordChunk>, u32) {
+    fn take(&mut self) -> (Arc<RecordChunk>, u32) {
         let row = self.at as u32;
         self.at += 1;
         (self.chunk.clone(), row)
@@ -436,7 +438,7 @@ pub struct RecordChunk {
 
 impl RecordChunk {
     /// A chunk of `columns`, each as long as the others, in the order the source declares its fields.
-    pub fn new(columns: Vec<crate::core::column::Column>, mut failed: Vec<(u32, usize, String)>) -> RecordChunk {
+    pub(crate) fn new(columns: Vec<crate::core::column::Column>, mut failed: Vec<(u32, usize, String)>) -> RecordChunk {
         let rows = columns.first().map_or(0, crate::core::column::Column::len);
         assert!(
             columns.iter().all(|c| c.len() == rows),
@@ -460,7 +462,7 @@ impl RecordChunk {
     }
 
     /// This chunk, each row stamped by its source at `time`, as `RecordChunkBuilder::push_stamped` takes it.
-    pub fn stamped(mut self, time: Vec<Option<i64>>) -> RecordChunk {
+    fn stamped(mut self, time: Vec<Option<i64>>) -> RecordChunk {
         assert_eq!(time.len(), self.len(), "a time per row");
         if time.iter().any(Option::is_some) {
             self.time = Some(time);
@@ -469,7 +471,7 @@ impl RecordChunk {
     }
 
     /// This chunk, each of `unread`'s rows one whose payload did not read, and why.
-    pub fn with_unread(mut self, mut unread: Vec<(u32, String)>) -> RecordChunk {
+    pub(crate) fn with_unread(mut self, mut unread: Vec<(u32, String)>) -> RecordChunk {
         unread.sort_by_key(|(row, _)| *row);
         self.unread = unread;
         self
@@ -482,18 +484,18 @@ impl RecordChunk {
     }
 
     /// This chunk, its rows read with `writers`, newest last.
-    pub fn read_with(mut self, writers: Vec<Arc<avro::Parsed>>) -> RecordChunk {
+    pub(crate) fn read_with(mut self, writers: Vec<Arc<avro::Parsed>>) -> RecordChunk {
         self.avro_writers = writers;
         self
     }
 
     /// The Avro writers' schemas this chunk's rows were read with, newest last.
-    pub fn avro_writers(&self) -> &[Arc<avro::Parsed>] {
+    pub(crate) fn avro_writers(&self) -> &[Arc<avro::Parsed>] {
         &self.avro_writers
     }
 
     /// This chunk, its every record filed under `filed`.
-    pub fn filed_under(mut self, filed: Arc<hec::Filed>) -> RecordChunk {
+    pub(crate) fn filed_under(mut self, filed: Arc<hec::Filed>) -> RecordChunk {
         self.filed = Some(filed);
         self
     }
@@ -504,17 +506,13 @@ impl RecordChunk {
     }
 
     /// Row `row`'s time as its source stamped it, in microseconds since the epoch, or `None` where it stamped none.
-    pub fn time(&self, row: usize) -> Option<i64> {
+    pub(crate) fn time(&self, row: usize) -> Option<i64> {
         self.time.as_ref()?[row]
     }
 
     /// The rows the chunk holds.
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.columns.first().map_or(0, crate::core::column::Column::len)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// A one-row chunk of `raw`, as a byte source's poll of one record makes.
@@ -526,12 +524,12 @@ impl RecordChunk {
     }
 
     /// Row `row`'s bytes, where this is a byte source's chunk: one column, of the bytes each record read.
-    pub fn bytes(&self, row: usize) -> Option<&[u8]> {
+    fn bytes(&self, row: usize) -> Option<&[u8]> {
         self.read().map(|v| v.get(row))
     }
 
     /// Every row's bytes, where this is a byte source's chunk.
-    pub fn read(&self) -> Option<crate::core::column::VarLen<'_>> {
+    pub(crate) fn read(&self) -> Option<crate::core::column::VarLen<'_>> {
         match &self.columns[..] {
             [column] if column.data_type() == DataType::Bytes => column.varlen().ok(),
             _ => None,
@@ -539,7 +537,7 @@ impl RecordChunk {
     }
 
     /// A chunk of only `rows` of this one, in that order, each failed value moved with its row.
-    pub fn take_rows(&self, rows: &[u32]) -> RecordChunk {
+    fn take_rows(&self, rows: &[u32]) -> RecordChunk {
         let mut pool = crate::core::buffer::BufferPool::new();
         let columns = self.columns.iter().map(|c| c.gather(&mut pool, rows)).collect();
         let failed = rows
@@ -573,7 +571,7 @@ impl RecordChunk {
     }
 
     /// What one row's values hold, as `Column::add_row_sizes` counts them. A chunk of no columns holds nothing.
-    pub(crate) fn row_size(&self, row: usize) -> usize {
+    fn row_size(&self, row: usize) -> usize {
         self.sizes.get(row).map_or(0, |&size| size as usize)
     }
 }
@@ -650,7 +648,7 @@ impl Progress {
     /// Drops what is over the limits a ledger keeps (`heartbeat::MAX_CURSOR`, `MAX_LEDGER_ITEM`,
     /// `MAX_LEDGER_ENTRY`), and answers whether the cursor went and how many entries did. What is dropped is read
     /// again by the next holder: duplicates, never lost rows.
-    pub fn admit(&mut self) -> (bool, usize) {
+    pub(crate) fn admit(&mut self) -> (bool, usize) {
         use crate::heartbeat::{MAX_CURSOR, MAX_LEDGER_ENTRY, MAX_LEDGER_ITEM};
         let cursor_refused = self.cursor.as_ref().is_some_and(|c| c.len() > MAX_CURSOR);
         if cursor_refused {
@@ -678,14 +676,14 @@ pub struct PartitionLag {
 #[derive(Debug)]
 pub struct IoError {
     pub message: String,
-    pub kind: IoErrorKind,
+    kind: IoErrorKind,
 }
 
 /// Whether retrying the same data could ever succeed. A destination that cannot be reached is waited for: at-least-once
 /// forbids committing past unacked data. One that has looked at a record and refused it will refuse it identically
 /// forever, and retrying that wedges the partition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum IoErrorKind {
+enum IoErrorKind {
     /// Unreachable, timed out, busy, queue full. Retried indefinitely, and reported through
     /// `smeltr_destination_healthy`.
     #[default]
@@ -710,7 +708,7 @@ impl IoError {
     }
 
     /// The destination refused this record and always will.
-    pub fn rejected(message: impl Into<String>) -> IoError {
+    fn rejected(message: impl Into<String>) -> IoError {
         IoError {
             message: message.into(),
             kind: IoErrorKind::Rejected,
@@ -729,7 +727,7 @@ impl IoError {
         }
     }
 
-    pub fn is_oversized(&self) -> bool {
+    fn is_oversized(&self) -> bool {
         self.kind == IoErrorKind::Oversized
     }
 
@@ -752,7 +750,7 @@ impl IoError {
 
 /// Where Entra signs in a client of the Azure service at `address`, a host or a URL: in the national cloud whose
 /// domain its host is under, else in Azure's public cloud.
-pub fn entra_authority(address: &str) -> &'static str {
+pub(crate) fn entra_authority(address: &str) -> &'static str {
     const CLOUDS: &[(&str, &str)] = &[
         (".usgovcloudapi.net", "https://login.microsoftonline.us"),
         (".azure.us", "https://login.microsoftonline.us"),
@@ -777,7 +775,7 @@ pub fn entra_authority(address: &str) -> &'static str {
 
 /// The value of the credential `what` takes its `name` from. One this worker cannot obtain is an error, in the one
 /// sentence every connector gives for it, never a connection that silently goes without.
-pub fn held(
+fn held(
     secrets: &crate::plan::topology::HeldSecrets,
     reference: &crate::plan::topology::SecretRef,
     what: &str,
@@ -988,23 +986,23 @@ pub struct OutgoingRecord<'a> {
     /// destination on its configured one.
     pub placement: Option<&'a str>,
     /// `__destination.id`, for a destination that can key a document on one.
-    pub doc_id: Option<&'a str>,
+    doc_id: Option<&'a str>,
     /// The partition key. Nothing in the pipeline sets it yet.
     pub key: Option<&'a [u8]>,
     /// A record another destination refused, on its way to a DLQ. The DLQ's own answer to `Refused` answers if it
     /// refuses it too; dropped there, it is counted lost.
-    pub salvaged: bool,
+    salvaged: bool,
     /// Every DLQ down its destination's chain, and how a refusal of this record reaches each. `None` sends it to
     /// every DLQ its destination names, keyed as here.
-    pub salvage_to: Option<&'a [SalvageTarget]>,
+    salvage_to: Option<&'a [SalvageTarget]>,
     /// The row in the forms the DLQs down its destination's chain write, but its own.
-    pub kept: &'a [(Payload, Arc<[u8]>)],
+    kept: &'a [(Payload, Arc<[u8]>)],
     /// The route whose pipeline made this record, by its index in `CompiledTopology::routes`. `None` for a record no
     /// pipeline ran on. A destination that writes a schema writes each route's records under that route's record.
-    pub route: Option<u32>,
+    route: Option<u32>,
     /// The record as Parquet columns, for a destination that writes them (`io::parquet`). Cut at egress for a row
     /// whose destinations, or the DLQs down their chains, write columns.
-    pub columns: Option<&'a Columns>,
+    columns: Option<&'a Columns>,
 }
 
 /// One DLQ a refused record may be sent to, as worked out while the row's fields were still at hand.
@@ -1063,7 +1061,7 @@ impl<'a> OutgoingRecord<'a> {
     /// and the source forms it kept -- which [`held_bytes`] counts: an identity, a placement or a salvage plan is
     /// held as long as the record is. A plan names every DLQ down the chain, so a long chain can outweigh a small
     /// record.
-    pub fn bytes(&self) -> usize {
+    fn bytes(&self) -> usize {
         self.value.len()
             + self.key.map_or(0, <[u8]>::len)
             + self.placement.map_or(0, str::len)
@@ -1100,7 +1098,7 @@ pub struct OwnedRecord {
 
 impl OwnedRecord {
     /// The rows this record stands for: itself and its riders.
-    pub fn rows(&self) -> u64 {
+    pub(crate) fn rows(&self) -> u64 {
         1 + self.riders.len() as u64
     }
 
@@ -1121,7 +1119,7 @@ impl OwnedRecord {
         }
     }
 
-    pub fn as_outgoing(&self) -> OutgoingRecord<'_> {
+    fn as_outgoing(&self) -> OutgoingRecord<'_> {
         OutgoingRecord {
             value: &self.value,
             payload: &self.payload,
@@ -1141,7 +1139,7 @@ impl OwnedRecord {
     /// delivery rule already sent it there. A DLQ the plan does not know of is sent it keyed as here. The plan goes
     /// along, for the next DLQ down the chain if `dlq` refuses it too. The placement stays behind: it routes within the
     /// destination it was computed for.
-    pub fn salvage_for<'s>(&'s self, dlq: DestId, payload: &'s Payload) -> Option<OutgoingRecord<'s>> {
+    pub(crate) fn salvage_for<'s>(&'s self, dlq: DestId, payload: &'s Payload) -> Option<OutgoingRecord<'s>> {
         let doc_id = match self.salvage_to.iter().flatten().find(|t| t.dlq == dlq) {
             Some(t) if t.reached => return None,
             Some(t) => t.doc_id.as_deref(),
@@ -1168,18 +1166,18 @@ impl OwnedRecord {
     }
 
     /// Everything the record owns, as [`OutgoingRecord::bytes`] counts it.
-    pub fn bytes(&self) -> usize {
+    fn bytes(&self) -> usize {
         self.as_outgoing().bytes()
     }
 
     /// What the record sends: its encoded bytes, or its row of columns.
-    pub fn sent_bytes(&self) -> usize {
+    pub(crate) fn sent_bytes(&self) -> usize {
         self.value.len() + self.columns.as_ref().map_or(0, |c| c.chunk.row_bytes(c.row))
     }
 }
 
 /// Why a row has no `payload` form to write. Only a text field the row lacks is missing from a row egress made.
-pub fn no_form(payload: &Payload) -> String {
+pub(crate) fn no_form(payload: &Payload) -> String {
     match payload {
         Payload::Text { field } => format!("it has no {field} to write as text"),
         Payload::Record => "it carries no record".to_string(),
@@ -1340,7 +1338,7 @@ pub trait Destination: Send {
 impl Rejection {
     /// A refusal of `rows[doc]`, carrying the row.
     /// The rows this refusal stands for: its record's, or one when it kept none.
-    pub fn rows(&self) -> u64 {
+    pub(crate) fn rows(&self) -> u64 {
         self.record.as_ref().map_or(1, OwnedRecord::rows)
     }
 
@@ -1349,444 +1347,6 @@ impl Rejection {
             doc,
             reason: reason.into(),
             record: rows.get(doc).cloned(),
-        }
-    }
-}
-
-/// In-memory `Source`/`Destination` for tests.
-pub mod fake {
-    use super::{
-        BatchCompletion, BatchId, CommitMap, Destination, Dispatched, IoError, OwnedRecord, Payload, Rejection, Source,
-        SourceRecord, TopicPartition, Undelivered,
-    };
-    use crate::sync::Mutex;
-    use std::borrow::Cow;
-    use std::collections::VecDeque;
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    #[derive(Default)]
-    struct SourceState {
-        pending: VecDeque<SourceRecord>,
-        committed: Vec<CommitMap>,
-        blocked: bool,
-        /// How many further `commit` calls should fail.
-        fail_commits: usize,
-        /// `keep_membership` calls so far.
-        membership_kept: usize,
-        /// Partitions `revoke` took, until `take_revoked` hands them over.
-        revoked: Vec<TopicPartition>,
-    }
-
-    /// Replays a fixed queue of records, never blocking, and records `commit` calls. `Arc`-backed so a test keeps a
-    /// handle after boxing a clone into a worker.
-    #[derive(Clone, Default)]
-    pub struct FakeSource(Arc<Mutex<SourceState>>);
-
-    impl FakeSource {
-        pub fn new(records: impl IntoIterator<Item = SourceRecord>) -> Self {
-            FakeSource(Arc::new(Mutex::new(SourceState {
-                pending: records.into_iter().collect(),
-                committed: Vec::new(),
-                blocked: false,
-                fail_commits: 0,
-                membership_kept: 0,
-                revoked: Vec::new(),
-            })))
-        }
-
-        /// Every `commit` call so far, in order.
-        pub fn committed(&self) -> Vec<CommitMap> {
-            self.0.lock().committed.clone()
-        }
-
-        pub fn is_blocked(&self) -> bool {
-            self.0.lock().blocked
-        }
-
-        /// Move `partition` to another member of the group, as a rebalance does.
-        pub fn revoke(&self, partition: TopicPartition) {
-            self.0.lock().revoked.push(partition);
-        }
-
-        /// How many times the reader kept this source's membership in place of polling it.
-        pub fn membership_kept(&self) -> usize {
-            self.0.lock().membership_kept
-        }
-
-        /// Make the next `n` `commit` calls fail.
-        pub fn fail_commits(&self, n: usize) {
-            self.0.lock().fail_commits = n;
-        }
-
-        /// Put records back for the next poll.
-        pub fn requeue(&self, records: impl IntoIterator<Item = SourceRecord>) {
-            self.0.lock().pending.extend(records);
-        }
-    }
-
-    impl Source for FakeSource {
-        fn poll_batch(
-            &mut self,
-            max_rows: usize,
-            max_bytes: usize,
-            _timeout: Duration,
-        ) -> Result<Vec<SourceRecord>, IoError> {
-            let mut s = self.0.lock();
-            let mut out = Vec::new();
-            // A blocked source keeps getting polled and hands back nothing, as a paused Kafka consumer does.
-            if s.blocked {
-                return Ok(out);
-            }
-            let mut bytes = 0usize;
-            while out.len() < max_rows {
-                let Some(r) = s.pending.front() else {
-                    break;
-                };
-                if !out.is_empty() && bytes + r.size() > max_bytes {
-                    break;
-                }
-                bytes += r.size();
-                out.push(s.pending.pop_front().unwrap());
-            }
-            Ok(out)
-        }
-
-        fn block(&mut self) -> Result<(), IoError> {
-            self.0.lock().blocked = true;
-            Ok(())
-        }
-
-        fn keep_membership(&mut self, _timeout: Duration) -> Result<(), IoError> {
-            self.0.lock().membership_kept += 1;
-            Ok(())
-        }
-
-        fn take_revoked(&mut self) -> Vec<TopicPartition> {
-            std::mem::take(&mut self.0.lock().revoked)
-        }
-
-        fn release(&mut self) -> Result<(), IoError> {
-            self.0.lock().blocked = false;
-            Ok(())
-        }
-
-        fn commit(&mut self, offsets: &CommitMap) -> Result<(), IoError> {
-            let mut s = self.0.lock();
-            if s.fail_commits > 0 {
-                s.fail_commits -= 1;
-                return Err(IoError::transient("commit refused".to_string()));
-            }
-            s.committed.push(offsets.clone());
-            Ok(())
-        }
-    }
-
-    #[derive(Clone, Debug, PartialEq)]
-    pub struct SentRecord {
-        pub key: Option<Vec<u8>>,
-        pub value: Vec<u8>,
-        pub payload: Payload,
-        pub placement: Option<String>,
-        pub doc_id: Option<String>,
-        pub kept: Vec<(Payload, Arc<[u8]>)>,
-        pub columns: Option<super::Columns>,
-    }
-
-    #[derive(Default)]
-    struct DestinationState {
-        sent: Vec<SentRecord>,
-        flushes: usize,
-        fail_sends: usize,
-        reject: bool,
-        flush_rejections: Vec<Rejection>,
-        fail_flushes: usize,
-    }
-
-    /// A destination that acknowledges out of band: `send` returns without waiting and a batch completes only when
-    /// the test says so. `FakeDestination` completes every batch inside `send`, so it cannot exercise anything in
-    /// flight.
-    #[derive(Clone, Default)]
-    pub struct AsyncDestination(Arc<Mutex<AsyncState>>);
-
-    #[derive(Default)]
-    pub struct AsyncState {
-        dispatched: Vec<BatchId>,
-        ready: Vec<BatchCompletion>,
-        sent: usize,
-        /// Every batch `send` took, with the rows it carried.
-        units: Vec<(BatchId, Vec<Vec<u8>>)>,
-        /// The same rows whole, as `egress` keeps them to hand back with a refusal.
-        records: Vec<(BatchId, Vec<OwnedRecord>)>,
-        fail_next_poll: Option<String>,
-        fail_next_deliver: Option<String>,
-        connection_error: Option<String>,
-    }
-
-    impl AsyncDestination {
-        pub fn new() -> Self {
-            AsyncDestination::default()
-        }
-
-        /// Batches handed over and not yet acknowledged.
-        pub fn outstanding(&self) -> Vec<BatchId> {
-            self.0.lock().dispatched.clone()
-        }
-
-        pub fn sent(&self) -> usize {
-            self.0.lock().sent
-        }
-
-        /// Every batch `send` took, in order, with the row values it carried.
-        pub fn units(&self) -> Vec<(BatchId, Vec<Vec<u8>>)> {
-            self.0.lock().units.clone()
-        }
-
-        /// Acknowledge `batch`, in any order.
-        pub fn complete(&self, batch: BatchId) {
-            self.complete_with(batch, Vec::new());
-        }
-
-        /// Acknowledge `batch`, reporting records it refused.
-        pub fn complete_with(&self, batch: BatchId, mut rejections: Vec<Rejection>) {
-            let mut st = self.0.lock();
-            st.dispatched.retain(|b| *b != batch);
-            // Each refusal gets its document back from the latest unit taken under `batch`, as egress does.
-            if let Some((_, rows)) = st.records.iter().rev().find(|(b, _)| *b == batch) {
-                for r in &mut rejections {
-                    if r.record.is_none() {
-                        r.record = rows.get(r.doc).cloned();
-                    }
-                }
-            }
-            st.ready.push(BatchCompletion {
-                batch,
-                rejections,
-                throttled: false,
-                undelivered: None,
-            });
-        }
-
-        /// Answer `batch` with `rows` of it undelivered, for `why`, and `rejections` refused: the rest were delivered.
-        pub fn fail_rows(&self, batch: BatchId, rows: Vec<usize>, rejections: Vec<Rejection>, why: &str) {
-            let mut st = self.0.lock();
-            st.dispatched.retain(|b| *b != batch);
-            st.ready.push(BatchCompletion {
-                batch,
-                rejections,
-                throttled: false,
-                undelivered: Some(Undelivered {
-                    error: IoError::transient(why),
-                    rows,
-                }),
-            });
-        }
-
-        /// Answer `batch` as the service asking to be sent less, `wait` first, of its `rows`.
-        pub fn throttle_rows(&self, batch: BatchId, rows: Vec<usize>, wait: Duration) {
-            let mut st = self.0.lock();
-            st.dispatched.retain(|b| *b != batch);
-            st.ready.push(BatchCompletion {
-                batch,
-                rejections: Vec::new(),
-                throttled: true,
-                undelivered: Some(Undelivered {
-                    error: IoError::throttled("asked to be sent less", wait),
-                    rows,
-                }),
-            });
-        }
-
-        /// Every batch `send` took, in order, with the rows it carried whole.
-        pub fn records(&self) -> Vec<(BatchId, Vec<OwnedRecord>)> {
-            self.0.lock().records.clone()
-        }
-
-        /// Make the next `poll_completions` report a delivery failure.
-        pub fn fail_next_poll(&self, msg: &str) {
-            self.0.lock().fail_next_poll = Some(msg.to_string());
-        }
-
-        /// Make the next `send` fail, as a full producer queue does.
-        pub fn fail_next_deliver(&self, msg: &str) {
-            self.0.lock().fail_next_deliver = Some(msg.to_string());
-        }
-
-        /// What `connection_error` answers from now on, as a client that loses and regains its brokers does.
-        pub fn set_connection_error(&self, error: Option<&str>) {
-            self.0.lock().connection_error = error.map(str::to_string);
-        }
-    }
-
-    impl Destination for AsyncDestination {
-        fn send(
-            &mut self,
-            batch: BatchId,
-            rows: Cow<'_, [OwnedRecord]>,
-        ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
-            let mut st = self.0.lock();
-            st.sent += rows.len();
-            if let Some(msg) = st.fail_next_deliver.take() {
-                return Err(IoError::transient(msg));
-            }
-            st.units.push((batch, rows.iter().map(|r| r.value.clone()).collect()));
-            st.records.push((batch, rows.into_owned()));
-            st.dispatched.push(batch);
-            Ok((Dispatched::InFlight, Vec::new()))
-        }
-
-        fn flush(&mut self) -> Result<(), IoError> {
-            let mut st = self.0.lock();
-            let pending = std::mem::take(&mut st.dispatched);
-            st.ready.extend(pending.into_iter().map(|batch| BatchCompletion {
-                batch,
-                rejections: Vec::new(),
-                throttled: false,
-                undelivered: None,
-            }));
-            Ok(())
-        }
-
-        /// As a file destination does: what it holds is acknowledged without waiting for `complete`.
-        fn finish(&mut self) {
-            let _ = self.flush();
-        }
-
-        fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-            let mut st = self.0.lock();
-            if let Some(msg) = st.fail_next_poll.take() {
-                // What was outstanding is forgotten, as the Kafka
-                // destination's tracker does on a delivery failure.
-                st.dispatched.clear();
-                st.ready.clear();
-                return Err(IoError::transient(msg));
-            }
-            Ok(std::mem::take(&mut st.ready))
-        }
-
-        fn connection_error(&self) -> Option<String> {
-            self.0.lock().connection_error.clone()
-        }
-    }
-
-    /// Collects every row verbatim and completes each batch inside `send`.
-    #[derive(Clone, Default)]
-    pub struct FakeDestination(Arc<Mutex<DestinationState>>);
-
-    impl FakeDestination {
-        pub fn new() -> Self {
-            FakeDestination::default()
-        }
-
-        /// Every row taken so far, in order.
-        pub fn sent(&self) -> Vec<SentRecord> {
-            self.0.lock().sent.clone()
-        }
-
-        pub fn flushes(&self) -> usize {
-            self.0.lock().flushes
-        }
-
-        /// Make the next `n` rows handed over fail transiently. A batch with any of them fails whole.
-        pub fn fail_next_sends(&self, n: usize) {
-            self.0.lock().fail_sends = n;
-        }
-
-        /// A destination whose every hand-over fails.
-        pub fn always_failing() -> Self {
-            let d = FakeDestination::default();
-            d.fail_next_sends(usize::MAX);
-            d
-        }
-
-        /// Make the next `n` rows handed over be refused.
-        pub fn reject_next_sends(&self, n: usize) {
-            let mut st = self.0.lock();
-            st.fail_sends = n;
-            st.reject = true;
-        }
-
-        /// Refuse these positions of the next batch once it is flushed, as a batched acknowledgment does.
-        pub fn reject_on_flush(&self, docs: &[usize]) {
-            self.0.lock().flush_rejections = docs
-                .iter()
-                .map(|&doc| Rejection {
-                    doc,
-                    reason: "fake refusal".into(),
-                    record: None,
-                })
-                .collect();
-        }
-
-        /// Make the next `n` `flush` calls fail: accepted, never drained.
-        pub fn fail_next_flushes(&self, n: usize) {
-            self.0.lock().fail_flushes = n;
-        }
-
-        /// A destination that takes records and never acknowledges them.
-        pub fn stalled() -> Self {
-            let d = FakeDestination::default();
-            d.fail_next_flushes(usize::MAX);
-            d
-        }
-    }
-
-    impl Destination for FakeDestination {
-        fn send(
-            &mut self,
-            _batch: BatchId,
-            rows: Cow<'_, [OwnedRecord]>,
-        ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
-            let mut rejections = Vec::new();
-            let mut failed = None;
-            {
-                let mut st = self.0.lock();
-                for (i, row) in rows.iter().enumerate() {
-                    if let Some(why) = &row.unfit {
-                        rejections.push(Rejection::of(&rows, i, why.as_str()));
-                        continue;
-                    }
-                    if st.fail_sends > 0 {
-                        st.fail_sends -= 1;
-                        if st.reject {
-                            rejections.push(Rejection::of(&rows, i, "fake destination: record refused"));
-                        } else {
-                            failed = Some(IoError::transient("fake destination: send failed"));
-                        }
-                        continue;
-                    }
-                    st.sent.push(SentRecord {
-                        key: row.key.clone(),
-                        value: row.value.clone(),
-                        payload: row.payload.clone(),
-                        placement: row.placement.clone(),
-                        doc_id: row.doc_id.clone(),
-                        kept: row.kept.clone(),
-                        columns: row.columns.clone(),
-                    });
-                }
-            }
-            if let Some(e) = failed {
-                return Err(e);
-            }
-            self.flush()?;
-            for mut r in std::mem::take(&mut self.0.lock().flush_rejections) {
-                r.record = rows.get(r.doc).cloned();
-                rejections.push(r);
-            }
-            Ok((Dispatched::Complete, rejections))
-        }
-
-        fn flush(&mut self) -> Result<(), IoError> {
-            let mut st = self.0.lock();
-            if st.fail_flushes > 0 {
-                st.fail_flushes = st.fail_flushes.saturating_sub(1);
-                return Err(IoError::transient(
-                    "fake destination: stalled, flush timed out".to_string(),
-                ));
-            }
-            st.flushes += 1;
-            Ok(())
         }
     }
 }

@@ -30,7 +30,7 @@ pub enum Value {
 
 impl Value {
     /// About the bytes the value takes in a record: its text's for text, eight for anything fixed.
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         match self {
             Value::Str(s) => s.len(),
             Value::Bytes(b) => b.len(),
@@ -41,7 +41,7 @@ impl Value {
     }
 
     /// About the bytes the value takes in memory: the value itself, and what it owns.
-    pub fn held(&self) -> usize {
+    pub(crate) fn held(&self) -> usize {
         std::mem::size_of::<Value>()
             + match self {
                 Value::Str(s) => s.len(),
@@ -58,11 +58,11 @@ mod base64 {
     use crate::format::bytes_text::BytesForm;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
-    pub fn serialize<S: Serializer>(bytes: &[u8], out: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(bytes: &[u8], out: S) -> Result<S::Ok, S::Error> {
         out.serialize_str(&BytesForm::Base64.text(bytes))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<u8>, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<u8>, D::Error> {
         let text = String::deserialize(input)?;
         let mut bytes = Vec::new();
         match BytesForm::Base64.read(text.as_bytes(), &mut bytes) {
@@ -78,7 +78,7 @@ mod base64 {
 mod float {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
-    pub fn serialize<S: Serializer>(f: &f64, out: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(f: &f64, out: S) -> Result<S::Ok, S::Error> {
         match *f {
             f if f.is_finite() => out.serialize_f64(f),
             f if f.is_nan() => out.serialize_str("NaN"),
@@ -87,7 +87,7 @@ mod float {
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<f64, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<f64, D::Error> {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Spelled {
@@ -116,11 +116,11 @@ mod json {
 
     use crate::core::variant::{self, Encoded, EncodedBuf};
 
-    pub fn serialize<S: Serializer>(json: &EncodedBuf, out: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(json: &EncodedBuf, out: S) -> Result<S::Ok, S::Error> {
         Shown(json.get()).serialize(out)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<EncodedBuf, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<EncodedBuf, D::Error> {
         let mut out = Vec::new();
         input.deserialize_any(Written(&mut out))?;
         Ok(EncodedBuf::check(out))

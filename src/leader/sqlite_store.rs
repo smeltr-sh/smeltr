@@ -524,7 +524,7 @@ fn check_for(conn: &Connection) -> Check {
 }
 
 /// Where each start keeps the copy of a sound `leader.db`, for a later start that finds it damaged.
-pub fn previous_path(path: &Path) -> PathBuf {
+fn previous_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(".previous");
     PathBuf::from(name)
@@ -940,7 +940,7 @@ impl Store {
     /// An enrollment code and the row saying who minted it, in one transaction. Like an account mutation and its audit
     /// row: an enrollment code that exists with nobody recorded as having asked for it is the worse of the two
     /// failures.
-    pub fn create_enrollment_code_recorded(
+    pub(crate) fn create_enrollment_code_recorded(
         &self,
         code: &NewEnrollmentCode,
         event: &SecurityEvent,
@@ -955,7 +955,7 @@ impl Store {
 
     /// Every enrollment code still usable, and every enrollment code that brought a worker in, newest first. The second
     /// is provenance: which workers arrived on an enrollment code outlives the enrollment code itself.
-    pub fn list_enrollment_codes(&self, now_ms: i64) -> Result<Vec<EnrollmentCodeRecord>, StoreError> {
+    pub(crate) fn list_enrollment_codes(&self, now_ms: i64) -> Result<Vec<EnrollmentCodeRecord>, StoreError> {
         let conn = self.conn();
         // Still usable, or it brought somebody in. The second half is the provenance: which workers arrived on an
         // enrollment code is the question that outlives the enrollment code, and one that expired unused answers
@@ -996,17 +996,23 @@ impl Store {
             .collect()
     }
 
-    /// `false` if no enrollment code has that id. A spent enrollment code is withdrawn like any other: what it already
-    /// brought in stays enrolled, and what it would have brought in no longer can. The row stays, marked withdrawn:
-    /// which workers it brought in is what an operator acts on next, and deleting it leaves `enrollment_code_uses` rows
-    /// belonging to nothing.
-    pub fn withdraw_enrollment_code(&self, id: &str, now_ms: i64) -> Result<bool, StoreError> {
+    /// The withdrawal [`Store::withdraw_enrollment_code_recorded`] makes, without the row saying who made it.
+    #[cfg(test)]
+    pub(crate) fn withdraw_enrollment_code(&self, id: &str, now_ms: i64) -> Result<bool, StoreError> {
         let conn = self.conn();
         Ok(conn.execute(WITHDRAW_CODE, (id, now_ms))? > 0)
     }
 
-    /// [`Store::withdraw_enrollment_code`] and the row saying who withdrew it, in one transaction.
-    pub fn withdraw_enrollment_code_recorded(&self, id: &str, event: &SecurityEvent) -> Result<bool, StoreError> {
+    /// Withdraw the enrollment code `id` and write the row saying who withdrew it, in one transaction; `false` if no
+    /// enrollment code has that id. A spent enrollment code is withdrawn like any other: what it already brought in
+    /// stays enrolled, and what it would have brought in no longer can. The row stays, marked withdrawn: which workers
+    /// it brought in is what an operator acts on next, and deleting it leaves `enrollment_code_uses` rows belonging to
+    /// nothing.
+    pub(crate) fn withdraw_enrollment_code_recorded(
+        &self,
+        id: &str,
+        event: &SecurityEvent,
+    ) -> Result<bool, StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let withdrawn = tx.execute(WITHDRAW_CODE, (id, event.at))? > 0;
@@ -1018,7 +1024,7 @@ impl Store {
     }
 
     /// Every enrollment code that can still bring a worker in, newest first.
-    pub fn list_usable_enrollment_codes(&self, now_ms: i64) -> Result<Vec<UsableEnrollmentCode>, StoreError> {
+    pub(crate) fn list_usable_enrollment_codes(&self, now_ms: i64) -> Result<Vec<UsableEnrollmentCode>, StoreError> {
         let conn = self.conn();
         let mut usable = conn.prepare(&format!(
             "SELECT id, group_id, fingerprint FROM enrollment_codes WHERE {USABLE_CODE} {NEWEST_FIRST}"
@@ -1040,7 +1046,7 @@ impl Store {
     /// Removed rather than revoked: the token never reached the worker, so there is no identity to keep a record of,
     /// and a revoked row would occupy the worker id for good -- [`Store::spend_enrollment_code`] refuses one that has
     /// ever enrolled. The hash is in the predicate so this can only take back the row it was called about.
-    pub fn remove_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<bool, StoreError> {
+    pub(crate) fn remove_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<bool, StoreError> {
         let conn = self.conn();
         Ok(conn.execute(
             "DELETE FROM worker_credentials WHERE worker_id = ?1 AND token_hash = ?2",
@@ -1055,7 +1061,12 @@ impl Store {
     /// to retry the very same enrollment code, and a use left spent while nothing was issued for it would make that
     /// retry fail on an enrollment code with none left, or collide with the row this spend already wrote on one that
     /// has.
-    pub fn unspend_enrollment_code(&self, code_id: &str, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
+    pub(crate) fn unspend_enrollment_code(
+        &self,
+        code_id: &str,
+        worker_id: &str,
+        token_hash: &str,
+    ) -> Result<(), StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
@@ -1083,7 +1094,7 @@ impl Store {
     /// `event` is asked for a row per id, because which enrollment codes these are is not known until the transaction
     /// has read them -- and an enrollment code withdrawn with nobody recorded as having withdrawn it is the hole
     /// [`Store::withdraw_enrollment_code_recorded`] exists to avoid.
-    pub fn withdraw_enrollment_codes_not_naming(
+    pub(crate) fn withdraw_enrollment_codes_not_naming(
         &self,
         may_have_named: &[&str],
         now_ms: i64,
@@ -1134,7 +1145,7 @@ impl Store {
     /// A worker this same enrollment code already brought in, holding a credential nothing has used, is retrying an
     /// enrollment whose answer it never received. It gets `token_hash` in place of that credential, and no second
     /// use is spent: it is the same worker.
-    pub fn spend_enrollment_code(
+    pub(crate) fn spend_enrollment_code(
         &self,
         code_hash: &str,
         worker_id: &str,
@@ -1246,7 +1257,7 @@ impl Store {
     /// Errors if `worker_id` has ever enrolled, revoked or not. An enrollment code must not take over an existing
     /// worker's identity or resurrect a revoked one.
     #[cfg(test)]
-    pub fn store_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
+    pub(crate) fn store_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
         let conn = self.conn();
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO worker_credentials (worker_id, token_hash, revoked) VALUES (?1, ?2, 0)",
@@ -1261,7 +1272,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_worker_credential_by_hash(
+    pub(crate) fn get_worker_credential_by_hash(
         &self,
         token_hash: &str,
     ) -> Result<Option<WorkerCredentialRecord>, StoreError> {
@@ -1276,7 +1287,7 @@ impl Store {
 
     /// Records that this credential has authenticated a request, which ends the window in which a retried
     /// enrollment may replace it.
-    pub fn mark_credential_used(&self, token_hash: &str) -> Result<(), StoreError> {
+    pub(crate) fn mark_credential_used(&self, token_hash: &str) -> Result<(), StoreError> {
         let conn = self.conn();
         conn.execute(
             "UPDATE worker_credentials SET used = 1 WHERE token_hash = ?1 AND used = 0",
@@ -1288,7 +1299,7 @@ impl Store {
     /// Forgets an ephemeral worker that is gone: its credential, and what its enrollment code says it brought in, in
     /// one transaction. `false` where there was nothing to forget -- no such worker, a permanent one, or one revoked,
     /// which is kept so it stays out.
-    pub fn forget_worker(&self, worker_id: &str) -> Result<bool, StoreError> {
+    pub(crate) fn forget_worker(&self, worker_id: &str) -> Result<bool, StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let forgotten = tx.execute(
@@ -1305,7 +1316,7 @@ impl Store {
 
     /// Removes a worker for good: revoked, and left out of [`Store::list_worker_credentials`] from now on. Its row
     /// stays, so its id is never enrolled again. `false` where no such worker has enrolled, or it is already removed.
-    pub fn remove_worker(
+    pub(crate) fn remove_worker(
         &self,
         worker_id: &str,
         now_ms: i64,
@@ -1325,7 +1336,11 @@ impl Store {
     }
 
     /// `false` if `worker_id` has never enrolled.
-    pub fn revoke_worker_credential(&self, worker_id: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
+    pub(crate) fn revoke_worker_credential(
+        &self,
+        worker_id: &str,
+        event: Option<&SecurityEvent>,
+    ) -> Result<bool, StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let updated = tx.execute(
@@ -1394,7 +1409,7 @@ impl Store {
 
     /// Declares `name`. `value` is required for [`Custody::LeaderStored`] and refused for [`Custody::WorkerLocal`],
     /// whose value is never the leader's to hold. Errors if the name is taken or unusable as a name.
-    pub fn create_secret(
+    pub(crate) fn create_secret(
         &self,
         name: &str,
         custody: Custody,
@@ -1426,7 +1441,7 @@ impl Store {
     }
 
     /// [`Store::create_certificate`] for one this leader keeps up to date as `kept` says.
-    pub fn create_kept_certificate(
+    pub(crate) fn create_kept_certificate(
         &self,
         name: &str,
         description: &str,
@@ -1449,7 +1464,7 @@ impl Store {
     }
 
     /// The certificates this leader keeps up to date, each with how.
-    pub fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError> {
+    pub(crate) fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError> {
         let conn = self.conn();
         let mut out = std::collections::BTreeMap::new();
         let mut statement = conn.prepare("SELECT name FROM acme_certificates")?;
@@ -1474,7 +1489,7 @@ impl Store {
     }
 
     /// Changes how this leader issues `name` from now on. Errors where it does not issue it.
-    pub fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
+    pub(crate) fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
         let names = serde_json::to_string(&issued.names).map_err(|e| StoreError::failed(e.to_string()))?;
         let conn = self.conn();
         let updated = conn.execute(
@@ -1493,7 +1508,7 @@ impl Store {
     /// Adds; it replaces nothing. Which older versions stop being kept is a policy decision the caller makes and
     /// applies with [`Store::delete_secret_version`], because it depends on what the fleet is running and the
     /// store cannot see that.
-    pub fn add_secret_version(
+    pub(crate) fn add_secret_version(
         &self,
         name: &str,
         value: &str,
@@ -1514,7 +1529,7 @@ impl Store {
     }
 
     /// The chain beside `name`'s `version`, PEM. `None` for a secret that is not a certificate, or a version not held.
-    pub fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
+    pub(crate) fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
         let conn = self.conn();
         Ok(conn
             .query_row(
@@ -1527,7 +1542,7 @@ impl Store {
     }
 
     /// `false` if `name` was not there. Takes every version with it.
-    pub fn delete_secret(&self, name: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
+    pub(crate) fn delete_secret(&self, name: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM certificate_chains WHERE name = ?1", (name,))?;
@@ -1543,7 +1558,7 @@ impl Store {
     }
 
     /// Forgets one version. `false` if that version was not held.
-    pub fn delete_secret_version(
+    pub(crate) fn delete_secret_version(
         &self,
         name: &str,
         version: i64,
@@ -1615,7 +1630,7 @@ impl Store {
     /// Whether `candidate` is the value stored as `version` -- the only question the leader answers about one, and
     /// what tells an admin a credential still needs rotating without showing it to them. `false` for an unknown
     /// name, an unheld version, and a row the leader's key cannot open.
-    pub fn verify_secret(&self, name: &str, version: i64, candidate: &str) -> Result<bool, StoreError> {
+    pub(crate) fn verify_secret(&self, name: &str, version: i64, candidate: &str) -> Result<bool, StoreError> {
         let Some(key) = self.key_if_any()? else {
             return Ok(false);
         };
@@ -1628,7 +1643,7 @@ impl Store {
 
     /// Every worker that has ever enrolled, revoked or not, ordered by `worker_id`, less those forgotten or removed. The only
     /// record of a worker that enrolled and never heartbeated.
-    pub fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError> {
+    pub(crate) fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {CREDENTIAL_COLUMNS} FROM worker_credentials WHERE removed_at IS NULL ORDER BY worker_id"
@@ -1669,7 +1684,7 @@ impl Store {
     /// it replaces so the values they sealed read as values to enter again rather than as a wrong key. A
     /// mismatched key file is moved aside, not overwritten: it may yet be the right one for something. Refused
     /// while the key is not broken.
-    pub fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError> {
+    pub(crate) fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError> {
         let standing = self.key_standing()?;
         if !standing.broken() {
             return Err(StoreError::conflict(
@@ -1729,7 +1744,7 @@ impl Store {
     // -- single-worker sources -------------------------------------------------
 
     /// Which worker holds `key` in `group`, and the cursor it resumes from. `None` where no worker ever has.
-    pub fn source_hold(&self, group: &str, key: &SourceKey) -> Result<Option<SourceHold>, StoreError> {
+    pub(crate) fn source_hold(&self, group: &str, key: &SourceKey) -> Result<Option<SourceHold>, StoreError> {
         let conn = self.conn();
         let hold = conn
             .query_row(
@@ -1747,7 +1762,7 @@ impl Store {
     }
 
     /// Gives `key` in `group` to `holder`. Its progress stays, which is what the next holder resumes from.
-    pub fn set_source_holder(&self, group: &str, key: &SourceKey, holder: &str) -> Result<(), StoreError> {
+    pub(crate) fn set_source_holder(&self, group: &str, key: &SourceKey, holder: &str) -> Result<(), StoreError> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO source_holds (grp, source, place, holder) VALUES (?1, ?2, ?3, ?4)
@@ -1759,7 +1774,12 @@ impl Store {
 
     /// Records what `key`'s holder has delivered, in one transaction: a cursor replaces the one kept, an added entry
     /// replaces its item's, and a removed item leaves the ledger. A key nobody holds keeps no cursor.
-    pub fn apply_source_progress(&self, group: &str, key: &SourceKey, progress: &Progress) -> Result<(), StoreError> {
+    pub(crate) fn apply_source_progress(
+        &self,
+        group: &str,
+        key: &SourceKey,
+        progress: &Progress,
+    ) -> Result<(), StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         if let Some(cursor) = &progress.cursor {
@@ -1789,7 +1809,7 @@ impl Store {
 
     /// Up to `limit` of `key`'s ledger entries in item order, starting after the item `after`. Read a page at a
     /// time, so a ledger of millions of items never holds the store for long.
-    pub fn ledger_page(
+    pub(crate) fn ledger_page(
         &self,
         group: &str,
         key: &SourceKey,
@@ -1840,7 +1860,7 @@ impl Store {
 
     /// Forgets `key` in `group`: its hold, its cursor and its whole ledger, in one transaction. For a source no bundle
     /// reads any more; one that comes back starts afresh.
-    pub fn forget_source(&self, group: &str, key: &SourceKey) -> Result<(), StoreError> {
+    pub(crate) fn forget_source(&self, group: &str, key: &SourceKey) -> Result<(), StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         // The hold first, so the trigger that counts each removed item finds no hold row left to update.
@@ -1860,7 +1880,7 @@ impl Store {
 
     /// Whether any account exists at all. What bootstrap asks before creating the first administrator; the answer
     /// is only ever a hint, since [`Store::bootstrap_administrator`] re-checks it inside its own transaction.
-    pub fn any_user_exists(&self) -> Result<bool, StoreError> {
+    pub(crate) fn any_user_exists(&self) -> Result<bool, StoreError> {
         let conn = self.conn();
         let n: i64 = conn.query_row("SELECT EXISTS (SELECT 1 FROM users)", [], |row| row.get(0))?;
         Ok(n != 0)
@@ -1868,7 +1888,7 @@ impl Store {
 
     /// Create the first administrator. `Ok(false)` when an account already existed, in which case nothing was
     /// written: the check and the insert are one transaction, so exactly one of two concurrent bootstraps wins.
-    pub fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError> {
+    pub(crate) fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let occupied: i64 = tx.query_row("SELECT EXISTS (SELECT 1 FROM users)", [], |row| row.get(0))?;
@@ -1969,23 +1989,25 @@ impl Store {
     }
 
     /// The account to verify a login against, by canonical username. The one method that returns a verifier.
-    pub fn local_credential_by_username(&self, username: &str) -> Result<Option<LocalCredentialRecord>, StoreError> {
+    pub(crate) fn local_credential_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<LocalCredentialRecord>, StoreError> {
         let conn = self.conn();
         Ok(conn
             .query_row(
                 // One statement, so the hash and the generation are the same moment of this account. Read apart,
                 // a reset landing between them verifies the old password against the new generation.
-                "SELECT c.user_id, c.username, c.password_hash, c.must_change, u.generation
+                "SELECT c.user_id, c.password_hash, c.must_change, u.generation
                    FROM local_credentials c JOIN users u ON u.id = c.user_id
                   WHERE c.username = ?1",
                 (username,),
                 |row| {
                     Ok(LocalCredentialRecord {
                         user_id: row.get(0)?,
-                        username: row.get(1)?,
-                        password_hash: row.get(2)?,
-                        must_change: row.get::<_, i64>(3)? != 0,
-                        generation: row.get(4)?,
+                        password_hash: row.get(1)?,
+                        must_change: row.get::<_, i64>(2)? != 0,
+                        generation: row.get(3)?,
                     })
                 },
             )
@@ -2273,7 +2295,7 @@ impl Store {
 
     /// Re-enable a local account, give it the administrator role and a fresh must-change password, and bump its
     /// generation: what recovery from the host does, as one transaction.
-    pub fn recover_local_user(
+    pub(crate) fn recover_local_user(
         &self,
         username: &str,
         password_hash: &str,
@@ -2713,7 +2735,7 @@ impl Store {
 
     /// `value` sealed under the leader's key and bound to the setting `key`, as the text [`Store::put_settings`]
     /// stores for it. For a setting that is a credential.
-    pub fn sealed_setting(&self, key: &str, value: &str) -> Result<String, StoreError> {
+    pub(crate) fn sealed_setting(&self, key: &str, value: &str) -> Result<String, StoreError> {
         Ok(self.key_for_sealing()?.seal(key, value.as_bytes()).to_text())
     }
 
@@ -2728,7 +2750,7 @@ impl Store {
     }
 
     /// Every warning an alert channel has been told of and not yet told has cleared.
-    pub fn alerts_told(&self) -> Result<Vec<AlertTold>, StoreError> {
+    pub(crate) fn alerts_told(&self) -> Result<Vec<AlertTold>, StoreError> {
         let conn = self.conn();
         let mut stmt =
             conn.prepare("SELECT channel, warning, told_at, body FROM alerts_told ORDER BY channel, warning")?;
@@ -2745,7 +2767,11 @@ impl Store {
 
     /// Record, as one transaction, that channels took `told` and were told that each `(channel, warning)` in
     /// `cleared` has cleared.
-    pub fn record_alerts_told(&self, told: &[AlertTold], cleared: &[(String, String)]) -> Result<(), StoreError> {
+    pub(crate) fn record_alerts_told(
+        &self,
+        told: &[AlertTold],
+        cleared: &[(String, String)],
+    ) -> Result<(), StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         for t in told {
@@ -2766,7 +2792,7 @@ impl Store {
     }
 
     /// Drop what was told to every channel not in `keep`: a channel that is gone has nobody left to tell.
-    pub fn forget_alert_channels(&self, keep: &[String]) -> Result<(), StoreError> {
+    pub(crate) fn forget_alert_channels(&self, keep: &[String]) -> Result<(), StoreError> {
         let conn = self.conn();
         let keep = serde_json::to_string(keep).map_err(|e| StoreError::failed(e.to_string()))?;
         conn.execute(

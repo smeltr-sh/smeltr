@@ -4,9 +4,9 @@ use crate::harness::{wait_for, wait_until};
 use smeltr::core::id::DestId;
 use std::time::Duration;
 
+use crate::harness::fake::{AsyncDestination, FakeDestination};
 use smeltr::egress::Egress;
 use smeltr::handoff::Ready;
-use smeltr::io::fake::{AsyncDestination, FakeDestination};
 use smeltr::io::{BatchId, Destination, Dispatched, OutgoingRecord, OwnedRecord, SalvageTarget};
 use smeltr::metrics::{Metrics, MetricsHandle};
 use std::borrow::Cow;

@@ -68,7 +68,7 @@ pub struct PostgresDriver {
 
 /// What `connect` takes: the config, password resolved, and the TLS it connects under (`None` under `Encrypted::Disable`).
 #[derive(Clone)]
-pub struct Opening {
+pub(crate) struct Opening {
     config: Config,
     tls: Option<rustls::ClientConfig>,
 }

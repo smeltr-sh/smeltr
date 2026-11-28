@@ -233,7 +233,7 @@ pub(super) const SFTP_MIN_STALL_AFTER: u64 = 15;
 /// Properties smeltr sets itself, with the reason it owns each, which `/api/system` serves to the GUI. Both spellings
 /// of an aliased property appear: librdkafka resolves either to the same setting, and operator properties are applied
 /// after smeltr's.
-pub const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
+pub(crate) const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ("bootstrap.servers", "set from the `brokers` field"),
     // librdkafka would run it through system() on every worker. A bundle may not carry a shell command, and smeltr gets
     // the ticket itself from the keytab and principal a bundle names.
@@ -668,7 +668,7 @@ pub(super) fn check_subscription(subscription: &str, what: &str, errors: &mut It
 }
 
 /// `url` as a whole http:// or https:// URL, the one shape every URL field takes; `None` when it is not one.
-pub fn web_url(url: &str) -> Option<reqwest::Url> {
+pub(crate) fn web_url(url: &str) -> Option<reqwest::Url> {
     reqwest::Url::parse(url.trim())
         .ok()
         .filter(|u| matches!(u.scheme(), "http" | "https") && u.has_host())
@@ -876,7 +876,7 @@ pub(super) fn check_sasl_login(dto: &KafkaPropsDto, what: &str, errors: &mut Ite
 /// librdkafka property names that answer the same question a connector's TLS settings answer: what this client
 /// presents, and what it trusts. A connector setting TLS and one of these has two answers to one question, and
 /// librdkafka would silently take whichever was set last. `/api/system` serves them to the GUI.
-pub const TLS_KAFKA_PROPS: &[&str] = &[
+pub(crate) const TLS_KAFKA_PROPS: &[&str] = &[
     "ssl.certificate.pem",
     "ssl.certificate.location",
     "ssl.key.pem",
@@ -1322,7 +1322,7 @@ pub(super) fn check_line_breaker(what: &str, pattern: &str, mut errors: ItemErro
 
 /// Why a save refuses `pattern` as a line breaker, said of `what`, or `None` when it takes it. The editor asks this as
 /// a line breaker is typed, so its verdict is the save's.
-pub fn line_breaker_refusal(what: &str, pattern: &str) -> Option<String> {
+pub(crate) fn line_breaker_refusal(what: &str, pattern: &str) -> Option<String> {
     if pattern.trim().is_empty() {
         return Some(format!("{what} names a blank lineBreaker pattern"));
     }
@@ -1359,7 +1359,7 @@ pub(super) fn check_fetch_bytes(fetch_bytes: Option<FetchBytes>, id: &str, error
 
 /// The bootstrap address of an Event Hubs namespace: a bare name is in Azure's public cloud, and a host without a port
 /// is reached on 9093, Event Hubs' Kafka port.
-pub fn event_hubs_brokers(namespace: &str) -> String {
+pub(crate) fn event_hubs_brokers(namespace: &str) -> String {
     let namespace = namespace.trim();
     if !namespace.contains('.') && !namespace.contains(':') {
         format!("{namespace}.servicebus.windows.net:9093")
@@ -1640,7 +1640,7 @@ pub(super) fn check_kafka_buffer(buffer_bytes: Option<BufferBytes>, id: &str, er
 }
 
 /// Whether `url` names this host: `localhost` or a loopback address. `url` may be a bare `host:port`.
-pub fn on_loopback(url: &str) -> bool {
+pub(crate) fn on_loopback(url: &str) -> bool {
     let url = url.trim();
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     crate::startup_config::split_authority(rest.split(['/', '?', '#']).next().unwrap_or_default())
@@ -1648,7 +1648,7 @@ pub fn on_loopback(url: &str) -> bool {
 }
 
 /// Whether `url` is plain http:// to a host other than this one: what a credential or a payload may never cross.
-pub fn plain_off_this_host(url: &str) -> bool {
+pub(crate) fn plain_off_this_host(url: &str) -> bool {
     let url = url.trim();
     url.get(..7)
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
@@ -1835,7 +1835,7 @@ pub(super) fn check_objects(id: &str, o: &ObjectSettingsDto, url: &str, tls: &Tl
             "destination {id:?} names variant, which only the \"parquet\" format reads"
         ));
     }
-    check_compression_level(id, o.compression, o.compression_level, false, errors);
+    check_compression_level(id, o.compression, o.compression_level, o.format.compressor(), errors);
     if o.format == ObjectFormatDto::Avro && o.compression == CompressionDto::Lz4 {
         errors.at("compression").push(format!(
             "destination {id:?} writes Avro compressed with lz4, which Avro has no codec for; use \"gzip\", \"snappy\", \"zstd\" or \"none\""
@@ -2894,18 +2894,18 @@ pub(super) fn to_http_core(
     }
 }
 
-/// Checks that a destination's `compressionLevel` is one its codec takes (`CompressionDto::levels`); `kafka` for a destination
-/// librdkafka compresses for.
+/// Checks that a destination's `compressionLevel` is one its codec takes where `by` compresses
+/// (`CompressionDto::levels`).
 pub(super) fn check_compression_level(
     id: &str,
     compression: CompressionDto,
     level: Option<u8>,
-    kafka: bool,
+    by: Compressor,
     errors: &mut ItemErrors<'_>,
 ) {
     let Some(level) = level else { return };
-    let codec = compression.to_plan(None).as_property();
-    match compression.levels(kafka) {
+    let codec = compression.to_plan(None, by).as_property();
+    match compression.levels(by) {
         Some((levels, _)) if levels.contains(&level) => {}
         Some((levels, _)) => errors.at("compressionLevel").push(format!(
             "destination {id:?} compresses with {codec} at level {level}; {codec} takes levels {} to {}",
@@ -2970,7 +2970,7 @@ pub(super) fn to_objects(
                 field: text_field(&o.field).into(),
             },
         },
-        compression: o.compression.to_plan(o.compression_level),
+        compression: o.compression.to_plan(o.compression_level, o.format.compressor()),
         storage_class: settings.storage_class.clone(),
         tls: to_tls(tls, of, Side::Client),
         in_flight: o.in_flight.0,

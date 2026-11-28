@@ -65,7 +65,7 @@ const UNDATED_LIFE: Duration = Duration::from_secs(15 * 60);
 /// The destination `config` names. Its table is loaded, or created from the record when missing, and the record's
 /// new columns are added to it before any file is written. Err is transient: the catalog cannot be reached, or the
 /// table cannot take the record, which a restart asks again.
-pub fn destination(
+pub(crate) fn destination(
     config: &IcebergDestinationConfig,
     subject: &str,
     records: Option<&Records>,
@@ -433,11 +433,11 @@ fn evolve(
         // Ids of schemas the table no longer uses stay taken.
         evolution.schema.schema_id = table.schemas.iter().map(|s| s.schema_id).max().map_or(0, |id| id + 1);
         let mut requirements = vec![
-            Requirement::AssertTableUuid(table.table_uuid.clone()),
-            Requirement::AssertLastAssignedFieldId(table.last_column_id),
+            Requirement::TableUuid(table.table_uuid.clone()),
+            Requirement::LastAssignedFieldId(table.last_column_id),
         ];
         if let Some(current) = current {
-            requirements.push(Requirement::AssertCurrentSchemaId(current.schema_id));
+            requirements.push(Requirement::CurrentSchemaId(current.schema_id));
         }
         let updates = [
             Update::AddSchema {
@@ -756,8 +756,8 @@ impl Committer for IcebergCommitter {
         let snapshot = self.write_snapshot(files).map_err(CommitError::Transient)?;
         let id = snapshot.snapshot_id;
         let requirements = [
-            Requirement::AssertTableUuid(self.uuid.clone()),
-            Requirement::AssertRefSnapshotId {
+            Requirement::TableUuid(self.uuid.clone()),
+            Requirement::RefSnapshotId {
                 r#ref: MAIN.to_string(),
                 snapshot_id: snapshot.parent_snapshot_id,
             },

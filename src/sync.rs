@@ -35,10 +35,6 @@ impl<T: ?Sized> Mutex<T> {
             Err(std::sync::TryLockError::WouldBlock) => None,
         }
     }
-
-    pub fn get_mut(&mut self) -> &mut T {
-        self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
-    }
 }
 
 /// A condition variable for a [`Mutex`]. Its waits always return the guard.
@@ -54,17 +50,7 @@ impl Condvar {
         self.0.wait(guard).unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub fn wait_while<'a, T>(
-        &self,
-        guard: MutexGuard<'a, T>,
-        waiting: impl FnMut(&mut T) -> bool,
-    ) -> MutexGuard<'a, T> {
-        self.0
-            .wait_while(guard, waiting)
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub fn wait_timeout<'a, T>(
+    pub(crate) fn wait_timeout<'a, T>(
         &self,
         guard: MutexGuard<'a, T>,
         within: Duration,
@@ -74,7 +60,7 @@ impl Condvar {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub fn wait_timeout_while<'a, T>(
+    pub(crate) fn wait_timeout_while<'a, T>(
         &self,
         guard: MutexGuard<'a, T>,
         within: Duration,
@@ -89,27 +75,27 @@ impl Condvar {
         self.0.notify_one();
     }
 
-    pub fn notify_all(&self) {
+    pub(crate) fn notify_all(&self) {
         self.0.notify_all();
     }
 }
 
 /// A reader-writer lock whose `read` and `write` always return the guard.
 #[derive(Debug, Default)]
-pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
+pub(crate) struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
 
 impl<T> RwLock<T> {
-    pub const fn new(value: T) -> Self {
+    pub(crate) const fn new(value: T) -> Self {
         Self(std::sync::RwLock::new(value))
     }
 }
 
 impl<T: ?Sized> RwLock<T> {
-    pub fn read(&self) -> RwLockReadGuard<'_, T> {
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, T> {
         self.0.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub fn write(&self) -> RwLockWriteGuard<'_, T> {
+    pub(crate) fn write(&self) -> RwLockWriteGuard<'_, T> {
         self.0.write().unwrap_or_else(PoisonError::into_inner)
     }
 }

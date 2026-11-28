@@ -28,30 +28,30 @@ use super::warnings;
 pub struct WorkerFacts {
     /// What the process was started with. Durable, so a worker that fell silent before a restart still answers
     /// what it would do about being unable to reach the leader.
-    pub stop_after_unreachable_secs: Option<u64>,
+    pub(crate) stop_after_unreachable_secs: Option<u64>,
     /// The commit whose bundle the process reported running.
-    pub commit: Option<String>,
+    pub(crate) commit: Option<String>,
     /// The process's own build. Empty from a worker older than this field.
-    pub smeltr_version: String,
+    pub(crate) smeltr_version: String,
     /// The release that build is. `None` on any other build, and from a worker older than this field.
-    pub release: Option<String>,
+    pub(crate) release: Option<String>,
     /// What the worker's supervisor said it was doing. Not persisted: it describes a moment rather than a state a
     /// restart should remember.
-    pub supervising: Option<crate::heartbeat::Supervising>,
+    pub(crate) supervising: Option<crate::heartbeat::Supervising>,
     /// What the process was spending against what it was allowed to run in. Not persisted, for the same reason
     /// `supervising` is not: a live reading a restarted leader cannot refresh is worse than none.
-    pub resources: Option<crate::heartbeat::ResourceReport>,
+    pub(crate) resources: Option<crate::heartbeat::ResourceReport>,
     /// When the authority the worker verifies the leader against expires. Durable: the worker this warns about is
     /// one that can no longer reach the leader to say it again.
-    pub authority_expires_millis: Option<i64>,
+    pub(crate) authority_expires_millis: Option<i64>,
     /// When the worker said it was stopping, where that is the last thing it said. Durable for the same reason as
     /// the expiry: a worker that stopped says nothing more.
-    pub stopped_at_ms: Option<i64>,
+    pub(crate) stopped_at_ms: Option<i64>,
 }
 
 impl WorkerFacts {
     /// What `req` says about its worker, heard at `now_ms`.
-    pub fn of(req: &crate::heartbeat::HeartbeatRequest, now_ms: i64) -> WorkerFacts {
+    pub(crate) fn of(req: &crate::heartbeat::HeartbeatRequest, now_ms: i64) -> WorkerFacts {
         WorkerFacts {
             stop_after_unreachable_secs: req.stop_after_unreachable_secs,
             commit: req.commit.clone(),
@@ -80,51 +80,51 @@ struct ThreadState {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadHealth {
-    pub worker_id: String,
+    pub(crate) worker_id: String,
     /// The only liveness signal: the leader keeps no online flag.
-    pub last_seen_millis_ago: u64,
+    pub(crate) last_seen_millis_ago: u64,
     /// This worker's own `stop_after_unreachable_secs` (`smeltr.toml`, `[worker]`), as reported on its most recent
     /// heartbeat. `None` is a worker that reported no limit: it keeps running however long the leader is away.
-    pub stop_after_unreachable_secs: Option<u64>,
+    pub(crate) stop_after_unreachable_secs: Option<u64>,
     /// The commit whose bundle this worker reported running on its most recent heartbeat. `None` from a worker
     /// running nothing -- one that has not deployed yet, or whose deployment stopped -- and from one older than
     /// this field. What the fleet is on is the worker's own answer: a commit it fetched but refused never becomes
     /// a deployment, so the leader cannot read it off `main`.
-    pub commit: Option<String>,
+    pub(crate) commit: Option<String>,
     /// This worker's own build, as reported on its most recent heartbeat. Empty from a worker older than this
     /// field.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub smeltr_version: String,
+    pub(crate) smeltr_version: String,
     /// The release that build is, as reported on its most recent heartbeat. `None` on any other build, and from a
     /// worker older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release: Option<String>,
+    pub(crate) release: Option<String>,
     /// What this worker's supervisor says it is doing. `None` from a worker older than this field, and from one
     /// that has not deployed since it started. A heartbeat says the supervisor is healthy; this is what says
     /// whether anything is running what it was told to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub supervising: Option<crate::heartbeat::Supervising>,
+    pub(crate) supervising: Option<crate::heartbeat::Supervising>,
     /// What this worker process was spending against what it was allowed to run in, as reported on its most
     /// recent heartbeat. `None` from a worker older than this field, and from one whose first heartbeat has not
     /// yet produced a CPU rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resources: Option<crate::heartbeat::ResourceReport>,
+    pub(crate) resources: Option<crate::heartbeat::ResourceReport>,
     /// When the certificate authority this worker verifies the leader against expires, as it reported on its most
     /// recent heartbeat. `None` from a worker on plain HTTP, and from one older than this field.
-    pub authority_expires_millis: Option<i64>,
+    pub(crate) authority_expires_millis: Option<i64>,
     /// When this worker said it was stopping, where that is the last thing it said. Its silence since is a stop
     /// it announced rather than a failure. `None` for a worker that has said anything else since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stopped_at_millis: Option<i64>,
+    pub(crate) stopped_at_millis: Option<i64>,
     #[serde(flatten)]
-    pub report: ThreadHeartbeat,
+    pub(crate) report: ThreadHeartbeat,
 }
 
 /// One instance of a fixed catalog entry (`leader::warnings::Warning`'s underlying condition): which entry, about
 /// which subject. Not a warning itself -- carries no severity and no sentence, only enough to say "seen before, and
 /// since when".
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FactKey {
+pub(crate) struct FactKey {
     // Owned rather than `&'static str`: `RegistryStore::load_fact_clock` hands back an entry name it read from
     // disk, which cannot borrow as `'static`. The public constructor still takes one, since every catalog entry
     // name is a literal -- only reconstruction from a durable row needs the owned form.
@@ -133,7 +133,7 @@ pub struct FactKey {
 }
 
 impl FactKey {
-    pub fn new(entry: &'static str, subject: impl Into<String>) -> FactKey {
+    pub(crate) fn new(entry: &'static str, subject: impl Into<String>) -> FactKey {
         FactKey {
             entry: entry.to_string(),
             subject: subject.into(),
@@ -141,12 +141,12 @@ impl FactKey {
     }
 
     /// The issue this fact is, as its log line names it.
-    pub fn logged(&self) -> super::warnings::LoggedIssue<'_> {
+    pub(crate) fn logged(&self) -> super::warnings::LoggedIssue<'_> {
         super::warnings::logged_issue(&self.entry, &self.subject)
     }
 
     /// Its entry and subject, as the store keeps a fact.
-    pub fn into_parts(self) -> (String, String) {
+    pub(crate) fn into_parts(self) -> (String, String) {
         (self.entry, self.subject)
     }
 }
@@ -382,7 +382,7 @@ impl Registry {
     }
 
     /// Drops everything held about `worker_id`, in memory and durably: the leader has forgotten it.
-    pub fn forget_worker(&self, worker_id: &str) {
+    pub(crate) fn forget_worker(&self, worker_id: &str) {
         if let Some(store) = &self.store
             && let Err(e) = store.forget_worker(worker_id)
         {
@@ -399,23 +399,23 @@ impl Registry {
 
     /// Whether a look for gone ephemeral workers is due at `now_ms`, and if so, that the next is `every` later.
     /// Asked on every housekeeping tick; true for one caller per `every`.
-    pub fn sweep_due(&self, now_ms: i64, every: Duration) -> bool {
+    pub(crate) fn sweep_due(&self, now_ms: i64, every: Duration) -> bool {
         due(&self.next_sweep_ms, now_ms, every)
     }
 
     /// Whether a look for the progress of sources no bundle reads is due at `now_ms`, as [`Registry::sweep_due`].
-    pub fn prune_due(&self, now_ms: i64, every: Duration) -> bool {
+    pub(crate) fn prune_due(&self, now_ms: i64, every: Duration) -> bool {
         due(&self.next_prune_ms, now_ms, every)
     }
 
     /// Whether the housekeeping's look at every issue is due at `now_ms`, as [`Registry::sweep_due`].
-    pub fn issue_look_due(&self, now_ms: i64, every: Duration) -> bool {
+    pub(crate) fn issue_look_due(&self, now_ms: i64, every: Duration) -> bool {
         due(&self.next_issue_look_ms, now_ms, every)
     }
 
     /// Records which authorities a worker would accept, as it just reported them, and whether it takes one from
     /// this leader at all.
-    pub fn record_authority(&self, worker_id: &str, fingerprints: Vec<String>, takes_authority: bool) {
+    pub(crate) fn record_authority(&self, worker_id: &str, fingerprints: Vec<String>, takes_authority: bool) {
         self.authorities().insert(
             worker_id.to_string(),
             Reported {
@@ -455,7 +455,7 @@ impl Registry {
     ///
     /// A rotation passes its start as `since_ms`. A report from before it can list a root the worker has since
     /// dropped, as when it has just switched away from one, so it counts as nothing held.
-    pub fn authorities_held(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<Vec<String>> {
+    pub(crate) fn authorities_held(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<Vec<String>> {
         self.holders(expected, since_ms)
             .into_iter()
             .map(|(_, held)| held)
@@ -463,7 +463,7 @@ impl Registry {
     }
 
     /// [`Self::authorities_held`], each list beside the worker it is for, in id order.
-    pub fn holders(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<(String, Vec<String>)> {
+    pub(crate) fn holders(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<(String, Vec<String>)> {
         let held = self.authorities();
         let mut holders: Vec<(String, Vec<String>)> = expected
             .iter()
@@ -481,14 +481,14 @@ impl Registry {
     ///
     /// Beside the enrolled roster rather than instead of it: a worker heartbeating is evidence the roster cannot
     /// contradict, and one enrolled but never heard from is exactly the worker a rotation must not sign away from.
-    pub fn known_workers(&self) -> HashSet<String> {
+    pub(crate) fn known_workers(&self) -> HashSet<String> {
         let mut known: HashSet<String> = self.authorities().keys().cloned().collect();
         known.extend(self.threads().keys().map(|(worker, _)| worker.clone()));
         known
     }
 
     /// Whether `worker_id` has heartbeated within `within` without saying it was stopping.
-    pub fn heartbeating(&self, worker_id: &str, within: std::time::Duration) -> bool {
+    pub(crate) fn heartbeating(&self, worker_id: &str, within: std::time::Duration) -> bool {
         self.threads().iter().any(|((worker, _), s)| {
             worker == worker_id && s.worker.stopped_at_ms.is_none() && s.last_seen.elapsed() <= within
         })
@@ -531,7 +531,7 @@ impl Registry {
 
     /// What one worker said about itself since the last beat the leader answered. Best-effort: the worker keeps
     /// them until this request succeeds, so a write that fails here costs a round trip rather than the events.
-    pub fn record_logs(
+    pub(crate) fn record_logs(
         &self,
         worker_id: &str,
         boot_id: u64,
@@ -568,7 +568,7 @@ impl Registry {
 
     /// Every fact the clock holds for one catalog entry: what a caller that cannot yet say whether those facts still
     /// hold passes back to [`Registry::observe_facts`], so their start times are kept rather than forgotten.
-    pub fn facts_of(&self, entry: &str) -> Vec<FactKey> {
+    pub(crate) fn facts_of(&self, entry: &str) -> Vec<FactKey> {
         let clock = self.fact_clock.lock();
         clock.keys().filter(|k| k.entry == entry).cloned().collect()
     }
@@ -576,7 +576,7 @@ impl Registry {
     /// When each of `keys` began, as [`Registry::observe_facts`] would answer at `now_ms` without changing the
     /// clock: the start it holds, or `now_ms` for a key it has not seen. What a caller reads while it is still
     /// working out the rest of what is active, before it observes the whole of it.
-    pub fn starts_of(&self, keys: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
+    pub(crate) fn starts_of(&self, keys: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
         let clock = self.fact_clock.lock();
         keys.iter()
             .map(|k| (k.clone(), clock.get(k).copied().unwrap_or(now_ms)))
@@ -592,7 +592,7 @@ impl Registry {
     /// Call this on every heartbeat, not only when a warning is read: a start time is only as accurate as how often
     /// this runs, and nothing else ticks this clock (design doc, Control plane: "recomputed ... on every
     /// heartbeat").
-    pub fn observe_facts(&self, active: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
+    pub(crate) fn observe_facts(&self, active: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
         let mut clock = self.fact_clock.lock();
         // Catalogs run side by side; one that lost the race to the lock is older than the clock, and applying it
         // would clear and begin again whatever the newer one saw.

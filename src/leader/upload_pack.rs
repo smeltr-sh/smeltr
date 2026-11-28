@@ -27,9 +27,9 @@ use super::pkt_line::{self, MAX_PAYLOAD, Packet};
 
 /// What the leader answers a git request with.
 #[derive(Debug)]
-pub struct Answer {
+pub(crate) struct Answer {
     pub status: u16,
-    pub content_type: &'static str,
+    pub(crate) content_type: &'static str,
     pub body: Vec<u8>,
 }
 
@@ -59,7 +59,7 @@ const BAND_PAYLOAD: usize = MAX_PAYLOAD - 1;
 
 /// Answer one git request for the repository at `repo`: `path` under the repository's URL, the request's `query`,
 /// its `Git-Protocol` header, and its body. `Err` is a failure of the leader's own, which the route reports.
-pub fn serve(
+pub(crate) fn serve(
     repo: &Path,
     path: &str,
     method: &str,

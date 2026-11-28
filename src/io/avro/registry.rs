@@ -28,7 +28,7 @@ const MAX_ANSWER: u64 = 16 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The most schemas one schema may reference, counting what its references reference.
-pub const MAX_REFERENCES: usize = 256;
+pub(crate) const MAX_REFERENCES: usize = 256;
 
 /// What a call that got no schema answers.
 #[derive(Debug)]
@@ -39,29 +39,19 @@ pub enum Unread {
     Refused(String),
 }
 
-impl Unread {
-    /// As an error to retry, whichever it is.
-    pub fn into_error(self) -> IoError {
-        match self {
-            Unread::Transient(e) => e,
-            Unread::Refused(why) => IoError::transient(why),
-        }
-    }
-}
-
 /// A schema as the registry holds it: its Avro text, and each schema it references by name.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Text {
-    pub schema: String,
-    pub references: Vec<Reference>,
+pub(crate) struct Text {
+    pub(crate) schema: String,
+    pub(crate) references: Vec<Reference>,
 }
 
 /// A schema another references, by the subject and version it is registered under.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct Reference {
-    pub name: String,
-    pub subject: String,
-    pub version: i64,
+pub(crate) struct Reference {
+    name: String,
+    pub(crate) subject: String,
+    pub(crate) version: i64,
 }
 
 #[derive(Deserialize)]
@@ -80,7 +70,7 @@ struct Registered {
     id: u32,
 }
 
-pub struct Registry {
+pub(crate) struct Registry {
     /// Without a trailing `/`.
     url: String,
     agent: ureq::Agent,
@@ -90,7 +80,7 @@ pub struct Registry {
 impl Registry {
     /// A client of `config`, connecting under `tls`. A password this worker does not hold is an error here,
     /// never a call made without it.
-    pub fn new(config: &SchemaRegistry, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<Registry, IoError> {
+    pub(crate) fn new(config: &SchemaRegistry, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<Registry, IoError> {
         let authorization = match &config.basic {
             Some((user, password)) => Some(crate::io::http::basic(
                 "the schema registry",
@@ -109,13 +99,13 @@ impl Registry {
     }
 
     /// The schema registered under `id`.
-    pub fn schema(&self, id: u32) -> Result<Text, Unread> {
+    pub(crate) fn schema(&self, id: u32) -> Result<Text, Unread> {
         let what = format!("schema {id}");
         self.text(&what, &format!("{}/schemas/ids/{id}", self.url))
     }
 
     /// The schema registered under `subject` at `version`.
-    pub fn version(&self, subject: &str, version: i64) -> Result<Text, Unread> {
+    pub(crate) fn version(&self, subject: &str, version: i64) -> Result<Text, Unread> {
         let what = format!("version {version} of subject {subject:?}");
         let url = format!("{}/subjects/{}/versions/{version}", self.url, percent_encode(subject));
         self.text(&what, &url)
@@ -123,7 +113,7 @@ impl Registry {
 
     /// Registers `schema` under `subject`, or finds it already there, and answers its id. `Refused` is a schema the
     /// subject's compatibility setting or the registry's parser refuses.
-    pub fn register(&self, subject: &str, schema: &str) -> Result<u32, Unread> {
+    pub(crate) fn register(&self, subject: &str, schema: &str) -> Result<u32, Unread> {
         let url = format!("{}/subjects/{}/versions", self.url, percent_encode(subject));
         let body = serde_json::json!({ "schema": schema }).to_string();
         let what = format!("registering a schema under subject {subject:?}");

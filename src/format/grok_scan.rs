@@ -35,21 +35,22 @@ pub struct Matcher {
 
 /// Which part of a candidate holds a named capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Group {
+pub(crate) enum Group {
     Capture(usize),
     Tail,
 }
 
 /// One row's match: the candidate that matched and what it captured.
 pub struct Matched<'m, 't> {
-    pub pattern: usize,
+    pub(crate) pattern: usize,
     caps: Captures<'t>,
     tail: Option<(&'m str, &'t str)>,
 }
 
 impl<'t> Matched<'_, 't> {
     /// A named capture's text, or `None` where the group did not participate.
-    pub fn name(&self, name: &str) -> Option<&'t str> {
+    #[cfg(test)]
+    pub(crate) fn name(&self, name: &str) -> Option<&'t str> {
         match self.tail {
             Some((tail, text)) if tail == name => Some(text),
             _ => self.caps.name(name).map(|m| m.as_str()),
@@ -57,7 +58,7 @@ impl<'t> Matched<'_, 't> {
     }
 
     /// A capture's text by the index `Matcher::group_index` gave.
-    pub fn get(&self, group: Group) -> Option<&'t str> {
+    pub(crate) fn get(&self, group: Group) -> Option<&'t str> {
         match group {
             Group::Capture(i) => self.caps.get(i).map(|m| m.as_str()),
             Group::Tail => self.tail.map(|(_, text)| text),
@@ -146,13 +147,13 @@ fn is_pattern_name(name: &str) -> bool {
 impl Matcher {
     /// Expand and compile every pattern in `config`, in order. A pattern the `regex` crate cannot compile is an `Err`.
     /// Called once per `Parser` step at plan-compile time and reused by every batch.
-    pub fn compile(config: &GrokConfig) -> Result<Matcher, GrokError> {
+    pub(crate) fn compile(config: &GrokConfig) -> Result<Matcher, GrokError> {
         Self::compile_with(config, &GrokPatterns::new())
     }
 
     /// `compile`, naming the bundle's `shared` patterns too. A step's own pattern may not take a shared one's name:
     /// one name would then mean two patterns in one group.
-    pub fn compile_with(config: &GrokConfig, shared: &GrokPatterns) -> Result<Matcher, GrokError> {
+    pub(crate) fn compile_with(config: &GrokConfig, shared: &GrokPatterns) -> Result<Matcher, GrokError> {
         if let Some((name, _)) = config.custom_patterns.iter().find(|(n, _)| shared.contains_key(n)) {
             return Err(GrokError(format!(
                 "`{name}` is already on the Grok patterns page. Rename this one, or use that one"
@@ -206,7 +207,7 @@ impl Matcher {
     /// What is wrong with each of a bundle's patterns, by name: a built-in's name, or a definition that does not
     /// compile against the bundle's patterns and the built-ins alone. A step's own patterns are not in scope, so a
     /// shared pattern means the same in every step.
-    pub fn check_shared(shared: &GrokPatterns) -> Vec<(String, GrokError)> {
+    pub(crate) fn check_shared(shared: &GrokPatterns) -> Vec<(String, GrokError)> {
         shared
             .keys()
             .filter_map(|name| {
@@ -231,7 +232,7 @@ impl Matcher {
 
     /// Every name the patterns capture, in pattern order, each once. A capture can be minted by a nested pattern the
     /// top-level text never names, so this reads the compiled regexes rather than the pattern strings.
-    pub fn capture_names(&self) -> Vec<&str> {
+    pub(crate) fn capture_names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = Vec::new();
         for (pattern, tail) in self.patterns.iter().zip(&self.tails) {
             for name in pattern.capture_names().flatten().chain(tail.as_deref()) {
@@ -245,13 +246,13 @@ impl Matcher {
 
     /// What the capture `name` holds: its pattern's type where every candidate that captures it gives it the same one,
     /// else text.
-    pub fn holds(&self, name: &str) -> Holds {
+    pub(crate) fn holds(&self, name: &str) -> Holds {
         self.holds.get(name).cloned().unwrap_or_else(Holds::text)
     }
 
     /// The first candidate (declared order) that matches `text`, with its captures, or `None`. One pattern needs no
     /// set pass: its own capture search already answers whether it matches.
-    pub fn match_row<'t>(&self, text: &'t str) -> Option<Matched<'_, 't>> {
+    pub(crate) fn match_row<'t>(&self, text: &'t str) -> Option<Matched<'_, 't>> {
         let pattern = if self.patterns.len() == 1 {
             0
         } else {
@@ -267,12 +268,12 @@ impl Matcher {
     }
 
     /// How many candidate patterns there are.
-    pub fn pattern_count(&self) -> usize {
+    pub(crate) fn pattern_count(&self) -> usize {
         self.patterns.len()
     }
 
     /// Where candidate `pattern` keeps the capture `name`, if it captures it.
-    pub fn group_index(&self, pattern: usize, name: &str) -> Option<Group> {
+    pub(crate) fn group_index(&self, pattern: usize, name: &str) -> Option<Group> {
         if self.tails[pattern].as_deref() == Some(name) {
             return Some(Group::Tail);
         }

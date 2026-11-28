@@ -46,7 +46,7 @@ pub fn parse(src: &str, fid: Option<FunctionId>) -> Result<Expr, CompileError> {
 
 /// The places the runtime fills, in slot order: `core::batch`'s prefix, the record's entries, then the source's
 /// `__source` fields.
-pub fn ingest_fields(meta: &SourceMeta) -> Vec<(Place, DataType)> {
+pub(crate) fn ingest_fields(meta: &SourceMeta) -> Vec<(Place, DataType)> {
     let leaf = |(name, ty): (&str, DataType)| (Place::Leaf(name.to_string()), ty);
     let mut fields: Vec<(Place, DataType)> = prefix_names().map(leaf).collect();
     fields.extend(meta.record().iter().map(|(entry, ty)| (entry.place(), ty.clone())));
@@ -76,7 +76,7 @@ pub struct Instr {
     /// on every row and has its guard compiled into a blend, and what it notes on a masked row is retracted after
     /// it (`plan::exec::retract_masked`). Set on a row barrier and on an instruction lifted ahead of the guarded
     /// expression that reads it; only that expression reads it, so where the guard takes no row it is not computed.
-    pub guard: Option<SlotId>,
+    pub(crate) guard: Option<SlotId>,
     /// Filled by liveness: this slot is dead, so reuse its buffers.
     pub reuse: Option<SlotId>,
     /// Filled by liveness: no instruction reads this instruction's output, so a bare literal may stay a constant
@@ -88,13 +88,13 @@ pub struct Instr {
     /// The `__live` binding in force as the instruction runs. A row dropped before it takes no step, so a kernel
     /// visits only the rows this keeps, and what the instruction raises on any other row is retracted
     /// (`plan::exec::retract_masked`). `None` in a loop's body, whose rows are its wave's.
-    pub live: Option<SlotId>,
+    pub(crate) live: Option<SlotId>,
 }
 
 impl Instr {
     /// Every slot this instruction reads from the batch it runs on, its guard included, a slot possibly more than
     /// once. A loop's body runs on the loop's wave, so what it reads counts here, less the slots the loop fills itself.
-    pub fn reads(&self, f: &mut impl FnMut(SlotId)) {
+    fn reads(&self, f: &mut impl FnMut(SlotId)) {
         self.guard.iter().chain(&self.live).copied().for_each(&mut *f);
         match &self.op {
             Op::Eval { ir } => walk_slots(ir, f),
@@ -135,7 +135,7 @@ impl Instr {
 
 impl Loop {
     /// What a trip's wave takes from the loop's batch besides the element and the accumulators.
-    pub fn wave_reads(&self) -> Vec<SlotId> {
+    pub(crate) fn wave_reads(&self) -> Vec<SlotId> {
         let own = |s: SlotId| {
             self.array.is_some_and(|(_, element)| s == element) || self.accumulators.iter().any(|(r, _)| *r == Some(s))
         };
@@ -160,12 +160,12 @@ fn reads_of(instrs: &[Instr], own: impl Fn(SlotId) -> bool) -> Vec<SlotId> {
 #[derive(Clone, Debug)]
 pub struct Output {
     /// What the call knows it by: a parse's key under its target, a lookup's column or record path.
-    pub name: String,
-    pub slot: SlotId,
+    pub(crate) name: String,
+    pub(crate) slot: SlotId,
     /// The declared type. A lookup under `Multiplicity::All` holds an array of it.
-    pub ty: DataType,
+    pub(crate) ty: DataType,
     /// `Some` only for a declared `datetime`: how its text reads.
-    pub time_source: Option<TimeSource>,
+    pub(crate) time_source: Option<TimeSource>,
 }
 
 /// An object a dynamic parser lays the keys it does not declare into. Each key goes to the deepest object at its
@@ -173,17 +173,17 @@ pub struct Output {
 #[derive(Clone, Debug)]
 pub struct ParseObject {
     /// The object's name, `""` for the record.
-    pub name: String,
+    pub(crate) name: String,
     /// Its unclaimed fields before the parse, which the keys it finds are laid over. `None` where the object has none,
     /// or the parse declares it new and so replaces it.
-    pub under: Option<SlotId>,
+    pub(crate) under: Option<SlotId>,
     /// Where its unclaimed fields after the parse go.
-    pub out: SlotId,
+    pub(crate) out: SlotId,
     /// Whether it is declared closed: a key under it that no field takes is dropped.
-    pub closed: bool,
+    pub(crate) closed: bool,
     /// The record's or the target's, where a schema the pipeline produces types keys under it: the keys a dynamic
     /// parse converts as it lays them.
-    pub schema: Option<std::sync::Arc<crate::format::spread::SchemaKeys>>,
+    pub(crate) schema: Option<std::sync::Arc<crate::format::spread::SchemaKeys>>,
 }
 
 /// What an `Op::Call` runs.
@@ -247,34 +247,34 @@ pub enum Op {
 /// Each `(read_slot, write_slot)` is one accumulator: a name the body binds outside the loop variable. `read_slot` is
 /// its slot before the loop (`None` if never bound); `write_slot` is where the body's last assignment lands, fed back as
 /// the next trip's `read_slot` and holding the row's final value.
-pub type Accumulator = (Option<SlotId>, SlotId);
+type Accumulator = (Option<SlotId>, SlotId);
 
 #[derive(Clone, Debug)]
 pub struct Loop {
     /// The array a `for` walks and its element's slot. A `while` has none: its body leaves at its condition.
-    pub array: Option<(SlotId, SlotId)>,
-    pub accumulators: Vec<Accumulator>,
+    pub(crate) array: Option<(SlotId, SlotId)>,
+    pub(crate) accumulators: Vec<Accumulator>,
     pub body: Vec<Instr>,
     /// The mask of the loop's region, in the wave, where its body can leave it: a row whose bit a trip cleared is
     /// done.
-    pub stay: Option<SlotId>,
+    pub(crate) stay: Option<SlotId>,
     /// How long a loop with no array may run. One with an array ends with it.
-    pub budget: Option<std::time::Duration>,
+    pub(crate) budget: Option<std::time::Duration>,
 }
 
 /// A `for` whose trips do not depend on one another (`independent`): `body` runs once over every element of every row,
 /// in one batch of them, then each of `folds` folds its row's elements.
 #[derive(Clone, Debug)]
 pub struct ArrayFold {
-    pub array: SlotId,
-    pub element_slot: SlotId,
-    pub body: Vec<Instr>,
-    pub folds: Vec<Fold>,
+    pub(crate) array: SlotId,
+    pub(crate) element_slot: SlotId,
+    pub(crate) body: Vec<Instr>,
+    pub(crate) folds: Vec<Fold>,
 }
 
 impl ArrayFold {
     /// What the elements' batch takes from the loop's besides the element.
-    pub fn element_reads(&self) -> Vec<SlotId> {
+    pub(crate) fn element_reads(&self) -> Vec<SlotId> {
         reads_of(&self.body, |s| s == self.element_slot)
     }
 }
@@ -282,12 +282,12 @@ impl ArrayFold {
 /// One accumulator `Op::ArrayFold` writes: the values `value` holds on the elements `ran` selects, every element
 /// without it, folded with `op` onto `seed`, its slot before the loop, into `out`.
 #[derive(Clone, Debug)]
-pub struct Fold {
-    pub op: FoldOp,
-    pub seed: SlotId,
-    pub value: SlotId,
-    pub ran: Option<SlotId>,
-    pub out: SlotId,
+pub(crate) struct Fold {
+    pub(crate) op: FoldOp,
+    pub(crate) seed: SlotId,
+    pub(crate) value: SlotId,
+    pub(crate) ran: Option<SlotId>,
+    pub(crate) out: SlotId,
 }
 
 /// The steps a `try` with a `catch` runs after its body, inside its region.
@@ -318,7 +318,7 @@ pub enum TryStep {
 /// The operators `Op::ArrayFold` accepts: associative and commutative, so the fold order is free. `Last` is a plain
 /// overwrite, and `Push` appends each element's value, in order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FoldOp {
+pub(crate) enum FoldOp {
     Add,
     Mul,
     And,
@@ -333,14 +333,14 @@ pub struct Plan {
     /// it. Positional here and resolved to the author's own id at the wire, the same as a source or a destination --
     /// the executor works in integers, and the position does not survive a config edit that reorders or deletes an
     /// unrelated pipeline (`worker::resolve_subject_labels`).
-    pub id: usize,
+    pub(crate) id: usize,
     /// `PipelineConfig::name`: what a person reading a block reason knows this pipeline by.
-    pub name: String,
+    pub(crate) name: String,
     /// `PipelineConfig::step_ids`, indexed by `FunctionId`: the step an exception came from, as its author named it.
-    pub step_ids: ById<FunctionId, String>,
+    pub(crate) step_ids: ById<FunctionId, String>,
     /// `id` rendered, because it is written as a metric label on every batch and building it there would allocate
     /// per batch on every transform thread. Compiled once, like everything else here.
-    pub id_label: String,
+    pub(crate) id_label: String,
     pub slot_layout: Slots<DataType>,
     pub instrs: Vec<Instr>,
     /// Where each slot came from, indexed by slot: entry `s` describes slot `s`, one entry for every slot in
@@ -351,8 +351,7 @@ pub struct Plan {
     pub provenance: Slots<SlotOrigin>,
     /// Each copy that shares its value's slot under another name, which `provenance` does not see: the slot, the name,
     /// how many slots there were when it was made, and the step that made it.
-    pub aliases: Vec<(SlotId, String, usize, FunctionId)>,
-    pub patterns: ById<PatternId, crate::expr::ast::PatternSrc>,
+    pub(crate) aliases: Vec<(SlotId, String, usize, FunctionId)>,
     pub warnings: Vec<CompileError>,
     /// Instruction indices that are row barriers. Declared by the function, never discovered from the data: finding
     /// one at runtime would cost roughly a thousandfold over the vectorized path while looking identical in the config.
@@ -368,12 +367,12 @@ pub struct Plan {
     pub id_out_slot: Option<SlotId>,
     /// Whether any instruction reads the source's metadata field `i`; the runtime skips building that column otherwise.
     /// Indices line up with the `SourceMeta` this plan was compiled against.
-    pub reads_meta: Vec<bool>,
+    pub(crate) reads_meta: Vec<bool>,
     /// How many slots the runtime fills before the first instruction (`ingest_fields`): the prefix, the record and
     /// the `__source` fields.
-    pub ingest_slots: usize,
+    ingest_slots: usize,
     /// `patterns`, compiled. Indices line up with `patterns`.
-    pub compiled_patterns: ById<PatternId, crate::core::ctx::CompiledPattern>,
+    pub(crate) compiled_patterns: ById<PatternId, crate::core::ctx::CompiledPattern>,
 }
 
 impl Plan {
@@ -388,7 +387,7 @@ impl Plan {
 
     /// Each row's record, by its index in the batch the run began with. Written before the first step, so an
     /// `Unroll` carries it to every row it makes.
-    pub fn origin_slot(&self) -> SlotId {
+    pub(crate) fn origin_slot(&self) -> SlotId {
         SlotId::at(self.slot_layout.len() + 1)
     }
 
@@ -419,7 +418,7 @@ impl Plan {
 
     /// The tag field's column: what a route's `when` reads and the serializer writes, under the route's tag field,
     /// beside the pipeline's own fields.
-    pub fn tag_slot(&self) -> SlotId {
+    pub(crate) fn tag_slot(&self) -> SlotId {
         self.slot_layout.next_id()
     }
 }
@@ -555,7 +554,7 @@ enum Resolved {
 /// `let`s bound; where the cut body does not compile that far, where the step begins. `None` where it does not
 /// resolve, or `step` is not one the pipeline reaches. The pipeline need not compile: an error elsewhere, the
 /// half-typed expression the question is about among them, leaves the names before `step` bound.
-pub fn type_at(
+pub(crate) fn type_at(
     p: &PipelineConfig,
     meta: &SourceMeta,
     step: FunctionId,
@@ -711,7 +710,6 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         instrs: c.instrs,
         provenance: c.syms.origins,
         aliases: c.syms.aliases,
-        patterns: c.res.patterns,
         warnings: c.syms.warnings,
         barriers,
         tree,

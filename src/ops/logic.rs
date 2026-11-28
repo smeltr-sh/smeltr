@@ -124,7 +124,7 @@ fn winners(ins: &[&Column], len: usize) -> Vec<Vec<u64>> {
 
 /// Set the bits of `out` for the rows `c` holds a value in; the rest keep what they were. A constant holds one in
 /// every row. A struct holds one where any leaf or its unclaimed fields do. An unbound column holds none.
-pub fn rows_with_a_value(c: &Column, len: usize, out: &mut [u64]) {
+pub(crate) fn rows_with_a_value(c: &Column, len: usize, out: &mut [u64]) {
     match (c.constant_value(), c.validity()) {
         (Some(_), _) => bits::fill_valid(out, len),
         (None, Some(v)) => {
@@ -157,7 +157,7 @@ pub fn rows_with_a_value(c: &Column, len: usize, out: &mut [u64]) {
 /// field any source has; a field a source lacks is null on the rows that source wins. Each field meets at the type its
 /// columns hold (`meet`), so a field held as text beside one held as a variant is taken as a variant, each value as
 /// it is.
-pub(crate) fn take(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, len: usize) -> Column {
+fn take(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, len: usize) -> Column {
     match ty {
         // A `null` type holds no value: its column is `Empty`, as `build`'s is.
         DataType::Null => Column::empty(DataType::Null, len),

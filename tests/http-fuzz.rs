@@ -14,6 +14,7 @@
 //! back.
 
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
@@ -277,7 +278,8 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
     }
     if compression == "gzip" && rng.chance(2) {
         cov.reach("compressionLevel");
-        d.insert("compressionLevel".into(), json!(1 + rng.below(9)));
+        // igzip's levels, 0 to 3.
+        d.insert("compressionLevel".into(), json!(rng.below(4)));
     }
 
     let mut taken: BTreeSet<String> = BTreeSet::new();
@@ -528,7 +530,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
         // Past the top of gzip's levels, or any level for none.
         "compressionLevel" => {
             let gzip = d.get("compression").and_then(Value::as_str) == Some("gzip");
-            d.insert("compressionLevel".into(), json!(if gzip { 10 } else { 1 }));
+            d.insert("compressionLevel".into(), json!(if gzip { 4 } else { 1 }));
             "compressionLevel"
         }
         "headers.name" | "headers.owned" | "headers.value" => {
@@ -646,7 +648,7 @@ fn size_of(v: &Value) -> usize {
 /// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw) -> Value {
     let mut b = json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [Value::Object(draw.destination.clone())],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
@@ -754,7 +756,11 @@ fn check_loaded(draw: &Draw, c: &HttpDestinationConfig, named: &[SecretRef]) -> 
     };
     expect("format", format!("{payload:?}"), format!("{:?}", c.payload));
     let compression = match s("compression").unwrap_or("none") {
-        "gzip" => Compression::Gzip(d.get("compressionLevel").and_then(Value::as_u64).unwrap_or(6) as u8),
+        "gzip" => {
+            let level = d.get("compressionLevel").and_then(Value::as_u64).map(|l| l as u8);
+            let level = level.map_or(IgzipLevel::DEFAULT, |l| IgzipLevel::new(l).unwrap());
+            Compression::Gzip(GzipLevel::Igzip(level))
+        }
         _ => Compression::None,
     };
     expect(

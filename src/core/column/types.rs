@@ -19,7 +19,7 @@ pub enum FixedType {
 }
 
 impl FixedType {
-    pub const fn size_of(&self) -> usize {
+    pub(crate) const fn size_of(&self) -> usize {
         8
     }
 }
@@ -78,7 +78,7 @@ impl std::fmt::Display for DataType {
 }
 
 impl DataType {
-    pub fn is_numeric(&self) -> bool {
+    pub(crate) fn is_numeric(&self) -> bool {
         matches!(self, DataType::I64 | DataType::F64)
     }
 
@@ -146,7 +146,7 @@ impl DataType {
 
     /// Two types share a pool bucket when their storage shape and per-row width match. This, not type equality, is what
     /// makes buffer reuse legal: an I64 buffer can back an F64 output, a Str buffer cannot.
-    pub fn same_storage_shape(&self, other: &DataType) -> bool {
+    pub(crate) fn same_storage_shape(&self, other: &DataType) -> bool {
         use DataType::*;
         matches!(
             (self, other),
@@ -181,8 +181,8 @@ impl From<VarType> for DataType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeError {
-    pub expected: &'static str,
-    pub found: DataType,
+    pub(crate) expected: &'static str,
+    pub(crate) found: DataType,
 }
 
 impl std::fmt::Display for TypeError {

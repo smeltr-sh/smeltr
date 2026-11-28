@@ -6,9 +6,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::harness::fake::FakeDestination;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::{DestId, FunctionId, SourceId};
-use smeltr::io::fake::FakeDestination;
 use smeltr::io::logs::{LogsSource, LogsSourceConfig};
 use smeltr::metrics::{Metrics, MetricsHandle};
 use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, PipelineConfig, Step};

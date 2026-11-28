@@ -2,7 +2,6 @@
 //! the directive it gets back, and the blocking client that sends it. Every exchange is worker-initiated.
 
 use crate::core::time::millis;
-use std::collections::HashMap;
 
 use crate::core::time::DateTime;
 
@@ -16,7 +15,7 @@ use crate::metrics::{MetricSample, MetricValue, Metrics};
 /// With the default beat this is what the leader drains at, and a worker saying more than that per second
 /// never catches up: its queue fills and what it says after is refused. The bound on raising it is the body
 /// (see [`HEARTBEAT_BODY_LIMIT`]), not the leader's appetite.
-pub const LOGS_PER_HEARTBEAT: usize = 512;
+pub(crate) const LOGS_PER_HEARTBEAT: usize = 512;
 
 /// How long one exchange with the leader may take, end to end: name resolution, connection, request, and reading
 /// the response body. `ureq` bounds none of these on its own, so without it a leader that accepts a connection and
@@ -32,11 +31,11 @@ pub const REQUEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(3
 /// of raw records, which is three orders of magnitude past a heartbeat; on a link where that takes longer than
 /// [`REQUEST_BUDGET`], every retry would restart it and the records would expire undelivered. It is the same five
 /// minutes a capture itself may run for.
-pub const CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
+const CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// How long one lookup file may take to arrive. A file is up to 2 GB, so this is what that size needs at a little over
 /// a megabyte a second; a deploy that needs a file waits on it, and one that does not fetches nothing.
-pub const LOOKUP_FILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const LOOKUP_FILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// What one string may contribute to a heartbeat: a log's message and fields, a destination's refusal, a source's
 /// block reason. The console keeps the whole of a message; the wire does not, because what a destination or a TLS
@@ -44,10 +43,10 @@ pub const LOOKUP_FILE_BUDGET: std::time::Duration = std::time::Duration::from_se
 ///
 /// Long enough for the worst error worth reading. An Elasticsearch mapping error that names the field and the
 /// document runs to several hundred characters, and a block reason carries its fix ahead of one.
-pub const MAX_TEXT_LEN: usize = 1000;
+pub(crate) const MAX_TEXT_LEN: usize = 1000;
 
 /// Fields one log carries onward. A call site with more than this to say has stopped describing an event.
-pub const MAX_LOG_FIELDS: usize = 16;
+const MAX_LOG_FIELDS: usize = 16;
 
 /// What the leader will read from one heartbeat. Stated rather than inherited from the web framework, because
 /// the bounds above are chosen against it: a full batch of the worst event there can be measures 9.1 MB, and
@@ -64,7 +63,7 @@ pub const HEARTBEAT_BODY_LIMIT: usize = 64 * 1024 * 1024;
 /// The share of [`HEARTBEAT_BODY_LIMIT`] a heartbeat may reach before the worker that built it warns about it.
 /// Metrics have no cap of their own to fall back on, so this is what stands in for one: an operator sees which
 /// worker and how large well before a beat is ever refused.
-pub const HEARTBEAT_BODY_WARNING: f64 = 0.5;
+pub(crate) const HEARTBEAT_BODY_WARNING: f64 = 0.5;
 
 /// One log on the wire. The worker it came from is on the request, so it is not repeated per event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,37 +71,37 @@ pub const HEARTBEAT_BODY_WARNING: f64 = 0.5;
 pub struct LogDto {
     /// This event's number in the reporting process's life. With the request's `boot_id` it is what lets the
     /// leader take the same batch twice without writing it twice -- which it must, because `send` retries.
-    pub seq: u64,
-    pub timestamp_ms: i64,
-    pub level: String,
+    pub(crate) seq: u64,
+    pub(crate) timestamp_ms: i64,
+    pub(crate) level: String,
     /// Absent on a library's line said outside any span of ours (`crate::logs::Event::class`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub class: Option<String>,
+    pub(crate) class: Option<String>,
     /// Empty from a build before lines had types: a field added to a heartbeat is optional.
     #[serde(default)]
-    pub r#type: String,
+    pub(crate) r#type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service: Option<String>,
+    pub(crate) service: Option<String>,
     /// The line's class and type as `class.type`, or its type alone, as a build before lines had types named it. A
     /// leader of such a build refuses a heartbeat without it, and a worker of one sends only this.
     #[serde(default)]
-    pub site: String,
-    pub message: String,
+    pub(crate) site: String,
+    pub(crate) message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread: Option<String>,
+    pub(crate) thread: Option<String>,
     /// Whose life `seq` counts in, when that is not the process sending the request. A worker's runtime is a
     /// process of its own with a sequence of its own, and the leader's `(worker, boot, seq)` key would collide
     /// two of them under one number. Absent from a worker whose logs all come from the process that heartbeats.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub boot_id: Option<u64>,
+    pub(crate) boot_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<(String, FieldValueDto)>,
+    pub(crate) fields: Vec<(String, FieldValueDto)>,
 }
 
 /// A detail field's value, typed so that whatever reads it does not have to parse the sentence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum FieldValueDto {
+pub(crate) enum FieldValueDto {
     Str(String),
     Int(i64),
     Uint(u64),
@@ -146,7 +145,7 @@ impl From<&crate::logs::Event> for LogDto {
 
 impl LogDto {
     /// The group its `group` field names, if it names one.
-    pub fn named_group(&self) -> Option<&str> {
+    pub(crate) fn named_group(&self) -> Option<&str> {
         self.fields.iter().find_map(|(name, value)| match value {
             FieldValueDto::Str(group) if name == "group" && !group.is_empty() => Some(group.as_str()),
             _ => None,
@@ -155,7 +154,7 @@ impl LogDto {
 
     /// Its class and type, read from `site` when a build before lines had types sent it, split at its first dot as
     /// the logs store's step that split each stored site does.
-    pub fn class_and_type(&self) -> (Option<&str>, &str) {
+    pub(crate) fn class_and_type(&self) -> (Option<&str>, &str) {
         if !self.r#type.is_empty() || self.site.is_empty() {
             return (self.class.as_deref(), &self.r#type);
         }
@@ -168,7 +167,7 @@ impl LogDto {
     /// The event this carries, for a process that reads it rather than delivers it: a runtime handed its
     /// supervisor's logs to mirror. Named for no worker, which the reading process supplies. `None` for a level this
     /// build does not know.
-    pub fn into_event(self) -> Option<crate::logs::Event> {
+    pub(crate) fn into_event(self) -> Option<crate::logs::Event> {
         Some(crate::logs::Event {
             timestamp: std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.timestamp_ms.max(0) as u64),
             level: crate::logs::level_for_label(&self.level)?,
@@ -249,7 +248,7 @@ pub enum MetricValueDto {
 
 impl MetricValueDto {
     /// A text fact, cut to [`MAX_TEXT_LEN`]: a fact rides every heartbeat while it stands, so none is longer.
-    pub fn text(fact: &str) -> MetricValueDto {
+    pub(crate) fn text(fact: &str) -> MetricValueDto {
         MetricValueDto::Text(crate::runtime::truncate(fact, MAX_TEXT_LEN))
     }
 }
@@ -271,7 +270,7 @@ impl From<MetricSample> for MetricSampleDto {
 impl MetricSampleDto {
     /// Back into a registry sample, for the worker process that mirrors what its other process recorded. `None` for
     /// text, which no registry holds, and for a kind this build does not read.
-    pub fn into_sample(self) -> Option<MetricSample> {
+    pub(crate) fn into_sample(self) -> Option<MetricSample> {
         let value = match self.value {
             MetricValueDto::Counter(v) => MetricValue::Counter(v),
             MetricValueDto::FloatCounter(v) => MetricValue::FloatCounter(v),
@@ -304,31 +303,12 @@ fn intern(name: String) -> &'static str {
 
 /// The registry's increase since the heartbeat's last commit. The cursor advances only in [`commit_for_heartbeat`],
 /// once the request has landed, so a failed send leaves the window's counts owed.
-pub fn peek_for_heartbeat(metrics: &Metrics) -> Vec<MetricSample> {
+pub(crate) fn peek_for_heartbeat(metrics: &Metrics) -> Vec<MetricSample> {
     metrics.peek_delta(crate::metrics::SUBSCRIBER_HEARTBEAT)
 }
 
-/// Peeked samples as per-thread wire DTOs, keyed by the `thread` label. Every sample carries one: `MetricsHandle`
-/// pushes it on every write.
-pub fn split_by_thread(samples: &[MetricSample]) -> HashMap<String, Vec<MetricSampleDto>> {
-    let mut out: HashMap<String, Vec<MetricSampleDto>> = HashMap::new();
-    for sample in samples {
-        let thread = sample
-            .key
-            .labels
-            .iter()
-            .find(|(k, _)| *k == crate::metrics::THREAD_LABEL)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
-        out.entry(thread)
-            .or_default()
-            .push(MetricSampleDto::from(sample.clone()));
-    }
-    out
-}
-
 /// Advance the heartbeat's cursor past `sent`, once the request landed.
-pub fn commit_for_heartbeat(metrics: &Metrics, sent: &[MetricSample]) {
+pub(crate) fn commit_for_heartbeat(metrics: &Metrics, sent: &[MetricSample]) {
     metrics.commit_delta(crate::metrics::SUBSCRIBER_HEARTBEAT, sent);
 }
 
@@ -366,45 +346,45 @@ pub struct Supervising {
     /// still ahead of it when one will not start -- which is what tells a worker that refused a commit from one
     /// that is simply up to date.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub desired_commit: Option<String>,
+    pub(crate) desired_commit: Option<String>,
     /// What the deployer is doing, and when it started. A phase that does not move is the shape a stall takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<String>,
+    pub(crate) phase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase_since_ms: Option<i64>,
+    pub(crate) phase_since_ms: Option<i64>,
     /// When discovery last succeeded, which is not when it last tried: a worker whose fetches are all failing
     /// looks busy and learns nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovered_ms: Option<i64>,
+    pub(crate) discovered_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempted_ms: Option<i64>,
+    pub(crate) attempted_ms: Option<i64>,
     /// Which runtime process is running, counted per supervisor. A number that climbs is a runtime that keeps
     /// being replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub incarnation: Option<u64>,
+    pub(crate) incarnation: Option<u64>,
     /// Why the last attempt did not run, cut to the length every other reported string is. What a bundle is
     /// refused for is a name and a version, never a value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<String>,
+    pub(crate) failure: Option<String>,
     /// What every receiver the running deployment reads listens on, which is where its senders send. Empty while
     /// nothing runs, and from a worker older than this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub listens: Vec<Listening>,
+    pub(crate) listens: Vec<Listening>,
     /// The name this worker's host goes by, which a sender reaches it under when a receiver listens on every
     /// address. `None` where the host would not say, and from a worker older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_name: Option<String>,
+    pub(crate) host_name: Option<String>,
 }
 
 /// One receiver's address, as its worker listens on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Listening {
+pub(crate) struct Listening {
     /// The source the receiver is.
-    pub source: String,
-    pub transport: crate::plan::topology::Transport,
+    pub(crate) source: String,
+    pub(crate) transport: crate::plan::topology::Transport,
     /// Every address of the host when its IP is unspecified.
-    pub address: std::net::SocketAddr,
+    pub(crate) address: std::net::SocketAddr,
 }
 
 /// What this worker -- its supervisor and the runtime it runs -- is spending against what it is
@@ -416,37 +396,37 @@ pub struct ResourceReport {
     /// `None` on a worker's first heartbeat: a rate needs a previous reading, and reporting zero
     /// would say "idle" about a worker that has simply just started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_percent: Option<f64>,
+    pub(crate) cpu_percent: Option<f64>,
     /// How many cores `cpu_percent` is a percentage of: a container's own quota where one was
     /// found, every core the host has otherwise. Fractional under a quota, which is what a k8s
     /// `cpu: 500m` limit is. Absent from a worker older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_limit_cores: Option<f64>,
+    pub(crate) cpu_limit_cores: Option<f64>,
     /// Whether `cpu_percent` is measured against a real container CPU quota rather than every
     /// core the host has.
-    pub cpu_limited: bool,
-    pub memory_used_bytes: u64,
+    pub(crate) cpu_limited: bool,
+    pub(crate) memory_used_bytes: u64,
     /// What `memory_used_bytes` is measured against. `None` only when neither a container memory
     /// limit nor the host's own total could be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_limit_bytes: Option<u64>,
+    pub(crate) memory_limit_bytes: Option<u64>,
     /// Whether `memory_limit_bytes` is a real container memory limit rather than the host's own
     /// total.
-    pub memory_limited: bool,
+    pub(crate) memory_limited: bool,
     /// Free and total bytes of the filesystem under this worker's state directory. Absent from a
     /// worker older than these fields, and from one whose filesystem would not answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disk_free_bytes: Option<u64>,
+    pub(crate) disk_free_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disk_total_bytes: Option<u64>,
+    pub(crate) disk_total_bytes: Option<u64>,
     /// How many files the worker may hold open (`RLIMIT_NOFILE`). Absent from a worker older than this field, and
     /// where the platform sets no such limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open_file_limit: Option<u64>,
+    pub(crate) open_file_limit: Option<u64>,
     /// How many connections the worker's receivers may hold together, within its open-file limit
     /// (`io::connections::Budget`). Absent from a worker older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connection_budget: Option<u64>,
+    pub(crate) connection_budget: Option<u64>,
 }
 
 impl From<crate::resources::ResourceUsage> for ResourceReport {
@@ -584,16 +564,16 @@ pub struct HeartbeatRequest {
 
 /// How many ledger entries, added and removed, one heartbeat carries. At [`MAX_LEDGER_ITEM`] and
 /// [`MAX_LEDGER_ENTRY`] apiece that is about 11 MB, inside [`HEARTBEAT_BODY_LIMIT`] beside a full batch of logs.
-pub const LEDGER_PER_HEARTBEAT: usize = 8192;
+pub(crate) const LEDGER_PER_HEARTBEAT: usize = 8192;
 
 /// The longest name a ledger keeps for one item: S3's and Azure's longest key.
-pub const MAX_LEDGER_ITEM: usize = 1024;
+pub(crate) const MAX_LEDGER_ITEM: usize = 1024;
 
 /// The longest record a ledger keeps of one item's read.
-pub const MAX_LEDGER_ENTRY: usize = 256;
+pub(crate) const MAX_LEDGER_ENTRY: usize = 256;
 
 /// The longest cursor a source keeps.
-pub const MAX_CURSOR: usize = 1024;
+pub(crate) const MAX_CURSOR: usize = 1024;
 
 /// One single-worker source, as its progress is kept. The place is what the source reads, as its kind names it
 /// (a bucket and prefix, a table), so a source pointed somewhere else starts afresh rather than skipping what it
@@ -601,8 +581,8 @@ pub const MAX_CURSOR: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceKey {
-    pub source: String,
-    pub place: String,
+    pub(crate) source: String,
+    pub(crate) place: String,
 }
 
 /// One item a source has read, by name, and the source's own record of the read: the version it read and how far.
@@ -610,7 +590,7 @@ pub struct SourceKey {
 #[serde(rename_all = "camelCase")]
 pub struct LedgerEntry {
     pub item: String,
-    pub entry: String,
+    pub(crate) entry: String,
 }
 
 /// What one held source has delivered: every destination has acknowledged it.
@@ -618,20 +598,20 @@ pub struct LedgerEntry {
 #[serde(rename_all = "camelCase")]
 pub struct SourceProgress {
     #[serde(flatten)]
-    pub key: SourceKey,
+    pub(crate) key: SourceKey,
     #[serde(flatten)]
-    pub progress: crate::io::Progress,
+    pub(crate) progress: crate::io::Progress,
 }
 
 /// A single-worker source the leader holds for this worker, and where it resumes. The ledger is fetched on its
 /// own (`/api/worker/ledger`), since it can be far larger than a heartbeat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Hold {
+pub(crate) struct Hold {
     #[serde(flatten)]
-    pub key: SourceKey,
+    pub(crate) key: SourceKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub(crate) cursor: Option<String>,
 }
 
 // -- streams ------------------------------------------------------------------
@@ -639,10 +619,10 @@ pub struct Hold {
 /// How many fields one Parser's shape names in one report, and how many keys one source's unmatched rows name. Past
 /// either, a report counts what it left out instead of naming it (`fields_dropped`, `keys_dropped`): a field name
 /// is data rather than structure, so without a bound a source inventing names would grow a heartbeat without one.
-pub const STREAM_FIELDS_PER_PARSER: usize = 256;
-pub const STREAM_KEYS_PER_SOURCE: usize = 64;
+pub(crate) const STREAM_FIELDS_PER_PARSER: usize = 256;
+pub(crate) const STREAM_KEYS_PER_SOURCE: usize = 64;
 /// The longest field name or stream key a report carries. A longer one is counted as dropped.
-pub const STREAM_NAME_LEN: usize = 256;
+pub(crate) const STREAM_NAME_LEN: usize = 256;
 
 /// What a worker saw of the data flowing through it since it last reported (design doc, Observability): the fields
 /// each Parser produced from one batch per interval, and the streams each source received that no route took.
@@ -662,11 +642,11 @@ pub struct StreamReport {
 
 /// How many values one field of one source is counted for on one worker. A field that holds more is no sender field:
 /// the worker stops counting it and says so ([`SenderCounts::too_many`]).
-pub const SENDER_VALUES: usize = 256;
+pub(crate) const SENDER_VALUES: usize = 256;
 
 /// How many fields of one source's records a worker counts senders in, besides its stream key: what bounds a
 /// report's senders, with [`SENDER_VALUES`].
-pub const SENDER_FIELDS: usize = 64;
+pub(crate) const SENDER_FIELDS: usize = 64;
 
 /// The rows each value of one field of one source's records held, where the pipeline delivered them: what a sender
 /// is (`leader::senders`). A record counts once for each field, whichever routes deliver it.
@@ -681,7 +661,7 @@ pub struct SenderCounts {
     pub values: Vec<SenderRows>,
     /// The field has held more than [`SENDER_VALUES`] values on this worker, which counts it no more.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub too_many: bool,
+    pub(crate) too_many: bool,
 }
 
 /// One value of a field, and how many records held it.
@@ -708,7 +688,7 @@ pub struct ParserShape {
     pub fields: Vec<FieldShape>,
     /// Fields seen past [`STREAM_FIELDS_PER_PARSER`], or with a name past [`STREAM_NAME_LEN`], as rows.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
-    pub fields_dropped: u64,
+    pub(crate) fields_dropped: u64,
 }
 
 /// One field a Parser produced: how many rows held it, and as what. The counts are `core::tally::TagCounts`'s, summed
@@ -720,19 +700,19 @@ pub struct FieldShape {
     pub name: String,
     /// Whether the Parser's declaration named it. A declared field's `suggested` is its declared type.
     pub declared: bool,
-    pub suggested: String,
+    pub(crate) suggested: String,
     pub present: u64,
-    pub bools: u64,
+    pub(crate) bools: u64,
     pub ints: u64,
     pub floats: u64,
     pub strings: u64,
-    pub arrays: u64,
-    pub objects: u64,
+    pub(crate) arrays: u64,
+    pub(crate) objects: u64,
     /// Rows whose value would not coerce to the declared type. Zero unless `declared`.
-    pub failed: u64,
+    pub(crate) failed: u64,
     /// Rows whose value read as a time (`TagCounts::times`). Zero unless undeclared; absent from a build before it.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
-    pub times: u64,
+    pub(crate) times: u64,
 }
 
 /// The rows of one source that no route took, by the stream they belong to: what the source's kind files a record
@@ -747,7 +727,7 @@ pub struct UnmatchedStreams {
     pub keys: Vec<StreamKey>,
     /// Rows under a key past [`STREAM_KEYS_PER_SOURCE`], or past [`STREAM_NAME_LEN`].
     #[serde(default, skip_serializing_if = "is_zero_u64")]
-    pub keys_dropped: u64,
+    pub(crate) keys_dropped: u64,
 }
 
 /// One stream's key and how many unmatched rows it had. An empty key is a record its source filed under nothing.
@@ -763,14 +743,14 @@ fn is_zero_u64(n: &u64) -> bool {
 }
 
 impl StreamReport {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.parsers.is_empty() && self.unmatched.is_empty() && self.senders.is_empty()
     }
 
     /// This report and `later`, one: the counts sum, a shape's `declared` and `suggested` are the later reading, and
     /// what either left out stays left out. The caps hold on the result, so two capped reports fold into one capped
     /// report with the overflow counted rather than named.
-    pub fn absorb(&mut self, later: StreamReport) {
+    pub(crate) fn absorb(&mut self, later: StreamReport) {
         for shape in later.parsers {
             let same = |p: &ParserShape| {
                 p.source == shape.source
@@ -805,7 +785,7 @@ impl StreamReport {
 impl SenderCounts {
     /// Fold `later`'s counts into this field's; see [`StreamReport::absorb`]. A field that reached too many values is
     /// counted no more.
-    pub fn absorb(&mut self, later: SenderCounts) {
+    fn absorb(&mut self, later: SenderCounts) {
         self.too_many |= later.too_many;
         let mut at: std::collections::HashMap<String, usize> = self
             .values
@@ -831,7 +811,7 @@ impl SenderCounts {
 
 impl ParserShape {
     /// Fold `later`'s counts into this shape; see [`StreamReport::absorb`].
-    pub fn absorb(&mut self, later: ParserShape) {
+    fn absorb(&mut self, later: ParserShape) {
         self.rows += later.rows;
         self.fields_dropped += later.fields_dropped;
         for field in later.fields {
@@ -846,7 +826,7 @@ impl ParserShape {
 
 impl FieldShape {
     /// Fold `later`'s counts into this field; see [`StreamReport::absorb`].
-    pub fn absorb(&mut self, later: FieldShape) {
+    fn absorb(&mut self, later: FieldShape) {
         self.declared = later.declared;
         self.suggested = later.suggested;
         self.present += later.present;
@@ -863,7 +843,7 @@ impl FieldShape {
 
 impl UnmatchedStreams {
     /// Fold `later`'s counts into this source's; see [`StreamReport::absorb`].
-    pub fn absorb(&mut self, later: UnmatchedStreams) {
+    fn absorb(&mut self, later: UnmatchedStreams) {
         self.rows += later.rows;
         self.keys_dropped += later.keys_dropped;
         for key in later.keys {
@@ -893,11 +873,11 @@ pub struct HeartbeatResponse {
     /// nobody is debugging, which is what keeps capture off the steady-state path: a worker holds no capture
     /// machinery until a session names it. An absent key is the empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub captures: Vec<Invited>,
+    pub(crate) captures: Vec<Invited>,
     /// Credentials this worker's group needs and does not hold. Empty whenever it is up to date, which is every
     /// heartbeat but the few after a rotation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<SecretDelivery>,
+    pub(crate) secrets: Vec<SecretDelivery>,
     /// The authorities to verify this leader by, PEM, sent whenever this worker reports holding something other
     /// than what the leader publishes. A worker is reached only when it asks, so this is the one moment a trust
     /// store can be changed: it rides the connection the worker's own token authenticates, verified against the
@@ -909,34 +889,34 @@ pub struct HeartbeatResponse {
     /// Absent whenever the worker already holds what is published, which is almost always -- an authority nobody
     /// is replacing is a kilobyte no beat should carry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authority: Option<String>,
+    pub(crate) authority: Option<String>,
     /// What an operator asked this worker to do, repeated on every answer until the worker's beat says it took it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub directive: Option<Directive>,
+    pub(crate) directive: Option<Directive>,
     /// Every single-worker source this worker holds, whole on every answer. A source this leaves out is one this
     /// worker stops reading. An absent key is the empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub holds: Vec<Hold>,
+    pub(crate) holds: Vec<Hold>,
     /// The commit the deployed pointer names, so a worker that has already fetched it need not fetch again to learn
     /// it has not moved. A cue, not an order: what the worker runs is what its fetch returns. Absent before anything
     /// is deployed, and from a leader too old to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deployed: Option<String>,
+    pub(crate) deployed: Option<String>,
     /// The levels this worker keeps its lines at, whole on every answer. Absent while an operator has set nothing,
     /// and from a leader too old to say: every line is then kept at the process's startup level
     /// (`crate::startup_config::log_level`).
     #[serde(default, skip_serializing_if = "LogLevels::is_empty")]
-    pub log_levels: LogLevels,
+    pub(crate) log_levels: LogLevels,
     /// What an editor changed of the sender fields of each source this worker's group runs, whole on every answer.
     /// Absent while nobody has changed any, and from a leader too old to say: every field the pipeline delivers as
     /// a string, and each source's stream key, are then counted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sender_fields: Vec<SenderFields>,
+    pub(crate) sender_fields: Vec<SenderFields>,
     /// How often the leader has its workers beat, which is the pace it judges them by. A worker beats at this from
     /// the answer that carries it on. Absent from a leader older than this field, and then the worker keeps
     /// [`crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heartbeat_interval_ms: Option<u64>,
+    pub(crate) heartbeat_interval_ms: Option<u64>,
 }
 
 /// One source's sender fields as an editor changed them: those it stopped counting, and those it added, which are
@@ -955,30 +935,30 @@ pub struct SenderFields {
 /// The levels lines are kept at (`crate::logs::levels`), each a label of [`crate::logs::LEVEL_LABELS`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LogLevels {
+pub(crate) struct LogLevels {
     /// Every line no override names. Absent is the process's startup level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub(crate) default: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub overrides: Vec<LevelOverride>,
+    pub(crate) overrides: Vec<LevelOverride>,
 }
 
 /// The level the lines one override names are kept at. It names a class and a type, a class, or a service.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LevelOverride {
+pub(crate) struct LevelOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub class: Option<String>,
+    pub(crate) class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r#type: Option<String>,
+    pub(crate) r#type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service: Option<String>,
-    pub level: String,
+    pub(crate) service: Option<String>,
+    pub(crate) level: String,
 }
 
 /// What one override names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Named<'a> {
+pub(crate) enum Named<'a> {
     Type { class: &'a str, kind: &'a str },
     Class(&'a str),
     Service(&'a str),
@@ -986,7 +966,7 @@ pub enum Named<'a> {
 
 impl LevelOverride {
     /// What this names, or `None` for any other mix of class, type and service, which names no line.
-    pub fn names(&self) -> Option<Named<'_>> {
+    pub(crate) fn names(&self) -> Option<Named<'_>> {
         match (self.class.as_deref(), self.r#type.as_deref(), self.service.as_deref()) {
             (Some(class), Some(kind), None) => Some(Named::Type { class, kind }),
             (Some(class), None, None) => Some(Named::Class(class)),
@@ -997,14 +977,14 @@ impl LevelOverride {
 }
 
 impl LogLevels {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.default.is_none() && self.overrides.is_empty()
     }
 
     /// What a process keeps its lines at, `fallback` where these name no default. A label this build does not know
     /// is one it cannot keep, and an override naming anything else is one it cannot follow, so those lines stay at
     /// the default.
-    pub fn levels(&self, fallback: tracing::Level) -> crate::logs::levels::Levels {
+    pub(crate) fn levels(&self, fallback: tracing::Level) -> crate::logs::levels::Levels {
         let default = self
             .default
             .as_deref()
@@ -1036,7 +1016,7 @@ impl LogLevels {
     }
 
     /// Keep this process's lines at these levels from now on.
-    pub fn apply(&self) {
+    pub(crate) fn apply(&self) {
         crate::logs::levels::set(self.levels(crate::startup_config::log_level()));
     }
 }
@@ -1045,9 +1025,9 @@ impl LogLevels {
 /// once, however many answers carry it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Directive {
-    pub id: String,
-    pub action: DirectiveAction,
+pub(crate) struct Directive {
+    pub(crate) id: String,
+    pub(crate) action: DirectiveAction,
 }
 
 /// What a directive asks.
@@ -1146,13 +1126,13 @@ impl CaptureInvitation {
     /// Whether this capture reads its source itself on a worker whose deployment already reads it, rather than
     /// tapping what the deployment reads: an SQL Run, which reads its query as its author has it now, or a capture
     /// that starts somewhere other than the latest.
-    pub fn reads_source_itself(&self) -> bool {
+    pub(crate) fn reads_source_itself(&self) -> bool {
         self.start.is_some() || self.source.as_ref().is_some_and(|s| s.kind.runs_its_own_query())
     }
 
     /// The source a deployment reading it serves this capture from, by tapping its records. None for a capture that
     /// names no source, or that reads its source itself wherever it is deployed.
-    pub fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
+    pub(crate) fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
         self.source.as_ref().filter(|_| !self.reads_source_itself())
     }
 }
@@ -1162,13 +1142,13 @@ impl CaptureInvitation {
 /// rather than failing the whole answer, which carries the worker's secrets, authority and directives too. The
 /// worker answers it with a failed report, so the capture says which worker could not take part.
 #[derive(Debug, Clone)]
-pub enum Invited {
+pub(crate) enum Invited {
     Readable(Box<CaptureInvitation>),
     Unreadable { session: String },
 }
 
 impl Invited {
-    pub fn session(&self) -> &str {
+    pub(crate) fn session(&self) -> &str {
         match self {
             Invited::Readable(invitation) => &invitation.session,
             Invited::Unreadable { session } => session,
@@ -1226,11 +1206,11 @@ pub struct CaptureReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvroField {
-    pub name: String,
+    pub(crate) name: String,
     /// The schema's own spelling of its type, such as `long` or `union[null, string]`.
-    pub avro_type: String,
+    pub(crate) avro_type: String,
     /// The type it reads as, spelled as a source declares one.
-    pub suggested: String,
+    pub(crate) suggested: String,
 }
 
 /// What Run found out about an SQL source's query: the columns its result has, and what the database plans for a
@@ -1333,7 +1313,7 @@ pub struct CapturedRow {
 
 /// The columns a destination batch adds after the route's fields, in this order: the topic, index or key prefix the
 /// row chose there; its document id there; and the route that made it, by its id and by its name.
-pub const DESTINATION_COLUMNS: [&str; 4] = [
+pub(crate) const DESTINATION_COLUMNS: [&str; 4] = [
     "__destination.placement",
     "__destination.id",
     "__destination.route",
@@ -1341,7 +1321,7 @@ pub const DESTINATION_COLUMNS: [&str; 4] = [
 ];
 
 impl CaptureBatch {
-    pub fn new(columns: Vec<CaptureColumn>) -> CaptureBatch {
+    pub(crate) fn new(columns: Vec<CaptureColumn>) -> CaptureBatch {
         CaptureBatch {
             columns,
             rows: Vec::new(),
@@ -1349,17 +1329,17 @@ impl CaptureBatch {
     }
 
     /// The bytes the batch's names and types cost, once. What capture limits count with each row's `size`.
-    pub fn header_size(&self) -> usize {
+    pub(crate) fn header_size(&self) -> usize {
         self.columns.iter().map(|c| c.name.len() + c.ty.len()).sum()
     }
 
     /// The bytes this batch adds to a capture: its names and types once, and every row.
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.header_size() + self.rows.iter().map(CapturedRow::size).sum::<usize>()
     }
 
     /// The column every capture's rows carry the instant it was taken in.
-    pub const TAKEN_AT: &'static str = "__capture.timestamp";
+    pub(crate) const TAKEN_AT: &'static str = "__capture.timestamp";
 
     /// What `now()` reads over these rows: the instant they were taken. Every preview of them, and every test over them,
     /// runs at that one instant, so a run of them is a function of the config alone.
@@ -1369,7 +1349,7 @@ impl CaptureBatch {
     }
 
     /// Whether every row says when it was taken.
-    pub fn is_stamped(&self) -> bool {
+    pub(crate) fn is_stamped(&self) -> bool {
         self.column(Self::TAKEN_AT).is_some_and(|c| {
             self.rows
                 .iter()
@@ -1425,7 +1405,7 @@ impl CaptureBatch {
     }
 
     /// Keeps column `i` where `kept[i]`, with each row's value and failed mark under it.
-    pub fn keep_columns(&mut self, kept: &[bool]) {
+    pub(crate) fn keep_columns(&mut self, kept: &[bool]) {
         // Where each kept column lands.
         let mut at = Vec::with_capacity(kept.len());
         let mut next = 0;
@@ -1470,7 +1450,7 @@ pub fn pasted_from(records: &[(&crate::io::RecordObject, &crate::io::SourceField
 
 impl CapturedRow {
     /// The bytes this row adds to a capture: each value as it travels, a text value its text.
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.values.iter().map(CapturedRow::value_size).sum()
     }
 
@@ -1561,7 +1541,7 @@ impl TryFrom<WireBatch> for CaptureBatch {
 
 /// A sample's table, read from its file or a person's request. Refused where its constants, copied onto every row,
 /// would cost more than a sample may hold (`config_file::MAX_SAMPLE_BYTES`).
-pub fn sample_table<'de, D: serde::Deserializer<'de>>(from: D) -> Result<CaptureBatch, D::Error> {
+pub(crate) fn sample_table<'de, D: serde::Deserializer<'de>>(from: D) -> Result<CaptureBatch, D::Error> {
     let held = WireBatch::deserialize(from)?.held("sample", crate::config_file::MAX_SAMPLE_BYTES);
     held.map_err(serde::de::Error::custom)
 }
@@ -1643,13 +1623,13 @@ mod client {
 
         /// Whether the leader answered that it does not know this worker's credential: never issued, or its worker
         /// forgotten. A revoked one is answered otherwise.
-        pub fn credential_unknown(&self) -> bool {
+        pub(crate) fn credential_unknown(&self) -> bool {
             self.1 == Failure::Status(401)
         }
 
         /// Whether the leader refused the request for its size: past [`super::HEARTBEAT_BODY_LIMIT`]. Sending it
         /// again is refused again.
-        pub fn too_large(&self) -> bool {
+        pub(crate) fn too_large(&self) -> bool {
             self.1 == Failure::Status(413)
         }
 
@@ -1695,7 +1675,7 @@ mod client {
 
     /// What a worker says when its roots refuse the leader's certificate, whichever request it was making: one
     /// mistake, one wording.
-    pub fn untrusted_certificate(leader_url: &str, reason: &dyn std::fmt::Display) -> String {
+    pub(crate) fn untrusted_certificate(leader_url: &str, reason: &dyn std::fmt::Display) -> String {
         format!(
             "{leader_url} presented a certificate this worker does not trust ({reason}). The leader's certificate \
              must chain to the worker's CA, or to the public roots when worker.leader.trust_public is on, and carry \
@@ -1705,7 +1685,7 @@ mod client {
 
     /// The handshake's refusal of the leader's certificate, if that is what `e` is. rustls reports it from inside
     /// the stream, so it arrives wrapped as an I/O error as often as on its own.
-    pub fn certificate_refused(e: &ureq::Error) -> Option<&rustls::Error> {
+    pub(crate) fn certificate_refused(e: &ureq::Error) -> Option<&rustls::Error> {
         let rustls = match e {
             ureq::Error::Rustls(e) => Some(e),
             ureq::Error::Io(e) => e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()),
@@ -1729,7 +1709,7 @@ mod client {
     ///
     /// It gives up after `budget` like every other agent here: this is a worker's first request, and one that
     /// waits forever on an address that accepts and never answers is a first boot that never reports why.
-    pub fn agent_without_verification(budget: std::time::Duration) -> ureq::Agent {
+    pub(crate) fn agent_without_verification(budget: std::time::Duration) -> ureq::Agent {
         let tls_config = ureq::tls::TlsConfig::builder().disable_verification(true).build();
         agent_with(tls_config, budget)
     }
@@ -1779,7 +1759,7 @@ mod client {
     /// Every root a worker verifies its leader by: the authorities in `leader_ca_pem`, and the public roots too when
     /// `trust_public` (`io::trust::trusting`), as a connector trusts. The heartbeat and git's fetch both trust this,
     /// so the two never disagree about a leader.
-    pub fn leader_roots(
+    pub(crate) fn leader_roots(
         leader_ca_pem: Option<&[u8]>,
         trust_public: bool,
     ) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, String> {
@@ -1838,7 +1818,7 @@ mod client {
 
         /// The bytes of the lookup file `oid` names in the leader's store, as they arrive. The caller checks them
         /// against the pointer it asked by.
-        pub fn lookup_file(&self, oid: &str) -> Result<impl std::io::Read + use<>, HeartbeatError> {
+        pub(crate) fn lookup_file(&self, oid: &str) -> Result<impl std::io::Read + use<>, HeartbeatError> {
             self.lookup_agent
                 .get(format!("{}/{oid}", self.lookup_url))
                 .header("Authorization", &format!("Bearer {}", self.token))
@@ -1849,7 +1829,10 @@ mod client {
 
         /// The ledger the leader keeps for a source it holds for this worker, as it arrives: one
         /// [`super::LedgerEntry`] per line. The leader refuses it for a source this worker does not hold now.
-        pub fn fetch_ledger(&self, key: &super::SourceKey) -> Result<impl std::io::Read + use<>, HeartbeatError> {
+        pub(crate) fn fetch_ledger(
+            &self,
+            key: &super::SourceKey,
+        ) -> Result<impl std::io::Read + use<>, HeartbeatError> {
             self.lookup_agent
                 .get(&self.ledger_url)
                 .query("source", &key.source)
@@ -1938,10 +1921,8 @@ fn gzipped_json(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
     gz.finish()
 }
 
-pub use client::{
-    HeartbeatClient, HeartbeatError, agent_trusting, agent_without_verification, certificate_refused, leader_roots,
-    untrusted_certificate,
-};
+pub use client::{HeartbeatClient, agent_trusting};
+pub(crate) use client::{agent_without_verification, certificate_refused, leader_roots, untrusted_certificate};
 
 #[cfg(test)]
 mod trust_tests {
@@ -2184,7 +2165,27 @@ mod tests {
     use super::*;
 
     use crate::metrics::MetricsHandle;
+    use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// Peeked samples as per-thread wire DTOs, keyed by the `thread` label. Every sample carries one: `MetricsHandle`
+    /// pushes it on every write.
+    fn split_by_thread(samples: &[MetricSample]) -> HashMap<String, Vec<MetricSampleDto>> {
+        let mut out: HashMap<String, Vec<MetricSampleDto>> = HashMap::new();
+        for sample in samples {
+            let thread = sample
+                .key
+                .labels
+                .iter()
+                .find(|(k, _)| *k == crate::metrics::THREAD_LABEL)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            out.entry(thread)
+                .or_default()
+                .push(MetricSampleDto::from(sample.clone()));
+        }
+        out
+    }
 
     /// A successful heartbeat: peek, ship, commit.
     fn heartbeat_ok(registry: &Metrics) -> HashMap<String, Vec<MetricSampleDto>> {

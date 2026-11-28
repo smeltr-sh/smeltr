@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+#[path = "../../src/fake.rs"]
+pub mod fake;
 #[path = "../../src/fuzz.rs"]
 pub mod fuzz;
 
@@ -29,6 +31,9 @@ use smeltr::plan::compile::{Plan, compile};
 use smeltr::plan::config::{CompileError, FunctionConfig, FunctionKind, PipelineConfig, Step};
 use smeltr::plan::output::run_to_json;
 use smeltr::plan::topology::SourceMeta;
+
+// What `src/fake.rs` reaches the library through.
+use smeltr::{io, plan, sync};
 
 /// How long a waiting test leaves between two looks.
 const LOOK_EVERY: Duration = Duration::from_millis(10);

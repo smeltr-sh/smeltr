@@ -318,7 +318,7 @@ fn hash(bytes: &[u8]) -> u64 {
 
 impl RowTable {
     /// A table already in memory: `LookupSource::Inline`'s.
-    pub fn build(
+    pub(crate) fn build(
         headers: Vec<String>,
         rows: Vec<Vec<String>>,
         key_column: &str,
@@ -340,7 +340,7 @@ impl RowTable {
     /// in errors. `stored` is the file's place in the lookup store, when it has one: its index is kept beside it. A
     /// file is a whole document read once, so the first line names the columns, unlike `ParserKind::Csv` over `_raw`,
     /// where every line is a record. Quoting is `format::csv_scan`'s RFC 4180.
-    pub fn from_csv(
+    pub(crate) fn from_csv(
         shown: &str,
         file: memmap2::Mmap,
         stored: Option<&Path>,
@@ -420,22 +420,23 @@ impl RowTable {
         View::of(text, &self.index, &self.layout, self.match_kind, self.regex.as_ref()).expect("checked at open")
     }
 
-    pub fn column(&self, name: &str) -> Option<usize> {
+    pub(crate) fn column(&self, name: &str) -> Option<usize> {
         self.headers.iter().position(|h| h == name)
     }
 
     /// Every cell of column `col`, top to bottom.
-    pub fn cells(&self, col: usize) -> impl Iterator<Item = &str> {
+    pub(crate) fn cells(&self, col: usize) -> impl Iterator<Item = &str> {
         let cells = self.view().cells;
         (0..self.layout.rows).map(move |r| std::str::from_utf8(cells.get(r, col)).unwrap_or("\u{fffd}"))
     }
 
-    pub fn row_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn row_count(&self) -> usize {
         self.layout.rows
     }
 
     /// Whether every cell of column `col` is known to read as `ty`, without reading them. `false` says nothing.
-    pub fn all_fit(&self, col: usize, ty: &DataType) -> bool {
+    pub(crate) fn all_fit(&self, col: usize, ty: &DataType) -> bool {
         let fit = self.view().types[col];
         FITS.iter().any(|(bit, t)| t == ty && fit & bit != 0)
     }
@@ -748,7 +749,7 @@ fn check_width(row: usize, fields: usize, width: usize) -> Result<(), LookupErro
 ///
 /// An absolute path is refused: a table's file is committed beside the config that names it, so there is no lookup
 /// file a deployment holds and the commit does not.
-pub fn resolve_lookup_path(path: &str, at: &Path) -> Result<PathBuf, LookupError> {
+pub(crate) fn resolve_lookup_path(path: &str, at: &Path) -> Result<PathBuf, LookupError> {
     check_relative(path)?;
     let real = std::fs::canonicalize(at.join(path))
         .map_err(|e| LookupError(format!("couldn't read lookup file `{path}`: {e}")))?;
@@ -768,7 +769,7 @@ pub fn resolve_lookup_path(path: &str, at: &Path) -> Result<PathBuf, LookupError
 
 /// A lookup path names a file inside the bundle that declared the table, so an absolute one names a file that
 /// travels with nothing. Checked wherever a path is resolved, on disk or in a commit.
-pub fn check_relative(path: &str) -> Result<(), LookupError> {
+pub(crate) fn check_relative(path: &str) -> Result<(), LookupError> {
     if Path::new(path).is_absolute() {
         return Err(LookupError(format!(
             "lookup file `{path}` is an absolute path. A table's file is committed beside the config that names \
@@ -828,15 +829,15 @@ fn csv_rows<'b>(
 /// value, in `outputs` order. `None` writes null.
 #[derive(Clone, Debug)]
 pub struct Lookup {
-    pub table: std::sync::Arc<Table>,
-    pub multiplicity: Multiplicity,
-    pub defaults: Vec<Option<String>>,
+    pub(crate) table: std::sync::Arc<Table>,
+    pub(crate) multiplicity: Multiplicity,
+    pub(crate) defaults: Vec<Option<String>>,
 }
 
 /// Whether `text` reads as a value of `ty`, by the same reading the convert pass after a call gives it: a declared parser field's
 /// for a number or bool, `parseTime`'s for a datetime. `Str` takes anything. The bundle loader asks this of a
 /// default and the compiler of every cell in a typed row-table column, so what a worker converts always fits.
-pub fn fits(text: &str, ty: &DataType, time_source: Option<&TimeSource>) -> bool {
+pub(crate) fn fits(text: &str, ty: &DataType, time_source: Option<&TimeSource>) -> bool {
     match ty {
         DataType::Str => true,
         DataType::I64 => parse_i64(text).is_some(),
@@ -853,7 +854,7 @@ pub fn fits(text: &str, ty: &DataType, time_source: Option<&TimeSource>) -> bool
 /// A loaded, ready-to-query table — `LookupSource` after compile-time loading, the same "resolve once, never touch the
 /// filesystem again" shape a Grok parse's `matcher: Option<Arc<Matcher>>` already has.
 #[derive(Debug)]
-pub enum Table {
+pub(crate) enum Table {
     Row(RowTable),
     Mmdb(mmdb::MmdbTable),
 }
@@ -989,7 +990,7 @@ impl OutBuilder {
 /// multiplicity, and write each of `outputs`' matched column or path, as text, straight into its own slot. A row with
 /// no match writes that output's own default, or null (an empty array under `All`), never an exception, as an absent
 /// JSON key does. Only the rows `live` selects (`spread::selected`) are looked up.
-pub fn run(
+pub(crate) fn run(
     input: SlotId,
     lookup: &Lookup,
     outputs: &[Output],

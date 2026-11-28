@@ -11,6 +11,7 @@
 //! and the second receiver.
 
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use smeltr::sync::Mutex;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -200,10 +201,11 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         let level = if loose(rng) {
             any(
                 rng,
-                vec![json!(0), json!(10), json!(256), json!(-1), json!(1.5), json!("6")],
+                vec![json!(4), json!(10), json!(256), json!(-1), json!(1.5), json!("1")],
             )
         } else {
-            json!(1 + rng.below(9))
+            // igzip's levels, 0 to 3.
+            json!(rng.below(4))
         };
         d.insert("compressionLevel".into(), level);
     }
@@ -307,7 +309,7 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         set.push("compression gzip".into());
     }
     let system = json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [d],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
@@ -767,7 +769,11 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
             zone_urls: Default::default(),
             body: Default::default(),
             payload: Payload::Record,
-            compression: if gzip { Compression::Gzip(6) } else { Compression::None },
+            compression: if gzip {
+                Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT))
+            } else {
+                Compression::None
+            },
             headers: Vec::new(),
             credentials: Vec::new(),
             tls: None,
@@ -1018,7 +1024,7 @@ fn bundle(url: &str, signal: Signal, mut d: Map<String, Value>) -> String {
     d.insert("url".into(), json!(url));
     d.insert("signal".into(), json!(signal.name()));
     json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [d],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],

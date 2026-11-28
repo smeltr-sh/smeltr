@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::commit::WaitsOn;
 use crate::core::id::DestId;
-use crate::io::{BatchId, IoError, SourceRecord};
+use crate::io::{BatchId, SourceRecord};
 
 /// Bytes of raw records one queue may hold before ingest waits, per batch of depth. A lane's depth is how many
 /// transform threads could be working on it at once, plus one of slack so the reader can poll while they do
@@ -59,7 +59,7 @@ pub enum BlockCause {
 
 impl BlockCause {
     /// What a heartbeat calls it, as the `cause` label of `smeltr_source_blocked_reason`.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             BlockCause::Held => "held",
             BlockCause::Refused => "refused",
@@ -68,7 +68,7 @@ impl BlockCause {
     }
 
     /// The cause a heartbeat calls `name`, if this build knows it.
-    pub fn named(name: &str) -> Option<BlockCause> {
+    pub(crate) fn named(name: &str) -> Option<BlockCause> {
         [BlockCause::Held, BlockCause::Refused, BlockCause::Waiting]
             .into_iter()
             .find(|c| c.name() == name)
@@ -85,8 +85,7 @@ struct State {
 /// tracked batch nobody holds blocks every commit behind it forever.
 #[derive(Debug)]
 pub struct Unsent {
-    pub batch: Handed,
-    pub error: IoError,
+    pub(crate) batch: Handed,
 }
 
 /// One signal across every queue a transform thread watches. A thread that found nothing anywhere waits here rather
@@ -104,13 +103,13 @@ impl Ready {
     }
 
     /// Say a batch is available. Wakes one waiter: one batch is one thread's work.
-    pub fn signal(&self) {
+    pub(crate) fn signal(&self) {
         *self.tick.lock() += 1;
         self.arrived.notify_one();
     }
 
     /// Wakes every waiter, for a change they all have to see -- a close.
-    pub fn signal_all(&self) {
+    pub(crate) fn signal_all(&self) {
         *self.tick.lock() += 1;
         self.arrived.notify_all();
     }
@@ -178,7 +177,7 @@ impl Handoff {
     }
 
     /// What this queue's arrivals are announced on.
-    pub fn ready(&self) -> &Arc<Ready> {
+    pub(crate) fn ready(&self) -> &Arc<Ready> {
         &self.ready
     }
 
@@ -191,19 +190,13 @@ impl Handoff {
         while !st.closed && st.bytes + bytes > self.capacity && st.bytes > 0 {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(Unsent {
-                    batch,
-                    error: IoError::transient(format!("transform did not take a batch within {timeout:?}")),
-                });
+                return Err(Unsent { batch });
             }
             let (guard, _) = self.room.wait_timeout(st, left);
             st = guard;
         }
         if st.closed {
-            return Err(Unsent {
-                batch,
-                error: IoError::transient("worker is shutting down"),
-            });
+            return Err(Unsent { batch });
         }
         st.bytes += bytes;
         st.queued.push_back(batch);
@@ -237,7 +230,8 @@ impl Handoff {
     }
 
     /// A waiting reader fails; transform drains what is queued, then ends.
-    pub fn close(&self) {
+    #[cfg(test)]
+    pub(crate) fn close(&self) {
         let mut st = self.state.lock();
         st.closed = true;
         self.room.notify_all();
@@ -251,7 +245,7 @@ impl Handoff {
     }
 
     /// Bytes of raw records it holds now, as its capacity counts them.
-    pub fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.state.lock().bytes
     }
 }
@@ -270,7 +264,7 @@ pub fn reports() -> (Reports, Acks) {
 
 impl Reports {
     /// Never blocks. A reader that has gone away is not an error: its uncommitted batches are redelivered.
-    pub fn send(&self, r: Report) {
+    pub(crate) fn send(&self, r: Report) {
         let _ = self.0.send(r);
     }
 }
@@ -288,7 +282,7 @@ impl Acks {
     }
 
     /// Wait up to `timeout` for a report, then everything behind it.
-    pub fn wait(&self, timeout: Duration) -> Vec<Report> {
+    pub(crate) fn wait(&self, timeout: Duration) -> Vec<Report> {
         match self.0.recv_timeout(timeout) {
             Ok(first) => {
                 let mut out = vec![first];

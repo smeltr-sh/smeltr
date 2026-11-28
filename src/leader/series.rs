@@ -53,7 +53,7 @@ impl Tier {
 
     /// This tier and every finer one, finest first: a bucket this tier's width stays in the finer ones until
     /// [`RegistryStore::maintain`] moves it up, so these are where a window of this tier's buckets lies.
-    pub fn and_finer(self) -> &'static [Tier] {
+    pub(crate) fn and_finer(self) -> &'static [Tier] {
         &Self::ALL[..=self.code() as usize]
     }
 
@@ -71,7 +71,7 @@ impl Tier {
 
     /// The finest tier that still holds a bucket `age_ms` old: [`RegistryStore::maintain`] moves each bucket on
     /// once it is older than its tier keeps.
-    pub fn holding(age_ms: i64) -> Tier {
+    pub(crate) fn holding(age_ms: i64) -> Tier {
         Tier::ALL
             .into_iter()
             .find(|tier| tier.retention_ms() >= age_ms)
@@ -137,7 +137,7 @@ const WIDEST_POINT_MS: i64 = 6 * 60 * 60_000;
 /// How wide each point of a chart over `window` is: the narrowest tier's bucket that keeps the chart to
 /// [`CHART_POINTS`], or [`WIDEST_POINT_MS`] when none does. The tier a point that wide is summed from holds the whole
 /// window.
-pub fn chart_point_ms(window: std::time::Duration) -> i64 {
+pub(crate) fn chart_point_ms(window: std::time::Duration) -> i64 {
     let window_ms = millis(window);
     Tier::ALL
         .map(Tier::bucket_ms)
@@ -150,73 +150,73 @@ pub fn chart_point_ms(window: std::time::Duration) -> i64 {
 /// Which points a read takes: each `point_ms` wide and starting `offset_ms` past the epoch's boundaries, from the
 /// point `since_ms` is in to the last bucket before `until_ms`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Points {
-    pub point_ms: i64,
-    pub offset_ms: i64,
-    pub since_ms: i64,
-    pub until_ms: i64,
+pub(crate) struct Points {
+    pub(crate) point_ms: i64,
+    pub(crate) offset_ms: i64,
+    pub(crate) since_ms: i64,
+    pub(crate) until_ms: i64,
 }
 
 /// One span a fact held for its subject ([`RegistryStore::fact_spans`]).
 #[derive(Debug, Clone, PartialEq)]
-pub struct FactSpan {
-    pub entry: String,
-    pub started_ms: i64,
+pub(crate) struct FactSpan {
+    pub(crate) entry: String,
+    pub(crate) started_ms: i64,
     /// None while it still holds.
-    pub ended_ms: Option<i64>,
+    pub(crate) ended_ms: Option<i64>,
     /// Why it began, as [`RegistryStore::keep_reasons`] kept it.
-    pub reason: Option<String>,
+    pub(crate) reason: Option<String>,
 }
 
 /// One subject's points, oldest first: bucket start (epoch milliseconds) and value. What
 /// [`RegistryStore::series_since`] groups every subject's rows into.
-pub type SubjectPoints = Vec<(i64, f64)>;
+pub(crate) type SubjectPoints = Vec<(i64, f64)>;
 
 /// One thread's `latest_state` row. `report_json` is the caller's encoding of what that thread reported
 /// (`registry::Registry` uses `serde_json` over the wire `ThreadHeartbeat`); this file stores it opaquely, so a
 /// field added to the wire type needs no step here.
-pub struct LatestRow<'a> {
-    pub thread_id: &'a str,
+pub(crate) struct LatestRow<'a> {
+    pub(crate) thread_id: &'a str,
     /// Owned: the caller encodes it for this write and nothing else holds it, so borrowing would only cost the
     /// caller a second pass to keep the encodings alive.
-    pub report_json: String,
+    pub(crate) report_json: String,
 }
 
 /// One sample to fold into the fine bucket its heartbeat landed in. `subject_key` is the caller's
 /// (`registry::subject_key`); a counter sums within the bucket and a gauge keeps its maximum.
-pub struct SeriesPoint<'a> {
-    pub metric: &'a str,
+pub(crate) struct SeriesPoint<'a> {
+    pub(crate) metric: &'a str,
     /// Owned, for the reason [`LatestRow::report_json`] is.
-    pub subject_key: String,
-    pub counter: bool,
-    pub value: f64,
+    pub(crate) subject_key: String,
+    pub(crate) counter: bool,
+    pub(crate) value: f64,
 }
 
 /// What one heartbeat writes, assembled by the caller: it owns the wire types, the encoding and the subject keys,
 /// and this file owns the transaction.
-pub struct HeartbeatRows<'a> {
-    pub worker_id: &'a str,
-    pub threads: &'a [LatestRow<'a>],
-    pub points: &'a [SeriesPoint<'a>],
+pub(crate) struct HeartbeatRows<'a> {
+    pub(crate) worker_id: &'a str,
+    pub(crate) threads: &'a [LatestRow<'a>],
+    pub(crate) points: &'a [SeriesPoint<'a>],
     /// What the beat gathered beside `points`, and which window of the worker's life they are.
-    pub window: Window<'a>,
+    pub(crate) window: Window<'a>,
     /// The worker process's own settings, which ride beside each report rather than inside it.
-    pub stop_after_unreachable_secs: Option<u64>,
-    pub commit: Option<&'a str>,
+    pub(crate) stop_after_unreachable_secs: Option<u64>,
+    pub(crate) commit: Option<&'a str>,
     /// The worker process's own build. Empty from a worker too old to report one.
-    pub smeltr_version: &'a str,
+    pub(crate) smeltr_version: &'a str,
     /// The release that build is, where it is one.
-    pub release: Option<&'a str>,
+    pub(crate) release: Option<&'a str>,
     /// Owned, for the reason [`LatestRow::report_json`] is.
-    pub supervising_json: Option<String>,
+    pub(crate) supervising_json: Option<String>,
     /// When the authority that worker verifies the leader against expires. Mirrored with the rest, because the
     /// worker this warns about is one that can no longer reach the leader to say it again.
-    pub authority_expires_millis: Option<i64>,
+    pub(crate) authority_expires_millis: Option<i64>,
     /// When this heartbeat said the worker was stopping, if it did. Mirrored with the rest, because the worker it
     /// describes has stopped and will not say it again. Its `threads` are then every row the worker keeps.
-    pub stopped_at_ms: Option<i64>,
+    pub(crate) stopped_at_ms: Option<i64>,
     /// One "now" for the whole heartbeat: `last_seen_ms`, and the bucket every point lands in.
-    pub now_ms: i64,
+    pub(crate) now_ms: i64,
 }
 
 const COUNTER: &str = "counter";
@@ -590,31 +590,31 @@ pub struct Swing {
 }
 
 /// How long a source's quiet spells, and the warnings about it they are learned against, are kept.
-pub const YEAR_MS: i64 = 365 * 24 * 60 * 60_000;
+pub(crate) const YEAR_MS: i64 = 365 * 24 * 60 * 60_000;
 
 /// A quiet spell one source made: a run of five-minute buckets with no rows, each reported by a worker, between two
 /// with rows. It ended at `ended_ms`, the start of the bucket whose rows ended it, and lasted `length_ms`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Silence {
-    pub group: String,
-    pub source: String,
-    pub ended_ms: i64,
-    pub length_ms: i64,
+pub(crate) struct Silence {
+    pub(crate) group: String,
+    pub(crate) source: String,
+    pub(crate) ended_ms: i64,
+    pub(crate) length_ms: i64,
 }
 
 /// How far one source's rows have been read for its quiet spells ([`Silence`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Watch {
+pub(crate) struct Watch {
     /// Its first bucket read.
-    pub watched_ms: i64,
+    pub(crate) watched_ms: i64,
     /// Every bucket before this one has been read.
-    pub read_ms: i64,
+    pub(crate) read_ms: i64,
     /// The end of its last bucket with rows.
-    pub row_ms: Option<i64>,
+    pub(crate) row_ms: Option<i64>,
     /// Where the quiet spell under way began: the end of its last bucket with rows, or of the last one no worker
     /// reported it in, whichever is later. A run counts as a quiet spell only if, when it ends, this equals `row_ms`:
     /// no unreported bucket broke it.
-    pub quiet_ms: i64,
+    pub(crate) quiet_ms: i64,
 }
 
 /// [`RegistryStore::series_since`] on a connection the caller holds.
@@ -651,7 +651,7 @@ fn series_since_on(
 /// Logs the leader keeps for the fleet. A row cap rather than an age: a quiet fleet should still have its
 /// last words, and a loud one must not grow the store without bound. `id` rises with arrival, so the newest rows
 /// are the ones past the cap from the other end.
-pub const LOGS_KEPT: i64 = 100_000;
+const LOGS_KEPT: i64 = 100_000;
 
 /// `%` and `_` are wildcards to `LIKE`, so a search for them must say so. Paired with `ESCAPE '\\'` at every
 /// call, and `\\` itself is escaped first or it would escape the escape.
@@ -726,26 +726,26 @@ fn write_point_at(conn: &Connection, point: &SeriesPoint<'_>, tier: Tier, now_ms
 
 /// One row of `latest_state`: what a thread last reported, and what the leader knew about the worker that sent it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LatestState {
-    pub worker_id: String,
-    pub thread_id: String,
+pub(crate) struct LatestState {
+    pub(crate) worker_id: String,
+    pub(crate) thread_id: String,
     /// The caller's encoding of the thread's report, stored opaquely (see [`LatestRow`]).
-    pub report_json: String,
-    pub stop_after_unreachable_secs: Option<u64>,
+    pub(crate) report_json: String,
+    pub(crate) stop_after_unreachable_secs: Option<u64>,
     /// The commit whose bundle the worker was running when it sent this.
-    pub commit: Option<String>,
+    pub(crate) commit: Option<String>,
     /// The worker's own build when it sent this. Empty from a worker too old to report one, and from a row
     /// written before this column.
-    pub smeltr_version: String,
+    pub(crate) smeltr_version: String,
     /// The release that build is. `None` on any other build, and from a row written before this column.
-    pub release: Option<String>,
+    pub(crate) release: Option<String>,
     /// The caller's encoding of what the worker's supervisor was doing, stored opaquely (see [`LatestRow`]).
-    pub supervising_json: Option<String>,
+    pub(crate) supervising_json: Option<String>,
     /// When the authority the worker verifies the leader against expires, as of this report.
-    pub authority_expires_millis: Option<i64>,
+    pub(crate) authority_expires_millis: Option<i64>,
     /// When the worker said it was stopping, where that is the last thing it said.
-    pub stopped_at_ms: Option<i64>,
-    pub last_seen_ms: i64,
+    pub(crate) stopped_at_ms: Option<i64>,
+    pub(crate) last_seen_ms: i64,
 }
 
 /// The registry's durable half: `latest_state`, `fact_clock`, and `series_points`, behind one connection guarded
@@ -781,45 +781,45 @@ struct PointsRead {
 /// bounds (`heartbeat::MAX_TEXT_LEN` and friends), so what is here is what the fleet delivered rather
 /// than what its call site said.
 #[derive(Debug, Clone, PartialEq)]
-pub struct StoredLog {
-    pub id: i64,
-    pub at_ms: i64,
-    pub worker_id: String,
-    pub group_id: Option<String>,
-    pub thread_name: Option<String>,
-    pub level: String,
-    pub class: Option<String>,
-    pub r#type: String,
-    pub service: Option<String>,
-    pub message: String,
+pub(crate) struct StoredLog {
+    pub(crate) id: i64,
+    pub(crate) at_ms: i64,
+    pub(crate) worker_id: String,
+    pub(crate) group_id: Option<String>,
+    pub(crate) thread_name: Option<String>,
+    pub(crate) level: String,
+    pub(crate) class: Option<String>,
+    pub(crate) r#type: String,
+    pub(crate) service: Option<String>,
+    pub(crate) message: String,
     /// The field list as it was delivered, still JSON: nothing here reads it, and whatever renders it wants
     /// the pairs rather than a shape this layer invented.
-    pub fields_json: String,
+    pub(crate) fields_json: String,
 }
 
 /// What one worker last logged of one class and type about one subject, as [`RegistryStore::latest_log_by_type`]
 /// reads it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LoggedType {
-    pub worker_id: String,
-    pub class: Option<String>,
-    pub r#type: String,
+pub(crate) struct LoggedType {
+    pub(crate) worker_id: String,
+    pub(crate) class: Option<String>,
+    pub(crate) r#type: String,
     /// The group the latest row was delivered under.
-    pub group_id: Option<String>,
+    pub(crate) group_id: Option<String>,
     /// The latest row's level, message and fields.
-    pub level: String,
-    pub message: String,
+    pub(crate) level: String,
+    pub(crate) message: String,
     /// As [`StoredLog::fields_json`] holds it.
-    pub fields_json: String,
+    pub(crate) fields_json: String,
     /// When the latest row was logged.
-    pub at_ms: i64,
+    pub(crate) at_ms: i64,
     /// When the earliest row read of this class and type about this subject was logged.
-    pub first_ms: i64,
+    pub(crate) first_ms: i64,
 }
 
 /// Which rows a read of the logs table may answer with, by the group each is filed under.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub enum Filed<'a> {
+pub(crate) enum Filed<'a> {
     #[default]
     Any,
     /// Only rows filed under some group.
@@ -831,28 +831,28 @@ pub enum Filed<'a> {
 /// What to narrow a read of the logs table by. Every field is optional and absent means "any", so the
 /// default asks for the newest of everything.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct LogFilter<'a> {
+pub(crate) struct LogFilter<'a> {
     /// Exactly these levels. Levels do not nest here: asking for `warn` is asking for `warn`, and a caller
     /// wanting warnings and errors together asks for both.
-    pub levels: &'a [String],
-    pub worker_id: Option<&'a str>,
-    pub group_id: Option<&'a str>,
-    pub filed: Filed<'a>,
-    pub class: Option<&'a str>,
+    pub(crate) levels: &'a [String],
+    pub(crate) worker_id: Option<&'a str>,
+    pub(crate) group_id: Option<&'a str>,
+    pub(crate) filed: Filed<'a>,
+    pub(crate) class: Option<&'a str>,
     /// Matched anywhere in the type, the same as `message_contains` is against the message, or whole when
     /// `type_exact`: a type that names one line can be part of another's.
-    pub r#type: Option<&'a str>,
-    pub type_exact: bool,
-    pub service: Option<&'a str>,
+    pub(crate) r#type: Option<&'a str>,
+    pub(crate) type_exact: bool,
+    pub(crate) service: Option<&'a str>,
     /// Matched anywhere in the message. Truncated at delivery, so this cannot find what was cut.
-    pub message_contains: Option<&'a str>,
-    pub since_ms: Option<i64>,
-    pub until_ms: Option<i64>,
+    pub(crate) message_contains: Option<&'a str>,
+    pub(crate) since_ms: Option<i64>,
+    pub(crate) until_ms: Option<i64>,
     /// Rows below this id -- the "older" page. At most one of `before_id`/`after_id` is set; both together
     /// read as a range.
-    pub before_id: Option<i64>,
+    pub(crate) before_id: Option<i64>,
     /// Rows above this id -- the "newer" page, walking back toward the current head.
-    pub after_id: Option<i64>,
+    pub(crate) after_id: Option<i64>,
 }
 
 /// Renames a damaged registry file and its sidecars to `<path>.damaged-<unix seconds>`, `-wal` and `-shm` after
@@ -918,7 +918,7 @@ impl RegistryStore {
     // -- latest state --------------------------------------------------------
 
     /// Every thread's last report, unordered.
-    pub fn load_latest_state(&self) -> Result<Vec<LatestState>, StoreError> {
+    pub(crate) fn load_latest_state(&self) -> Result<Vec<LatestState>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT worker_id, thread_id, report_json, stop_after_unreachable_secs, commit_sha, smeltr_version,
@@ -946,7 +946,7 @@ impl RegistryStore {
     }
 
     /// Drops every row a worker has. What the registry mirrors when the leader forgets one.
-    pub fn forget_worker(&self, worker_id: &str) -> Result<(), StoreError> {
+    pub(crate) fn forget_worker(&self, worker_id: &str) -> Result<(), StoreError> {
         let conn = self.conn.lock();
         conn.execute(FORGET_WORKER_ROWS, params![worker_id])?;
         // Its last window, which only that worker's next beat would be checked against.
@@ -960,7 +960,7 @@ impl RegistryStore {
     /// to `fact_history` as having ended at `now_ms`; `inserted` are newly active and are stamped `now_ms` -- but
     /// only if nothing is there yet, so a fact this call already knows the true start of (loaded at open, or
     /// inserted on an earlier call) keeps it.
-    pub fn sync_fact_clock(
+    pub(crate) fn sync_fact_clock(
         &self,
         removed: &[(String, String)],
         inserted: &[(String, String)],
@@ -992,7 +992,7 @@ impl RegistryStore {
 
     /// Keeps why each of `reasons`' facts began: (entry, subject, reason). A fact keeps the first reason given while it
     /// holds, as of the reading that began it or the first after; one not active yet is given its reason on a later call.
-    pub fn keep_reasons(&self, reasons: &[(String, String, String)]) -> Result<(), StoreError> {
+    pub(crate) fn keep_reasons(&self, reasons: &[(String, String, String)]) -> Result<(), StoreError> {
         let conn = self.conn.lock();
         let mut keep = conn
             .prepare_cached("UPDATE fact_clock SET reason = ?3 WHERE entry = ?1 AND subject = ?2 AND reason IS NULL")?;
@@ -1003,7 +1003,7 @@ impl RegistryStore {
     }
 
     /// Every currently-active fact's true start: (entry, subject, started).
-    pub fn load_fact_clock(&self) -> Result<Vec<(String, String, i64)>, StoreError> {
+    pub(crate) fn load_fact_clock(&self) -> Result<Vec<(String, String, i64)>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT entry, subject, started_ms FROM fact_clock")?;
         let rows = stmt
@@ -1013,7 +1013,12 @@ impl RegistryStore {
     }
 
     /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first.
-    pub fn fact_spans(&self, entries: &[&str], subject: &str, since_ms: i64) -> Result<Vec<FactSpan>, StoreError> {
+    pub(crate) fn fact_spans(
+        &self,
+        entries: &[&str],
+        subject: &str,
+        since_ms: i64,
+    ) -> Result<Vec<FactSpan>, StoreError> {
         let conn = self.conn.lock();
         let span = |r: &rusqlite::Row| {
             Ok(FactSpan {
@@ -1041,7 +1046,7 @@ impl RegistryStore {
     }
 
     /// The subject of each fact of `entry` that began at `started_ms` and has ended.
-    pub fn facts_started(&self, entry: &str, started_ms: i64) -> Result<Vec<String>, StoreError> {
+    pub(crate) fn facts_started(&self, entry: &str, started_ms: i64) -> Result<Vec<String>, StoreError> {
         let conn = self.conn.lock();
         // A fact ends after it began, so the index on its end reads only the facts that ended since.
         let mut stmt = conn.prepare_cached(
@@ -1068,7 +1073,7 @@ impl RegistryStore {
     /// anything: the maximum of a set of maxima is the maximum of the whole set, so a rollup can fold it forward
     /// tier by tier and never has to look back at raw samples.
     #[cfg(test)]
-    pub fn record_gauge_max(
+    pub(crate) fn record_gauge_max(
         &self,
         metric: &str,
         subject_key: &str,
@@ -1114,7 +1119,7 @@ impl RegistryStore {
     ///
     /// Streams that will not write are the exception, left out and said: they fail on what they hold, so the same
     /// window sent again would fail again, and the worker could never be heard.
-    pub fn record_heartbeat(&self, beat: &HeartbeatRows<'_>) -> Result<(), StoreError> {
+    pub(crate) fn record_heartbeat(&self, beat: &HeartbeatRows<'_>) -> Result<(), StoreError> {
         let mut conn = self.conn.lock();
         let mut tx = conn.transaction()?;
         let unseen;
@@ -1206,7 +1211,8 @@ impl RegistryStore {
 
     /// Every point of one series at one tier, oldest first. A bucket nothing landed in has no row and so no entry
     /// here -- absence, not a zero.
-    pub fn points(&self, metric: &str, subject_key: &str, tier: Tier) -> Result<Vec<(i64, f64)>, StoreError> {
+    #[cfg(test)]
+    pub(crate) fn points(&self, metric: &str, subject_key: &str, tier: Tier) -> Result<Vec<(i64, f64)>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT p.bucket_ms, p.value FROM series s JOIN series_points p ON p.series_id = s.id \
@@ -1221,9 +1227,8 @@ impl RegistryStore {
     }
 
     /// Every subject of `metric` at `tier` with a point at or after `since_ms`, oldest first within each subject --
-    /// what E6's lag-climbing check wants: every source or destination's
-    /// series at once, not one subject looked up at a time. A subject with nothing in range is missing from the
-    /// result outright, the same absence [`RegistryStore::points`] already gives one bucket.
+    /// what E6's lag-climbing check wants: every source or destination's series at once, not one subject looked up at a
+    /// time. A subject with nothing in range is missing from the result outright.
     pub fn series_since(
         &self,
         metric: &str,
@@ -1254,7 +1259,7 @@ impl RegistryStore {
     /// hold the window's newest buckets: a point may hold several buckets, which a counter adds and a gauge takes the
     /// highest of, as [`RegistryStore::maintain`] rolls them up. A point that began before `since_ms` is left out,
     /// since only part of it would be read.
-    pub fn series_at(
+    pub(crate) fn series_at(
         &self,
         metric: &str,
         point_ms: i64,
@@ -1307,7 +1312,7 @@ impl RegistryStore {
     /// [`RegistryStore::points_from`] up to now, asked of the store at most once per ten-second bucket of `now_ms`
     /// for each metric and window: every open Status page polls faster than data lands, and a window over every
     /// subject is the costliest read a page makes. What lands later in the same bucket waits for the next one.
-    pub fn points_this_bucket(
+    pub(crate) fn points_this_bucket(
         &self,
         metric: &str,
         counter: bool,
@@ -1342,7 +1347,7 @@ impl RegistryStore {
     }
 
     /// [`RegistryStore::series_at`] for a gauge: one value per point, its highest.
-    pub fn peaks_since(
+    pub(crate) fn peaks_since(
         &self,
         metric: &str,
         point_ms: i64,
@@ -1359,7 +1364,7 @@ impl RegistryStore {
 
     /// Every subject of `metric` with a point among `points`, its buckets added for a counter and the highest taken
     /// for a gauge.
-    pub fn points_from(
+    pub(crate) fn points_from(
         &self,
         metric: &str,
         counter: bool,
@@ -1370,7 +1375,7 @@ impl RegistryStore {
     }
 
     /// Whether `metric` is a counter, or `None` when the store holds no series of it.
-    pub fn is_counter(&self, metric: &str) -> Result<Option<bool>, StoreError> {
+    pub(crate) fn is_counter(&self, metric: &str) -> Result<Option<bool>, StoreError> {
         let conn = self.conn.lock();
         let kind: Option<String> = conn
             .query_row("SELECT kind FROM series WHERE metric = ?1 LIMIT 1", [metric], |r| {
@@ -1381,7 +1386,7 @@ impl RegistryStore {
     }
 
     /// Every metric the store holds a series of, each with every subject it has one for and whether it counts.
-    pub fn metric_subjects(&self) -> Result<Vec<(String, String, bool)>, StoreError> {
+    pub(crate) fn metric_subjects(&self) -> Result<Vec<(String, String, bool)>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT metric, labels_json, kind FROM series ORDER BY metric, labels_json")?;
         let rows = stmt
@@ -1431,7 +1436,7 @@ impl RegistryStore {
     }
 
     /// One source's swings at `width_ms` from `since_ms` on, oldest first.
-    pub fn swings_since(
+    pub(crate) fn swings_since(
         &self,
         group: &str,
         source: &str,
@@ -1459,14 +1464,14 @@ impl RegistryStore {
     }
 
     /// The start of the newest bucket any swing is held for.
-    pub fn last_swing_ms(&self) -> Result<Option<i64>, StoreError> {
+    pub(crate) fn last_swing_ms(&self) -> Result<Option<i64>, StoreError> {
         let conn = self.conn.lock();
         Ok(conn.query_row("SELECT MAX(bucket_ms) FROM swings", [], |r| r.get(0))?)
     }
 
     /// Write each source's `watches` over the one held, and add `silences`. One transaction, so a quiet spell is never
     /// read twice.
-    pub fn record_silences(
+    pub(crate) fn record_silences(
         &self,
         watches: &[((String, String), Watch)],
         silences: &[Silence],
@@ -1493,7 +1498,7 @@ impl RegistryStore {
     }
 
     /// How far each source's rows have been read for its quiet spells.
-    pub fn watches(&self) -> Result<BTreeMap<(String, String), Watch>, StoreError> {
+    pub(crate) fn watches(&self) -> Result<BTreeMap<(String, String), Watch>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt =
             conn.prepare_cached("SELECT group_id, source, watched_ms, read_ms, row_ms, quiet_ms FROM silence_watch")?;
@@ -1514,7 +1519,12 @@ impl RegistryStore {
     }
 
     /// `group`'s `source`'s quiet spells that began from `since_ms` on, oldest first, as (ended, length).
-    pub fn source_silences(&self, group: &str, source: &str, since_ms: i64) -> Result<Vec<(i64, i64)>, StoreError> {
+    pub(crate) fn source_silences(
+        &self,
+        group: &str,
+        source: &str,
+        since_ms: i64,
+    ) -> Result<Vec<(i64, i64)>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT ended_ms, length_ms FROM silences WHERE group_id = ?1 AND source = ?2 AND ended_ms - length_ms >= ?3 \
@@ -1529,7 +1539,7 @@ impl RegistryStore {
     /// Record what one worker said about itself. Best-effort like the series: a heartbeat must not fail because
     /// the leader could not write down what it carried. Each line is filed under `group_id`, the group that said it,
     /// or, where none did, under the group its own `group` field names: that group's viewers read it.
-    pub fn record_logs(
+    pub(crate) fn record_logs(
         &self,
         worker_id: &str,
         boot_id: u64,
@@ -1588,7 +1598,7 @@ impl RegistryStore {
     /// No index covers `level`, `class`, `type`, `service` or `message` (only `at_ms` and the delivery key). At the cap of
     /// [`LOGS_KEPT`] the worst case -- a substring that matches nothing, so every row is read -- measures
     /// ~13 ms, and an ordinary filtered page ~1 ms. The cap is doing the work an index would, so there is none.
-    pub fn logs(&self, filter: &LogFilter, limit: usize) -> Result<Vec<StoredLog>, StoreError> {
+    pub(crate) fn logs(&self, filter: &LogFilter, limit: usize) -> Result<Vec<StoredLog>, StoreError> {
         let mut sql = String::from(
             "SELECT id, at_ms, worker_id, group_id, thread_name, level, class, type, service, message, fields_json \
              FROM logs WHERE 1 = 1",
@@ -1696,7 +1706,7 @@ impl RegistryStore {
     /// Window functions rather than a bare column beside `MAX(at_ms)`: an entry wants both the latest row and the
     /// earliest time, and SQLite says which row a bare column comes from only when one `MIN` or `MAX` stands alone.
     /// Two rows at the same `at_ms` go to the one that arrived last.
-    pub fn latest_log_by_type(
+    pub(crate) fn latest_log_by_type(
         &self,
         levels: &[String],
         since_ms: i64,
@@ -1854,7 +1864,7 @@ impl RegistryStore {
     /// `maintain`, throttled to once per fine bucket -- the cadence data actually arrives at, so rollup never falls
     /// behind ingestion but also never runs more than data justifies. Failure is reported and dropped: a heartbeat
     /// must not fail because housekeeping did.
-    pub fn maybe_maintain(&self, now_ms: i64) {
+    pub(crate) fn maybe_maintain(&self, now_ms: i64) {
         let due = self.next_maintenance_due_ms.load(Ordering::Relaxed);
         if now_ms < due {
             return;
@@ -1877,69 +1887,69 @@ impl RegistryStore {
 /// every worker of the group), with when it was first and last reported.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredParserShape {
-    pub group_id: String,
-    pub source: String,
-    pub route: String,
-    pub pipeline: String,
-    pub step: String,
-    pub rows: i64,
-    pub fields_dropped: i64,
-    pub first_seen_ms: i64,
-    pub last_seen_ms: i64,
-    pub fields: Vec<StoredFieldShape>,
+pub(crate) struct StoredParserShape {
+    pub(crate) group_id: String,
+    source: String,
+    route: String,
+    pipeline: String,
+    step: String,
+    rows: i64,
+    fields_dropped: i64,
+    first_seen_ms: i64,
+    last_seen_ms: i64,
+    fields: Vec<StoredFieldShape>,
 }
 
 /// One field of a [`StoredParserShape`] (`heartbeat::FieldShape`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredFieldShape {
-    pub name: String,
-    pub declared: bool,
-    pub suggested: String,
-    pub present: i64,
-    pub bools: i64,
-    pub ints: i64,
-    pub floats: i64,
-    pub strings: i64,
-    pub arrays: i64,
-    pub objects: i64,
-    pub failed: i64,
+struct StoredFieldShape {
+    name: String,
+    declared: bool,
+    suggested: String,
+    present: i64,
+    bools: i64,
+    ints: i64,
+    floats: i64,
+    strings: i64,
+    arrays: i64,
+    objects: i64,
+    failed: i64,
     /// Values that read as a time (`heartbeat::FieldShape::times`).
-    pub times: i64,
-    pub first_seen_ms: i64,
-    pub last_seen_ms: i64,
+    times: i64,
+    first_seen_ms: i64,
+    last_seen_ms: i64,
 }
 
 /// The rows of one source no route took, by stream, as the leader has accumulated them
 /// (`heartbeat::UnmatchedStreams`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredUnmatched {
-    pub group_id: String,
-    pub source: String,
-    pub rows: i64,
-    pub keys_dropped: i64,
-    pub first_seen_ms: i64,
-    pub last_seen_ms: i64,
-    pub keys: Vec<StoredStreamKey>,
+pub(crate) struct StoredUnmatched {
+    pub(crate) group_id: String,
+    pub(crate) source: String,
+    pub(crate) rows: i64,
+    pub(crate) keys_dropped: i64,
+    pub(crate) first_seen_ms: i64,
+    pub(crate) last_seen_ms: i64,
+    pub(crate) keys: Vec<StoredStreamKey>,
 }
 
 /// One stream of a [`StoredUnmatched`] (`heartbeat::StreamKey`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredStreamKey {
-    pub key: String,
-    pub rows: i64,
-    pub first_seen_ms: i64,
-    pub last_seen_ms: i64,
+pub(crate) struct StoredStreamKey {
+    pub(crate) key: String,
+    pub(crate) rows: i64,
+    pub(crate) first_seen_ms: i64,
+    pub(crate) last_seen_ms: i64,
     /// The route condition that takes this stream (`SourceMeta::stream_condition`). Not stored: `GET /api/streams`
     /// fills it from the source's kind in the group's deployed bundle, and leaves it out where that bundle has none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
+    pub(crate) condition: Option<String>,
     /// Whether a `StreamUnrouted` warning names it ([`RegistryStore::unrouted_since`]). Not stored:
     /// `GET /api/streams` sets it.
-    pub recent: bool,
+    pub(crate) recent: bool,
 }
 
 /// What one beat gathered beyond its points, and which window of one worker process's life it is
@@ -1954,14 +1964,14 @@ pub struct Window<'a> {
 
 /// One beat's streams, and whose they are.
 pub struct Streams<'a> {
-    pub group_id: &'a str,
-    pub report: &'a crate::heartbeat::StreamReport,
+    pub(crate) group_id: &'a str,
+    pub(crate) report: &'a crate::heartbeat::StreamReport,
     /// Whether the report comes from a commit that runs what its group is deployed at
     /// (`crate::leader::git::ContentId`).
-    pub deployed: bool,
+    pub(crate) deployed: bool,
     /// What its group is deployed at, as [`crate::leader::git::ContentId::key`] names it. `None` with nothing
     /// deployed.
-    pub config: Option<&'a str>,
+    pub(crate) config: Option<&'a str>,
 }
 
 /// Whether window `seq` of `boot_id` is one `worker_id` has not had recorded, and if so, records that it now has. A
@@ -1985,16 +1995,16 @@ fn claim_window(tx: &Connection, worker_id: &str, boot_id: u64, seq: u64) -> rus
 /// Everything the leader has accumulated of the fleet's streams.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredStreams {
-    pub parsers: Vec<StoredParserShape>,
-    pub unmatched: Vec<StoredUnmatched>,
+pub(crate) struct StoredStreams {
+    pub(crate) parsers: Vec<StoredParserShape>,
+    pub(crate) unmatched: Vec<StoredUnmatched>,
 }
 
 impl RegistryStore {
     /// One beat's streams, recorded as [`RegistryStore::record_heartbeat`] records them but without the rest of a
     /// beat.
     #[cfg(test)]
-    pub fn record_streams(
+    pub(crate) fn record_streams(
         &self,
         group_id: &str,
         report: &crate::heartbeat::StreamReport,
@@ -2047,12 +2057,12 @@ impl RegistryStore {
     }
 
     /// From the next bucket written on, keeps the rows of the `watched` values only (`senders::keep`).
-    pub fn watch_senders(&self, watched: HashSet<SenderKey>) {
+    pub(crate) fn watch_senders(&self, watched: HashSet<SenderKey>) {
         self.senders.lock().watched = Some(watched);
     }
 
     /// Every sender field's days from `since_day_ms`, by group, source and name.
-    pub fn sender_fields_since(&self, since_day_ms: i64) -> Result<BTreeMap<FieldKey, FieldDays>, StoreError> {
+    pub(crate) fn sender_fields_since(&self, since_day_ms: i64) -> Result<BTreeMap<FieldKey, FieldDays>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT group_id, source, field, day_ms, counted, over FROM sender_fields WHERE day_ms >= ?1")?;
@@ -2071,7 +2081,7 @@ impl RegistryStore {
 
     /// Calls `each` with every sender value's days from `since_day_ms`, one value at a time and a field's values one
     /// after another, so only one value's days are held at once.
-    pub fn each_sender_value(
+    pub(crate) fn each_sender_value(
         &self,
         since_day_ms: i64,
         mut each: impl FnMut(&FieldKey, &str, Days),
@@ -2104,7 +2114,7 @@ impl RegistryStore {
     }
 
     /// The buckets `group`'s `source`'s `field` was counted in on each day from `since_day_ms`, oldest first.
-    pub fn sender_field_days(
+    pub(crate) fn sender_field_days(
         &self,
         group: &str,
         source: &str,
@@ -2126,7 +2136,7 @@ impl RegistryStore {
 
     /// The buckets each value of each of `group`'s `source`'s fields held a row in, on each day from `since_day_ms`,
     /// as (field, day, buckets).
-    pub fn sender_value_days(
+    pub(crate) fn sender_value_days(
         &self,
         group: &str,
         source: &str,
@@ -2145,7 +2155,7 @@ impl RegistryStore {
     }
 
     /// The rows `group`'s `source`'s `field`'s `value` held, on each day it keeps them, oldest first.
-    pub fn sender_rows(
+    pub(crate) fn sender_rows(
         &self,
         group: &str,
         source: &str,
@@ -2165,7 +2175,7 @@ impl RegistryStore {
 
     /// Keeps rows only for the `watched` values; forgets each value's day row before `values_before_ms` that holds no
     /// rows, and every value's and field's day rows before `kept_before_ms`.
-    pub fn forget_senders(
+    pub(crate) fn forget_senders(
         &self,
         watched: &HashSet<SenderKey>,
         values_before_ms: i64,
@@ -2583,7 +2593,7 @@ impl RegistryStore {
     /// Everything accumulated of every group's streams, each shape with its fields and each source with its keys,
     /// in key order. A Parser's counts are those of the buckets from `since_ms` on: a Parser that read nothing since
     /// is left out, and so is a field it neither declares nor has held since.
-    pub fn streams(&self, since_ms: i64) -> Result<StoredStreams, StoreError> {
+    pub(crate) fn streams(&self, since_ms: i64) -> Result<StoredStreams, StoreError> {
         let conn = self.conn.lock();
         let mut parsers: Vec<StoredParserShape> = conn
             .prepare(
@@ -2727,7 +2737,10 @@ impl RegistryStore {
     }
 
     /// Forgets what every source outside `kept`, by `(group, source)`, showed of its streams.
-    pub fn forget_streams_except(&self, kept: &std::collections::HashSet<(String, String)>) -> Result<(), StoreError> {
+    pub(crate) fn forget_streams_except(
+        &self,
+        kept: &std::collections::HashSet<(String, String)>,
+    ) -> Result<(), StoreError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let held: Vec<(String, String)> = tx
@@ -2759,7 +2772,7 @@ impl RegistryStore {
     /// Each source that received rows no route took at or after `since_ms` while its group was deployed at what it is
     /// now, naming the streams it received them under since then. `deployed` answers what a group is deployed at, as
     /// [`write_streams`] was given it.
-    pub fn unrouted_since(
+    pub(crate) fn unrouted_since(
         &self,
         since_ms: i64,
         deployed: impl Fn(&str) -> Option<String>,
@@ -2802,7 +2815,7 @@ impl RegistryStore {
 
     /// Every declared field of every Parser shape, with when its step last read rows, it was last present and it
     /// last failed: what a drift warning reads.
-    pub fn declared_fields(&self) -> Result<Vec<DeclaredField>, StoreError> {
+    pub(crate) fn declared_fields(&self) -> Result<Vec<DeclaredField>, StoreError> {
         let conn = self.conn.lock();
         let fields = conn
             .prepare(
@@ -2834,36 +2847,36 @@ impl RegistryStore {
 /// One source of one group that received rows no route took (`RegistryStore::unrouted_since`): the streams they
 /// came under, in the order each was first seen. An empty key is a row its source files under no stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnroutedSource {
-    pub group_id: String,
-    pub source: String,
+pub(crate) struct UnroutedSource {
+    pub(crate) group_id: String,
+    pub(crate) source: String,
     /// When its latest run of rows no route took began; `None` for a run recorded before the store kept it.
-    pub since_ms: Option<i64>,
-    pub keys: Vec<String>,
+    pub(crate) since_ms: Option<i64>,
+    pub(crate) keys: Vec<String>,
 }
 
 /// How long a declared field may go without a row that holds it, while its step reads rows, before it is gone; and
 /// how far apart two failures may fall and still be one run of them. An hour of tallied batches is enough that a
 /// field most rows hold is not missed by chance.
-pub const DRIFT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+pub(crate) const DRIFT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// One declared field of one Parser shape (`RegistryStore::declared_fields`). `None` where no window since the
 /// store began keeping it said so.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeclaredField {
-    pub group_id: String,
-    pub pipeline: String,
-    pub step: String,
-    pub field: String,
+pub(crate) struct DeclaredField {
+    pub(crate) group_id: String,
+    pub(crate) pipeline: String,
+    pub(crate) step: String,
+    pub(crate) field: String,
     /// Its declared type.
-    pub declared: String,
+    declared: String,
     /// When its step last read a row on this shape.
-    pub read_last_ms: Option<i64>,
-    pub present_last_ms: Option<i64>,
-    pub failed_last_ms: Option<i64>,
+    pub(crate) read_last_ms: Option<i64>,
+    pub(crate) present_last_ms: Option<i64>,
+    pub(crate) failed_last_ms: Option<i64>,
     /// When the run of failures that ends at `failed_last_ms` began: no two of its failures fell further apart than
     /// [`DRIFT_WINDOW`].
-    pub failing_since_ms: Option<i64>,
+    pub(crate) failing_since_ms: Option<i64>,
 }
 
 #[cfg(test)]

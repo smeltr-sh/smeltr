@@ -20,7 +20,7 @@ pub struct Validity {
 }
 
 impl Validity {
-    pub fn alloc_null(pool: &mut BufferPool, len: usize) -> Self {
+    pub(crate) fn alloc_null(pool: &mut BufferPool, len: usize) -> Self {
         let mut bitmap = pool.take(bits::bytes_for(len));
         bits::fill_invalid(bitmap.as_mut_slice::<u64>());
         Validity {
@@ -40,26 +40,18 @@ impl Validity {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
     pub fn valid_count(&self) -> usize {
         self.valid_count
     }
 
     /// The fast-path gate: when false, a kernel can skip validity entirely.
     #[inline]
-    pub fn has_nulls(&self) -> bool {
+    pub(crate) fn has_nulls(&self) -> bool {
         debug_assert!(self.valid_count <= self.len);
         self.valid_count < self.len
     }
 
-    pub fn recount(&mut self) -> usize {
+    pub(crate) fn recount(&mut self) -> usize {
         self.valid_count = bits::popcount(self.bits());
         self.valid_count
     }
@@ -87,7 +79,7 @@ impl Validity {
     }
 
     /// Grows to `len` rows: the rows it had are kept, and the rows added are valid.
-    pub fn grow(&mut self, pool: &mut BufferPool, len: usize) {
+    pub(crate) fn grow(&mut self, pool: &mut BufferPool, len: usize) {
         debug_assert!(len >= self.len);
         let old = self.len;
         self.bitmap.grow(pool, bits::bytes_for(len));
@@ -104,21 +96,21 @@ impl Validity {
     }
 
     /// Keeps only the first `len` rows.
-    pub fn truncate(&mut self, len: usize) {
+    pub(crate) fn truncate(&mut self, len: usize) {
         debug_assert!(len <= self.len);
         self.len = len;
         bits::mask_tail(self.bits_mut(), len);
         self.recount();
     }
 
-    pub fn set_all_valid(&mut self) {
+    pub(crate) fn set_all_valid(&mut self) {
         let len = self.len;
         let words = bits::words_for(len);
         bits::fill_valid(&mut self.bitmap.as_mut_slice::<u64>()[..words], len);
         self.valid_count = len;
     }
 
-    pub fn set_all_null(&mut self) {
+    pub(crate) fn set_all_null(&mut self) {
         let words = bits::words_for(self.len);
         bits::fill_invalid(&mut self.bitmap.as_mut_slice::<u64>()[..words]);
         self.valid_count = 0;
@@ -126,22 +118,22 @@ impl Validity {
 
     /// Raw bitmap. Bits past `len` are always 0.
     #[inline]
-    pub fn bits(&self) -> &[u64] {
+    pub(crate) fn bits(&self) -> &[u64] {
         &self.bitmap.as_slice::<u64>()[..bits::words_for(self.len)]
     }
 
     /// Raw mutable bitmap. Writing here bypasses `valid_count`; call `recount()` afterward.
     #[inline]
-    pub fn bits_mut(&mut self) -> &mut [u64] {
+    pub(crate) fn bits_mut(&mut self) -> &mut [u64] {
         let words = bits::words_for(self.len);
         &mut self.bitmap.as_mut_slice::<u64>()[..words]
     }
 
-    pub fn reclaim(self, pool: &mut BufferPool) {
+    pub(crate) fn reclaim(self, pool: &mut BufferPool) {
         pool.give(self.bitmap);
     }
 
-    pub fn deep_copy(&self, pool: &mut BufferPool) -> Validity {
+    pub(crate) fn deep_copy(&self, pool: &mut BufferPool) -> Validity {
         let mut b = pool.take(bits::bytes_for(self.len));
         let words = bits::words_for(self.len);
         b.as_mut_slice::<u64>()[..words].copy_from_slice(self.bits());

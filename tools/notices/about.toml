@@ -51,6 +51,21 @@ path = "LICENSE"
 license = "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)"
 checksum = "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e"
 
+# ISA-L's sources each carry Intel's license header, which cargo-about would reproduce file by file. The wrapper's
+# LICENSE and ISA-L's own hold the two copyright lines that ship.
+[isal-sys.clarify]
+license = "BSD-3-Clause"
+
+[[isal-sys.clarify.files]]
+path = "LICENSE"
+license = "BSD-3-Clause"
+checksum = "5368e1c9e8423151ec1894a56c137df590acf008464cc506ad241744cda8d818"
+
+[[isal-sys.clarify.files]]
+path = "isa-l/LICENSE"
+license = "BSD-3-Clause"
+checksum = "bc8fd4a3d031e65e05e9c9e2add2c3f336ce527fa85c1e31031c808b58216217"
+
 # Its LICENSE carries Amazon's copyright line, which the generic ISC text cargo-about would put in its place lacks.
 [aws-lc-rs.clarify]
 license = "ISC AND (Apache-2.0 OR ISC)"

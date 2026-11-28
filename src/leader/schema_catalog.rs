@@ -14,7 +14,7 @@ use crate::schema::{json_schema, standard};
 /// What a schema is read from: a file in a format a standard publishes.
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ReadFormat {
+enum ReadFormat {
     /// A JSON Schema document (`schema::json_schema`).
     JsonSchema,
     /// ECS's `fields.csv` or `ecs_flat.yml` (`schema::ecs`).
@@ -32,46 +32,46 @@ pub enum ReadFormat {
 #[serde(rename_all = "camelCase")]
 pub struct ReadRequest {
     #[serde(default)]
-    pub id: String,
-    pub format: ReadFormat,
+    id: String,
+    format: ReadFormat,
     /// The file, as text.
     #[serde(default)]
-    pub text: String,
+    text: String,
     /// Read a release of ECS or OCSF smeltr carries (`schema::standard`) rather than `text`.
     #[serde(default)]
-    pub built_in: bool,
+    built_in: bool,
     /// The release `built_in` reads, by its version; the newest where empty.
     #[serde(default)]
-    pub release: String,
+    release: String,
     /// Whose requirements an ECS schema's fields take.
     #[serde(default)]
-    pub requirements: crate::schema::ecs::Requirements,
+    pub(crate) requirements: crate::schema::ecs::Requirements,
     /// The OCSF class to read.
     #[serde(default)]
-    pub class: String,
+    class: String,
     /// How much of an OCSF class to read.
     #[serde(default)]
-    pub cut: crate::schema::ocsf::Cut,
+    pub(crate) cut: crate::schema::ocsf::Cut,
     /// The OpenTelemetry signal whose records an `otlp` schema holds.
     #[serde(default)]
-    pub signal: crate::plan::topology::Signal,
+    signal: crate::plan::topology::Signal,
     /// Which column of a CSV holds what; unsaid, its header says.
     #[serde(default)]
-    pub columns: Option<crate::schema::csv::Columns>,
+    pub(crate) columns: Option<crate::schema::csv::Columns>,
     /// The type of each value of a CSV's type column the reader does not know of itself.
     #[serde(default)]
-    pub types: std::collections::BTreeMap<String, String>,
+    types: std::collections::BTreeMap<String, String>,
     /// Answer what a CSV holds, for its columns and types to be chosen, rather than read it.
     #[serde(default)]
-    pub preview: bool,
+    preview: bool,
 }
 
 /// A schema read from a file, as a bundle declares one, or, asked for, what a CSV holds before it is read.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct ReadSchema {
-    pub schema: SchemaDto,
+    schema: SchemaDto,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub preview: Option<crate::schema::csv::Preview>,
+    pub(crate) preview: Option<crate::schema::csv::Preview>,
 }
 
 /// The schema `req`'s file declares, checked as a bundle's would be.
@@ -140,18 +140,18 @@ fn carried<'a>(
 /// `ReadRequest::built_in` and `ReadRequest::release`.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Standards {
-    pub ecs: Vec<Release>,
-    pub ocsf: Vec<Release>,
+    ecs: Vec<Release>,
+    ocsf: Vec<Release>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
-pub struct Release {
-    pub version: String,
+struct Release {
+    version: String,
     /// Where the release is published.
-    pub source: String,
+    source: String,
     /// OCSF's classes, one of which a schema is read from.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub classes: Vec<standard::OcsfClass>,
+    pub(crate) classes: Vec<standard::OcsfClass>,
 }
 
 pub fn standards() -> Standards {
@@ -189,7 +189,7 @@ fn declared(id: &str, title: &str, fields: Vec<crate::config_file::SchemaFieldDt
 /// What a schema is exported as.
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ExportFormat {
+enum ExportFormat {
     /// A JSON Schema document.
     JsonSchema,
     /// The body of `PUT /<index>` for an index whose documents fit it (`io::elastic_mapping`).
@@ -198,14 +198,14 @@ pub enum ExportFormat {
 
 #[derive(serde::Deserialize)]
 pub struct ExportRequest {
-    pub schema: SchemaDto,
-    pub format: ExportFormat,
+    schema: SchemaDto,
+    format: ExportFormat,
 }
 
 /// A schema written in an export format.
 #[derive(Default, serde::Serialize)]
 pub struct ExportedSchema {
-    pub document: Value,
+    document: Value,
 }
 
 /// `req`'s schema, written as its format has it.
@@ -300,7 +300,7 @@ pub fn findings(
     declared_at: &crate::config_file::DeclaredAt,
     base: Option<(crate::config_file::FileConfig, crate::config_file::DeclaredAt)>,
 ) -> Result<Vec<crate::config_file::SchemaFinding>, String> {
-    let base = base.and_then(|(file, declared_at)| crate::config_file::validate_at(file, &declared_at).ok());
+    let base = base.and_then(|(file, declared_at)| crate::config_file::validate(file, &declared_at).ok());
     let (misfits, was) = match base
         .as_ref()
         .and_then(|system| Some((system, system.compiled.as_ref()?)))
@@ -308,7 +308,7 @@ pub fn findings(
         Some((system, compiled)) => (system.schema_misfits(compiled), system.schema_findings(compiled)),
         None => Default::default(),
     };
-    let system = crate::config_file::validate_at(file, declared_at).map_err(|e| e.to_string())?;
+    let system = crate::config_file::validate(file, declared_at).map_err(|e| e.to_string())?;
     let compiled = system.compiled.as_ref().ok_or("the bundle does not compile")?;
     Ok((system.schema_findings_beyond(compiled, &misfits).into_iter())
         .filter(|f| !was.contains(f))

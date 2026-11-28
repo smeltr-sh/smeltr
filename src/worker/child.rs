@@ -124,7 +124,7 @@ const REPORT_INTERVAL: Duration = Duration::from_millis(500);
 /// What the supervisor says to a runtime.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ToRuntime {
+enum ToRuntime {
     /// Run this commit. Sent once, immediately after the child starts.
     Start(Box<StartSpec>),
     /// Serve this capture, either by tapping a source already being read or by opening one of its own.
@@ -161,41 +161,41 @@ pub enum ToRuntime {
 /// What one runtime process holds for as long as it runs, shared by the deployment it starts and the supervisor's
 /// commands it obeys: the captures it serves, the secrets it was sent, its metrics registry and the sources it holds.
 #[derive(Clone, Default)]
-pub struct Runtime {
-    pub captures: Arc<super::capture::Captures>,
-    pub secrets: crate::plan::topology::HeldSecrets,
-    pub registry: Arc<crate::metrics::Metrics>,
-    pub held: Arc<super::held::Held>,
-    pub sender_fields: crate::streams::SenderEdits,
+pub(crate) struct Runtime {
+    pub(crate) captures: Arc<super::capture::Captures>,
+    pub(crate) secrets: crate::plan::topology::HeldSecrets,
+    pub(crate) registry: Arc<crate::metrics::Metrics>,
+    pub(crate) held: Arc<super::held::Held>,
+    pub(crate) sender_fields: crate::streams::SenderEdits,
 }
 
 /// Everything a runtime needs to become one. No path to a working tree: a commit is read out of the object store.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct StartSpec {
+pub(crate) struct StartSpec {
     /// This worker's own directory. The runtime locks a file in it for as long as it lives, so no second runtime
     /// can read the same sources.
-    pub state_dir: std::path::PathBuf,
-    pub repo_dir: std::path::PathBuf,
-    pub commit: String,
-    pub group_id: String,
-    pub thread_limit: usize,
+    pub(crate) state_dir: std::path::PathBuf,
+    pub(crate) repo_dir: std::path::PathBuf,
+    pub(crate) commit: String,
+    pub(crate) group_id: String,
+    pub(crate) thread_limit: usize,
     /// `WorkerConfig::memory`.
     #[serde(default)]
-    pub memory: Option<usize>,
+    pub(crate) memory: Option<usize>,
     /// How often the leader has this worker beat, which the runtime tallies its streams at.
-    pub heartbeat_interval: Duration,
-    pub worker_id: String,
+    pub(crate) heartbeat_interval: Duration,
+    pub(crate) worker_id: String,
     /// Only what this commit names. A runtime is not given credentials its own bundle does not quote.
-    pub secrets: Vec<crate::heartbeat::SecretDelivery>,
+    pub(crate) secrets: Vec<crate::heartbeat::SecretDelivery>,
     /// Which incarnation this is. Echoed on every frame the child sends, so a message from one the supervisor has
     /// replaced is recognized and dropped rather than attributed to its successor.
-    pub incarnation: u64,
+    pub(crate) incarnation: u64,
 }
 
 /// What a runtime says about itself.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FromRuntime {
+enum FromRuntime {
     /// Loaded, compiled, connectors open, threads running. Not a heartbeat: it is said once, and says the startup
     /// steps completed rather than that the process is alive.
     Ready { incarnation: u64 },
@@ -218,61 +218,61 @@ pub enum FromRuntime {
 /// One reader's published facts: what its thread keeps current behind a lock, and what crosses to the supervisor as
 /// a snapshot whose age is the report interval.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct ReaderReport {
-    pub thread_id: String,
-    pub partitions: Vec<PartitionRef>,
-    pub held: Option<MetricSampleDto>,
-    pub connection_error: Option<MetricSampleDto>,
+pub(crate) struct ReaderReport {
+    pub(crate) thread_id: String,
+    pub(crate) partitions: Vec<PartitionRef>,
+    pub(crate) held: Option<MetricSampleDto>,
+    pub(crate) connection_error: Option<MetricSampleDto>,
 }
 
 /// Everything the heartbeat says about a running deployment: what it is doing now, and what it has gathered since
 /// the last report.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct RuntimeReport {
-    pub state: RuntimeState,
-    pub gathered: Gathered,
+pub(crate) struct RuntimeReport {
+    pub(crate) state: RuntimeState,
+    pub(crate) gathered: Gathered,
 }
 
 /// What a deployment is doing now. A later report's replaces an earlier one's.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct RuntimeState {
-    pub readers: Vec<ReaderReport>,
-    pub pool_thread_ids: Vec<String>,
-    pub egress_ids: Vec<crate::core::id::DestId>,
-    pub egress_refusals: Vec<(crate::core::id::DestId, Vec<MetricSampleDto>)>,
+pub(crate) struct RuntimeState {
+    pub(crate) readers: Vec<ReaderReport>,
+    pub(crate) pool_thread_ids: Vec<String>,
+    pub(crate) egress_ids: Vec<crate::core::id::DestId>,
+    pub(crate) egress_refusals: Vec<(crate::core::id::DestId, Vec<MetricSampleDto>)>,
     /// What the metrics' subject labels resolve against: the topology they were written under.
-    pub subjects: crate::metrics::Subjects,
+    pub(crate) subjects: crate::metrics::Subjects,
     /// Every single-worker source this deployment runs, held here or not.
-    pub single_worker: Vec<crate::heartbeat::SourceKey>,
+    pub(crate) single_worker: Vec<crate::heartbeat::SourceKey>,
     /// Every single-worker source this runtime holds now, as of the holds frame numbered `holds_applied`. One the
     /// supervisor sent in that frame or before and that this leaves out is a grant that failed.
-    pub holding: Vec<crate::heartbeat::SourceKey>,
-    pub holds_applied: u64,
+    pub(crate) holding: Vec<crate::heartbeat::SourceKey>,
+    pub(crate) holds_applied: u64,
 }
 
 /// What a deployment gathered since its last report, owed to the leader. A later report's adds to an earlier one's,
 /// since the leader has had neither, and outlives the runtime that gathered it.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct Gathered {
+pub(crate) struct Gathered {
     /// The runtime's own registry since the last report. Committed on send rather than on the leader's
     /// acknowledgment: a runtime that is killed loses at most one window of counts, which is the trade
     /// Observability already makes for metrics and never makes for data.
-    pub metrics: Vec<MetricSampleDto>,
+    pub(crate) metrics: Vec<MetricSampleDto>,
     /// Each carries the boot id of the runtime that numbered it, so the leader dedupes a batch that arrives twice
     /// by sequence number, and two runtimes' sequences never collide under one key.
-    pub logs: Vec<LogDto>,
+    pub(crate) logs: Vec<LogDto>,
     /// What held sources have delivered since the last report, oldest first. Owed to the supervisor once written,
     /// as the logs are, and carried on until the leader acknowledges it.
-    pub progress: Vec<crate::heartbeat::SourceProgress>,
+    pub(crate) progress: Vec<crate::heartbeat::SourceProgress>,
     /// What the deployment saw of its streams since the last report (`streams::Streams::drain`). Owed to the
     /// supervisor once written, as the logs are, and carried on until the leader acknowledges it.
-    pub streams: Option<crate::heartbeat::StreamReport>,
+    pub(crate) streams: Option<crate::heartbeat::StreamReport>,
 }
 
 impl RuntimeReport {
     /// This report brought up to date by a later one. What a thread is doing is whatever it is doing now; what it
     /// gathered is both windows, because the leader has had neither.
-    pub fn followed_by(self, next: RuntimeReport) -> RuntimeReport {
+    pub(crate) fn followed_by(self, next: RuntimeReport) -> RuntimeReport {
         RuntimeReport {
             state: next.state,
             gathered: self.gathered.followed_by(next.gathered),
@@ -282,7 +282,7 @@ impl RuntimeReport {
 
 impl Gathered {
     /// Two windows the leader has not seen, as one.
-    pub fn followed_by(self, next: Gathered) -> Gathered {
+    fn followed_by(self, next: Gathered) -> Gathered {
         // Two windows of streams are one: the counts sum (`StreamReport::absorb`).
         let streams = match (self.streams, next.streams) {
             (Some(mut earlier), Some(later)) => {
@@ -872,8 +872,7 @@ pub struct RuntimeHandle {
     /// what it wrote: without this join the supervisor could replace the inbox while those frames were still
     /// being decoded into it.
     reader: Option<std::thread::JoinHandle<()>>,
-    pub incarnation: u64,
-    pub commit: String,
+    pub(crate) commit: String,
 }
 
 /// What a supervisor learns from a running child, kept where its heartbeat can read it without waiting.
@@ -882,12 +881,12 @@ pub struct RuntimeHandle {
 /// each report carries the counts and the logs since its own last one, so keeping only the newest would drop
 /// every window in between -- including all of them while the deployer is busy stopping something.
 #[derive(Default)]
-pub struct RuntimeInbox {
-    pub report: crate::sync::Mutex<Option<RuntimeReport>>,
-    pub captured: crate::sync::Mutex<Vec<CaptureReport>>,
-    pub ready: AtomicBool,
-    pub failed: crate::sync::Mutex<Option<String>>,
-    pub exited: AtomicBool,
+pub(crate) struct RuntimeInbox {
+    pub(crate) report: crate::sync::Mutex<Option<RuntimeReport>>,
+    pub(crate) captured: crate::sync::Mutex<Vec<CaptureReport>>,
+    pub(crate) ready: AtomicBool,
+    pub(crate) failed: crate::sync::Mutex<Option<String>>,
+    pub(crate) exited: AtomicBool,
 }
 
 /// This executable, for spawning a runtime from.
@@ -926,7 +925,7 @@ const PURGE_DELAY_ENV: &str = "MIMALLOC_PURGE_DELAY";
 impl RuntimeHandle {
     /// Starts a runtime and hands it its target, and the held sockets of the receivers it serves (`listens`). Returns as soon as the
     /// process exists: readiness is a frame, not a spawn.
-    pub fn start(
+    pub(crate) fn start(
         spec: StartSpec,
         inbox: &Arc<RuntimeInbox>,
         sockets: &crate::io::receiver::Sockets,
@@ -982,12 +981,11 @@ impl RuntimeHandle {
         let mut process = crate::process::Contained::spawn(&mut cmd)?;
         // A failure past this point drops `process`, and dropping a `Contained` that was not confirmed dead kills
         // its tree: what was started is ended before the failure is reported, on every such path.
-        let (control, reader, incarnation, commit) = RuntimeHandle::attach(&mut process, spec, inbox)?;
+        let (control, reader, commit) = RuntimeHandle::attach(&mut process, spec, inbox)?;
         Ok(RuntimeHandle {
             process: Box::new(process),
             control,
             reader: Some(reader),
-            incarnation,
             commit,
         })
     }
@@ -997,7 +995,7 @@ impl RuntimeHandle {
         process: &mut crate::process::Contained,
         spec: StartSpec,
         inbox: &Arc<RuntimeInbox>,
-    ) -> std::io::Result<(Control, std::thread::JoinHandle<()>, u64, String)> {
+    ) -> std::io::Result<(Control, std::thread::JoinHandle<()>, String)> {
         let stdin = process.take_stdin().ok_or_else(|| std::io::Error::other("no stdin"))?;
         let stdout = process
             .take_stdout()
@@ -1026,47 +1024,47 @@ impl RuntimeHandle {
                 }
             })?;
         }
-        Ok((control, reader, incarnation, commit))
+        Ok((control, reader, commit))
     }
 
     /// Ask this runtime to serve a capture.
-    pub fn capture(&mut self, invitation: CaptureInvitation) -> std::io::Result<()> {
+    pub(crate) fn capture(&mut self, invitation: CaptureInvitation) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::Capture(Box::new(invitation)), CONTROL_FRAME_BUDGET)
     }
 
     /// Tell this runtime every capture session the leader still lists.
-    pub fn listed(&mut self, sessions: Vec<String>) -> std::io::Result<()> {
+    pub(crate) fn listed(&mut self, sessions: Vec<String>) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::Listed { sessions }, CONTROL_FRAME_BUDGET)
     }
 
     /// Tell this runtime every single-worker source the leader holds for this worker, in frame `seq`.
-    pub fn holds(&mut self, seq: u64, holds: Vec<super::held::Holding>) -> std::io::Result<()> {
+    pub(crate) fn holds(&mut self, seq: u64, holds: Vec<super::held::Holding>) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::Holds { seq, holds }, CONTROL_FRAME_BUDGET)
     }
 
     /// Tell this runtime whether the progress the supervisor holds for the leader is past its bound.
-    pub fn backlogged(&mut self, full: bool) -> std::io::Result<()> {
+    pub(crate) fn backlogged(&mut self, full: bool) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::Backlogged { full }, CONTROL_FRAME_BUDGET)
     }
 
     /// Tell this runtime the levels to keep its lines at.
-    pub fn log_levels(&mut self, levels: crate::heartbeat::LogLevels) -> std::io::Result<()> {
+    pub(crate) fn log_levels(&mut self, levels: crate::heartbeat::LogLevels) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::LogLevels { levels }, CONTROL_FRAME_BUDGET)
     }
 
     /// Tell this runtime what an editor changed of each source's sender fields.
-    pub fn sender_fields(&mut self, fields: Vec<crate::heartbeat::SenderFields>) -> std::io::Result<()> {
+    pub(crate) fn sender_fields(&mut self, fields: Vec<crate::heartbeat::SenderFields>) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::SenderFields { fields }, CONTROL_FRAME_BUDGET)
     }
 
     /// Hand this runtime what the supervisor recorded and said, to mirror.
-    pub fn mirror(&mut self, samples: Vec<MetricSampleDto>, logs: Vec<LogDto>) -> std::io::Result<()> {
+    pub(crate) fn mirror(&mut self, samples: Vec<MetricSampleDto>, logs: Vec<LogDto>) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::Mirror { samples, logs }, CONTROL_FRAME_BUDGET)
     }
@@ -1076,7 +1074,7 @@ impl RuntimeHandle {
     ///
     /// `Err` is a termination that could not be confirmed: the caller stays blocked from activating anything and
     /// says so, rather than claiming a replacement over a runtime that may still be running.
-    pub fn stop(&mut self, graceful: Duration, hard: Duration, inbox: &RuntimeInbox) -> std::io::Result<()> {
+    pub(crate) fn stop(&mut self, graceful: Duration, hard: Duration, inbox: &RuntimeInbox) -> std::io::Result<()> {
         if let Err(e) = self.control.send_within(ToRuntime::Stop, CONTROL_FRAME_BUDGET) {
             tracing::debug!(name: "stop_not_sent", target: "processes", error = %e, "the runtime could not be asked to stop, so it is ended at the deadline");
         }
@@ -1139,7 +1137,7 @@ impl RuntimeHandle {
     /// replaces it, which is the overlap this boundary exists to rule out. So an exit is followed by the kill
     /// anything else here gets. The child is reaped by then, and the group is named by its id; that id stays
     /// pinned for as long as any member of the group lives, which is exactly when there is something to kill.
-    pub fn exited(&mut self) -> Exit {
+    pub(crate) fn exited(&mut self) -> Exit {
         // Asked without reaping, so the kill that follows names an id this child still holds.
         if !matches!(self.process.ended(), Ok(true)) {
             return Exit::Running;
@@ -1164,7 +1162,7 @@ impl RuntimeHandle {
 /// from one whose tree it dare not consider dead -- and only the second of those is [`Unconfirmed`](Exit::Unconfirmed),
 /// the state the Control plane's process boundary (design doc) has a worker report rather than recover from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Exit {
+pub(crate) enum Exit {
     /// Neither observed nor asked for: this handle is still what it was deployed as.
     Running,
     /// The process ended, but its tree did not confirm: the group kill failed, or something is still holding its
@@ -1724,7 +1722,7 @@ mod tests {
             let opened = opened.clone();
             Box::new(move || {
                 opened.fetch_add(1, Ordering::Relaxed);
-                Ok(Box::new(crate::io::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
+                Ok(Box::new(crate::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
             })
         });
         assert!(obey(read.into_iter().next().unwrap(), &runtime));

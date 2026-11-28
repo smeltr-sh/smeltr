@@ -46,8 +46,8 @@ pub enum Origin {
 
 /// Interned compile-time constants.
 #[derive(Clone, Default, Debug)]
-pub struct ResourceBuilder {
-    pub patterns: ById<PatternId, PatternSrc>,
+pub(crate) struct ResourceBuilder {
+    pub(crate) patterns: ById<PatternId, PatternSrc>,
 }
 
 impl ResourceBuilder {
@@ -55,7 +55,7 @@ impl ResourceBuilder {
     ///
     /// The grammar guarantees every regex is a compile-time constant, which is what makes this possible — a pattern
     /// built from a runtime value could not be compiled once and shared across every batch.
-    pub fn intern(&mut self, p: &PatternSrc) -> PatternId {
+    fn intern(&mut self, p: &PatternSrc) -> PatternId {
         let held = self.patterns.entries().find(|(_, q)| *q == p).map(|(id, _)| id);
         held.unwrap_or_else(|| self.patterns.push(p.clone()))
     }
@@ -66,24 +66,24 @@ impl ResourceBuilder {
 #[derive(Clone)]
 pub struct SymbolTable {
     root: Object,
-    pub layout: Slots<DataType>,
-    pub origins: Slots<SlotOrigin>,
-    pub warnings: Vec<CompileError>,
+    pub(crate) layout: Slots<DataType>,
+    pub(crate) origins: Slots<SlotOrigin>,
+    pub(crate) warnings: Vec<CompileError>,
     /// The slots bound to a local, rather than to the record's field.
-    pub local_slots: HashSet<SlotId>,
+    pub(crate) local_slots: HashSet<SlotId>,
     /// The slots `delete` took out of the record.
-    pub deleted_slots: HashSet<SlotId>,
+    pub(crate) deleted_slots: HashSet<SlotId>,
     /// Each copy that shares a slot rather than fill one: the slot, the name it was put at, how many slots there
     /// were then, so a later write of that name is told from an earlier one, and the step that made the copy.
-    pub aliases: Vec<(SlotId, String, usize, FunctionId)>,
+    pub(crate) aliases: Vec<(SlotId, String, usize, FunctionId)>,
     /// Each open local, innermost last.
     open: Vec<Scope>,
     /// How many locals have been opened: the next one's serial.
     opened: usize,
     /// Slots null on every row: bound to the null literal where nothing, or only null, was before.
-    pub nulls: HashSet<SlotId>,
+    pub(crate) nulls: HashSet<SlotId>,
     /// Slots a parse or a lookup wrote over what its name held before: its output, else the prior.
-    pub blends: HashSet<SlotId>,
+    pub(crate) blends: HashSet<SlotId>,
     /// Names whose read is a slot's value where it holds one, else what the tree reads there (`over_plan_output`).
     laid: Vec<(String, SlotId)>,
     /// The tree without the laid names: what a laid name's own read falls back to. A read above one sees it in `root`.
@@ -102,12 +102,6 @@ pub struct Scope {
     serial: usize,
 }
 
-impl Scope {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
 impl SymbolTable {
     /// A table over a *compiled pipeline's output*, for resolving an expression that runs after the pipeline rather
     /// than inside it — a route's `deliver` rule's `when` (design doc, Runtime stages: "Delivery belongs to routes").
@@ -116,7 +110,7 @@ impl SymbolTable {
     /// straight at the finished batch. Nothing is bound here and nothing may be: this table describes a batch that
     /// already exists, so `layout` is the plan's own and allocating into it would name a slot the batch has no column
     /// for. A field reads with the type it had inside the pipeline.
-    pub fn over_plan_output(
+    pub(crate) fn over_plan_output(
         layout: &[DataType],
         tree: &Object,
         ingest: &[(Place, DataType)],
@@ -167,7 +161,7 @@ impl SymbolTable {
         }
     }
 
-    pub fn new(ingest: &[(Place, DataType)]) -> SymbolTable {
+    pub(crate) fn new(ingest: &[(Place, DataType)]) -> SymbolTable {
         let mut t = SymbolTable {
             root: Object::default(),
             layout: Slots::new(),
@@ -203,24 +197,24 @@ impl SymbolTable {
     }
 
     /// The record: every name bound right now.
-    pub fn root(&self) -> &Object {
+    pub(crate) fn root(&self) -> &Object {
         &self.root
     }
 
     /// The record as `$` names it: the root, less the engine's own fields (`tree::is_internal`) and the open locals.
-    pub fn record(&self) -> Object {
+    pub(crate) fn record(&self) -> Object {
         let mut o = self.root.clone();
         o.fields.retain(|k, _| !tree::is_internal(k) && !self.is_local(k));
         o
     }
 
     /// The slot of the leaf `name`.
-    pub fn lookup(&self, name: &str) -> Option<SlotId> {
+    pub(crate) fn lookup(&self, name: &str) -> Option<SlotId> {
         self.root.leaf(name)
     }
 
     /// The slot of the record's own leaf `name`, a top-level name, where a local hides it too.
-    pub fn field_lookup(&self, name: &str) -> Option<SlotId> {
+    pub(crate) fn field_lookup(&self, name: &str) -> Option<SlotId> {
         match self.open.iter().find(|s| s.name == name) {
             Some(scope) => match &scope.saved {
                 Some(Node::Leaf(s)) => Some(*s),
@@ -231,13 +225,13 @@ impl SymbolTable {
     }
 
     /// The node `name` is: a leaf or an object.
-    pub fn node(&self, name: &str) -> Option<&Node> {
+    pub(crate) fn node(&self, name: &str) -> Option<&Node> {
         self.root.get(name)
     }
 
     /// The node `name` names, with the name the tree knows it by. `$` and `""` both name the record; the tree's name
     /// for it is `""`.
-    pub fn named<'n>(&self, name: &'n str) -> (&'n str, Option<Node>) {
+    pub(crate) fn named<'n>(&self, name: &'n str) -> (&'n str, Option<Node>) {
         match name {
             tree::ROOT | "" => ("", Some(Node::Object(self.record()))),
             name => (name, self.node(name).cloned()),
@@ -245,26 +239,26 @@ impl SymbolTable {
     }
 
     /// The object `name` is. `""` is the record.
-    pub fn object(&self, name: &str) -> Option<&Object> {
+    pub(crate) fn object(&self, name: &str) -> Option<&Object> {
         self.root.object(name)
     }
 
     /// The deepest object on `name`'s path, with its name and the rest of `name` below it.
-    pub fn deepest<'n>(&self, name: &'n str) -> (&Object, &'n str, &'n str) {
+    pub(crate) fn deepest<'n>(&self, name: &'n str) -> (&Object, &'n str, &'n str) {
         self.root.deepest(name)
     }
 
     /// The leaf a path meets on its way to `name`, with its slot.
-    pub fn leaf_above<'n>(&self, name: &'n str) -> Option<(&'n str, SlotId)> {
+    pub(crate) fn leaf_above<'n>(&self, name: &'n str) -> Option<(&'n str, SlotId)> {
         self.root.leaf_above(name)
     }
 
     /// The slot at `place`.
-    pub fn slot_of(&self, place: &Place) -> Option<SlotId> {
+    pub(crate) fn slot_of(&self, place: &Place) -> Option<SlotId> {
         self.root.slot(place)
     }
 
-    pub fn open_scope(&mut self, name: &str) -> Scope {
+    pub(crate) fn open_scope(&mut self, name: &str) -> Scope {
         let saved = self.root.get(name).cloned();
         if let Some(Node::Object(_)) = saved {
             self.root.take(name);
@@ -280,7 +274,7 @@ impl SymbolTable {
     }
 
     /// Close `scope`, putting back what its name was: what the scope saved, or what `field_bind` bound there since.
-    pub fn close_scope(&mut self, scope: &Scope) {
+    pub(crate) fn close_scope(&mut self, scope: &Scope) {
         let saved = match self.open.iter().rposition(|s| s.name == scope.name) {
             Some(i) => self.open.remove(i).saved,
             None => scope.saved.clone(),
@@ -292,39 +286,39 @@ impl SymbolTable {
     }
 
     /// Whether `name` is an open local's name or a path under it.
-    pub fn is_local(&self, name: &str) -> bool {
+    pub(crate) fn is_local(&self, name: &str) -> bool {
         self.local_index(name).is_some()
     }
 
     /// Where the open local `name` names, or is a path under, stands among the open locals: the `local_count` when it
     /// was opened.
-    pub fn local_index(&self, name: &str) -> Option<usize> {
+    pub(crate) fn local_index(&self, name: &str) -> Option<usize> {
         let head = tree::head(name);
         self.open.iter().rposition(|s| s.name == head)
     }
 
     /// Which binding `name`, or a path under it, means here: the open local's serial, or `None` for the record's field.
-    pub fn binding(&self, name: &str) -> Option<usize> {
+    pub(crate) fn binding(&self, name: &str) -> Option<usize> {
         self.local_index(name).map(|i| self.open[i].serial)
     }
 
     /// Note that `slot` is null on every row.
-    pub fn note_null(&mut self, slot: SlotId) {
+    pub(crate) fn note_null(&mut self, slot: SlotId) {
         self.nulls.insert(slot);
     }
 
     /// Whether `slot` is null on every row.
-    pub fn is_null(&self, slot: SlotId) -> bool {
+    pub(crate) fn is_null(&self, slot: SlotId) -> bool {
         self.nulls.contains(&slot)
     }
 
     /// Whether `o` is known to hold no key besides its fields, so a read of another is a compile error.
-    pub fn no_keys(&self, o: &Object) -> bool {
+    pub(crate) fn no_keys(&self, o: &Object) -> bool {
         o.unclaimed.is_none_or(|u| self.is_null(u))
     }
 
     /// Every slot an open local hides, which its block's end puts back.
-    pub fn hidden_slots(&self) -> Vec<SlotId> {
+    pub(crate) fn hidden_slots(&self) -> Vec<SlotId> {
         let mut out = Vec::new();
         for scope in &self.open {
             match &scope.saved {
@@ -338,7 +332,7 @@ impl SymbolTable {
 
     /// The slots of the record's fields an open local hides, less smeltr's own `__` fields. A local that hides a
     /// local outside it hides no field.
-    pub fn hidden_field_slots(&self) -> Vec<SlotId> {
+    pub(crate) fn hidden_field_slots(&self) -> Vec<SlotId> {
         let mut out = Vec::new();
         for (i, scope) in self.open.iter().enumerate() {
             if scope.name.starts_with("__") || self.open[..i].iter().any(|outer| outer.name == scope.name) {
@@ -354,18 +348,18 @@ impl SymbolTable {
     }
 
     /// How many locals are open.
-    pub fn local_count(&self) -> usize {
+    pub(crate) fn local_count(&self) -> usize {
         self.open.len()
     }
 
     /// Take `name` out of the tree, with everything under it: a read of it after this is a compile error
     /// (`unresolved`) until a step binds it again.
-    pub fn unbind(&mut self, name: &str) -> Option<Node> {
+    pub(crate) fn unbind(&mut self, name: &str) -> Option<Node> {
         self.root.take(name)
     }
 
     /// Take the slot at `place` out of the tree: the leaf, or the object's unclaimed fields.
-    pub fn unbind_place(&mut self, place: &Place) {
+    pub(crate) fn unbind_place(&mut self, place: &Place) {
         match place {
             Place::Leaf(name) => {
                 if self.lookup(name).is_some() {
@@ -377,7 +371,7 @@ impl SymbolTable {
     }
 
     /// Bind `place` to a fresh slot of type `ty`: a leaf, or an object's unclaimed fields, which are a variant.
-    pub fn bind_place(&mut self, place: &Place, ty: DataType, origin: Origin) -> SlotId {
+    pub(crate) fn bind_place(&mut self, place: &Place, ty: DataType, origin: Origin) -> SlotId {
         match place {
             Place::Leaf(name) => self.bind(name, ty, origin),
             Place::Unclaimed(name) => self.bind_unclaimed(name, origin),
@@ -385,7 +379,7 @@ impl SymbolTable {
     }
 
     /// Put the slot `slot` at `place`, in place of whatever was there: a copy, which moves no data.
-    pub fn put_place(&mut self, place: &Place, slot: SlotId) {
+    pub(crate) fn put_place(&mut self, place: &Place, slot: SlotId) {
         match place {
             Place::Leaf(name) => {
                 self.root.put(name, Node::Leaf(slot));
@@ -395,38 +389,33 @@ impl SymbolTable {
     }
 
     /// Put `node` at `name`, in place of whatever was there.
-    pub fn put(&mut self, name: &str, node: Node) {
+    fn put(&mut self, name: &str, node: Node) {
         self.root.put(name, node);
     }
 
-    pub fn type_of(&self, slot: SlotId) -> &DataType {
+    pub(crate) fn type_of(&self, slot: SlotId) -> &DataType {
         &self.layout[slot]
     }
 
-    /// Whether `name` is a leaf bound to a variant.
-    pub fn is_dynamic(&self, name: &str) -> bool {
-        self.lookup(name)
-            .is_some_and(|slot| self.layout[slot] == DataType::Variant)
-    }
-
-    pub fn slot_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn slot_count(&self) -> usize {
         self.layout.len()
     }
 
     /// The slot the next allocation takes.
-    pub fn next_slot(&self) -> SlotId {
+    pub(crate) fn next_slot(&self) -> SlotId {
         self.layout.next_id()
     }
 
     /// Every slot the tree names right now, by its place. What `rebound_since` compares against.
-    pub fn bindings(&self) -> HashMap<Place, SlotId> {
+    pub(crate) fn bindings(&self) -> HashMap<Place, SlotId> {
         self.root.places().into_iter().collect()
     }
 
     /// Every place bound by an assignment to a slot made since `before` was taken, when `first` was the next slot, with
     /// its slot then and now: what a loop body compiled in between assigned. In the order the places first bound,
     /// which is the order the body assigns them.
-    pub fn rebound_since(
+    pub(crate) fn rebound_since(
         &self,
         before: &HashMap<Place, SlotId>,
         first: SlotId,
@@ -440,7 +429,7 @@ impl SymbolTable {
                 let name = place.to_string();
                 let first_bound = self
                     .origins
-                    .from_id(first)
+                    .starting_at(first)
                     .iter()
                     .find(|o| o.name == name && assigned(o))
                     .map_or(slot, |o| o.slot);
@@ -460,7 +449,7 @@ impl SymbolTable {
     /// SSA: `x = x + 1` does not mutate `x`'s column, it allocates a new one and rebinds the name. The old slot becomes
     /// dead — which is what makes "mutate in place when a slot is provably dead" a *derivable* optimization rather than
     /// a hand-audited one. Whatever was at `name` goes: a leaf replaces an object whole.
-    pub fn bind(&mut self, name: &str, ty: DataType, origin: Origin) -> SlotId {
+    pub(crate) fn bind(&mut self, name: &str, ty: DataType, origin: Origin) -> SlotId {
         let slot = self.alloc(name.to_string(), ty, origin);
         if self.is_local(name) {
             self.local_slots.insert(slot);
@@ -471,7 +460,7 @@ impl SymbolTable {
 
     /// Bind the record's own leaf `name`, a top-level name, to a fresh slot, where a local hides it too: the block's
     /// end puts that slot back.
-    pub fn field_bind(&mut self, name: &str, ty: DataType, origin: Origin) -> SlotId {
+    pub(crate) fn field_bind(&mut self, name: &str, ty: DataType, origin: Origin) -> SlotId {
         let Some(i) = self.open.iter().position(|s| s.name == name) else {
             return self.bind(name, ty, origin);
         };
@@ -481,7 +470,7 @@ impl SymbolTable {
     }
 
     /// Give the object `name`, made where it is not one yet, a fresh slot for its unclaimed fields.
-    pub fn bind_unclaimed(&mut self, name: &str, origin: Origin) -> SlotId {
+    pub(crate) fn bind_unclaimed(&mut self, name: &str, origin: Origin) -> SlotId {
         let slot = self.alloc(
             Place::Unclaimed(name.to_string()).to_string(),
             DataType::Variant,
@@ -492,7 +481,7 @@ impl SymbolTable {
     }
 
     /// Make `name` an empty object where nothing is bound there: it claims its key though it holds nothing.
-    pub fn make_object(&mut self, name: &str) {
+    pub(crate) fn make_object(&mut self, name: &str) {
         if !name.is_empty() && self.root.get(name).is_none() {
             self.root.put(name, Node::Object(Object::default()));
         }
@@ -500,7 +489,7 @@ impl SymbolTable {
 
     /// Set the slot of the object `name`'s unclaimed fields, making the object where it is not one yet. `None` takes
     /// them away. The new column has no key removed.
-    pub fn set_unclaimed(&mut self, name: &str, slot: Option<SlotId>) {
+    pub(crate) fn set_unclaimed(&mut self, name: &str, slot: Option<SlotId>) {
         if self.root.object(name).is_none() {
             if slot.is_none() {
                 return;
@@ -513,7 +502,7 @@ impl SymbolTable {
     }
 
     /// Take `key` out of the object `name`'s unclaimed fields, where it has some, without touching their column.
-    pub fn remove_key(&mut self, name: &str, key: &str) {
+    pub(crate) fn remove_key(&mut self, name: &str, key: &str) {
         if let Some(o) = self.root.object_mut(name)
             && o.unclaimed.is_some()
             && !o.removed.iter().any(|k| k == key)
@@ -523,26 +512,26 @@ impl SymbolTable {
     }
 
     /// The keys taken out of the object `name`'s unclaimed fields (`tree::Object::removed`).
-    pub fn removed(&self, name: &str) -> &[String] {
+    pub(crate) fn removed(&self, name: &str) -> &[String] {
         self.root.object(name).map_or(&[], |o| &o.removed)
     }
 
     /// Give the object `name` the unclaimed fields `slot` less `removed`: a copy, which moves no data.
-    pub fn put_unclaimed(&mut self, name: &str, slot: SlotId, removed: &[String]) {
+    pub(crate) fn put_unclaimed(&mut self, name: &str, slot: SlotId, removed: &[String]) {
         self.set_unclaimed(name, Some(slot));
         self.root.object_mut(name).expect("made above").removed = removed.to_vec();
     }
 
     /// A fresh slot of type `ty`, named `name` in provenance and bound to nothing: what an instruction writes before
     /// a write binds it.
-    pub fn alloc(&mut self, name: String, ty: DataType, origin: Origin) -> SlotId {
+    pub(crate) fn alloc(&mut self, name: String, ty: DataType, origin: Origin) -> SlotId {
         let slot = self.layout.push(ty.clone());
         self.origins.push(SlotOrigin { slot, name, ty, origin });
         slot
     }
 
     /// An unnamed slot — a guard column, or a blend's output.
-    pub fn temp(&mut self, ty: DataType, origin: Origin) -> SlotId {
+    pub(crate) fn temp(&mut self, ty: DataType, origin: Origin) -> SlotId {
         let slot = self.layout.len();
         self.alloc(format!("<t{slot}>"), ty, origin)
     }
@@ -551,7 +540,8 @@ impl SymbolTable {
     ///
     /// **Emits no instruction and moves no data.** The columns stay exactly where they are; only the names pointing at
     /// them change.
-    pub fn rebind(&mut self, from: &str, to: &str) -> Result<(), CompileError> {
+    #[cfg(test)]
+    pub(crate) fn rebind(&mut self, from: &str, to: &str) -> Result<(), CompileError> {
         let Some(node) = self.root.take(from) else {
             return Err(CompileError::new(
                 None,
@@ -572,13 +562,13 @@ impl SymbolTable {
 
     /// A read of `name`, which nothing bound: a compile error, wherever it appears. A record key a step reads is a
     /// field its parser declares.
-    pub fn unresolved(&self, name: &str) -> CompileError {
+    fn unresolved(&self, name: &str) -> CompileError {
         CompileError::new(None, format!("`{name}` is not a field"))
     }
 
     /// Why a write at `name` is refused, where a leaf stands above it: a path under a variant or a scalar is no place
     /// to write. A leaf that holds nothing, `null`, gives way to the object.
-    pub fn write_refused(&self, name: &str) -> Option<CompileError> {
+    pub(crate) fn write_refused(&self, name: &str) -> Option<CompileError> {
         let (above, slot) = self.leaf_above(name)?;
         let ty = self.type_of(slot);
         let message = match ty {
@@ -594,7 +584,7 @@ impl SymbolTable {
 }
 
 /// Lower one expression. The node carries the type the checker judged (`expr::ir::Ir::ty`).
-pub fn resolve(e: &Expr, syms: &mut SymbolTable, res: &mut ResourceBuilder) -> Result<Ir, CompileError> {
+pub(crate) fn resolve(e: &Expr, syms: &mut SymbolTable, res: &mut ResourceBuilder) -> Result<Ir, CompileError> {
     Ok(match &e.kind {
         ExprKind::Literal(v) => Ir::new(
             v.data_type().unwrap_or(DataType::Null),
@@ -715,7 +705,7 @@ pub fn resolve(e: &Expr, syms: &mut SymbolTable, res: &mut ResourceBuilder) -> R
 
 /// Whether the language gives `name` a meaning as a call: a statement's, a parser's or a function's. A pipeline's own
 /// function needs a name of its own, since there is one namespace.
-pub fn is_builtin(name: &str) -> bool {
+pub(crate) fn is_builtin(name: &str) -> bool {
     STATEMENT_CALLS.contains(&name)
         || PARSE_FNS.contains(&name)
         || PRELUDE_FUNCTIONS.contains(&name)
@@ -853,7 +843,7 @@ fn omit_ir(o: Ir, keys: &[Ir], span: Span) -> Ir {
 /// names takes `fit(name, type, named)`, the value as the field's type where `named` holds, and a null value takes
 /// the field out; else the unclaimed fields of `o`, where it is open, take it. A literal key reaches only its own
 /// field, and a null value there drops the field from the type. The record's internal fields stay as they are.
-pub fn lay_key(
+pub(crate) fn lay_key(
     o: Ir,
     key: &Ir,
     value: &Ir,
@@ -1091,7 +1081,7 @@ fn resolve_call(
 }
 
 /// The error a use of a variant gets. It names the value only where the expression is a name the user wrote.
-pub fn refuse_variant(ir: &Ir, e: &Expr, syms: &SymbolTable) -> Result<(), CompileError> {
+pub(crate) fn refuse_variant(ir: &Ir, e: &Expr, syms: &SymbolTable) -> Result<(), CompileError> {
     if ir.ty != DataType::Variant {
         return Ok(());
     }
@@ -1109,7 +1099,7 @@ pub fn refuse_variant(ir: &Ir, e: &Expr, syms: &SymbolTable) -> Result<(), Compi
 
 /// The conversion that gives `name`, a variant, a type: `name: type = name;`, or, for a key under a variant, the
 /// variant's conversion to an open object holding it. Where nothing may be bound, `name as type`.
-pub fn conversion_hint(name: &str, syms: &SymbolTable) -> String {
+fn conversion_hint(name: &str, syms: &SymbolTable) -> String {
     if syms.reads_only {
         return format!("`{name} as type`");
     }
@@ -1134,7 +1124,7 @@ fn named_expr(e: &Expr) -> Option<String> {
 
 /// How `e` reads in an error: its name where it has one (`named_expr`), a literal as written, a call as `f(...)`,
 /// and "the value" for anything else.
-pub fn describe_expr(e: &Expr) -> String {
+pub(crate) fn describe_expr(e: &Expr) -> String {
     if let Some(name) = named_expr(e) {
         return name;
     }
@@ -1169,7 +1159,7 @@ pub fn describe_expr(e: &Expr) -> String {
 
 /// `ir` coerced to `to` by the coercion table, or `ir` itself where it is that type already. A pair the table has
 /// no row for is a compile error.
-pub fn coerce_ir(ir: Ir, to: &DataType, span: Span) -> Result<Ir, CompileError> {
+pub(crate) fn coerce_ir(ir: Ir, to: &DataType, span: Span) -> Result<Ir, CompileError> {
     let ty = match &ir.ty {
         from if from == to => return Ok(ir),
         DataType::Null => return Ok(Ir::new(to.clone(), span, IrKind::Literal(Value::Null))),
@@ -1194,7 +1184,7 @@ pub fn coerce_ir(ir: Ir, to: &DataType, span: Span) -> Result<Ir, CompileError> 
 
 /// `ir` widened to `ty` where its type meets `ty` as the narrower: the `i64` side of a blend, an `i64` element
 /// beside an `f64`, an argument the result widened. A null reads as any type as it is.
-pub fn widen_to(ir: Ir, ty: &DataType, span: Span) -> Result<Ir, CompileError> {
+pub(crate) fn widen_to(ir: Ir, ty: &DataType, span: Span) -> Result<Ir, CompileError> {
     // A blend into a variant keeps each side as it is; the select holds them.
     if ir.ty == *ty || ir.ty == DataType::Null || *ty == DataType::Variant || !fits(&ir.ty, ty) {
         return Ok(ir);
@@ -1245,7 +1235,7 @@ fn check_ir(ir: Ir, e: &Expr, to: &DataType, site: &Site, span: Span, syms: &Sym
 
 /// Whether a value of `from` may stand where `to` is declared, by `check_ir`'s rule. A closed value has no unclaimed
 /// fields, so it fits an open object, which may have some; an open one does not fit a closed object.
-pub fn fits(from: &DataType, to: &DataType) -> bool {
+pub(crate) fn fits(from: &DataType, to: &DataType) -> bool {
     use DataType::*;
     match (from, to) {
         _ if from == to => true,
@@ -1267,7 +1257,7 @@ pub fn fits(from: &DataType, to: &DataType) -> bool {
 
 /// The coercion table's rows (design doc, Language), as a question about types: whether any value of
 /// `from` may coerce to `to`. A `null` holds no value to refuse.
-pub fn coercible(from: &DataType, to: &DataType) -> bool {
+pub(crate) fn coercible(from: &DataType, to: &DataType) -> bool {
     use DataType::*;
     // A variant is decoded row by row: a row it does not fit is refused, never the pair.
     if matches!(from, Null | Variant) {
@@ -1503,7 +1493,11 @@ fn part_ir(
 }
 
 /// What `source` computes, the value of a place under what lays it down.
-pub fn source_ir(source: &Source, syms: &mut SymbolTable, res: &mut ResourceBuilder) -> Result<Ir, CompileError> {
+pub(crate) fn source_ir(
+    source: &Source,
+    syms: &mut SymbolTable,
+    res: &mut ResourceBuilder,
+) -> Result<Ir, CompileError> {
     let span = Span::default();
     Ok(match source {
         Source::Expr(e) => resolve(e, syms, res)?,
@@ -1723,7 +1717,7 @@ fn key_names(key: &Ir, name: &str, span: Span) -> Ir {
 }
 
 /// Whether `key` may name an object's key: text, or null, which names none.
-pub fn object_key(key: &Ir, key_expr: &Expr, syms: &SymbolTable) -> Result<(), CompileError> {
+pub(crate) fn object_key(key: &Ir, key_expr: &Expr, syms: &SymbolTable) -> Result<(), CompileError> {
     refuse_variant(key, key_expr, syms)?;
     match &key.ty {
         DataType::Str | DataType::Null => Ok(()),
@@ -1751,7 +1745,7 @@ fn object_ir(
 }
 
 /// The unclaimed fields in `slot`, less the keys `removed` takes out of them (`tree::Object::removed`).
-pub fn unclaimed_ir(slot: SlotId, removed: &[String], span: Span) -> Ir {
+pub(crate) fn unclaimed_ir(slot: SlotId, removed: &[String], span: Span) -> Ir {
     let column = Ir::new(DataType::Variant, span, IrKind::Field(slot));
     if removed.is_empty() {
         return column;
@@ -1776,7 +1770,7 @@ fn field_ir(slot: SlotId, span: Span, syms: &SymbolTable) -> Ir {
 /// `name` read through the leaf a path meets on its way to it: a variant gives a member, a variant, where the row's
 /// value has it; a struct gives its field, with the field's type. A path under a scalar is a compile error. `None`
 /// where no leaf stands above `name`, or where the leaf is an array or null, which have no member to read.
-pub fn member_ir(name: &str, span: Span, syms: &SymbolTable) -> Result<Option<Ir>, CompileError> {
+pub(crate) fn member_ir(name: &str, span: Span, syms: &SymbolTable) -> Result<Option<Ir>, CompileError> {
     let Some((above, slot)) = syms.leaf_above(name) else {
         return Ok(None);
     };
@@ -1848,7 +1842,7 @@ fn path_under<'k>(
 /// The pieces an object bound to `name` is: each field of `value`, a struct, a leaf read from it, a struct field an
 /// object, and its unclaimed fields the object's where its type is open. Each by its place, with what fills it. An
 /// object bound to a name is its leaves, wherever it came from: an array's element, a coercion, a parse.
-pub fn split_struct(name: &str, value: &Ir) -> Vec<(Place, Ir)> {
+pub(crate) fn split_struct(name: &str, value: &Ir) -> Vec<(Place, Ir)> {
     let mut out = Vec::new();
     split_into(name, value, &mut out);
     out
@@ -1885,7 +1879,13 @@ fn split_into(name: &str, value: &Ir, out: &mut Vec<(Place, Ir)>) {
 
 /// Bind `name` to an array's element, the slot `element`: the slot itself, or, for an element that is an object, the
 /// leaves `split_struct` reads from it, each a fresh slot. The leaves go to `out`, for what visits the elements to fill.
-pub fn bind_element(syms: &mut SymbolTable, name: &str, element: SlotId, origin: &Origin, out: &mut Vec<(SlotId, Ir)>) {
+pub(crate) fn bind_element(
+    syms: &mut SymbolTable,
+    name: &str,
+    element: SlotId,
+    origin: &Origin,
+    out: &mut Vec<(SlotId, Ir)>,
+) {
     let ty = syms.type_of(element).clone();
     if !matches!(ty, DataType::Struct(..)) {
         syms.put(name, Node::Leaf(element));
@@ -2052,7 +2052,7 @@ fn resolve_element_access(
 /// that fits any name.
 /// The exception for a use of the variant `name` where it reads from the record's fields the source does not declare
 /// (`SourceMeta::opened`), and nothing in the pipeline gives it a value. `hint` is the declaration that types `name`.
-pub fn undeclared_use(name: &str, hint: &str, syms: &SymbolTable) -> Option<String> {
+pub(crate) fn undeclared_use(name: &str, hint: &str, syms: &SymbolTable) -> Option<String> {
     let (object, at, _) = syms.root.deepest(name);
     let ingested = object
         .unclaimed
@@ -2065,13 +2065,13 @@ pub fn undeclared_use(name: &str, hint: &str, syms: &SymbolTable) -> Option<Stri
     })
 }
 
-pub fn variant_use(hint: Option<&str>) -> String {
+pub(crate) fn variant_use(hint: Option<&str>) -> String {
     let hint = hint.unwrap_or("`name: type = name;`");
     format!("is a variant: give it a type first -- {hint}")
 }
 
 /// Whether `t` is `null` or holds it: an array's element, a struct's field.
-pub fn holds_null(t: &DataType) -> bool {
+pub(crate) fn holds_null(t: &DataType) -> bool {
     match t {
         DataType::Null => true,
         DataType::Array(e) => holds_null(e),
@@ -2090,7 +2090,7 @@ fn operand_types(a: &DataType, b: &DataType) -> (DataType, DataType) {
 }
 
 /// Whether `from` holds an `i64` where `to` holds an `f64`, at any depth: a value that widens to meet it.
-pub fn widens(from: &DataType, to: &DataType) -> bool {
+fn widens(from: &DataType, to: &DataType) -> bool {
     use DataType::*;
     match (from, to) {
         (I64, F64) => true,
@@ -2104,7 +2104,7 @@ pub fn widens(from: &DataType, to: &DataType) -> bool {
 
 /// `ir` widened where it holds an `i64` that `to` holds as an `f64`; otherwise `ir`. A run-time kernel never meets an
 /// `i64` beside an `f64`.
-pub fn widen_number(ir: Ir, to: &DataType, span: Span) -> Result<Ir, CompileError> {
+fn widen_number(ir: Ir, to: &DataType, span: Span) -> Result<Ir, CompileError> {
     if !widens(&ir.ty, to) {
         return Ok(ir);
     }
@@ -2159,14 +2159,14 @@ pub fn unop_result(op: UnOp, t: &DataType) -> Result<DataType, String> {
 }
 
 /// Whether `t` is what a condition must be: `Bool`, or `null`, which reads false.
-pub fn is_condition(t: &DataType) -> bool {
+pub(crate) fn is_condition(t: &DataType) -> bool {
     matches!(t, DataType::Null | DataType::Bool)
 }
 
 /// `cond ? then : else_`, or `then ?? else_` with no condition: the one blend, at `then`'s span. Its parts meet as
 /// `DataType::unify` says, `f64` for `i64` with `f64`; a pair that does not meet is a variant, which moves each row's
 /// value as it is (Language).
-pub fn blend(cond: Option<Ir>, then: Ir, else_: Ir) -> Result<Ir, CompileError> {
+pub(crate) fn blend(cond: Option<Ir>, then: Ir, else_: Ir) -> Result<Ir, CompileError> {
     let (ty, span) = (then.ty.unify(&else_.ty).unwrap_or(DataType::Variant), then.span);
     let (then, else_) = (
         Box::new(widen_to(then, &ty, span)?),
@@ -2189,7 +2189,7 @@ pub fn blend(cond: Option<Ir>, then: Ir, else_: Ir) -> Result<Ir, CompileError> 
 
 /// `cond ? a : b`. The condition must be `Bool` (no truthiness). The branches meet as `DataType::unify` says; a pair
 /// that does not meet, or a variant branch, makes the whole a variant: the blend moves both values and reads neither.
-pub fn ternary_result(cond: &DataType, then: &DataType, else_: &DataType) -> Result<DataType, String> {
+fn ternary_result(cond: &DataType, then: &DataType, else_: &DataType) -> Result<DataType, String> {
     if !is_condition(cond) {
         return Err(format!(
             "ternary condition must be bool, found {} (no truthiness coercion)",

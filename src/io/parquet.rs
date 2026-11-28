@@ -80,7 +80,7 @@ pub struct Schema {
 
 /// What a field of a written schema takes in each row where the record does not write it.
 #[derive(Clone, Debug)]
-pub enum WriteDefault {
+pub(crate) enum WriteDefault {
     /// A field the record does not write: one row of the field's type, which every row takes.
     Value(ArrayRef),
     /// A struct the record writes: its fields', in the written schema's order.
@@ -92,7 +92,7 @@ pub enum WriteDefault {
 }
 
 /// A column a destination computes for each row it writes, after the record's own, such as a table's identity.
-pub trait Computed: std::fmt::Debug + Send + Sync {
+pub(crate) trait Computed: std::fmt::Debug + Send + Sync {
     /// The column as the file carries it.
     fn field(&self) -> Arc<Field>;
     /// Why `columns`' row can take no value. Each row admitted is filled at most once, after it is admitted.
@@ -203,7 +203,7 @@ impl Schema {
     /// own, such as Iceberg's field ids or Delta's physical names, and a leaf a table holds narrower of that type
     /// (`narrows`). A struct may end with fields the record lacks, such as a table's columns it does not write, which
     /// every row writes null.
-    pub fn with_written(self, written: Arc<ArrowSchema>) -> Schema {
+    pub(crate) fn with_written(self, written: Arc<ArrowSchema>) -> Schema {
         let Some(Arrow::Struct(fields)) = narrowed(&self.root, &Arrow::Struct(written.fields().clone())) else {
             panic!("a written schema is the record's own, renamed, with metadata added or a leaf narrowed");
         };
@@ -216,7 +216,7 @@ impl Schema {
 
     /// This schema, a field its record does not write taking `defaults`, one for each of the written schema's root
     /// fields, rather than null.
-    pub fn with_defaults(self, defaults: Vec<WriteDefault>) -> Schema {
+    pub(crate) fn with_defaults(self, defaults: Vec<WriteDefault>) -> Schema {
         Schema {
             defaults: defaults.into(),
             ..self
@@ -225,7 +225,7 @@ impl Schema {
 
     /// This schema, its files' column of each field id in `annotations` written as that Parquet logical type: one
     /// Arrow has none for, such as a geometry, or a variant's group.
-    pub fn with_annotations(self, annotations: Vec<(i32, LogicalType)>) -> Schema {
+    pub(crate) fn with_annotations(self, annotations: Vec<(i32, LogicalType)>) -> Schema {
         Schema {
             annotations: annotations.into(),
             ..self
@@ -235,7 +235,7 @@ impl Schema {
     /// This schema, its files holding each of the record's variants as Parquet's variant, each value of its own type
     /// (`parquet_variant`), rather than JSON text. For a file with no table to name its types: it has no written
     /// schema of its own.
-    pub fn with_native_variants(self) -> Schema {
+    pub(crate) fn with_native_variants(self) -> Schema {
         let Arrow::Struct(fields) = native(&self.root) else {
             unreachable!("Schema::new takes only a struct")
         };
@@ -247,24 +247,24 @@ impl Schema {
 
     /// This schema, its chunks cut without their variants' own bytes, for a route on which no destination holds a
     /// variant as Parquet's variant.
-    pub fn without_variant_bytes(self) -> Schema {
+    pub(crate) fn without_variant_bytes(self) -> Schema {
         Schema { variants: None, ..self }
     }
 
     /// Whether its chunks carry their variants' own bytes.
     #[cfg(test)]
-    pub fn cuts_variant_bytes(&self) -> bool {
+    pub(crate) fn cuts_variant_bytes(&self) -> bool {
         self.variants.is_some()
     }
 
     /// This schema, its files written with `computed` after the record's columns.
-    pub fn with_computed(self, computed: Vec<Arc<dyn Computed>>) -> Schema {
+    pub(crate) fn with_computed(self, computed: Vec<Arc<dyn Computed>>) -> Schema {
         Schema { computed, ..self }
     }
 
     /// This schema, its record's columns `columns` holding the partition's values, each named by its partition field.
     /// A file of a partition whose value is empty, which a Hive-style table reads as null, holds that column null.
-    pub fn with_partition_columns(self, columns: Vec<(String, usize)>) -> Schema {
+    pub(crate) fn with_partition_columns(self, columns: Vec<(String, usize)>) -> Schema {
         Schema {
             partition_columns: columns,
             ..self
@@ -272,12 +272,12 @@ impl Schema {
     }
 
     /// Admits `columns`' row to every computed column: Err is why one can give it no value.
-    pub fn admit(&self, columns: &Columns) -> Result<(), String> {
+    pub(crate) fn admit(&self, columns: &Columns) -> Result<(), String> {
         self.computed.iter().try_for_each(|c| c.admit(columns))
     }
 
     /// Why `columns`' row cannot be written, when a value of it is one a column its table holds narrower cannot hold.
-    pub fn unfit(&self, columns: &Columns) -> Option<String> {
+    pub(crate) fn unfit(&self, columns: &Columns) -> Option<String> {
         let written = self.written.as_ref().filter(|_| self.narrowed)?;
         let batch = &columns.chunk.batch;
         (batch
@@ -289,18 +289,18 @@ impl Schema {
     }
 
     /// Whether `columns` were cut to this schema, so they can be written by a writer opened on it.
-    pub fn matches(&self, columns: &Columns) -> bool {
+    pub(crate) fn matches(&self, columns: &Columns) -> bool {
         let theirs = columns.chunk.batch.schema_ref();
         Arc::ptr_eq(&self.arrow, theirs) || *self.arrow == **theirs
     }
 
     /// The Arrow schema, for a format that maps it to its own.
-    pub fn arrow(&self) -> &Arc<ArrowSchema> {
+    pub(crate) fn arrow(&self) -> &Arc<ArrowSchema> {
         &self.arrow
     }
 
     /// The record these columns hold, for a format that tells a variant from text, which Arrow types alike.
-    pub fn record(&self) -> &DataType {
+    pub(crate) fn record(&self) -> &DataType {
         &self.root.ty
     }
 }
@@ -363,7 +363,7 @@ impl Chunk {
     }
 
     /// The chunk's columns, for a reader of one row's values.
-    pub fn batch(&self) -> &RecordBatch {
+    pub(crate) fn batch(&self) -> &RecordBatch {
         &self.batch
     }
 
@@ -409,7 +409,7 @@ impl Columns {
 }
 
 /// Whether a table may hold a leaf the record types `record` as `to`, each value converted as its file is written.
-pub fn narrows(record: &DataType, to: &Arrow) -> bool {
+pub(crate) fn narrows(record: &DataType, to: &Arrow) -> bool {
     matches!(
         (record, to),
         (DataType::I64, Arrow::Int8 | Arrow::Int16 | Arrow::Int32)
@@ -482,7 +482,7 @@ fn narrows_a_leaf(ours: &Arrow, written: &Arrow) -> bool {
 }
 
 /// Parquet's variant group, unshredded, which a table holds a variant in: its metadata and its value.
-pub fn variant_group() -> Arrow {
+pub(crate) fn variant_group() -> Arrow {
     Arrow::Struct(Fields::from(vec![
         Field::new("metadata", Arrow::Binary, false),
         Field::new("value", Arrow::Binary, false),
@@ -644,7 +644,7 @@ fn unfit_at(array: &ArrayRef, to: &Arrow, i: usize, path: &dyn Fn() -> String) -
 
 /// Why value `i` of `array`, a leaf of the record's, cannot be held by a column a table holds as `to` (`narrows`):
 /// `is 300, which an 8-bit integer column cannot hold`. None when it can, and for a time, which every one can.
-pub fn misfit(array: &ArrayRef, i: usize, to: &Arrow) -> Option<String> {
+pub(crate) fn misfit(array: &ArrayRef, i: usize, to: &Arrow) -> Option<String> {
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Float64Type, Int64Type};
     let int = |fits: bool, width: &str| {
@@ -742,7 +742,7 @@ fn add_sizes(array: &ArrayRef, sizes: &mut [u32]) {
 }
 
 /// Writes one Parquet file a row group at a time, so a file larger than memory streams out as it grows.
-pub struct FileWriter {
+pub(crate) struct FileWriter {
     writer: ArrowWriter<Sink>,
     sink: Sink,
     rows: u64,
@@ -846,12 +846,12 @@ impl Sink {
 /// How a file's bytes are written: what a destination's config asks, or a table's own properties.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WriteOptions {
-    pub codec: Compression,
+    pub(crate) codec: Compression,
     /// The level the table asks of the codec, which wins over the codec's own; ignored when outside the codec's range.
-    pub level: Option<i32>,
+    pub(crate) level: Option<i32>,
     /// Leaf columns, by their names in the written file, that carry a bloom filter, each with its false-positive
     /// probability.
-    pub bloom_filters: Vec<(Vec<String>, f64)>,
+    pub(crate) bloom_filters: Vec<(Vec<String>, f64)>,
 }
 
 impl From<Compression> for WriteOptions {
@@ -873,7 +873,7 @@ impl WriteOptions {
             Compression::Gzip(level) => Codec::GZIP(
                 (self.level.and_then(|l| u32::try_from(l).ok()))
                     .and_then(|l| GzipLevel::try_new(l).ok())
-                    .unwrap_or(GzipLevel::try_new(level.into()).expect("a gzip level the loader checked")),
+                    .unwrap_or(GzipLevel::try_new(level.get().into()).expect("a gzip level the loader checked")),
             ),
             Compression::Snappy => Codec::SNAPPY,
             Compression::Lz4(_) => Codec::LZ4_RAW,
@@ -899,7 +899,7 @@ impl WriteOptions {
 
 impl FileWriter {
     /// A writer for rows of chunks cut to `schema`, its bytes written as `options` say.
-    pub fn open(schema: &Schema, options: &WriteOptions) -> FileWriter {
+    pub(crate) fn open(schema: &Schema, options: &WriteOptions) -> FileWriter {
         let own = schema.written.as_ref().unwrap_or(&schema.arrow);
         let file = if schema.computed.is_empty() {
             own.clone()
@@ -918,7 +918,7 @@ impl FileWriter {
     }
 
     /// A file of the partition whose values are `values`, by field name.
-    pub fn of_partition(schema: &Schema, options: &WriteOptions, values: &[(String, String)]) -> FileWriter {
+    pub(crate) fn of_partition(schema: &Schema, options: &WriteOptions, values: &[(String, String)]) -> FileWriter {
         let empty = |name: &String| values.iter().any(|(n, v)| n == name && v.is_empty());
         FileWriter {
             nulled: (schema.partition_columns.iter())
@@ -969,7 +969,7 @@ impl FileWriter {
 
     /// Appends `rows` to the row group in progress. Every row's chunk has the writer's schema (the caller checks
     /// `Schema::matches`).
-    pub fn write<'a>(&mut self, rows: impl IntoIterator<Item = &'a Columns>) {
+    pub(crate) fn write<'a>(&mut self, rows: impl IntoIterator<Item = &'a Columns>) {
         let mut chunks: Vec<&Arc<Chunk>> = Vec::new();
         let mut at: Vec<(usize, usize)> = Vec::new();
         for c in rows {
@@ -1011,13 +1011,13 @@ impl FileWriter {
     }
 
     /// Bytes of the row group in progress, uncompressed, as Arrow holds them.
-    pub fn in_progress_bytes(&self) -> usize {
+    pub(crate) fn in_progress_bytes(&self) -> usize {
         self.writer.in_progress_size()
     }
 
     /// Ends the row group in progress and hands back every byte written so far and not yet taken. Empty if nothing is
     /// in progress and nothing is pending.
-    pub fn take_row_group(&mut self) -> Vec<u8> {
+    pub(crate) fn take_row_group(&mut self) -> Vec<u8> {
         // Only the file's magic is pending before the first row, and it goes out with the first row group.
         if self.writer.in_progress_rows() == 0 {
             return Vec::new();
@@ -1030,19 +1030,19 @@ impl FileWriter {
 
     /// Bytes the finished file will have had so far: taken bytes plus what `take_row_group` would return now
     /// (an estimate for the row group in progress).
-    pub fn bytes_written(&self) -> usize {
+    pub(crate) fn bytes_written(&self) -> usize {
         // The writer counts every byte it has encoded, taken or still buffered on its way to the sink.
         self.writer.bytes_written() + self.writer.in_progress_size()
     }
 
     /// Row count written, in progress included.
-    pub fn rows(&self) -> u64 {
+    pub(crate) fn rows(&self) -> u64 {
         self.rows
     }
 
     /// Ends the file: the remaining bytes (the last row group and the footer) and the file's metadata, from which a
     /// format derives its statistics.
-    pub fn finish(mut self) -> (Vec<u8>, ParquetMetaData) {
+    pub(crate) fn finish(mut self) -> (Vec<u8>, ParquetMetaData) {
         let metadata = self.writer.finish().expect("writing to memory");
         self.writer.sync().expect("writing to memory");
         (self.sink.drain(), metadata)
@@ -1589,7 +1589,7 @@ mod tests {
     fn a_file_carries_the_codec_and_the_bloom_filters_asked() {
         let schema = raw_schema();
         let options = WriteOptions {
-            codec: Compression::Gzip(6),
+            codec: Compression::Gzip(crate::plan::topology::GzipLevel::Zlib(6)),
             level: Some(9),
             bloom_filters: vec![(vec!["_raw".into()], 0.05), (vec!["nowhere".into()], 0.05)],
         };
@@ -1599,7 +1599,10 @@ mod tests {
         let column = metadata.row_group(0).column(0);
         assert!(matches!(column.compression(), parquet::basic::Compression::GZIP(_)));
         assert!(column.bloom_filter_offset().is_some(), "a bloom filter for _raw");
-        let mut plain = FileWriter::open(&schema, &Compression::Gzip(6).into());
+        let mut plain = FileWriter::open(
+            &schema,
+            &Compression::Gzip(crate::plan::topology::GzipLevel::Zlib(6)).into(),
+        );
         plain.write(&rows(&schema, &["a", "b"]));
         assert_eq!(plain.finish().1.row_group(0).column(0).bloom_filter_offset(), None);
     }

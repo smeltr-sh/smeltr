@@ -4,12 +4,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::harness::fake::AsyncDestination;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::handoff::{Handed, Handoff, Ready, reports};
 use smeltr::heartbeat::SenderFields;
 use smeltr::io::SourceRecord;
-use smeltr::io::fake::AsyncDestination;
 use smeltr::metrics::{Metrics, MetricsHandle};
 use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, OnException, PipelineConfig, Step};
 use smeltr::plan::topology::{DeliverRule, RouteConfig, compile_topology};

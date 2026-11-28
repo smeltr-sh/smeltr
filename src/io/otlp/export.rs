@@ -33,13 +33,13 @@ use super::{InstrumentationScope, Nested, Resource, http_path, logs, rows, trace
 use crate::io::http::{Outcome, Protocol, Response, Unwritten};
 use crate::io::http_post::{answered, compressed};
 use crate::io::{IoError, OwnedRecord};
-use crate::plan::topology::{Compression, OtlpDestinationConfig, Signal};
+use crate::plan::topology::{OtlpDestinationConfig, Signal};
 
 /// The request and the answer.
 #[derive(Clone, Debug)]
 pub struct Otlp {
     signal: Signal,
-    gzip: Option<u8>,
+    gzip: Option<crate::plan::topology::IgzipLevel>,
     /// What the last row admitted came under, which the next most often shares. Shared by every clone, though only
     /// the egress thread admits.
     last: Arc<Mutex<Last>>,
@@ -57,10 +57,7 @@ impl Otlp {
     pub fn new(config: &OtlpDestinationConfig) -> Otlp {
         Otlp {
             signal: config.signal,
-            gzip: match config.http.compression {
-                Compression::Gzip(level) => Some(level),
-                _ => None,
-            },
+            gzip: crate::io::http_post::igzip_level(config.http.compression),
             last: Arc::default(),
             unwritten: None,
         }
@@ -345,7 +342,7 @@ fn by_metric(resources: Nested<(Arc<Family>, DataPoint)>) -> Nested<Metric> {
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &OtlpDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -377,7 +374,7 @@ mod tests {
                 zone_urls: Default::default(),
                 body: Default::default(),
                 payload: Payload::Record,
-                compression: Compression::None,
+                compression: crate::plan::topology::Compression::None,
                 headers: Vec::new(),
                 credentials: Vec::new(),
                 tls: None,

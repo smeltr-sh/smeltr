@@ -27,8 +27,8 @@ pub enum Kind {
 /// One object of a bundle.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct Object {
-    pub kind: Kind,
-    pub id: String,
+    pub(crate) kind: Kind,
+    pub(crate) id: String,
 }
 
 impl Object {
@@ -44,48 +44,49 @@ impl Object {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Connections {
     /// Everything downstream of it: what reads, runs, calls or delivers on from it.
-    pub downstream: BTreeSet<Object>,
+    pub(crate) downstream: BTreeSet<Object>,
     /// What it holds an implicit contract with on fields, though upstream of it: the sources whose rows a pipeline
     /// processes, and the pipelines whose rows a destination writes. Empty for every other kind.
-    pub upstream: BTreeSet<Object>,
+    pub(crate) upstream: BTreeSet<Object>,
 }
 
 impl Connections {
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.downstream.is_empty() && self.upstream.is_empty()
     }
 }
 
 /// One route's path: what it reads, what it runs, and every destination it writes to.
 #[derive(Clone, Debug)]
-pub struct RouteLinks {
-    pub id: String,
-    pub source: String,
-    pub pipeline: String,
+pub(crate) struct RouteLinks {
+    id: String,
+    source: String,
+    pub(crate) pipeline: String,
     /// Delivered to by a rule, by the route's or the group's exception answers, and down each chain of refusals:
     /// a destination's refusals go where its own answer says.
-    pub destinations: BTreeSet<String>,
+    pub(crate) destinations: BTreeSet<String>,
 }
 
 /// Every link in one bundle.
 #[derive(Clone, Debug, Default)]
 pub struct Links {
-    pub routes: Vec<RouteLinks>,
+    pub(crate) routes: Vec<RouteLinks>,
     /// Pipeline id -> the pipelines it calls, directly.
-    pub calls: BTreeMap<String, BTreeSet<String>>,
+    calls: BTreeMap<String, BTreeSet<String>>,
     /// Pipeline id -> the pipelines that call it, directly.
     pub callers: BTreeMap<String, BTreeSet<String>>,
     /// Pipeline id -> the lookup tables its steps read, however deep.
-    pub tables: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) tables: BTreeMap<String, BTreeSet<String>>,
     /// Pipeline id -> every `%{NAME}` its steps hold. Read off the steps' text, so a grok in code counts, and a name
     /// nothing declares (a built-in, or a pattern a change deleted) is kept too.
-    pub patterns: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) patterns: BTreeMap<String, BTreeSet<String>>,
     /// Shared grok pattern id -> every `%{NAME}` its own pattern holds.
-    pub pattern_names: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) pattern_names: BTreeMap<String, BTreeSet<String>>,
     /// Destination id -> where its refusals go, directly.
-    pub refusals: BTreeMap<String, BTreeSet<String>>,
+    refusals: BTreeMap<String, BTreeSet<String>>,
     /// Where the group's own exception answers deliver: a row any source reads can end there.
-    pub group_deliveries: BTreeSet<String>,
+    group_deliveries: BTreeSet<String>,
 }
 
 impl Links {
@@ -174,7 +175,7 @@ impl Links {
 
     /// What a change to `object` reaches, in this bundle. An object the bundle does not link to anything answers
     /// empty.
-    pub fn connections(&self, object: &Object) -> Connections {
+    pub(crate) fn connections(&self, object: &Object) -> Connections {
         let mut c = Connections::default();
         let id = object.id.as_str();
         let down = &mut c.downstream;

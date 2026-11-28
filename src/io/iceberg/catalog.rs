@@ -41,7 +41,7 @@ const CREDENTIALS_ENDPOINT: &str = "GET /v1/{prefix}/namespaces/{namespace}/tabl
 
 /// How the catalog is signed in to.
 #[derive(Clone)]
-pub enum Auth {
+pub(crate) enum Auth {
     None,
     /// A token sent as it is on every call. Nothing renews it.
     Bearer(String),
@@ -59,7 +59,7 @@ pub enum Auth {
 }
 
 /// Signs one call to the catalog.
-pub trait Signer: Send + Sync {
+pub(crate) trait Signer: Send + Sync {
     /// The headers that sign a call of `method` to `url` carrying `body`, to send with it.
     fn sign(&self, method: &str, url: &str, body: &[u8]) -> Result<Vec<(String, String)>, String>;
 }
@@ -67,17 +67,17 @@ pub trait Signer: Send + Sync {
 /// A table as the catalog answers it.
 #[derive(Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct Loaded {
+pub(crate) struct Loaded {
     /// Where the metadata is written; `None` for a table staged and not yet committed.
     #[serde(default)]
-    pub metadata_location: Option<String>,
-    pub metadata: TableMetadata,
+    metadata_location: Option<String>,
+    pub(crate) metadata: TableMetadata,
     /// The table's settings for a client: a server that vends credentials without `storage-credentials` puts them
     /// here (`s3.access-key-id`, ...).
     #[serde(default)]
-    pub config: BTreeMap<String, String>,
+    pub(crate) config: BTreeMap<String, String>,
     #[serde(default)]
-    pub storage_credentials: Vec<StorageCredential>,
+    pub(crate) storage_credentials: Vec<StorageCredential>,
 }
 
 impl std::fmt::Debug for Loaded {
@@ -94,9 +94,9 @@ impl std::fmt::Debug for Loaded {
 
 /// Credentials for the files under `prefix`. The longest prefix that holds a file's path is the one for it.
 #[derive(Clone, PartialEq, Deserialize)]
-pub struct StorageCredential {
-    pub prefix: String,
-    pub config: BTreeMap<String, String>,
+pub(crate) struct StorageCredential {
+    pub(crate) prefix: String,
+    pub(crate) config: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for StorageCredential {
@@ -112,36 +112,36 @@ impl std::fmt::Debug for StorageCredential {
 /// The table after a commit landed.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct Committed {
-    pub metadata_location: String,
-    pub metadata: TableMetadata,
+pub(crate) struct Committed {
+    metadata_location: String,
+    pub(crate) metadata: TableMetadata,
 }
 
 /// What must hold of the table for a commit to apply.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Requirement {
-    AssertTableUuid(String),
+pub(crate) enum Requirement {
+    TableUuid(String),
     /// The ref points at this snapshot; `None` asserts the ref does not exist.
-    AssertRefSnapshotId {
+    RefSnapshotId {
         r#ref: String,
         snapshot_id: Option<i64>,
     },
-    AssertCurrentSchemaId(i32),
-    AssertLastAssignedFieldId(i32),
+    CurrentSchemaId(i32),
+    LastAssignedFieldId(i32),
 }
 
 impl Serialize for Requirement {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Requirement::AssertTableUuid(uuid) => json!({"type": "assert-table-uuid", "uuid": uuid}),
+            Requirement::TableUuid(uuid) => json!({"type": "assert-table-uuid", "uuid": uuid}),
             // `snapshot-id` is written even when null: null is what asserts the ref is absent.
-            Requirement::AssertRefSnapshotId { r#ref, snapshot_id } => {
+            Requirement::RefSnapshotId { r#ref, snapshot_id } => {
                 json!({"type": "assert-ref-snapshot-id", "ref": r#ref, "snapshot-id": snapshot_id})
             }
-            Requirement::AssertCurrentSchemaId(id) => {
+            Requirement::CurrentSchemaId(id) => {
                 json!({"type": "assert-current-schema-id", "current-schema-id": id})
             }
-            Requirement::AssertLastAssignedFieldId(id) => {
+            Requirement::LastAssignedFieldId(id) => {
                 json!({"type": "assert-last-assigned-field-id", "last-assigned-field-id": id})
             }
         }
@@ -151,7 +151,7 @@ impl Serialize for Requirement {
 
 /// One change a commit makes to the table.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Update {
+pub(crate) enum Update {
     AddSchema {
         schema: Schema,
         last_column_id: i32,
@@ -197,7 +197,7 @@ impl Serialize for Update {
 
 /// Why a commit did not land, as far as the caller can know.
 #[derive(Clone, Debug, PartialEq)]
-pub enum CommitFailure {
+pub(crate) enum CommitFailure {
     /// A requirement did not hold (409): another writer committed first. Load the table and commit again.
     Conflict,
     /// The commit may have landed (500, 502, 503, 504, or no answer after the request was sent): the spec's
@@ -208,7 +208,7 @@ pub enum CommitFailure {
 }
 
 /// A blocking client of one REST catalog.
-pub struct Catalog {
+pub(crate) struct Catalog {
     uri: String,
     warehouse: Option<String>,
     auth: Auth,
@@ -269,7 +269,13 @@ impl Method {
 
 impl Catalog {
     /// `uri` is the catalog's base, under which `/v1/...` is asked. `timeout` bounds each call, sign-in included.
-    pub fn new(uri: String, warehouse: Option<String>, auth: Auth, agent: ureq::Agent, timeout: Duration) -> Catalog {
+    pub(crate) fn new(
+        uri: String,
+        warehouse: Option<String>,
+        auth: Auth,
+        agent: ureq::Agent,
+        timeout: Duration,
+    ) -> Catalog {
         let uri = uri.trim_end_matches('/').to_string();
         let client_credentials = client_credentials(&uri, &auth, &agent, timeout);
         Catalog {
@@ -286,13 +292,13 @@ impl Catalog {
 
     /// How the catalog is signed in to.
     #[cfg(test)]
-    pub fn auth(&self) -> &Auth {
+    pub(crate) fn auth(&self) -> &Auth {
         &self.auth
     }
 
     /// Asks the catalog for its settings, once: the prefix of every path after, and the base they are asked under when
     /// the catalog overrides it. Every other call opens first.
-    pub fn open(&mut self) -> Result<(), IoError> {
+    fn open(&mut self) -> Result<(), IoError> {
         if self.config.is_some() {
             return Ok(());
         }
@@ -336,7 +342,7 @@ impl Catalog {
     }
 
     /// The table, with credentials for its storage when the catalog vends them. `None` when it does not exist.
-    pub fn load_table(&mut self, namespace: &[String], table: &str) -> Result<Option<Loaded>, IoError> {
+    pub(crate) fn load_table(&mut self, namespace: &[String], table: &str) -> Result<Option<Loaded>, IoError> {
         let url = self.table_url(namespace, table)?;
         let reply = self
             .call(Method::Get, &url, None, true)
@@ -350,7 +356,7 @@ impl Catalog {
 
     /// Creates the table with `schema` and `spec`, whose source ids are `schema`'s field ids. The catalog may assign
     /// ids of its own: the answer's metadata is the table. A table another writer created first is loaded instead.
-    pub fn create_table(
+    pub(crate) fn create_table(
         &mut self,
         namespace: &[String],
         table: &str,
@@ -388,7 +394,7 @@ impl Catalog {
 
     /// Fresh credentials for the table's storage. `None` when the catalog does not serve this (servers older than
     /// the credentials endpoint): [`Catalog::load_table`] answers them too.
-    pub fn credentials(
+    pub(crate) fn credentials(
         &mut self,
         namespace: &[String],
         table: &str,
@@ -420,7 +426,7 @@ impl Catalog {
     }
 
     /// Applies `updates` to the table if every one of `requirements` holds of it.
-    pub fn commit(
+    pub(crate) fn commit(
         &mut self,
         namespace: &[String],
         table: &str,
@@ -1093,17 +1099,17 @@ mod tests {
             &ns(),
             "logs",
             &[
-                Requirement::AssertTableUuid("u".into()),
-                Requirement::AssertRefSnapshotId {
+                Requirement::TableUuid("u".into()),
+                Requirement::RefSnapshotId {
                     r#ref: "main".into(),
                     snapshot_id: Some(6),
                 },
-                Requirement::AssertRefSnapshotId {
+                Requirement::RefSnapshotId {
                     r#ref: "audit".into(),
                     snapshot_id: None,
                 },
-                Requirement::AssertCurrentSchemaId(0),
-                Requirement::AssertLastAssignedFieldId(1),
+                Requirement::CurrentSchemaId(0),
+                Requirement::LastAssignedFieldId(1),
             ],
             &[
                 Update::AddSchema {

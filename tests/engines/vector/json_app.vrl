@@ -1,0 +1,23 @@
+# tests/reference/json_app.rs's mapping to ECS.
+if .level == "debug" { abort }
+."@timestamp" = parse_timestamp!(del(.ts), "%+")
+.event.duration = to_int(round(to_float!(del(.latency_ms)) * 1000000))
+.log.level = del(.level)
+.log.logger = del(.logger)
+.message = del(.msg)
+.labels.attempt = del(.attempt)
+.labels.tier = del(.user.tier)
+if exists(.order_id) { .labels.order_id = del(.order_id) }
+if exists(.error.stack) { .error.stack_trace = del(.error.stack) }
+del(.trace_id)
+del(.span_id)
+del(.http)
+# What the sources add.
+del(.source_type)
+del(.path)
+del(.timestamp)
+del(.topic)
+del(.partition)
+del(.offset)
+del(.headers)
+del(.message_key)

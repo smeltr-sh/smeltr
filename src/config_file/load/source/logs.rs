@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct LogsSourceDto {
     /// The lowest severity it carries. See [`LevelLabel`].
     #[serde(default, skip_serializing_if = "LevelLabel::is_default")]
-    pub min_level: LevelLabel,
+    pub(crate) min_level: LevelLabel,
 }
 
 impl SourceSpec for LogsSourceDto {

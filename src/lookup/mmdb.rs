@@ -20,7 +20,7 @@ use serde::de::{Deserialize, DeserializeSeed, Deserializer, IgnoredAny, MapAcces
 use super::LookupError;
 
 /// The record an address fell in.
-pub type Record<'a> = LookupResult<'a, memmap2::Mmap>;
+type Record<'a> = LookupResult<'a, memmap2::Mmap>;
 
 #[derive(Debug)]
 pub struct MmdbTable {
@@ -30,7 +30,8 @@ pub struct MmdbTable {
 impl MmdbTable {
     /// Maps the file once, at compile time -- the same "no filesystem access once compiled" guarantee every other
     /// lookup source gets. A corrupt or unreadable file is a `CompileError` here, never a row-time surprise.
-    pub fn open(path: &std::path::Path) -> Result<MmdbTable, LookupError> {
+    #[cfg(test)]
+    pub(crate) fn open(path: &std::path::Path) -> Result<MmdbTable, LookupError> {
         let shown = path.display().to_string();
         let map =
             super::store::map(path).map_err(|e| LookupError(format!("couldn't open MMDB file `{shown}`: {e}")))?;
@@ -69,7 +70,7 @@ impl MmdbTable {
 /// the record once: a key on the tree is entered, every other value is stepped over, and a leaf's text lands at
 /// the index its path was given at. Built once per batch. Cheap to clone, since a read hands a clone to the decoder.
 #[derive(Clone)]
-pub struct Paths(Rc<Tree>);
+pub(crate) struct Paths(Rc<Tree>);
 
 struct Tree {
     root: Node,
@@ -84,7 +85,7 @@ struct Node {
 }
 
 impl Paths {
-    pub fn new<'a>(paths: impl IntoIterator<Item = &'a str>) -> Paths {
+    pub(crate) fn new<'a>(paths: impl IntoIterator<Item = &'a str>) -> Paths {
         let mut root = Node {
             key: String::new(),
             children: Vec::new(),
@@ -117,7 +118,7 @@ impl Paths {
     /// path misses at any segment or lands on a map or an array. That is an ordinary miss for the one output, never
     /// an error. The walk steps over every value it does not want, so a record with one key or value the decoder
     /// cannot read, wanted or not, is a miss for every output.
-    pub fn read(&self, record: &Record<'_>) -> Vec<Option<String>> {
+    pub(crate) fn read(&self, record: &Record<'_>) -> Vec<Option<String>> {
         WANTED.with(|w| *w.borrow_mut() = Some(self.clone()));
         let leaves = record.decode::<Leaves>();
         WANTED.with(|w| *w.borrow_mut() = None);
@@ -277,7 +278,7 @@ impl<'de, 'a> Visitor<'de> for KeySeed<'a> {
 /// value: the oracle `Paths::read` is checked against, not a path the pipeline takes. Missing at any segment, or a
 /// non-scalar leaf (a path that only reaches partway into a nested object/array), is `None`.
 #[cfg(test)]
-pub fn path_value(record: &serde_json::Value, path: &str) -> Option<String> {
+fn path_value(record: &serde_json::Value, path: &str) -> Option<String> {
     let mut v = record;
     for segment in path.split('.') {
         v = v.get(segment)?;

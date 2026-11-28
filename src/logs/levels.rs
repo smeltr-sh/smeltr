@@ -12,16 +12,16 @@ use tracing::Level;
 /// What lines are kept at: `default` for every line no override names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Levels {
-    pub default: Level,
+    pub(crate) default: Level,
     /// By class, then type.
-    pub types: BTreeMap<String, BTreeMap<String, Level>>,
-    pub services: BTreeMap<String, Level>,
-    pub classes: BTreeMap<String, Level>,
+    pub(crate) types: BTreeMap<String, BTreeMap<String, Level>>,
+    pub(crate) services: BTreeMap<String, Level>,
+    pub(crate) classes: BTreeMap<String, Level>,
 }
 
 impl Levels {
     /// Every line at `default`.
-    pub const fn at(default: Level) -> Levels {
+    pub(crate) const fn at(default: Level) -> Levels {
         Levels {
             default,
             types: BTreeMap::new(),
@@ -32,7 +32,7 @@ impl Levels {
 
     /// The level a line of `class` and `kind` is kept at, from code that talks to `service`. A library's line said
     /// outside any span of ours has no class.
-    pub fn kept_at(&self, class: Option<&str>, kind: &str, service: Option<&str>) -> Level {
+    pub(crate) fn kept_at(&self, class: Option<&str>, kind: &str, service: Option<&str>) -> Level {
         let by_type = class.and_then(|c| self.types.get(c)).and_then(|types| types.get(kind));
         let by_service = || service.and_then(|s| self.services.get(s));
         let by_class = || class.and_then(|c| self.classes.get(c));
@@ -44,7 +44,7 @@ impl Levels {
     }
 
     /// The most any line is kept at.
-    pub fn most(&self) -> Level {
+    fn most(&self) -> Level {
         self.types
             .values()
             .flat_map(BTreeMap::values)
@@ -56,7 +56,7 @@ impl Levels {
 }
 
 /// Every class a line of smeltr's is in, for whoever chooses one to turn up.
-pub const CLASSES: &[&str] = &[
+pub(crate) const CLASSES: &[&str] = &[
     "sources",
     "destinations",
     "pipelines",
@@ -78,7 +78,7 @@ pub const CLASSES: &[&str] = &[
 ];
 
 /// Whether `kind` can be a line's type: snake_case, which starts with a letter and has no empty word.
-pub fn is_type(kind: &str) -> bool {
+pub(crate) fn is_type(kind: &str) -> bool {
     kind.starts_with(|c: char| c.is_ascii_lowercase())
         && kind.split('_').all(|word| !word.is_empty())
         && kind
@@ -125,7 +125,7 @@ const SERVICES: &[(&str, &str)] = &[
 ];
 
 /// The service a line said at `origin` talks to: its module path, or a library's own name.
-pub fn service(origin: &str) -> Option<&'static str> {
+pub(crate) fn service(origin: &str) -> Option<&'static str> {
     SERVICES
         .iter()
         .find(|(at, _)| {
@@ -137,7 +137,7 @@ pub fn service(origin: &str) -> Option<&'static str> {
 }
 
 /// Every service a line can name, each once.
-pub fn services() -> Vec<&'static str> {
+pub(crate) fn services() -> Vec<&'static str> {
     let mut all: Vec<&str> = SERVICES.iter().map(|(_, s)| *s).collect();
     all.sort_unstable();
     all.dedup();
@@ -147,23 +147,18 @@ pub fn services() -> Vec<&'static str> {
 static LEVELS: RwLock<Levels> = RwLock::new(Levels::at(Level::INFO));
 
 /// The level a line of `class` and `kind` from code that talks to `service` is kept at now.
-pub fn kept_at(class: Option<&str>, kind: &str, service: Option<&str>) -> Level {
+pub(crate) fn kept_at(class: Option<&str>, kind: &str, service: Option<&str>) -> Level {
     LEVELS.read().kept_at(class, kind, service)
 }
 
 /// Whether a line of `class` and `kind` from code that talks to `service`, said at `level`, is kept now.
-pub fn keeps(level: Level, class: Option<&str>, kind: &str, service: Option<&str>) -> bool {
+pub(crate) fn keeps(level: Level, class: Option<&str>, kind: &str, service: Option<&str>) -> bool {
     level <= super::max_level() && level <= kept_at(class, kind, service)
-}
-
-/// The levels kept at now.
-pub fn current() -> Levels {
-    LEVELS.read().clone()
 }
 
 /// Keep lines at `levels` from now on. Every call site is asked again, so one that was off costs nothing until an
 /// override that names it is turned up, and one turned down costs nothing again at once.
-pub fn set(levels: Levels) {
+pub(crate) fn set(levels: Levels) {
     let most = levels.most();
     {
         let mut held = LEVELS.write();
@@ -222,6 +217,7 @@ mod tests {
             "avro",
             "batch_wait",
             "csv",
+            "gzip",
             "line_breaker",
             "lines",
             "logs",

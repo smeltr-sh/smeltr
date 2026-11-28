@@ -20,7 +20,7 @@ pub struct ById<I, T> {
 }
 
 impl<I: Id, T> ById<I, T> {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         ById {
             entries: Vec::new(),
             read_by: PhantomData,
@@ -28,17 +28,17 @@ impl<I: Id, T> ById<I, T> {
     }
 
     /// Adds `entry` and gives the id that reads it.
-    pub fn push(&mut self, entry: T) -> I {
+    pub(crate) fn push(&mut self, entry: T) -> I {
         self.entries.push(entry);
         I::at(self.entries.len() - 1)
     }
 
     /// The id the next entry pushed will have.
-    pub fn next_id(&self) -> I {
+    pub(crate) fn next_id(&self) -> I {
         I::at(self.entries.len())
     }
 
-    pub fn get(&self, id: I) -> Option<&T> {
+    pub(crate) fn get(&self, id: I) -> Option<&T> {
         self.entries.get(id.index())
     }
 
@@ -47,12 +47,12 @@ impl<I: Id, T> ById<I, T> {
     }
 
     /// The entries from the one `id` reads, on, in order.
-    pub fn from_id(&self, id: I) -> &[T] {
+    pub(crate) fn starting_at(&self, id: I) -> &[T] {
         &self.entries[id.index()..]
     }
 
     /// Every id that reads an entry, in order.
-    pub fn ids(&self) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator + use<I, T> {
+    pub(crate) fn ids(&self) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator + use<I, T> {
         (0..self.entries.len()).map(I::at)
     }
 
@@ -195,4 +195,4 @@ id!(
 );
 
 /// A list with one entry per slot.
-pub type Slots<T> = ById<SlotId, T>;
+pub(crate) type Slots<T> = ById<SlotId, T>;

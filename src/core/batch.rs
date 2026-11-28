@@ -14,8 +14,8 @@ use crate::core::column::{Column, DataType};
 /// The first `RESERVED_SLOTS` of them are reserved: the runtime reads each back after the run at its layout's type,
 /// so no step removes one or changes its type. A record's fields are not: a step may drop or replace any of them.
 pub const SLOT_LIVE: SlotId = SlotId::new(0); // Bool — row liveness, written by routing (`plan::topology::route_masks`) and by `Drop`
-pub const PREFIX_SLOTS: usize = 1;
-pub const RESERVED_SLOTS: usize = 1;
+pub(crate) const PREFIX_SLOTS: usize = 1;
+pub(crate) const RESERVED_SLOTS: usize = 1;
 
 /// A byte source's record is one field, `_raw`, so it takes the first slot after the prefix.
 ///
@@ -25,7 +25,7 @@ pub const SLOT_RAW: SlotId = SlotId::new(1); // Str  — the unparsed message, d
 pub const RAW_SLOTS: usize = PREFIX_SLOTS + 1;
 
 /// The prefix every plan's slot layout must begin with.
-pub fn prefix_layout() -> Vec<DataType> {
+pub(crate) fn prefix_layout() -> Vec<DataType> {
     vec![DataType::Bool]
 }
 
@@ -63,11 +63,12 @@ impl Batch {
         self.rows
     }
 
-    pub fn partition(&self) -> i32 {
+    pub(crate) fn partition(&self) -> i32 {
         self.partition
     }
 
-    pub fn slot_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn slot_count(&self) -> usize {
         self.slots.len()
     }
 
@@ -90,7 +91,7 @@ impl Batch {
 
     /// Write a bound column in place: a region's mask, whose bits clear as rows leave it.
     #[inline]
-    pub fn get_mut(&mut self, slot: SlotId) -> &mut Column {
+    pub(crate) fn get_mut(&mut self, slot: SlotId) -> &mut Column {
         &mut self.slots[slot]
     }
 
@@ -112,7 +113,7 @@ impl Batch {
 
     /// Move a column out, leaving `Empty` behind. Only legal once liveness has proven the slot dead.
     #[inline]
-    pub fn take_dead(&mut self, slot: SlotId) -> Column {
+    pub(crate) fn take_dead(&mut self, slot: SlotId) -> Column {
         let ty = self.slots[slot].data_type();
         #[cfg(debug_assertions)]
         {
@@ -124,7 +125,7 @@ impl Batch {
     // -- cardinality ---------------------------------------------------------
 
     /// A new batch containing only `indices`: row `i` of the result is row `indices[i]` of `self`, across every slot. Consuming, because `rows` is fixed for a batch's lifetime.
-    pub fn gather(self, pool: &mut BufferPool, indices: &[u32]) -> Batch {
+    pub(crate) fn gather(self, pool: &mut BufferPool, indices: &[u32]) -> Batch {
         let new_slots: Slots<Column> = self.slots.iter().map(|c| c.gather(pool, indices)).collect();
         let partition = self.partition;
         #[cfg(debug_assertions)]

@@ -499,15 +499,25 @@ export type HttpCompression = Extract<Compression, 'none' | 'gzip'>;
 export type HttpBody = 'lines' | 'jsonArray' | 'single';
 export const COMPRESSIONS: Compression[] = ['none', 'gzip', 'snappy', 'lz4', 'zstd'];
 
-/** The levels `codec` takes on a destination (`LIMITS`), or undefined for a codec that takes none; `kafka` is true for a
- * destination librdkafka compresses for. */
+/** Whose code compresses a destination's output, mirroring `config_file::dto::Compressor`. */
+export type Compressor = 'smeltr' | 'librdkafka' | 'parquet';
+
+/** The levels `codec` takes where `by` compresses (`LIMITS`), or undefined for a codec that takes none there. */
 export function compressionLevels(
   codec: Compression,
-  kafka: boolean,
+  by: Compressor,
 ): { min: number; max: number; default: number } | undefined {
-  if (codec === 'gzip') return LIMITS.gzipLevel;
-  if (codec === 'zstd') return kafka ? LIMITS.kafkaZstdLevel : LIMITS.zstdLevel;
-  if (codec === 'lz4' && kafka) return LIMITS.kafkaLz4Level;
+  if (codec === 'gzip') {
+    if (by === 'librdkafka') return LIMITS.kafkaGzipLevel;
+    if (by === 'parquet') return LIMITS.parquetGzipLevel;
+    return LIMITS.gzipLevel;
+  }
+  if (codec === 'zstd') {
+    if (by === 'librdkafka') return LIMITS.kafkaZstdLevel;
+    if (by === 'parquet') return LIMITS.parquetZstdLevel;
+    return LIMITS.zstdLevel;
+  }
+  if (codec === 'lz4' && by === 'librdkafka') return LIMITS.kafkaLz4Level;
   return undefined;
 }
 
@@ -522,12 +532,15 @@ export type Acks = (typeof ACKS)[number];
  * inputs never offer a value the save would reject. */
 export const LIMITS = {
   inFlight: { min: 1, max: 64, default: 4 },
-  /** The levels each codec takes, as `CompressionDto::levels` gives them: librdkafka caps zstd at 12, and only its
-   * lz4 takes a level. */
-  gzipLevel: { min: 1, max: 9, default: 6 },
+  /** The levels each codec takes where smeltr, librdkafka or the parquet writer compresses, as
+   * `CompressionDto::levels` gives them. */
+  gzipLevel: { min: 0, max: 3, default: 1 },
   zstdLevel: { min: 1, max: 22, default: 3 },
+  kafkaGzipLevel: { min: 1, max: 9, default: 6 },
   kafkaZstdLevel: { min: 1, max: 12, default: 3 },
   kafkaLz4Level: { min: 0, max: 12, default: 0 },
+  parquetGzipLevel: { min: 1, max: 9, default: 6 },
+  parquetZstdLevel: { min: 1, max: 22, default: 3 },
   maxBulkBytes: { min: 64 * 1024, max: 100 * 1024 * 1024, default: 5 * 1024 * 1024 },
   maxRequestBytes: { min: 4 * 1024, max: 100 * 1024 * 1024, default: 1024 * 1024 },
   /** An HTTP destination's `maxRequestBytes` (`HttpRequestBytes`): one whole batch by default. */

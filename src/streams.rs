@@ -63,14 +63,14 @@ impl SenderEdits {
 
 /// One sender field a batch counts: a string field of the record the pipeline delivers, read from its column, or a
 /// field an editor added, read by its name as text.
-pub struct Counted {
-    pub name: String,
-    pub slot: Option<SlotId>,
+pub(crate) struct Counted {
+    pub(crate) name: String,
+    pub(crate) slot: Option<SlotId>,
 }
 
 /// The rows each value of each sender field held in one batch, each record counted once for each field.
 #[derive(Default)]
-pub struct SenderTally {
+pub(crate) struct SenderTally {
     fields: Vec<Counting>,
 }
 
@@ -110,7 +110,7 @@ impl SenderTally {
 
     /// Count each record's value under `field`, where it has one, and the field itself even when no record has one:
     /// the leader judges a sender only where its field was counted (`leader::senders::FieldDays`).
-    pub fn count_rows<V: AsRef<str>>(&mut self, field: &str, values: impl Iterator<Item = (usize, Option<V>)>) {
+    pub(crate) fn count_rows<V: AsRef<str>>(&mut self, field: &str, values: impl Iterator<Item = (usize, Option<V>)>) {
         let counting = self.field(field);
         for (record, value) in values {
             if let Some(value) = value {
@@ -121,7 +121,13 @@ impl SenderTally {
 
     /// Count `column`'s value on each of `rows`, for the record `record` gives each, under `field`, as
     /// [`Self::count_rows`] does. A null counts nothing: the record does not hold the field.
-    pub fn count_column(&mut self, field: &str, column: &Column, rows: &[usize], record: impl Fn(usize) -> usize) {
+    pub(crate) fn count_column(
+        &mut self,
+        field: &str,
+        column: &Column,
+        rows: &[usize],
+        record: impl Fn(usize) -> usize,
+    ) {
         let counting = self.field(field);
         if let Some(Scalar::Str(value)) = column.constant_value() {
             for &row in rows {
@@ -186,7 +192,7 @@ impl Streams {
     /// The sender fields of `source`'s records that `plan` delivers: each string field of the record's own level, and
     /// each field an editor added, less those an editor unchecked and those past [`SENDER_VALUES`] values; the first
     /// [`SENDER_FIELDS`] of them.
-    pub fn sender_fields(&self, source: &str, plan: &Plan) -> Vec<Counted> {
+    pub(crate) fn sender_fields(&self, source: &str, plan: &Plan) -> Vec<Counted> {
         let edits = self.edits.of(source);
         let mut fields: Vec<Counted> = plan
             .tree
@@ -216,14 +222,14 @@ impl Streams {
     }
 
     /// Whether `source`'s stream key, filed under `field`, is counted.
-    pub fn counts_stream(&self, source: &str, field: &str) -> bool {
+    pub(crate) fn counts_stream(&self, source: &str, field: &str) -> bool {
         self.counts(source, field, &self.edits.of(source))
     }
 
     /// What one batch of `source`'s records counted of its senders. A field the batch found past [`SENDER_VALUES`]
     /// values, or that reaches that many with this batch, is reported as having too many values, once, and counted no
     /// more.
-    pub fn saw_senders(&self, source: &str, tally: SenderTally) {
+    pub(crate) fn saw_senders(&self, source: &str, tally: SenderTally) {
         if tally.fields.is_empty() {
             return;
         }
@@ -269,7 +275,7 @@ impl Streams {
 
     /// Whether the batch about to run `route` is the one this interval tallies. Answers yes once per interval per
     /// route, to one thread.
-    pub fn due(&self, route: usize) -> bool {
+    pub(crate) fn due(&self, route: usize) -> bool {
         let Some(due) = self.due.get(route) else { return false };
         let now = self.started.elapsed().as_millis() as u64;
         let at = due.load(Ordering::Relaxed);
@@ -280,7 +286,7 @@ impl Streams {
     }
 
     /// Gives back the tally `due` granted for `route`, for a batch that never ran: the next batch on it tallies.
-    pub fn not_run(&self, route: usize) {
+    pub(crate) fn not_run(&self, route: usize) {
         if let Some(due) = self.due.get(route) {
             due.store(0, Ordering::Relaxed);
         }
@@ -289,7 +295,7 @@ impl Streams {
     /// What each Parser of `plan` produced from a tallied batch of `source`'s rows on `route`. A parse whose function
     /// `plan` has no step for -- one reached through a `Call` -- is left out: the shape names steps the pipeline's
     /// author has.
-    pub fn saw_parse(&self, source: &str, route: &str, plan: &Plan, tally: &FieldTally) {
+    pub(crate) fn saw_parse(&self, source: &str, route: &str, plan: &Plan, tally: &FieldTally) {
         let mut shapes = Vec::new();
         for parse in tally.parses() {
             let Some(step) = plan.step_ids.get(parse.function) else {
@@ -329,7 +335,11 @@ impl Streams {
 
     /// The rows of `source` no route took, each by its stream key, or `None` where its kind files records under
     /// nothing.
-    pub fn saw_unmatched<'k>(&self, source: &str, keys: impl IntoIterator<Item = Option<std::borrow::Cow<'k, str>>>) {
+    pub(crate) fn saw_unmatched<'k>(
+        &self,
+        source: &str,
+        keys: impl IntoIterator<Item = Option<std::borrow::Cow<'k, str>>>,
+    ) {
         let mut streams = UnmatchedStreams {
             source: source.to_string(),
             rows: 0,
@@ -392,7 +402,7 @@ impl Streams {
 
     /// `report`, drained earlier and not delivered, put back ahead of what was seen since, so the next drain carries
     /// both.
-    pub fn give_back(&self, report: StreamReport) {
+    pub(crate) fn give_back(&self, report: StreamReport) {
         let mut window = self.window.lock();
         let mut earlier = report;
         earlier.absorb(std::mem::take(&mut *window));
