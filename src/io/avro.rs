@@ -48,7 +48,8 @@ const MAGIC: u8 = 0;
 /// What a framed payload carries before its value: the magic byte and the schema's id.
 const HEADER: usize = 5;
 
-/// A writer's schema, by the id a framed payload names it with: its registry's, or the one `Writers::intern` gave it.
+/// A writer's schema, by the id a framed payload names it with: its registry's, or the one its source gave the container
+/// file it came from.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, serde::Deserialize)]
 #[serde(transparent)]
 pub struct SchemaId(u32);
@@ -153,9 +154,10 @@ fn fetch_reference(
     Ok(())
 }
 
-/// The writers' schemas a source's payloads name, by the id each payload is framed with. The source fills it before a
-/// payload naming a new id leaves it, and transform decodes with it. It holds one entry for each writer's schema the
-/// source has met, which are few, so it never lets one go: a batch still on its way may name any of them.
+/// The writers' schemas a registry holds for a source's payloads, by the id each payload is framed with. The source
+/// fills it before a payload naming a new id leaves it, and transform decodes with it. It holds one entry for each
+/// registry schema the source has met, which are few, so it never lets one go: a batch still on its way may name any
+/// of them. A container file's schema is not one of them: it comes with the file's chunks (`RecordChunk::avro_schema`).
 #[derive(Default)]
 pub struct Writers {
     held: crate::sync::RwLock<Schemas>,
@@ -164,8 +166,6 @@ pub struct Writers {
 #[derive(Default)]
 struct Schemas {
     by_id: HashMap<SchemaId, Result<Arc<Parsed>, String>>,
-    /// The id `Writers::intern` gave each schema, by the schema's text.
-    interned: HashMap<String, SchemaId>,
 }
 
 /// Its ids: a schema's text is its registry's to show.
@@ -184,24 +184,6 @@ impl Writers {
     /// Takes `answer` as schema `id`'s.
     pub(crate) fn insert(&self, id: SchemaId, answer: Result<Arc<Parsed>, String>) {
         self.held.write().by_id.insert(id, answer);
-    }
-
-    /// The id `schema` is framed with: the one of an equal schema already here, or a new one. For payloads no registry
-    /// numbers, as a container file's values are.
-    pub(crate) fn intern(&self, schema: Arc<Parsed>) -> SchemaId {
-        // Its own text, not its canonical form, which leaves out the logical types a value is decoded by. A schema
-        // whose text does not serialize equals no other, so it takes an id of its own.
-        let text = serde_json::to_string(&schema.schema).ok();
-        let mut held = self.held.write();
-        if let Some(&id) = text.as_ref().and_then(|text| held.interned.get(text)) {
-            return id;
-        }
-        let id = SchemaId(u32::try_from(held.by_id.len()).expect("fewer writers' schemas than u32 holds"));
-        held.by_id.insert(id, Ok(schema));
-        if let Some(text) = text {
-            held.interned.insert(text, id);
-        }
-        id
     }
 
     /// The entries of every id in `ids`.
@@ -279,12 +261,14 @@ pub(crate) struct Read {
     pub newest: Option<Arc<Parsed>>,
 }
 
-/// Each of `payloads`, Confluent-framed, read with the writer's schema it names in `writers` into the fields of
-/// `record`, each taken by name and as its declared type (`io::values::column`). A payload that does not read is a row
-/// of nulls with the reason; a value that is not its field's type is null and failed. Its columns come from `pool`.
+/// Each of `payloads`, Confluent-framed, read with the writer's schema it names, in `carried` or else in `writers`, into
+/// the fields of `record`, each taken by name and as its declared type (`io::values::column`). A payload that does not
+/// read is a row of nulls with the reason; a value that is not its field's type is null and failed. Its columns come
+/// from `pool`.
 pub(crate) fn decode<'p>(
     record: &[(crate::plan::topology::Entry, DataType)],
     writers: &Writers,
+    carried: impl Iterator<Item = (SchemaId, Arc<Parsed>)>,
     payloads: impl ExactSizeIterator<Item = &'p [u8]> + Clone,
     pool: &mut crate::core::buffer::BufferPool,
 ) -> Read {
@@ -297,7 +281,8 @@ pub(crate) fn decode<'p>(
         .collect();
     // Each schema once: a batch names few, under many payloads.
     let ids: std::collections::HashSet<SchemaId> = payloads.clone().filter_map(|p| Some(unframe(p).ok()?.0)).collect();
-    let schemas = writers.of(ids.into_iter());
+    let mut schemas = writers.of(ids.into_iter());
+    schemas.extend(carried.map(|(id, schema)| (id, Ok(schema))));
     let rows = payloads.len();
     let mut columns: Vec<Vec<Value>> = vec![Vec::with_capacity(rows); fields.len()];
     let (mut failed, mut unread, mut newest) = (Vec::new(), Vec::new(), None);

@@ -42,6 +42,7 @@ fn read(reader: &AvroReader, meta: &SourceMeta, payloads: &[Vec<u8>]) -> Read {
     decode(
         meta.record(),
         &reader.writers,
+        std::iter::empty(),
         payloads.iter().map(Vec::as_slice),
         &mut pool,
     )
@@ -686,18 +687,4 @@ fn a_read_names_the_schema_its_last_payload_that_read_was_read_with() {
         "id",
         "a row that does not read names no schema"
     );
-}
-
-#[test]
-fn schemas_that_differ_only_in_a_logical_type_are_interned_apart() {
-    let at = |unit: &str| {
-        let text = format!(
-            r#"{{"type":"record","name":"r","fields":[{{"name":"t","type":{{"type":"long","logicalType":"{unit}"}}}}]}}"#
-        );
-        Arc::new(Parsed::new(&text, &[]).unwrap())
-    };
-    let writers = Writers::default();
-    let millis = writers.intern(at("timestamp-millis"));
-    assert_ne!(writers.intern(at("timestamp-micros")), millis);
-    assert_eq!(writers.intern(at("timestamp-millis")), millis);
 }
