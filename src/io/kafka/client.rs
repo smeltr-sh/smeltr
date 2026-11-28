@@ -39,8 +39,9 @@ use crate::io::{IoError, PartitionLag, SourceRecord, TopicPartition};
 use crate::plan::topology::{HeldSecrets, KafkaSourceConfig, StartPosition};
 
 use super::{
-    CLIENT_ID, LAG_QUERY_TIMEOUT, LAG_SAMPLE_INTERVAL, MAX_POLL_INTERVAL, PLACE_TIMEOUT, apply_client_config,
-    fetch_request_bytes, headers_of, receive_message_bytes, topic_pattern,
+    CLIENT_ID, FETCH_EXPANSION, FETCHED_RECORD_BYTES, LAG_QUERY_TIMEOUT, LAG_SAMPLE_INTERVAL, MAX_POLL_INTERVAL,
+    PLACE_TIMEOUT, STATS_INTERVAL, apply_client_config, fetch_request_bytes, headers_of, named_brokers,
+    queue_payload_bytes, queue_records, topic_pattern,
 };
 
 /// How long the client thread waits in one poll: how soon it sees a stop, a subscription to send, or a reader that
@@ -259,6 +260,7 @@ fn instance_id(member: &str, place: usize) -> String {
 /// The configuration every source reading `config` through one client shares: what makes two sources' clients the
 /// same client.
 fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<ClientConfig, IoError> {
+    let request = fetch_request_bytes(config.fetch_bytes, named_brokers(&config.brokers));
     let mut client_config = ClientConfig::new();
     client_config
         .set("bootstrap.servers", &config.brokers)
@@ -266,27 +268,21 @@ fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<Cl
         // The runtime commits explicitly, once a batch's destinations have all flushed (design doc, Runtime
         // stages).
         .set("enable.auto.commit", "false")
-        // The client's queue, before its records are routed to each source's inbox.
-        .set("queued.max.messages.kbytes", (config.fetch_bytes / 1024).to_string())
+        // The client's queue, before its records are routed to each source's inbox. Its bounds count payloads and
+        // records, and stop the next fetch, never one in flight (`consumer_ceiling`).
+        .set(
+            "queued.max.messages.kbytes",
+            (queue_payload_bytes(config.fetch_bytes) / 1024).max(1).to_string(),
+        )
+        .set("queued.min.messages", queue_records(config.fetch_bytes).to_string())
         // librdkafka's default waits a second to fetch again once that queue is full, which idles a source whose
         // transform drains it in less: Kafka passthrough on one core went from 181k to 306k rows a second.
         .set("fetch.queue.backoff.ms", "10")
-        // One fetch may carry half the queue, so a fetch always lands with room behind it. Both caps the same:
-        // one hot partition may fill a fetch, and the request cap is what bounds the whole. What one round trip
-        // to the broker brings back follows from `fetchBytes` and nothing else. The queue bound above is where
-        // fetching stops, not where the memory does: a fetch already asked for from each broker still lands, so
-        // the client may hold the queue plus half of it per broker.
-        .set("fetch.max.bytes", fetch_request_bytes(config.fetch_bytes).to_string())
-        .set(
-            "fetch.message.max.bytes",
-            fetch_request_bytes(config.fetch_bytes).to_string(),
-        )
-        // librdkafka refuses a fetch cap within 512 bytes of what it will receive in one message, and leaves
-        // that at 100 MB. Raised only when the fetch needs it, so a small `fetchBytes` changes nothing.
-        .set(
-            "receive.message.max.bytes",
-            receive_message_bytes(config.fetch_bytes).to_string(),
-        )
+        // Both caps the same: one hot partition may fill a request.
+        .set("fetch.max.bytes", request.to_string())
+        .set("fetch.message.max.bytes", request.to_string())
+        // What the client received, for `Routes::stats` to weigh against what it took.
+        .set("statistics.interval.ms", STATS_INTERVAL.as_millis().to_string())
         .set("max.poll.interval.ms", MAX_POLL_INTERVAL.as_millis().to_string())
         // librdkafka's default assignors are eager: every rebalance revokes every partition from every member. A
         // group here spans many topics and routinely thousands of partitions, so one restart would stop all of
@@ -446,6 +442,8 @@ struct Drain<'r> {
     rows: usize,
     /// `RoutesInner::revokes` as the pass began.
     revokes: u64,
+    /// Every record taken, as `RoutesInner::taken` counts it.
+    taken: u64,
 }
 
 /// One source's records of a pass.
@@ -468,6 +466,7 @@ impl<'r> Drain<'r> {
             sources: Vec::new(),
             rows: 0,
             revokes: routes.0.revokes.load(Ordering::Acquire),
+            taken: 0,
         }
     }
 
@@ -481,6 +480,8 @@ impl<'r> Drain<'r> {
             self.routes.clear_error();
         }
         self.rows += 1;
+        let held = msg.payload().map_or(0, <[u8]>::len) + msg.key().map_or(0, <[u8]>::len) + FETCHED_RECORD_BYTES;
+        self.taken += held as u64;
         // Read once: each read of a message's topic measures and checks the name again.
         let topic = msg.topic();
         let (name, at) = match self.topics.iter().find(|(t, _)| t.as_ref() == topic) {
@@ -539,6 +540,7 @@ impl<'r> Drain<'r> {
     /// needs waking ([`BatchWait::arrived`]), for the caller to wake.
     fn hand_off(self, consumer: &BaseConsumer<Routes>) -> Vec<Arc<Slot>> {
         let routes = self.routes;
+        routes.0.taken.fetch_add(self.taken, Ordering::Relaxed);
         // A revoke inside the pass's polls took partitions some of its records came from: theirs to the new owner.
         let revoked = routes.0.revokes.load(Ordering::Acquire) != self.revokes;
         let mut woken = Vec::new();
@@ -600,7 +602,7 @@ pub(super) struct Slot {
     pub(super) start: StartPosition,
     /// The deployed commit's committer time, in unix seconds: what orders one `start` after another.
     pub(super) at: i64,
-    /// What the inbox holds before the source's partitions pause: one fetch.
+    /// What the inbox holds before the source's partitions pause: half of `fetchBytes`.
     cap: usize,
     /// The order it attached in (`Clients::attached`).
     seq: u64,
@@ -677,7 +679,7 @@ impl Slot {
             listed: AtomicBool::new(false),
             start: config.start,
             at: config.deployed_at,
-            cap: fetch_request_bytes(config.fetch_bytes),
+            cap: (config.fetch_bytes / 2).max(1),
             seq,
             state: Mutex::new(SlotState {
                 inbox: VecDeque::new(),
@@ -860,7 +862,24 @@ struct RoutesInner {
     refetch: AtomicBool,
     /// How many revokes the client has been told of: a pass that saw one filters what it drained (`Drain::hand_off`).
     revokes: AtomicU64,
+    /// Every record the client thread took off librdkafka, counted at its payload and key and librdkafka's record for
+    /// it, [`FETCHED_RECORD_BYTES`].
+    taken: AtomicU64,
+    /// What `stats` last weighed.
+    expansion: Mutex<Expansion>,
 }
+
+/// What the client received and took when `Routes::stats` last weighed them, and whether they took more memory per
+/// byte received than [`FETCH_EXPANSION`].
+#[derive(Default)]
+struct Expansion {
+    received: u64,
+    taken: u64,
+    over: crate::logs::Relog,
+}
+
+/// The least received between two weighings: under it, a few records' framing would outweigh what they hold.
+const EXPANSION_SAMPLE_BYTES: u64 = 16 << 20;
 
 impl Routes {
     fn slots(&self) -> Vec<Arc<Slot>> {
@@ -1206,6 +1225,32 @@ impl ClientContext for Routes {
 
     fn log(&self, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
         super::librdkafka_said("sources", level, fac, message);
+    }
+
+    /// Runs on librdkafka's own thread. Weighs what the client took against what it received: more than
+    /// [`FETCH_EXPANSION`] for each byte received can take the client past the memory it is sized to.
+    fn stats(&self, stats: rdkafka::Statistics) {
+        let received: u64 = stats.brokers.values().map(|b| b.rxbytes).sum();
+        let taken = self.0.taken.load(Ordering::Relaxed);
+        let mut last = self.0.expansion.lock();
+        // A broker the client no longer lists takes its count with it.
+        if received < last.received {
+            (last.received, last.taken) = (received, taken);
+            return;
+        }
+        let fetched = received - last.received;
+        if fetched < EXPANSION_SAMPLE_BYTES {
+            return;
+        }
+        let times = (taken - last.taken) / fetched;
+        (last.received, last.taken) = (received, taken);
+        if times <= FETCH_EXPANSION as u64 {
+            last.over.clear();
+        } else if let Some(error) = last.over.fail_due(format!(
+            "records took {times} times the bytes fetched for them, where memory is sized for {FETCH_EXPANSION}"
+        )) {
+            tracing::warn!(name: "fetch_expansion", target: "sources", group = %self.group(), error, "a Kafka source's records decompress to more than its memory is sized for, so its worker may run out of memory; lower its fetch buffer or give the worker more memory");
+        }
     }
 
     fn generate_oauth_token(
