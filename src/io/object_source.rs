@@ -1014,7 +1014,10 @@ fn values(
         }
         if !out.is_empty() {
             let size = out.size();
-            send(Fetch::Rows(out.into_chunk().written_with(id, container.schema.clone()), size))?;
+            send(Fetch::Rows(
+                out.into_chunk().written_with(id, container.schema.clone()),
+                size,
+            ))?;
         }
     }
     Ok(())

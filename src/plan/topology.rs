@@ -970,7 +970,13 @@ impl SourceMeta {
             for (id, schema) in records.iter().filter_map(|r| r.chunk.avro_schema()) {
                 carried.entry(*id).or_insert_with(|| schema.clone());
             }
-            let read = crate::io::avro::decode(&self.record, writers, carried.into_iter(), payloads.iter().copied(), pool);
+            let read = crate::io::avro::decode(
+                &self.record,
+                writers,
+                carried.into_iter(),
+                payloads.iter().copied(),
+                pool,
+            );
             for (i, column) in read.columns.into_iter().enumerate() {
                 batch.put(record_slot(i), column, pool);
             }
