@@ -27,6 +27,7 @@ pub mod elastic_agent;
 pub mod fortigate;
 pub mod json_app;
 pub mod k8s;
+pub mod mmdb;
 pub mod netscout;
 pub mod nginx;
 pub mod people;

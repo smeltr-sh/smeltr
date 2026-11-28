@@ -148,8 +148,8 @@ impl In {
         Some(push)
     }
 
-    /// What a row that forwards delivers of record `i` of the corpus, sent this way: the record as it was sent.
-    fn sent(self, i: u64) -> Value {
+    /// What a row that forwards delivers of record `i` of `records`, sent this way: the record as it was sent.
+    fn sent(self, i: u64, records: Records) -> Value {
         match self {
             In::Syslog => Value::String(syslog_line(i)),
             In::Prometheus => json!({
@@ -158,7 +158,7 @@ impl In {
                 "value": i as f64,
                 "time": utc_millis(1_790_000_000_000 + i),
             }),
-            In::Http | In::Kafka | In::Hec | In::Otlp | In::S3Sqs => serde_json::from_str(&line(i)).unwrap(),
+            In::Http | In::Kafka | In::Hec | In::Otlp | In::S3Sqs => serde_json::from_str(&(records.line)(i)).unwrap(),
         }
     }
 
@@ -374,11 +374,32 @@ enum Give {
 /// What a pipeline makes of record `line`, as the check compares it: `None` when the pipeline drops it.
 type Expect = fn(line: &str) -> Option<Value>;
 
+/// A corpus: the records a workload's input is made of, record `i` as `line` makes it.
+#[derive(Clone, Copy)]
+struct Records {
+    /// Names its topics.
+    name: &'static str,
+    line: Line,
+}
+
+/// A service's JSON log, as `tests/reference/json_app.rs` makes it.
+const APP_LOG: Records = Records { name: "app", line };
+
+/// Suricata's EVE events, as `tests/reference/suricata.rs` makes them.
+const EVE: Records = Records {
+    name: "eve",
+    line: reference::suricata::line,
+};
+
 /// One pipeline, as each engine runs it.
 struct Workload {
     name: &'static str,
+    records: Records,
     /// Smeltr's steps for it.
     steps: fn() -> Value,
+    /// The lookup files it reads, each by its name under `lookups/`, and smeltr's tables over them.
+    lookups: fn() -> Vec<(&'static str, Vec<u8>)>,
+    tables: fn() -> Vec<Value>,
     expect: Expect,
     /// An engine's document, put in the form `expect` writes.
     normal: fn(Value) -> Value,
@@ -391,6 +412,9 @@ struct Workload {
 const WORKLOADS: &[Workload] = &[
     Workload {
         name: "passthrough",
+        records: APP_LOG,
+        lookups: Vec::new,
+        tables: Vec::new,
         steps: || json!([]),
         expect: |line| serde_json::from_str(line).ok(),
         normal: |doc| doc,
@@ -400,6 +424,9 @@ const WORKLOADS: &[Workload] = &[
     },
     Workload {
         name: "json",
+        records: APP_LOG,
+        lookups: Vec::new,
+        tables: Vec::new,
         steps: || {
             json!([{"id": "parse", "type": "parser", "input": "_raw", "kind": {"type": "json"}},
                    {"id": "unraw", "type": "eval", "assignments": [{"target": "_raw", "expr": "null"}]}])
@@ -412,6 +439,9 @@ const WORKLOADS: &[Workload] = &[
     },
     Workload {
         name: "json_timed",
+        records: APP_LOG,
+        lookups: Vec::new,
+        tables: Vec::new,
         steps: || {
             json!([{"id": "parse", "type": "parser", "input": "_raw", "kind": {"type": "json"}},
                    {"id": "unraw", "type": "eval", "assignments": [{"target": "_raw", "expr": "null"},
@@ -433,6 +463,9 @@ const WORKLOADS: &[Workload] = &[
     },
     Workload {
         name: "json_app",
+        records: APP_LOG,
+        lookups: Vec::new,
+        tables: Vec::new,
         steps: || {
             let bundle: Value = serde_json::from_str(&(reference::json_app::PIPELINE.bundle)()).unwrap();
             bundle["pipelines"][0]["steps"].clone()
@@ -444,6 +477,17 @@ const WORKLOADS: &[Workload] = &[
             }
             doc
         },
+        forwards: false,
+        over: Transport::shared,
+    },
+    Workload {
+        name: "suricata",
+        records: EVE,
+        lookups: reference::suricata::files,
+        tables: reference::suricata::tables,
+        steps: || Value::Array(reference::suricata::steps()),
+        expect: suricata::expect,
+        normal: suricata::normal,
         forwards: false,
         over: Transport::shared,
     },
@@ -902,8 +946,8 @@ impl Broker {
             .block_on(admin.delete_topics(&[topic], &rdkafka::admin::AdminOptions::new()));
     }
 
-    /// Writes records `0..rows` of the corpus to `topic`.
-    fn seed(&self, topic: &str, rows: u64) {
+    /// Writes records `0..rows` of `records` to `topic`.
+    fn seed(&self, topic: &str, rows: u64, records: Records) {
         use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
         let producer: BaseProducer = rdkafka::ClientConfig::new()
             .set("bootstrap.servers", &self.brokers)
@@ -913,7 +957,7 @@ impl Broker {
             .expect("a Kafka producer");
         let partitions = partitions();
         for i in 0..rows {
-            let line = line(i);
+            let line = (records.line)(i);
             // Spread evenly, so no partition is left to drain alone at the end.
             let mut record = BaseRecord::<(), String>::to(topic)
                 .payload(&line)
@@ -1059,6 +1103,9 @@ struct Running {
     push: Option<(String, Push)>,
 }
 
+/// Where every engine's container holds the workload's lookup files.
+const LOOKUPS: &str = "/etc/engine/lookups";
+
 /// Starts `engine` running `workload` on `cpus` between `ends`, and waits until it takes records.
 fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -> Running {
     let gb = env_or("ENGINE_MEMORY_GB", 4);
@@ -1070,6 +1117,15 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
     let api_port = free_port();
     let host = engine_host();
     let mut docker = container(host.as_deref(), run, cpus, gb);
+    // The same files for every engine, mounted where its pipeline reads them.
+    let lookups = (w.lookups)();
+    if !lookups.is_empty() {
+        std::fs::create_dir_all(dir.join("lookups")).unwrap();
+        for (name, contents) in &lookups {
+            std::fs::write(dir.join("lookups").join(name), contents).unwrap();
+        }
+        docker.args(["-v", &format!("{}:{LOOKUPS}:ro", dir.join("lookups").display())]);
+    }
     match engine {
         Engine::Smeltr => {
             // SAFETY: neither reads anything but this process's own credentials.
@@ -1150,7 +1206,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 docker.args([
                     "-v",
                     &format!(
-                        "{}:/opt/nifi/nifi-current/nar_extensions/json-app.nar:ro",
+                        "{}:/opt/nifi/nifi-current/nar_extensions/bench.nar:ro",
                         nifi::nar().display()
                     ),
                 ]);
@@ -1252,7 +1308,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
             let steps = (w.steps)();
             let bundle = json!({"sources": [&source], "destinations": [&destination], "steps": &steps});
             std::fs::write(dir.join("smeltr.json"), serde_json::to_string_pretty(&bundle).unwrap()).unwrap();
-            deploy(&dir, source, destination, steps);
+            deploy(&dir, source, destination, steps, &(w.tables)(), &lookups);
         }
         Engine::Nifi | Engine::NifiGroovy => nifi::build(&container, run, api_port, ends, w, cores, engine),
         Engine::Logstash | Engine::Vector => {}
@@ -1277,6 +1333,8 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
     };
     Running { container, push }
 }
+
+mod suricata;
 
 /// Logstash's pipeline and settings, as its performance tuning guide sets them for throughput.
 mod logstash {
@@ -1450,12 +1508,19 @@ mod vector {
             ends.give_to(),
             Some(Out::Elasticsearch | Out::SplunkHec | Out::LogAnalytics)
         );
+        // Its Kafka source writes the message's time to `timestamp` there, over a record's own field of that name.
+        let stamped = ends.from() == In::Kafka
+            && serde_json::from_str::<Value>(&(w.records.line)(0)).is_ok_and(|r| r.get("timestamp").is_some());
         let mut config = json!({
             "data_dir": "/tmp",
-            "schema": {"log_namespace": json_documents},
+            "schema": {"log_namespace": json_documents || stamped},
             "sources": {"in": source},
             "sinks": {"out": sink},
         });
+        // The pipeline's lookup tables, each over a file of `LOOKUPS`.
+        if let Some(tables) = Engine::Vector.pipeline(w, "tables.json") {
+            config["enrichment_tables"] = serde_json::from_str(&tables).expect("Vector's tables are JSON");
+        }
         config["sinks"]["out"]["inputs"] = match remap {
             Some(vrl) => {
                 config["transforms"] =
@@ -1475,9 +1540,16 @@ mod vector {
 }
 
 impl Ends {
-    /// `transport`'s ends for `run`: what it takes of `corpus` when it pulls, and what it gives to `sink` or to a
-    /// topic of its own, which this makes.
-    fn new(transport: Transport, run: &str, sink: &Sink, services: &Services, corpus: Corpus, rest: &[usize]) -> Ends {
+    /// `transport`'s ends for `run`: what it takes of `corpus` of `records` when it pulls, and what it gives to `sink`
+    /// or to a topic of its own, which this makes.
+    fn new(
+        transport: Transport,
+        run: &str,
+        sink: &Sink,
+        services: &Services,
+        (corpus, records): (Corpus, Records),
+        rest: &[usize],
+    ) -> Ends {
         let broker = services.broker.as_ref();
         let take = match transport.from {
             In::Http | In::Hec | In::Otlp | In::Prometheus | In::Syslog => Take::Listen {
@@ -1486,7 +1558,7 @@ impl Ends {
             },
             In::Kafka => Take::Kafka {
                 brokers: broker.expect("a broker").brokers.clone(),
-                topic: corpus.topic().into(),
+                topic: corpus.topic(records),
                 group: run.into(),
             },
             In::S3Sqs => {
@@ -1583,15 +1655,17 @@ fn made(
     transport: Transport,
     services: &Services,
 ) -> Vec<Value> {
-    let want = (0..CHECK_ROWS).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
+    let want = (0..CHECK_ROWS)
+        .filter(|&i| (w.expect)(&(w.records.line)(i)).is_some())
+        .count() as u64;
     let sink = Sink::keeping();
-    let ends = Ends::new(transport, run, &sink, services, Corpus::Check, rest);
+    let ends = Ends::new(transport, run, &sink, services, (Corpus::Check, w.records), rest);
     let delivered = Delivered::new(&ends.give, &sink, services.broker.as_ref());
     let running = start(engine, w, run, cpus, &ends);
-    let _sender = running
-        .push
-        .as_ref()
-        .map(|(url, push)| Sender::start(url, push, &bodies(push), SENDERS, 0, CHECK_ROWS));
+    let _sender = running.push.as_ref().map(|(url, push)| {
+        let line = w.records.line;
+        Sender::start(url, push, line, &bodies(push, line), SENDERS, 0, CHECK_ROWS)
+    });
     if let Take::Listen { port, from: In::Syslog } = ends.take {
         stream_syslog(port, 0, CHECK_ROWS);
     }
@@ -1621,11 +1695,13 @@ enum Corpus {
 }
 
 impl Corpus {
-    fn topic(self) -> &'static str {
-        match self {
+    /// The topic that holds it of `records`.
+    fn topic(self, records: Records) -> String {
+        let topic = match self {
             Corpus::Check => CHECK_TOPIC,
             Corpus::Input => INPUT_TOPIC,
-        }
+        };
+        format!("{topic}-{}", records.name)
     }
 
     fn rows(self) -> u64 {
@@ -1642,10 +1718,10 @@ struct Services {
     objects: Option<announced::Objects>,
 }
 
-/// The topic every Kafka check reads, seeded with the first `CHECK_ROWS` records.
+/// The topics every Kafka check reads, one for each corpus, seeded with its first `CHECK_ROWS` records.
 const CHECK_TOPIC: &str = "engine-speed-check";
 
-/// The topic every timed Kafka row reads, seeded with `FINITE` times the rows a row times.
+/// The topics every timed Kafka row reads, one for each corpus, seeded with `FINITE` times the rows a row times.
 const INPUT_TOPIC: &str = "engine-speed-input";
 
 /// How many rows' worth of records a finite input holds, the input topic or a stream of syslog lines: enough for the
@@ -1667,9 +1743,9 @@ fn check(
     let mut want: Vec<String> = (0..CHECK_ROWS)
         .filter_map(|i| {
             if w.forwards {
-                Some(from.sent(i))
+                Some(from.sent(i, w.records))
             } else {
-                (w.expect)(&line(i))
+                (w.expect)(&(w.records.line)(i))
             }
         })
         .map(|d| canonical(&d))
@@ -1720,7 +1796,7 @@ fn publish(engine: Engine, w: &Workload, run: &str, transport: Transport, made: 
         std::fs::copy(from.join(file), to.join(file.replace('/', "-"))).unwrap();
     }
     let lines = |docs: &mut dyn Iterator<Item = Value>| docs.map(|d| d.to_string() + "\n").collect::<String>();
-    let sent = lines(&mut (0..SAMPLE as u64).map(|i| transport.from.sent(i)));
+    let sent = lines(&mut (0..SAMPLE as u64).map(|i| transport.from.sent(i, w.records)));
     std::fs::write(to.join("sent.ndjson"), sent).unwrap();
     std::fs::write(to.join("made.ndjson"), lines(&mut made.iter().take(SAMPLE).cloned())).unwrap();
 }
@@ -1764,7 +1840,7 @@ fn window(count: impl Fn() -> u64, most: u64, rest: &[usize]) -> (f64, f64) {
 /// where the engine answers each request and posts what it makes in batches. A request costs the sink what it costs
 /// an engine, so the sink may be slower than the sender: the ceiling is the rate it reaches over how busy that left
 /// `rest`, the rate with every one of them busy.
-fn http_ceiling(push: &Push, apart: &[usize], rest: &[usize]) -> f64 {
+fn http_ceiling(push: &Push, records: Records, apart: &[usize], rest: &[usize]) -> f64 {
     // The sink's threads keep the cores of the thread that starts them.
     set_affinity(0, apart);
     let sink = Sink::start();
@@ -1773,7 +1849,8 @@ fn http_ceiling(push: &Push, apart: &[usize], rest: &[usize]) -> f64 {
     let sender = Sender::start(
         &format!("http://{}:{}{}", harness_address(), sink.port, push.path),
         push,
-        &bodies(push),
+        records.line,
+        &bodies(push, records.line),
         senders,
         0,
         u64::MAX / 2,
@@ -1840,10 +1917,14 @@ fn time(
     let broker = services.broker.as_ref();
     let rows = rows();
     // Under HTTP the sender cycles through its bodies; under Kafka the engine reads the seeded topic.
-    let kept_of = |from: u64, n: u64| (from..from + n).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
+    let kept_of = |from: u64, n: u64| {
+        (from..from + n)
+            .filter(|&i| (w.expect)(&(w.records.line)(i)).is_some())
+            .count() as u64
+    };
     let keeps = |n: u64| kept_of(0, n) as f64 / n as f64;
     let sink = Sink::start();
-    let ends = Ends::new(transport, run, &sink, services, Corpus::Input, rest);
+    let ends = Ends::new(transport, run, &sink, services, (Corpus::Input, w.records), rest);
     let delivered = Delivered::new(&ends.give, &sink, broker);
     // A stream of lines, like a topic, is as long as a topic is seeded.
     let (kept, most) = match ends.take {
@@ -1857,7 +1938,8 @@ fn time(
         Sender::start(
             url,
             push,
-            &bodies(push),
+            w.records.line,
+            &bodies(push, w.records.line),
             env_or("ENGINE_SENDERS", SENDERS),
             0,
             u64::MAX / 2,
@@ -2003,45 +2085,68 @@ fn speed() {
     let id = std::process::id();
     let broker = cases.iter().any(|c| c.1.kafka()).then(|| {
         let broker = Broker::start(&format!("es-broker-{id}"), &rest);
-        broker.create(CHECK_TOPIC);
-        broker.seed(CHECK_TOPIC, CHECK_ROWS);
-        broker.create(INPUT_TOPIC);
-        broker.seed(INPUT_TOPIC, FINITE * rows());
+        let mut seeded: Vec<&str> = Vec::new();
+        for (w, _) in cases.iter().filter(|c| c.1.kafka()) {
+            if seeded.contains(&w.records.name) {
+                continue;
+            }
+            seeded.push(w.records.name);
+            for (corpus, rows) in [(Corpus::Check, CHECK_ROWS), (Corpus::Input, FINITE * rows())] {
+                let topic = corpus.topic(w.records);
+                broker.create(&topic);
+                broker.seed(&topic, rows, w.records);
+            }
+        }
         broker
     });
     let objects = cases
         .iter()
-        .any(|c| c.1.from == In::S3Sqs)
-        .then(|| announced::Objects::start(&format!("es-objects-{id}"), &rest));
+        .filter(|c| c.1.from == In::S3Sqs)
+        .map(|c| c.0.records)
+        .next()
+        .map(|records| {
+            assert!(
+                (cases.iter()).all(|c| c.1.from != In::S3Sqs || c.0.records.name == records.name),
+                "the bucket holds one corpus"
+            );
+            announced::Objects::start(&format!("es-objects-{id}"), &rest, records)
+        });
     let services = Services { broker, objects };
 
-    // Each way input is pushed, before any engine runs. The sink takes every engine's body for one alike.
-    let mut ceilings: Vec<(In, f64)> = Vec::new();
+    // Each way input is pushed, of each corpus, before any engine runs. The sink takes every engine's body for one
+    // alike.
+    let mut ceilings: Vec<(In, &str, f64)> = Vec::new();
     // Each stand-in for an engine on the cores the engines will have; with the engine on a host of its own, it shares
     // the harness's, and the ceiling is lower than it is.
     let apart = if remote { rest.clone() } else { on(most) };
-    for &(_, t) in &cases {
-        if ceilings.iter().any(|c| c.0 == t.from) {
+    for &(w, t) in &cases {
+        if ceilings.iter().any(|c| (c.0, c.1) == (t.from, w.records.name)) {
             continue;
         }
         let c = match (t.from, engines.iter().find_map(|&e| t.from.push(e))) {
-            (_, Some(push)) => Some(http_ceiling(&push, &apart, &rest)),
+            (_, Some(push)) => Some(http_ceiling(&push, w.records, &apart, &rest)),
             (In::Syslog, None) => Some(syslog_ceiling(&apart, &rest)),
-            (In::Kafka, None) => services.broker.as_ref().map(|b| b.ceiling(INPUT_TOPIC, &apart, &rest)),
+            (In::Kafka, None) => {
+                (services.broker.as_ref()).map(|b| b.ceiling(&Corpus::Input.topic(w.records), &apart, &rest))
+            }
             (In::S3Sqs, None) => services.objects.as_ref().map(|o| o.ceiling(&apart, &rest)),
             _ => None,
         };
         if let Some(c) = c {
             println!(
                 "{:<12} {:<6} {:<9} harness ceiling {c:>9.0} records/s",
-                "",
+                w.records.name,
                 t.from.label(),
                 ""
             );
-            ceilings.push((t.from, c));
+            ceilings.push((t.from, w.records.name, c));
         }
     }
-    let ceiling_of = |t: Transport| ceilings.iter().find(|c| c.0 == t.from).map(|c| c.1);
+    let ceiling_of = |w: &Workload, t: Transport| {
+        (ceilings.iter())
+            .find(|c| (c.0, c.1) == (t.from, w.records.name))
+            .map(|c| c.2)
+    };
 
     // Checked once each, on the fewest cores: an engine that makes other documents is not timed.
     let mut refused: Vec<(Case, Engine, String)> = Vec::new();
@@ -2095,7 +2200,7 @@ fn speed() {
                             r.peak as f64 / 1e6,
                             r.broker,
                             r.harness * 100.0,
-                            ceiling_of(t).map_or(String::new(), |c| format!(
+                            ceiling_of(w, t).map_or(String::new(), |c| format!(
                                 "  of ceiling {:>3.0}%",
                                 r.rows_per_sec / c * 100.0
                             ))
@@ -2132,7 +2237,7 @@ fn table(
     counts: &[usize],
     timed: &[(Case, Engine, usize, Result<Timed, String>)],
     refused: &[(Case, Engine, String)],
-    ceilings: &[(In, f64)],
+    ceilings: &[(In, &str, f64)],
 ) -> String {
     let mut out = String::from(
         "| Pipeline | Transport | Engine | Threads | records/s | Spread | records/s per thread used | Threads used | Peak memory | \
@@ -2178,8 +2283,8 @@ fn table(
                 // A harness-bound row says so where its speed would be: it is not the engine's.
                 let share = ceilings
                     .iter()
-                    .find(|c| c.0 == t.from)
-                    .map(|c| median.rows_per_sec / c.1);
+                    .find(|c| (c.0, c.1) == (t.from, w.records.name))
+                    .map(|c| median.rows_per_sec / c.2);
                 let speed = match share {
                     Some(s) if s > HEADROOM => format!("harness-bound, {:.0}", median.rows_per_sec),
                     _ => format!("{:.0}", median.rows_per_sec),
@@ -2331,7 +2436,7 @@ mod nifi {
                 .status()
                 .unwrap();
             assert!(built.success(), "Maven could not build the NAR");
-            dir.join("nar/target/json-app-nar-1.0.nar")
+            dir.join("nar/target/bench-nar-1.0.nar")
         })
         .clone()
     }
@@ -2457,36 +2562,53 @@ mod nifi {
             Give::Store(_) => unreachable!("NiFi runs HTTP and Kafka alone"),
         };
         api.connect(&produce, &produce, failed);
-        match Engine::Nifi.pipeline(w, "groovy") {
-            Some(script) => {
-                // A schema read once beats inferring one from each flowfile, as the record readers' documentation
-                // says. It names only the fields the mapping reads: the rest leave at the reader.
-                let schema = Engine::Nifi.pipeline(w, "avsc").expect("the script's schema");
-                let reader = api.service(
-                    "org.apache.nifi.json.JsonTreeReader",
-                    json!({"Schema Access Strategy": "schema-text-property", "Schema Text": schema}),
-                );
-                let writer = api.service(
-                    "org.apache.nifi.json.JsonRecordSetWriter",
-                    json!({"Schema Write Strategy": "no-schema", "Output Grouping": "output-oneline",
-                           "Suppress Null Values": "always-suppress"}),
-                );
-                let transform = match engine {
-                    Engine::NifiGroovy => api.processor(
-                        "org.apache.nifi.processors.script.ScriptedTransformRecord",
-                        json!({"Record Reader": reader, "Record Writer": writer, "Script Engine": "Groovy",
-                               "Script Body": script}),
-                        &["failure"],
-                        cores,
-                    ),
-                    // The same mapping, in `nifi/nar`'s processor.
-                    _ => api.processor(
-                        "sh.smeltr.bench.NormalizeJsonApp",
-                        json!({"Record Reader": reader, "Record Writer": writer}),
-                        &["failure"],
-                        cores,
-                    ),
-                };
+        // A schema read once beats inferring one from each flowfile, as the record readers' documentation says. It
+        // names only the fields the mapping reads: the rest leave at the reader.
+        let records = |api: &Api| {
+            let schema = Engine::Nifi.pipeline(w, "avsc").expect("the records' schema");
+            let reader = api.service(
+                "org.apache.nifi.json.JsonTreeReader",
+                json!({"Schema Access Strategy": "schema-text-property", "Schema Text": schema}),
+            );
+            let writer = api.service(
+                "org.apache.nifi.json.JsonRecordSetWriter",
+                json!({"Schema Write Strategy": "no-schema", "Output Grouping": "output-oneline",
+                       "Suppress Null Values": "always-suppress"}),
+            );
+            (reader, writer)
+        };
+        let transform = match engine {
+            Engine::NifiGroovy => {
+                let script = Engine::Nifi.pipeline(w, "groovy").expect("the Groovy row's script");
+                let (reader, writer) = records(&api);
+                Some(api.processor(
+                    "org.apache.nifi.processors.script.ScriptedTransformRecord",
+                    json!({"Record Reader": reader, "Record Writer": writer, "Script Engine": "Groovy",
+                           "Script Body": script}),
+                    &["failure"],
+                    cores,
+                ))
+            }
+            // The same mapping, in `nifi/nar`'s processor that `nifi/{pipeline}.json` names, with its properties.
+            // One that reads records takes them through the reader and writer over the pipeline's schema.
+            _ => Engine::Nifi.pipeline(w, "json").map(|p| {
+                let p: Value = serde_json::from_str(&p).expect("a NiFi processor in JSON");
+                let mut properties = p["properties"].clone();
+                if p["records"] == true {
+                    let (reader, writer) = records(&api);
+                    properties["Record Reader"] = json!(reader);
+                    properties["Record Writer"] = json!(writer);
+                }
+                api.processor(
+                    p["type"].as_str().expect("a processor type"),
+                    properties,
+                    &["failure"],
+                    cores,
+                )
+            }),
+        };
+        match transform {
+            Some(transform) => {
                 api.connect(&consume, &transform, &["success"]);
                 api.connect(&transform, &produce, &["success"]);
             }
@@ -2625,8 +2747,8 @@ mod announced {
     const BUCKET: &str = "bench-in";
 
     impl Objects {
-        /// Starts LocalStack on `cpus` and puts the corpus in its bucket.
-        pub fn start(name: &str, cpus: &[usize]) -> Objects {
+        /// Starts LocalStack on `cpus` and puts `records` in its bucket.
+        pub fn start(name: &str, cpus: &[usize], records: Records) -> Objects {
             assert_eq!(CHECK_ROWS % FILE_ROWS, 0, "a check reads whole objects");
             let port = free_port();
             let mut docker = container(None, name, cpus, env_or("ENGINE_BROKER_MEMORY_GB", 8));
@@ -2648,7 +2770,9 @@ mod announced {
                 std::thread::sleep(Duration::from_millis(500));
             }
             for f in 0..(FINITE * rows()).div_ceil(FILE_ROWS) {
-                let lines: String = (f * FILE_ROWS..(f + 1) * FILE_ROWS).map(|i| line(i) + "\n").collect();
+                let lines: String = (f * FILE_ROWS..(f + 1) * FILE_ROWS)
+                    .map(|i| (records.line)(i) + "\n")
+                    .collect();
                 let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                 std::io::Write::write_all(&mut gz, lines.as_bytes()).unwrap();
                 let url = format!("{}/{BUCKET}/{}", objects.url, key(f));

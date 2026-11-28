@@ -49,7 +49,7 @@ its name, and its transports and settings in `tests/engines/mod.rs`.
   transport's producer. The consumer runs a task for each hyperthread over Kafka and one over HTTP, the mapping a task
   for each hyperthread, the producer two for each hyperthread over Kafka and eight for each over HTTP, past which more
   stopped adding speed, and the thread pool has four threads for each hyperthread, the most NiFi's administration guide
-  advises. The mapping's reader is given the record schema rather than inferring one. A delivery that fails goes back to
+  advises. A mapping that reads records is given their schema rather than inferring one. A delivery that fails goes back to
   the producer, as the other engines retry it. Content archiving, which keeps sent content for replay, is off: with it
   on, NiFi stops taking records while the disk is more than half full. Its heap is half the container's memory.
 
@@ -87,12 +87,34 @@ nanoseconds, move the application's fields to their ECS names, and leave out the
 | NiFi | `tests/engines/nifi/nar/`, a Java processor reading and writing records through NiFi's JSON reader and writer |
 | NiFi Groovy | `tests/engines/nifi/json_app.groovy`, a ScriptedTransformRecord, with the reader's schema in `json_app.avsc` |
 
+**suricata** is the Suricata reference pipeline, over Suricata's EVE events: parse the JSON, keep what Suricata sent
+under `suricata.eve`, map each event type's fields to ECS, and enrich both ends of the connection from four lookup
+tables. Every engine reads the same four files, mounted read-only:
+
+| File | Holds | Looked up by |
+|---|---|---|
+| `city.mmdb` | a City database of the corpus's public addresses | address: country, city, location |
+| `networks.mmdb` | the company's networks | address, the network that holds it: site, tier, business unit |
+| `domains.csv` | listed domains | exact name: category, owner |
+| `domain-patterns.csv` | domain regexes, in order | the first that matches: verdict, reason |
+
+Both databases are synthetic, written by the harness from the corpus (`tests/reference/mmdb.rs`), so no licensed
+database is needed. The City database carries the type tag `GeoIP2-City`, since Logstash's `geoip` filter and Vector's
+`geoip` table read only MaxMind's own database types.
+
+| Engine | Pipeline |
+|---|---|
+| smeltr | the steps in `tests/reference/suricata.rs`, with an `mmdb` table for each database and a `csv` table for each list |
+| Logstash | `tests/engines/logstash/suricata.conf`: `json`, `mutate` and conditionals for the mapping, `geoip` for each end, and a Ruby filter for the timestamps, the sums and the three company tables. The `date` filter keeps only milliseconds, `geoip` refuses a non-MaxMind database type, and `translate` takes a two-column CSV and matches its regexes leftmost, not first; the Ruby filter reads the networks with the MaxMind reader the `geoip` filter ships |
+| Vector | `tests/engines/vector/suricata.vrl`, one `remap`, over the enrichment tables in `suricata.tables.json`: `geoip`, `mmdb` and a CSV `file` table. VRL compiles only regexes written in the program, so the five patterns are written there, in the file's order. Over Kafka it runs its log namespace, which is in beta: in its default namespace, its Kafka source writes the message's time over EVE's own `timestamp` |
+| NiFi | `tests/engines/nifi/nar/`, a Java processor that reads each line as a JSON tree, since `suricata.eve` keeps objects of whatever shape each event type gives them, and reads the tables with MaxMind's reader and Commons CSV. Its properties are in `tests/engines/nifi/suricata.json` |
+
 ## Checking a run
 
 Each engine is checked once for each pipeline and transport, on the fewest cores a run gives it. The check sends it
 the first 20,000 records and compares the documents that arrive with those the pipeline must make, as a multiset: no
-document missing, none extra, none different. A passthrough document must be the record itself. A `json_app`
-document must be the reference's, its `@timestamp` the same instant written in UTC to any precision.
+document missing, none extra, none different. A passthrough document must be the record itself. A `json_app` or
+`suricata` document must be the reference's, each instant in it the same instant written in UTC to any precision.
 
 Each timed run is counted when it ends. Over HTTP the sender stops and the sink must receive, record for record, what
 the engine accepted. Over Kafka the engine reads the whole input topic and the output topic must hold every record it

@@ -1,0 +1,9 @@
+{
+  "type": "sh.smeltr.bench.NormalizeSuricata",
+  "properties": {
+    "GeoIP Database": "/etc/engine/lookups/city.mmdb",
+    "Networks Database": "/etc/engine/lookups/networks.mmdb",
+    "Domains": "/etc/engine/lookups/domains.csv",
+    "Domain Patterns": "/etc/engine/lookups/domain-patterns.csv"
+  }
+}
