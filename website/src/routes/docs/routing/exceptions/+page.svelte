@@ -142,6 +142,8 @@
   <p>
     A batch Smeltr cannot process, including a record that exceeds its memory budget, is
     <code>Unprocessable</code>. Blocking waits for a new deployment. No pipeline finished the
-    record, so a destination that writes the record writes <code>{'{"_raw": …}'}</code>.
+    record, so a destination writes it as it arrived. To keep a record too large to read within the
+    memory budget, use the <code>deliver</code> answer to send unprocessable records to a
+    destination that writes <code>__source.bytes</code>; any other destination refuses it.
   </p>
 </GuideLayout>
