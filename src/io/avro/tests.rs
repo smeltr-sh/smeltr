@@ -48,7 +48,7 @@ fn read(reader: &AvroReader, meta: &SourceMeta, payloads: &[Vec<u8>]) -> Read {
 }
 
 /// `value` written with `schema`, framed as `id`.
-fn written(id: u32, schema: &Schema, value: Avro) -> Vec<u8> {
+fn written(id: SchemaId, schema: &Schema, value: Avro) -> Vec<u8> {
     let bytes = GenericDatumWriter::builder(schema)
         .build()
         .unwrap()
@@ -75,7 +75,10 @@ fn rows(meta: &SourceMeta, read: Read) -> Vec<serde_json::Value> {
 
 #[test]
 fn a_framed_payload_is_its_id_and_its_value() {
-    assert_eq!(unframe(&frame(258, b"abc")), Ok((258, &b"abc"[..])));
+    assert_eq!(
+        unframe(&frame(SchemaId::new(258), b"abc")),
+        Ok((SchemaId::new(258), &b"abc"[..]))
+    );
     assert!(unframe(b"").unwrap_err().contains("empty"));
     assert!(unframe(b"\x01\0\0\0\x01x").unwrap_err().contains("0x01"));
     assert!(unframe(b"\0\0\0").unwrap_err().contains("3 bytes"));
@@ -196,7 +199,7 @@ fn a_payload_that_does_not_read_is_a_row_of_nulls_with_the_reason() {
     let (mut reader, meta) = reader(&url, &[("id", DataType::I64)]);
     reader.ask(id).unwrap();
     reader.ask(not_a_record).unwrap();
-    reader.ask(99).unwrap();
+    reader.ask(SchemaId::new(99)).unwrap();
     let parsed = Schema::parse_str(schema).unwrap();
     let payloads = [
         written(
@@ -205,7 +208,7 @@ fn a_payload_that_does_not_read_is_a_row_of_nulls_with_the_reason() {
             Avro::Record(vec![("id".into(), Avro::String("seven".into()))]),
         ),
         b"{\"id\":1}".to_vec(),
-        frame(99, b"\x02"),
+        frame(SchemaId::new(99), b"\x02"),
         written(not_a_record, &Schema::Long, Avro::Long(1)),
         frame(id, b"\x02a\x00"),
         frame(id, b"\x7f"),
@@ -301,7 +304,7 @@ fn a_row_written_reads_back_as_it_was() {
             ("who.name", DataType::Str),
         ],
     );
-    reader.ask(1).unwrap();
+    reader.ask(SchemaId::new(1)).unwrap();
     assert_eq!(
         rows(&meta, read(&reader, &meta, &payloads)),
         vec![
