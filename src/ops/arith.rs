@@ -28,7 +28,7 @@ fn fail_overflowed(ctx: &mut Ctx, out: &mut Column, len: usize, overflowed: impl
 
 /// Null and raise every row of the `F64` column `out` that is not finite, as an `I64` that does not fit is: an
 /// infinity is an `Overflow`, and a NaN a `NaN`. A row null from its inputs is left alone.
-pub fn fail_non_finite(ctx: &mut Ctx, out: &mut Column) {
+pub(crate) fn fail_non_finite(ctx: &mut Ctx, out: &mut Column) {
     let len = out.len();
     // No kernel returns a constant column, so a constant here is a literal's value, which the lexer keeps finite: it
     // needs no check.
@@ -266,7 +266,7 @@ fn joins_to_i64(ins: &[&Column]) -> bool {
 }
 
 /// `idiv(a, b)`: an `i64` from two `i64`s, else an `f64`, an `i64` beside an `f64` widening, as `%` gives.
-pub fn idiv_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn idiv_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     if joins_to_i64(ins) {
         idiv_i64_i64(ctx, ins)
     } else {
@@ -275,7 +275,7 @@ pub fn idiv_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 /// `idiv(a, b)`, where `i64::MIN / -1`, the one quotient outside `i64`, fails its row.
-pub fn idiv_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+fn idiv_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let mut out = idiv_wrapping(ctx, ins);
     let len = out.len();
     if let (Some(a), Some(b)) = (side::i64(ins[0]), side::i64(ins[1])) {
@@ -312,7 +312,7 @@ div_like!(div_dur_f64, duration, f64, DataType::Duration, 0.0, |x: i64, y: f64| 
 
 macro_rules! float_arith {
     ($name:ident, $la:ident, $ra:ident, $f:expr) => {
-        pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+        pub(crate) fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             fn run<A: Operand<native!($la)>, B: Operand<native!($ra)>>(
                 ctx: &mut Ctx,
                 a: A,
@@ -345,7 +345,7 @@ float_arith!(pow_f64_f64, f64, f64, |x: f64, y: f64| x.powf(y));
 float_arith!(pow_i64_i64, i64, i64, |x: f64, y: f64| x.powf(y));
 
 /// Float division. Divide by zero is null, not infinity.
-pub fn div_f64_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn div_f64_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let av = f64_values(ins[0]).unwrap();
     let bv = f64_values(ins[1]).unwrap();
@@ -445,7 +445,7 @@ temporal!(mul_f64_dur, f64, duration, DataType::Duration, |x: f64, y: i64| micro
 
 macro_rules! unary_i64 {
     ($name:ident, $acc:ident, $mut_acc:ident, $ty:expr, $f:expr) => {
-        pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+        pub(crate) fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
             let out_ty = $ty;
             let a = ins[0].$acc().unwrap();
@@ -465,7 +465,7 @@ macro_rules! unary_i64 {
 unary_i64!(neg_wrapping, i64, i64_mut, DataType::I64, |x: i64| x.wrapping_neg());
 
 /// `-x`, where `-i64::MIN`, the one negation outside `i64`, fails its row.
-pub fn neg_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn neg_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let mut out = neg_wrapping(ctx, ins);
     if let Ok(a) = ins[0].i64() {
         let len = out.len();
@@ -503,7 +503,7 @@ round_f64_to_i64!(trunc_f64, trunc);
 // Half away from zero, as `as i64` rounds.
 round_f64_to_i64!(round_f64, round);
 
-pub fn neg_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn neg_f64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let a = ins[0].f64().unwrap();
     let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[Some(a.validity), None]);
@@ -636,7 +636,7 @@ fn minmax_n(
 /// `clamp(value, lo, hi)`: the value pulled into `lo..=hi`. An inverted range satisfies nothing, so a row whose `lo`
 /// exceeds its `hi` is null rather than silently answering with one end of it -- the bounds are usually constants, and
 /// a mistake in them should be visible.
-pub fn clamp_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn clamp_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let all_i64 = joins_to_i64(ins);
     let out_ty = if all_i64 { DataType::I64 } else { DataType::F64 };
@@ -681,7 +681,7 @@ pub fn clamp_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 macro_rules! bitwise {
     ($name:ident, $f:expr) => {
-        pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+        pub(crate) fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
             let a = ins[0].i64().unwrap();
             let b = ins[1].i64().unwrap();

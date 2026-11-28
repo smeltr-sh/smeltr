@@ -18,7 +18,7 @@ const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 const NESTED: usize = 64;
 
 /// The schema `id` that `doc` declares. Its root is an object.
-pub fn read(id: &str, doc: &Value) -> Result<Schema, String> {
+pub(crate) fn read(id: &str, doc: &Value) -> Result<Schema, String> {
     let root = doc
         .as_object()
         .filter(|node| is_object(node))
@@ -195,7 +195,7 @@ fn shown(at: &str) -> String {
 }
 
 /// `schema` as a JSON Schema document, each object written where it is.
-pub fn write(schema: &Schema) -> Value {
+pub(crate) fn write(schema: &Schema) -> Value {
     let root = schema.tree();
     let mut doc = Map::new();
     doc.insert("$schema".to_string(), json!(DIALECT));

@@ -12,13 +12,13 @@ use crate::plan::topology::{ListStart, OktaLogsConfig};
 /// The most events Okta returns in one page.
 const PAGE: &str = "1000";
 
-pub struct OktaLogs {
+pub(crate) struct OktaLogs {
     logs: reqwest::Url,
     start: ListStart,
 }
 
 impl OktaLogs {
-    pub fn new(config: &OktaLogsConfig) -> Result<Self, String> {
+    pub(crate) fn new(config: &OktaLogsConfig) -> Result<Self, String> {
         let url = config.logs_url();
         Ok(OktaLogs {
             logs: reqwest::Url::parse(&url).map_err(|e| format!("{url:?} is not a URL: {e}"))?,

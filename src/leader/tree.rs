@@ -113,7 +113,7 @@ pub fn groups_at(repo: &Path, rev: &str) -> Result<Vec<String>, git::GitError> {
 /// at -- the last one read, where two paths hold the same file. A table whose file is not there is
 /// left out, and loading the bundle is what reports it; a bundle whose tables or files cannot be read, or a file
 /// committed as its bytes (`store::pointer_in`), is an error, since what it names is then unknown.
-pub fn lookup_pointers(
+pub(crate) fn lookup_pointers(
     repo: &Path,
     rev: &str,
     prefixes: &[String],

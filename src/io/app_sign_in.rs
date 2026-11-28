@@ -28,7 +28,7 @@ use super::oauth::{AppKey, SignIn};
 use crate::plan::topology::TokenAt;
 
 /// An app's sign-in, before and after its token endpoint is known.
-pub struct AppSignIn {
+pub(crate) struct AppSignIn {
     client_id: String,
     token_at: TokenAt,
     scope: Option<String>,
@@ -38,7 +38,7 @@ pub struct AppSignIn {
 }
 
 /// What an app proves itself with, its secret values read.
-pub enum Proof {
+pub(crate) enum Proof {
     Secret(String),
     Key(AppKey),
 }
@@ -49,7 +49,7 @@ enum Held {
 }
 
 impl AppSignIn {
-    pub fn new(client_id: String, token_at: TokenAt, scope: Option<String>, proof: Proof) -> AppSignIn {
+    pub(crate) fn new(client_id: String, token_at: TokenAt, scope: Option<String>, proof: Proof) -> AppSignIn {
         AppSignIn {
             client_id,
             token_at,

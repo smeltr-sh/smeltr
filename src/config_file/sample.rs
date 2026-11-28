@@ -33,7 +33,7 @@ pub const MAX_SAMPLE_RECORDS: usize = 1000;
 
 /// The most a sample's records hold in memory: what a person's request may carry, so a sample pasted whole is one that
 /// reads back.
-pub const MAX_SAMPLE_BYTES: usize = 1 << 30;
+pub(crate) const MAX_SAMPLE_BYTES: usize = 1 << 30;
 
 /// `Err` with what to tell the author when a sample of `records` records cannot be stored: none, or more than
 /// [`MAX_SAMPLE_RECORDS`].
@@ -79,9 +79,9 @@ pub struct SampleDto {
 #[serde(rename_all = "camelCase")]
 pub struct SampleSummary {
     pub id: String,
-    pub name: String,
+    name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
+    source: Option<String>,
     pub records: usize,
     /// When the leader last wrote the sample, in unix seconds: the newest commit that touched its file. The listing
     /// fills it from `config.git`'s history; a sample is not stored with it.
@@ -89,14 +89,14 @@ pub struct SampleSummary {
     pub written: Option<i64>,
     /// When its records were taken: the first row's `__capture.timestamp`, which a paste is stamped with when it is saved.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub captured: Option<String>,
+    captured: Option<String>,
     /// The file it was read from, within its bundle.
     #[serde(skip)]
     pub path: String,
 }
 
 impl SampleDto {
-    pub fn summary(&self) -> SampleSummary {
+    fn summary(&self) -> SampleSummary {
         SampleSummary {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -233,7 +233,7 @@ pub fn sample_table(batches: &[crate::heartbeat::CaptureBatch]) -> crate::heartb
 
 /// Set `value` at `path`, a record field's name, in `object`: under each of its keys in turn (`plan::tree::segments`),
 /// as `io::value_at` reads it back.
-pub fn put_path(object: &mut serde_json::Map<String, serde_json::Value>, path: &str, value: serde_json::Value) {
+pub(crate) fn put_path(object: &mut serde_json::Map<String, serde_json::Value>, path: &str, value: serde_json::Value) {
     let keys: Vec<_> = crate::plan::tree::segments(path).collect();
     let Some((last, parents)) = keys.split_last() else {
         return;

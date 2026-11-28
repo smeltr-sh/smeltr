@@ -23,7 +23,7 @@ pub enum Kind {
 }
 
 /// `src` laid out in the style, or `None` where it does not parse. Formatting formatted text gives it back unchanged.
-pub fn format(src: &str, kind: Kind) -> Option<String> {
+pub(crate) fn format(src: &str, kind: Kind) -> Option<String> {
     let (tree, shape) = parsed(src, kind)?;
     let out = layout(src, &shape)?;
     // The layout keeps the tokens, so this holds unless the layout itself has a bug; the text is left as written then.

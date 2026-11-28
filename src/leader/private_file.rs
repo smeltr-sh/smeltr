@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// A directory only its owner may enter. Succeeds on one that already exists, whatever its mode.
 #[cfg(unix)]
-pub fn create_dir(path: &Path) -> std::io::Result<()> {
+pub(crate) fn create_dir(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
 
     fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
@@ -17,13 +17,13 @@ pub fn create_dir(path: &Path) -> std::io::Result<()> {
 
 /// Inherits the parent's ACL, which is the whole of its protection on Windows. See [`check`].
 #[cfg(not(unix))]
-pub fn create_dir(path: &Path) -> std::io::Result<()> {
+fn create_dir(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path)
 }
 
 /// `create_new` so two callers racing to write the first one cannot both win.
 #[cfg(unix)]
-pub fn create(path: &Path) -> std::io::Result<fs::File> {
+pub(crate) fn create(path: &Path) -> std::io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
     fs::OpenOptions::new()
@@ -35,7 +35,7 @@ pub fn create(path: &Path) -> std::io::Result<fs::File> {
 
 /// `create_new` still holds the race; the mode does not exist to set. See [`check`].
 #[cfg(not(unix))]
-pub fn create(path: &Path) -> std::io::Result<fs::File> {
+fn create(path: &Path) -> std::io::Result<fs::File> {
     fs::OpenOptions::new().write(true).create_new(true).open(path)
 }
 
@@ -43,7 +43,7 @@ pub fn create(path: &Path) -> std::io::Result<fs::File> {
 ///
 /// Written beside and renamed over, so an interrupted write leaves the previous file rather than half of this one,
 /// and the mode travels with the rename: the contents are never briefly readable under the real name.
-pub fn replace(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn replace(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     let mut beside = path.as_os_str().to_owned();
     beside.push(".new");
     let beside = PathBuf::from(beside);
@@ -66,7 +66,7 @@ pub fn replace(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// reached the disk under a name that never did, and a caller that writes two files in an order it relies on gets
 /// no ordering at all.
 #[cfg(unix)]
-pub fn sync_parent(path: &Path) -> std::io::Result<()> {
+pub(crate) fn sync_parent(path: &Path) -> std::io::Result<()> {
     match path.parent() {
         Some(dir) => fs::File::open(dir)?.sync_all(),
         None => Ok(()),
@@ -78,13 +78,13 @@ pub fn sync_parent(path: &Path) -> std::io::Result<()> {
 /// A directory cannot be opened as a file, so `std::fs` offers no handle to sync one through. Durability of a name
 /// there is whatever the filesystem gives without asking.
 #[cfg(not(unix))]
-pub fn sync_parent(_path: &Path) -> std::io::Result<()> {
+fn sync_parent(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
 /// Refuses a file anyone but its owner can read. `what` names what would leak, for the operator reading it.
 #[cfg(unix)]
-pub fn check(path: &Path, what: &str) -> Result<(), String> {
+pub(crate) fn check(path: &Path, what: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let mode = fs::metadata(path)
@@ -109,7 +109,7 @@ pub fn check(path: &Path, what: &str) -> Result<(), String> {
 /// still refused: that is not an ACL question, and a caller reading `Ok` from a key it cannot open is a bug no
 /// platform should have.
 #[cfg(not(unix))]
-pub fn check(path: &Path, _what: &str) -> Result<(), String> {
+fn check(path: &Path, _what: &str) -> Result<(), String> {
     fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(())
 }

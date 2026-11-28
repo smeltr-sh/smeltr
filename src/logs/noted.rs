@@ -18,7 +18,7 @@ impl Noted {
     /// The message [`noted!`] just logged. Only the macro calls this: it is public so the macro expands outside
     /// this crate's module tree, and is not a way around it.
     #[doc(hidden)]
-    pub fn logged(message: String) -> Self {
+    pub(crate) fn logged(message: String) -> Self {
         Noted(message)
     }
 

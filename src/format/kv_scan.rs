@@ -14,9 +14,9 @@ use std::borrow::Cow;
 use crate::plan::config::KvConfig;
 
 pub struct Pair<'d> {
-    pub key: &'d str,
-    pub value: Cow<'d, str>,
-    pub quoted: bool,
+    pub(crate) key: &'d str,
+    pub(crate) value: Cow<'d, str>,
+    pub(crate) quoted: bool,
 }
 
 /// The pairs of one record into `pairs`, cleared first. `false` on invalid UTF-8 or an unterminated quoted value; the
@@ -67,7 +67,7 @@ pub fn split_pairs<'d>(line: &'d [u8], c: &KvConfig, pairs: &mut Vec<Pair<'d>>) 
 /// `line` without the pairs whose key `drop` names, each kept pair as it was written, quotes and escapes and all.
 /// A pair runs from its key to the next pair's key, so a dropped pair takes the separators after it. `None` where
 /// `line` does not split whole, which leaves nothing safe to cut.
-pub fn drop_pairs(line: &[u8], c: &KvConfig, drop: impl Fn(&str) -> bool) -> Option<Vec<u8>> {
+pub(crate) fn drop_pairs(line: &[u8], c: &KvConfig, drop: impl Fn(&str) -> bool) -> Option<Vec<u8>> {
     let mut pairs = Vec::new();
     if !split_pairs(line, c, &mut pairs) {
         return None;
@@ -110,11 +110,11 @@ pub(crate) enum Piece<'d> {
 
 /// The separators [`next_key_pieces`] splits at.
 pub(crate) struct Seps {
-    pub pair: u8,
-    pub kv: u8,
-    pub quote: Option<u8>,
+    pub(crate) pair: u8,
+    pub(crate) kv: u8,
+    pub(crate) quote: Option<u8>,
     /// A backslash keeps the byte after it from being a separator.
-    pub backslash: bool,
+    pub(crate) backslash: bool,
 }
 
 /// Calls `each` with the pieces of `line` in order, stopping at the first `false`. A key is the text after the last

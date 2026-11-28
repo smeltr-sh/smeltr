@@ -31,11 +31,11 @@ pub mod auth;
 pub mod capture;
 pub mod connections;
 pub mod deploy_checks;
-pub mod directives;
+mod directives;
 pub mod docs;
 pub mod enrollment_codes;
 pub mod envelope;
-pub mod forget;
+mod forget;
 pub mod git;
 pub mod holds;
 pub mod housekeeping;
@@ -49,20 +49,20 @@ pub mod measurements;
 pub mod model;
 pub mod oidc;
 pub mod onboard;
-pub mod outbound;
-pub mod pkt_line;
+mod outbound;
+mod pkt_line;
 pub mod preview;
-pub mod private_file;
-pub mod query;
+pub(crate) mod private_file;
+mod query;
 pub mod registry;
 pub mod remote;
 pub mod resolver;
 pub mod schema_catalog;
 pub mod secrets;
-pub mod senders;
+mod senders;
 pub mod series;
 pub mod sessions;
-pub mod sqlite_store;
+pub(crate) mod sqlite_store;
 pub mod stats;
 pub mod steps;
 pub mod store;
@@ -71,7 +71,7 @@ pub mod throughput;
 pub mod tls;
 pub mod tree;
 pub mod updates;
-pub mod upload_pack;
+mod upload_pack;
 pub mod warnings;
 
 use crate::core::time::millis;
@@ -134,7 +134,7 @@ pub struct AppState {
 pub struct Entitlements(crate::sync::Mutex<std::collections::HashMap<String, (String, Quoted)>>);
 
 /// One credential a bundle quotes: its name, and the version that bundle runs.
-pub type SecretAt = (String, i64);
+type SecretAt = (String, i64);
 
 /// What a bundle quotes: each leader-stored secret at the version it runs, and each certificate by name. A
 /// certificate runs at the list's newest version, which [`at_newest`] resolves when it is asked for.
@@ -186,7 +186,7 @@ fn deployed_configs(
 /// One deployed connector's TLS as its bundle says it: the list entry it presents, by name, and the authorities it
 /// trusts, described. The chain the entry holds is read when it is asked for, since it changes without the bundle.
 #[derive(Clone, Debug)]
-pub struct DeployedTls {
+struct DeployedTls {
     subject_kind: warnings::SubjectKind,
     subject_id: String,
     certificate: Option<String>,
@@ -816,7 +816,7 @@ const PRUNE_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs
 /// bundle the fleet runs, or may run next, reads at that place ([`read_sources`]) and no live worker lists
 /// ([`holds::Holds::forget_unread`]), so `leader.db` keeps what is deployed rather than all that ever was. A source
 /// that comes back afterwards starts afresh. Nothing is forgotten when a running bundle cannot be read.
-pub async fn prune_source_progress(state: &AppState) {
+async fn prune_source_progress(state: &AppState) {
     let running = running_deployments(state).await;
     let data_dir = state.data_dir.clone();
     let read = match blocking(move || read_sources(&data_dir, &running)).await {
@@ -945,10 +945,10 @@ fn read_sources(
 // -- git smart-HTTP, read-only ----------------------------------------------
 
 /// The header a worker names its build's commit in on every request for the repository (`version::commit`).
-pub const BUILD_HEADER: &str = "smeltr-commit";
+pub(crate) const BUILD_HEADER: &str = "smeltr-commit";
 
 /// The header a worker names its release in beside [`BUILD_HEADER`] (`version::RELEASE`), on a build that is one.
-pub const RELEASE_HEADER: &str = "smeltr-release";
+pub(crate) const RELEASE_HEADER: &str = "smeltr-release";
 
 /// Every git HTTP request, answered by `upload_pack`, which decides what each path is.
 async fn git_http(
@@ -998,7 +998,7 @@ async fn git_http(
 }
 
 /// A build as people tell it apart: its release when it is one, else its commit.
-pub fn build_name(commit: &str, release: Option<&str>) -> String {
+fn build_name(commit: &str, release: Option<&str>) -> String {
     match (release.filter(|r| !r.is_empty()), commit) {
         (Some(release), _) => format!("release {release}"),
         (None, "") => "an unnamed build".to_string(),
@@ -1011,11 +1011,11 @@ pub fn build_name(commit: &str, release: Option<&str>) -> String {
 /// What `GET /api/health` serves: each worker thread's last heartbeat.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HealthResponse {
-    pub threads: Vec<ThreadHealth>,
+struct HealthResponse {
+    threads: Vec<ThreadHealth>,
     /// How long a worker may go without a heartbeat before it is silent: the window `workerSilent` is raised on, so
     /// a page counting silent workers agrees with it.
-    pub silent_after_ms: u64,
+    silent_after_ms: u64,
 }
 
 /// The threads heartbeating in the groups `access` views.
@@ -1032,24 +1032,24 @@ fn health_snapshot(state: &AppState, access: &access::Access) -> HealthResponse 
 /// that build can do that another build of the same version might not.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SystemInfo {
-    pub smeltr_version: &'static str,
+struct SystemInfo {
+    smeltr_version: &'static str,
     /// The release this build is (`version::RELEASE`); absent on any other build.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub release: Option<&'static str>,
+    release: Option<&'static str>,
     /// The newest published release, when it is newer than this one (`updates`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub newer_release: Option<updates::Newer>,
+    pub(crate) newer_release: Option<updates::Newer>,
     /// The last look for one: when, and why it failed if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub release_check: Option<updates::Checked>,
+    pub(crate) release_check: Option<updates::Checked>,
     /// The SASL mechanisms a Kafka client here can select. GSSAPI is in it only where a provider was linked, and a
     /// form that offered one this build does not carry would be offering a save that is refused.
-    pub sasl_mechanisms: Vec<&'static str>,
+    sasl_mechanisms: Vec<&'static str>,
     /// The librdkafka properties a save refuses, each with why smeltr owns it, so a form refuses the same ones.
-    pub kafka_reserved: std::collections::BTreeMap<&'static str, &'static str>,
+    kafka_reserved: std::collections::BTreeMap<&'static str, &'static str>,
     /// The librdkafka properties a save refuses beside a connector's own TLS settings, which answer the same question.
-    pub kafka_tls_props: &'static [&'static str],
+    kafka_tls_props: &'static [&'static str],
 }
 
 /// The gate lets in anyone who views some area, and the registry holds the whole fleet's threads, so this keeps
@@ -1086,7 +1086,7 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
 /// What `GET /api/warnings?info=true`, `GET /api/metrics` and the alert channels are given: the fixed catalog (design
 /// doc, Control plane), info entries and all, derived fresh from the registry and the worker roster on every call --
 /// there is no warning table, so this is the only place the answer lives.
-pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
+async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let snapshot = state.registry.snapshot();
@@ -1458,20 +1458,20 @@ pub const MAX_WINDOW_MINUTES: i64 = 30 * 24 * 60;
 /// Status page reads its flow chart and table from `GET /api/series`.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FlowResponse {
-    pub normals: Vec<FlowNormal>,
+struct FlowResponse {
+    normals: Vec<FlowNormal>,
 }
 
 /// One source's reading against its normal, as rows per second: what the Status page ranks by
 /// how far each source is from its normal.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FlowNormal {
-    pub group: String,
-    pub subject_id: String,
-    pub now: f64,
-    pub low: f64,
-    pub high: f64,
+struct FlowNormal {
+    group: String,
+    subject_id: String,
+    now: f64,
+    low: f64,
+    high: f64,
 }
 
 impl FlowNormal {
@@ -1493,16 +1493,16 @@ impl FlowNormal {
 
 impl FlowResponse {
     /// Only the groups `access` holds viewer in.
-    pub fn visible_to(mut self, access: &access::Access) -> Self {
+    fn visible_to(mut self, access: &access::Access) -> Self {
         self.normals.retain(|n| access.allows(&n.group, access::Level::Viewer));
         self
     }
 }
 
 /// The group label `registry::subject_key` stamps on every series subject.
-pub(crate) const GROUP_LABEL: &str = "group";
+const GROUP_LABEL: &str = "group";
 /// `Reader::step`'s count of records read from the source (`runtime.rs`), the "in" of E2.
-pub(crate) const ROWS_IN_METRIC: &str = "smeltr_rows_polled_total";
+const ROWS_IN_METRIC: &str = "smeltr_rows_polled_total";
 /// `Transform::count_outcomes`' count of rows handed to a destination's queue (`runtime.rs`). The destination page
 /// calls these received: they are not yet acknowledged.
 const ROWS_SENT_METRIC: &str = "smeltr_rows_sent_total";
@@ -1551,14 +1551,14 @@ async fn get_flow(
 /// keys of the rows each source received that no route took, each with when it was first and last seen.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamsResponse {
-    pub parsers: Vec<series::StoredParserShape>,
-    pub unmatched: Vec<series::StoredUnmatched>,
+struct StreamsResponse {
+    pub(crate) parsers: Vec<series::StoredParserShape>,
+    pub(crate) unmatched: Vec<series::StoredUnmatched>,
 }
 
 impl StreamsResponse {
     /// Only the groups `access` holds viewer in (design doc, user stories P6).
-    pub fn visible_to(mut self, access: &access::Access) -> Self {
+    fn visible_to(mut self, access: &access::Access) -> Self {
         self.parsers
             .retain(|p| access.allows(&p.group_id, access::Level::Viewer));
         self.unmatched
@@ -1646,7 +1646,7 @@ fn stream_conditions(data_dir: &std::path::Path, unmatched: &mut [series::Stored
 // -- logs ---------------------------------------------------------------------
 
 /// The worker id a leader's own logs are kept under, where no worker of its own carries them.
-pub const LEADER_LOGS: &str = "leader";
+const LEADER_LOGS: &str = "leader";
 
 /// How often a leader writes what it has logged into its store.
 const LEADER_LOGS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1709,18 +1709,18 @@ const LOGS_PAGE_MAX: usize = 1000;
 /// than reshaped: what a call site said is what a reader indexes.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LogRow {
-    pub id: i64,
-    pub at_millis: i64,
-    pub worker_id: String,
-    pub group: Option<String>,
-    pub thread: Option<String>,
-    pub level: String,
-    pub class: Option<String>,
-    pub r#type: String,
-    pub service: Option<String>,
-    pub message: String,
-    pub fields: serde_json::Value,
+struct LogRow {
+    id: i64,
+    at_millis: i64,
+    worker_id: String,
+    group: Option<String>,
+    thread: Option<String>,
+    level: String,
+    class: Option<String>,
+    r#type: String,
+    service: Option<String>,
+    message: String,
+    fields: serde_json::Value,
 }
 
 /// What `GET /api/logs` serves: what the fleet's workers and this leader have said, newest first.
@@ -1729,22 +1729,22 @@ pub struct LogRow {
 /// Observability).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LogsResponse {
-    pub rows: Vec<LogRow>,
+struct LogsResponse {
+    rows: Vec<LogRow>,
     /// What the caller asked for, after clamping, so a page that came back short is told apart from one cut off.
-    pub limit: usize,
+    limit: usize,
     /// How long a delivered message may be before the heartbeat cuts it (`heartbeat::MAX_TEXT_LEN`). A
     /// search cannot match past this, and a reader should say so rather than quietly find nothing.
-    pub message_limit: usize,
+    message_limit: usize,
     /// The cursor for "older", present only while a row exists below the page. Absent means these are the
     /// last rows the filter has.
-    pub next_before: Option<i64>,
+    next_before: Option<i64>,
     /// The cursor for "newer", present only while a row exists above the page. Absent on the head, which a
     /// page reached with no cursor already is.
-    pub next_after: Option<i64>,
+    next_after: Option<i64>,
     /// Every class and service a line can name, for a reader to narrow by.
-    pub classes: &'static [&'static str],
-    pub services: Vec<&'static str>,
+    classes: &'static [&'static str],
+    services: Vec<&'static str>,
 }
 
 #[cfg(test)]
@@ -2272,24 +2272,24 @@ async fn revoke_worker(
 /// A catalog row. Never carries a value, and there is no route that does.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SecretOut {
-    pub name: String,
-    pub custody: String,
-    pub description: String,
+struct SecretOut {
+    name: String,
+    custody: String,
+    description: String,
     /// Every version still held, oldest first. Empty for worker-local custody, whose value the leader never had.
-    pub versions: Vec<SecretVersionOut>,
+    versions: Vec<SecretVersionOut>,
     /// The version each deployed group's bundle quotes, as `(group, version)`. Empty means nothing running names
     /// it -- which is what tells an admin a value they just stored has not reached the fleet.
-    pub deployed: Vec<(String, i64)>,
+    deployed: Vec<(String, i64)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SecretVersionOut {
-    pub version: i64,
-    pub set_at: i64,
+struct SecretVersionOut {
+    version: i64,
+    set_at: i64,
     /// Whether the leader can hand this value out. `false` is a credential the fleet cannot obtain.
-    pub usable: bool,
+    usable: bool,
 }
 
 impl From<store::SecretRecord> for SecretOut {
@@ -2331,35 +2331,35 @@ fn versions_to_forget<T: Ord + Clone>(held: &[T], keep: usize, pinned: &[T]) -> 
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateSecretRequest {
-    pub name: String,
+struct CreateSecretRequest {
+    name: String,
     /// `"worker-local"` or `"leader-stored"`.
-    pub custody: String,
+    custody: String,
     #[serde(default)]
-    pub description: String,
+    description: String,
     /// Required for leader-stored custody, refused for worker-local.
     #[serde(default)]
-    pub value: Option<String>,
+    value: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SecretValueRequest {
-    pub value: String,
+struct SecretValueRequest {
+    value: String,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct VerifySecretRequest {
+struct VerifySecretRequest {
     /// Which version to ask about. An admin checking whether a credential needs rotating usually means the one the
     /// fleet is running, which is not always the newest.
-    pub version: i64,
-    pub candidate: String,
+    version: i64,
+    candidate: String,
 }
 
 #[derive(serde::Serialize)]
-pub struct VerifySecretResponse {
-    pub matches: bool,
+struct VerifySecretResponse {
+    matches: bool,
 }
 
 /// How often one secret may be asked "is this the value", and over how long.
@@ -2453,25 +2453,25 @@ async fn create_secret(
 /// Where the secrets encryption key stands, as the Secrets page shows it.
 #[derive(serde::Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct EncryptionKeyOut {
+struct EncryptionKeyOut {
     /// `absent`, `held`, `missing` or `mismatched` (`store::KeyState`).
-    pub state: String,
+    state: String,
     /// The key's id, where there is a key file.
-    pub key_id: Option<String>,
-    pub path: String,
+    key_id: Option<String>,
+    path: String,
     /// Each value whose newest copy the key cannot open.
-    pub unopenable: Vec<UnopenableOut>,
+    unopenable: Vec<UnopenableOut>,
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UnopenableOut {
+struct UnopenableOut {
     /// `secret`, `certificate` or `setting`.
-    pub kind: &'static str,
+    kind: &'static str,
     /// A secret's or certificate's name, or a setting's key.
-    pub name: String,
+    name: String,
     /// What a person calls it: a secret's or certificate's name, or what the setting is.
-    pub label: String,
+    label: String,
 }
 
 impl EncryptionKeyOut {
@@ -2658,22 +2658,22 @@ async fn store_value(
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CertificateOut {
-    pub name: String,
-    pub description: String,
+struct CertificateOut {
+    name: String,
+    description: String,
     /// Every version still held, oldest first.
-    pub versions: Vec<SecretVersionOut>,
+    versions: Vec<SecretVersionOut>,
     /// The newest version's chain, leaf first. Empty where this leader cannot open it.
-    pub chain: Vec<tls::Described>,
+    chain: Vec<tls::Described>,
     /// Whether the leader serves a copy of it.
-    pub served: bool,
+    served: bool,
     /// Whether the newest version can be served, to a client enforcing its Extended Key Usage and Key Usage.
-    pub for_servers: bool,
+    for_servers: bool,
     /// Whether the newest version can be presented by a client, to a server enforcing them.
-    pub for_clients: bool,
+    for_clients: bool,
     /// How this leader keeps it up to date, `issued` or `acme`, where it does.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub kept: Option<&'static str>,
+    kept: Option<&'static str>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2681,9 +2681,9 @@ pub struct CertificateOut {
 pub struct CertificateRequest {
     /// The new certificate's name. Ignored when replacing one, which the path names.
     #[serde(default)]
-    pub name: String,
+    name: String,
     #[serde(default)]
-    pub description: String,
+    description: String,
     /// PEM: the certificate, then any intermediates, then optionally the root.
     pub certificate: String,
     /// PEM, unencrypted.
@@ -2721,7 +2721,7 @@ pub fn newest_certificate(store: &Store, name: &str) -> Result<Option<(i64, Stri
 
 /// The list entries the leader serves, or is rotating to, each at the version it serves. None where it serves plain
 /// HTTP or holds no TLS folder.
-pub fn served_entries(tls_dir: &std::path::Path) -> Result<Vec<tls::Entry>, String> {
+fn served_entries(tls_dir: &std::path::Path) -> Result<Vec<tls::Entry>, String> {
     if !crate::startup_config::leader_tls_enabled() || !tls_dir.exists() {
         return Ok(Vec::new());
     }
@@ -2780,7 +2780,7 @@ pub async fn list_certificates(State(state): State<AppState>) -> Result<Envelope
 
 #[derive(serde::Serialize)]
 pub struct CertificateList {
-    pub certificates: Vec<CertificateOut>,
+    certificates: Vec<CertificateOut>,
 }
 
 /// What `POST /api/certificates` lists: a certificate supplied with its key, or one this leader's authority issues.
@@ -2827,14 +2827,14 @@ async fn add_supplied(state: AppState, actor: &store::Actor, req: CertificateReq
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IssueRequest {
-    pub name: String,
+    name: String,
     #[serde(default)]
-    pub description: String,
+    description: String,
     /// The DNS names and IP addresses it is issued for.
-    pub names: Vec<String>,
+    names: Vec<String>,
     /// How long each version is valid, at most until the leader's authority expires.
     #[serde(default = "a_year")]
-    pub validity_days: i64,
+    validity_days: i64,
 }
 
 fn a_year() -> i64 {
@@ -3133,14 +3133,14 @@ async fn verify_secret(
 }
 
 /// What one call to [`point_secret_references`] rewrote.
-pub struct Repointed {
+struct Repointed {
     /// `None` when nothing named the secret at another version, so nothing was written.
-    pub commit: Option<String>,
+    commit: Option<String>,
     /// Paths rewritten, in the order they were walked.
-    pub files: Vec<String>,
+    files: Vec<String>,
     /// Groups touched -- `shared` among them when the shared bundle names it.
-    pub groups: Vec<String>,
-    pub references: usize,
+    groups: Vec<String>,
+    references: usize,
 }
 
 /// Points every reference to `name` at `version`, across every group's bundle and `shared/`, as one commit on
@@ -3308,24 +3308,24 @@ fn moved_since_read(read: &str, at: Option<&str>) -> String {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PointSecretRequest {
+struct PointSecretRequest {
     /// Which version every reference should name. Any the leader holds -- naming an older one is how a credential
     /// is rolled back, as a reviewed change rather than as a side effect of reverting a commit.
-    pub version: i64,
+    version: i64,
     /// Where the change is drafted. Created off `main` when it does not exist; `main` itself is refused.
-    pub branch: String,
+    branch: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PointedSecret {
-    pub commit: Option<String>,
+struct PointedSecret {
+    commit: Option<String>,
     /// What was rewritten, so the page can say the blast radius without opening the diff.
-    pub files: Vec<String>,
-    pub groups: Vec<String>,
-    pub references: usize,
+    files: Vec<String>,
+    groups: Vec<String>,
+    references: usize,
     /// Whether this call opened the change, or joined one already open on that branch.
-    pub opened_change: bool,
+    opened_change: bool,
 }
 
 /// Drafts the change that points a secret's references at one version.
@@ -3482,10 +3482,10 @@ pub struct WorkerOut {
     pub kind: String,
     /// What it can be asked now: empty unless it is heartbeating to this leader.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub accepts: Vec<crate::heartbeat::DirectiveAction>,
+    accepts: Vec<crate::heartbeat::DirectiveAction>,
     /// What it has been asked and has not yet taken.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asked: Option<crate::heartbeat::DirectiveAction>,
+    asked: Option<crate::heartbeat::DirectiveAction>,
 }
 
 impl From<store::WorkerCredentialRecord> for WorkerOut {
@@ -3502,7 +3502,7 @@ impl From<store::WorkerCredentialRecord> for WorkerOut {
 
 /// What `GET /api/workers` serves: every worker that has ever enrolled, heartbeating or not, less the ephemeral
 /// workers gone long enough to be forgotten. A store error is returned, not an empty list.
-pub async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerOut>, StoreError> {
+async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerOut>, StoreError> {
     let creds = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     Ok(creds
         .into_iter()

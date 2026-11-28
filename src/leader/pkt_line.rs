@@ -2,11 +2,11 @@
 //! (`remote`) and the fetches it serves workers (`upload_pack`).
 
 /// The most a pkt-line carries: git's 65520-byte packet less its four length digits.
-pub const MAX_PAYLOAD: usize = 65516;
+pub(crate) const MAX_PAYLOAD: usize = 65516;
 
 /// One packet: a line of data, or one of the markers that frame a message.
 #[derive(Debug, PartialEq)]
-pub enum Packet<'a> {
+pub(crate) enum Packet<'a> {
     Data(&'a [u8]),
     /// `0000`: the end of a message.
     Flush,
@@ -18,7 +18,7 @@ pub enum Packet<'a> {
 
 /// `payload` as one pkt-line: its length, in four hex digits counting themselves, then the bytes. `payload` is at
 /// most [`MAX_PAYLOAD`].
-pub fn line(payload: &[u8]) -> Vec<u8> {
+pub(crate) fn line(payload: &[u8]) -> Vec<u8> {
     debug_assert!(payload.len() <= MAX_PAYLOAD);
     let mut line = format!("{:04x}", payload.len() + 4).into_bytes();
     line.extend_from_slice(payload);
@@ -26,7 +26,7 @@ pub fn line(payload: &[u8]) -> Vec<u8> {
 }
 
 /// The first packet of `bytes`, and what follows it.
-pub fn next(bytes: &[u8]) -> Result<(Packet<'_>, &[u8]), String> {
+pub(crate) fn next(bytes: &[u8]) -> Result<(Packet<'_>, &[u8]), String> {
     let length = bytes
         .get(..4)
         .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))

@@ -46,7 +46,7 @@ pub fn offered() -> (Vec<String>, Vec<String>) {
 
 /// `n` bytes nobody can guess, from AWS-LC's generator. Use it for every token, id, salt and nonce. It panics when
 /// the operating system has no randomness to give.
-pub fn random_bytes(n: usize) -> Vec<u8> {
+pub(crate) fn random_bytes(n: usize) -> Vec<u8> {
     use aws_lc_rs::rand::SecureRandom;
 
     let mut bytes = vec![0u8; n];

@@ -13,10 +13,10 @@ use arrow_schema::{DataType as Arrow, TimeUnit};
 use crate::io::table::{Kind, parse_date, parse_timestamp, unhex};
 
 /// The key of a column's metadata that holds its default.
-pub const CURRENT_DEFAULT: &str = "CURRENT_DEFAULT";
+pub(crate) const CURRENT_DEFAULT: &str = "CURRENT_DEFAULT";
 
 /// The Arrow type a column of `kind` is written as.
-pub fn arrow(kind: &Kind) -> Arrow {
+pub(crate) fn arrow(kind: &Kind) -> Arrow {
     kind.narrowed().unwrap_or(match kind {
         Kind::Boolean => Arrow::Boolean,
         Kind::Long => Arrow::Int64,
@@ -31,7 +31,7 @@ pub fn arrow(kind: &Kind) -> Arrow {
 /// `NULL`, `true` or `false`, a number, a quoted string, `X'…'` bytes, `DATE '…'`, or `TIMESTAMP '…'` and
 /// `TIMESTAMP_NTZ '…'`. A timestamp with a time zone needs one in its literal: the zone a reader of the table would
 /// read it in is not the table's.
-pub fn value(sql: &str, kind: &Kind) -> Option<ArrayRef> {
+pub(crate) fn value(sql: &str, kind: &Kind) -> Option<ArrayRef> {
     let sql = sql.trim();
     if sql.eq_ignore_ascii_case("null") {
         return Some(new_null_array(&arrow(kind), 1));

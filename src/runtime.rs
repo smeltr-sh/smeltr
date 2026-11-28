@@ -150,12 +150,12 @@ pub struct DestinationTarget {
 /// The `reason` label on `smeltr_rows_dropped_total`: no route matched the row, or no condition of its route took it,
 /// and `Unmatched` is answered with drop (design doc, Exception taxonomy). A source loses rows three ways and only this
 /// label tells them apart.
-pub const DROPPED_UNMATCHED: &str = "unmatched";
+const DROPPED_UNMATCHED: &str = "unmatched";
 /// A destination refused the row for good, and its answer to `Refused` is drop. One a refused row was delivered to
 /// counts here too, and the row it drops is counted lost as well.
 pub const DROPPED_REJECTED: &str = "rejected";
 /// The pipeline marked the row, and its route answered with drop.
-pub const DROPPED_EXCEPTION: &str = "exception";
+const DROPPED_EXCEPTION: &str = "exception";
 /// No pipeline could process the row -- a pipeline panicked on its batch, or the memory budget will not fit it
 /// alone -- and `Unprocessable` is answered with drop.
 pub const DROPPED_UNPROCESSABLE: &str = "unprocessable";
@@ -164,29 +164,29 @@ pub const DROPPED_UNPROCESSABLE: &str = "unprocessable";
 /// Runtime stages: a reader keeps whatever membership the source's protocol requires). Short spells of backpressure are
 /// ordinary, and pausing throws away what the client has prefetched; ten seconds is well inside Kafka's poll interval,
 /// and a group's rebalance takes seconds anyway.
-pub const MEMBERSHIP_AFTER: Duration = Duration::from_secs(10);
+const MEMBERSHIP_AFTER: Duration = Duration::from_secs(10);
 
 /// Ingest and commit: polls the source, tracks each batch at poll time, hands it to transform, and commits what comes
 /// back acknowledged. One per source, and the only thing that touches it -- a Kafka consumer refuses a commit from
 /// anyone who does not hold the partition.
 pub struct Reader {
-    pub source_id: SourceId,
+    pub(crate) source_id: SourceId,
     /// Batches this reader may have outstanding before it stops polling, unless [`Reader::with_byte_budget`] lets it
     /// read on: every transform thread that could be working on this lane has one, and [`MAX_IN_FLIGHT`] more for the
     /// acknowledgment round trip.
-    pub max_in_flight: usize,
+    max_in_flight: usize,
     /// Bytes past which a reader at `max_in_flight` stops polling: its destinations' largest queue, so every queue
     /// binds first however small its batches are. 0 is none: the batch count alone binds.
     pub byte_budget: usize,
     /// Every destination reachable from this source: what a batch waits on from the moment it is polled. Kept in step
     /// with `Transform::destinations` by [`Worker::add_destination`].
-    pub destinations: Vec<DestId>,
-    pub metrics: MetricsHandle,
+    destinations: Vec<DestId>,
+    metrics: MetricsHandle,
     pub source: Box<dyn Source>,
     /// At-least-once bookkeeping. Carries offsets, never rows: egress keeps whatever may have to be re-sent.
     pub commits: CommitTracker,
     /// Whether the source is blocked. The transition is what gets logged.
-    pub blocked: bool,
+    blocked: bool,
     /// The last outstanding count written to `smeltr_source_in_flight`. Written on change only, so an idle reader
     /// writes nothing and the series is absent until the reader first has a batch out.
     reported_in_flight: usize,
@@ -197,12 +197,12 @@ pub struct Reader {
     /// `block_reason` is.
     pub block_cause: Option<BlockCause>,
     /// Whether the last offset commit was refused, so the log fires on the transition rather than every turn.
-    pub commit_failing: bool,
+    commit_failing: bool,
     /// When the failing source was last logged, while its polls fail. `None` once a poll succeeds.
     poll_failing: Option<std::time::Instant>,
     /// A tracked batch the handoff would not take. Offered again before the next poll: it is already the oldest thing
     /// the watermark waits on, so dropping it would block every commit behind it.
-    pub pending: Option<Handed>,
+    pending: Option<Handed>,
     /// How long the reader goes without taking work before it keeps its source's membership: [`MEMBERSHIP_AFTER`].
     pub membership_after: Duration,
     /// Since when the reader has been unable to take work. `None` while it is taking it.
@@ -345,12 +345,12 @@ pub(crate) fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta)
 /// be re-run. Shared, so more than one transform thread can serve the same source; the exclusive half -- the egress
 /// handles a batch's rows are handed to -- stays on [`Transform`].
 pub struct Lane {
-    pub source_id: SourceId,
+    source_id: SourceId,
     /// The id the author gave this source, which is what a capture names. `None` on the single-source tick driver:
     /// that is not a deployment, and a capture only ever reaches one.
-    pub source_name: Option<String>,
+    source_name: Option<String>,
     /// What this source's records carry, and how their bytes become `_raw`'s text; the ingest batch is built from it.
-    pub meta: SourceMeta,
+    meta: SourceMeta,
     /// Batches this source's reader has polled and no transform thread has taken.
     pub batches: Handoff,
     /// Every destination reachable from this source: what its batches are dispatched to, and what its reader waits on.
@@ -358,7 +358,7 @@ pub struct Lane {
     /// deployment runs.
     destinations: Mutex<Vec<DestId>>,
     /// Where a batch's outcome goes: this source's reader, and no other.
-    pub reports: Reports,
+    reports: Reports,
     parked: Mutex<Parked>,
 }
 
@@ -537,10 +537,10 @@ pub struct Transform {
     pub topology: Arc<CompiledTopology>,
     /// `topology`'s records as Parquet columns.
     columnar: Columnar,
-    pub destinations: Vec<DestinationTarget>,
+    destinations: Vec<DestinationTarget>,
     /// The process-wide ceiling on columnar memory. A refusal splits the range that asked for too much -- see
     /// `process_batch`.
-    pub memory: MemoryBudget,
+    memory: MemoryBudget,
     /// Kept across attempts, so a batch reuses the buffers the last one gave back.
     pool: BufferPool,
     /// Capture sessions this worker is running, if any. `None` outside a deployment.
@@ -818,27 +818,27 @@ impl Reader {
 
     /// Share `refusals` with the rest of this deployment, in place of the private ring `new` gave it -- one
     /// destination's history in one place, however many readers and transform threads dispatch to it.
-    pub fn with_refusals(mut self, refusals: Arc<RefusalRing>) -> Reader {
+    pub(crate) fn with_refusals(mut self, refusals: Arc<RefusalRing>) -> Reader {
         self.refusals = refusals;
         self
     }
 
     /// The id the author gave the source, for this reader's lines and the source's own.
-    pub fn named(mut self, name: &str) -> Reader {
+    pub(crate) fn named(mut self, name: &str) -> Reader {
         self.subject = name.to_string();
         self.source.named(name);
         self
     }
 
     /// Read on past `max_in_flight` batches while the outstanding ones hold under `bytes`.
-    pub fn with_byte_budget(mut self, bytes: usize) -> Reader {
+    pub(crate) fn with_byte_budget(mut self, bytes: usize) -> Reader {
         self.byte_budget = bytes;
         self
     }
 
     /// Whether the outstanding batches stop the reader: past `max_in_flight` of them, and past the byte budget in what
     /// they read or in what tracking them costs ([`TRACKED_BYTES`]).
-    pub fn over_depth(&self) -> bool {
+    fn over_depth(&self) -> bool {
         let depth = self.commits.depth();
         let budget = self.byte_budget;
         depth > self.max_in_flight && (self.commits.bytes() >= budget || depth * TRACKED_BYTES >= budget)
@@ -846,14 +846,14 @@ impl Reader {
 
     /// Have the source copy its records' headers while `wants` answers true: something reads them, or a capture
     /// is taking its records.
-    pub fn with_headers(mut self, wants: impl Fn() -> bool + Send + 'static) -> Reader {
+    pub(crate) fn with_headers(mut self, wants: impl Fn() -> bool + Send + 'static) -> Reader {
         self.wants_headers = Box::new(wants);
         self
     }
 
     /// This reader's block as a heartbeat fact, while it is blocked. `None` once it resumes: a fact that stops is a
     /// fact that clears, the same as [`Reader::enter_block`]'s gauge.
-    pub fn blocked_fact(&self) -> Option<crate::heartbeat::MetricSampleDto> {
+    pub(crate) fn blocked_fact(&self) -> Option<crate::heartbeat::MetricSampleDto> {
         let reason = self.block_reason.clone()?;
         let cause = self.block_cause.unwrap_or(BlockCause::Held);
         Some(crate::heartbeat::MetricSampleDto {
@@ -870,7 +870,7 @@ impl Reader {
     /// source every call -- unlike `block_reason`, nothing on `Reader` remembers it, since the source kind is
     /// already the thing keeping it (`Source::connection_error`). `None` once a fetch or an assignment proves the
     /// source reachable again, the same as `blocked_fact` clearing once a block ends.
-    pub fn connection_error_fact(&mut self) -> Option<crate::heartbeat::MetricSampleDto> {
+    pub(crate) fn connection_error_fact(&mut self) -> Option<crate::heartbeat::MetricSampleDto> {
         let reason = match self.source.connection_error() {
             Some(reason) => reason,
             None => {
@@ -941,13 +941,13 @@ impl Transform {
 
     /// Share `refusals` with the rest of this deployment, in place of the private ring `new` gave it -- see
     /// [`Reader::with_refusals`].
-    pub fn with_refusals(mut self, refusals: Arc<RefusalRing>) -> Transform {
+    pub(crate) fn with_refusals(mut self, refusals: Arc<RefusalRing>) -> Transform {
         self.refusals = refusals;
         self
     }
 
     /// One of `threads` transform threads sharing the budget: its pool keeps idle at most its share of half of it.
-    pub fn with_threads(mut self, threads: usize) -> Transform {
+    pub(crate) fn with_threads(mut self, threads: usize) -> Transform {
         self.pool = idle_capped_pool(&self.memory, threads);
         self
     }
@@ -2412,10 +2412,10 @@ fn now_millis() -> i64 {
 
 /// One destination's refusal, kept as it worded it -- an operator's diagnosis, not smeltr's paraphrase.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Refusal {
+struct Refusal {
     /// Milliseconds since the epoch, matching every other timestamp this process reports.
-    pub at_millis: i64,
-    pub message: String,
+    at_millis: i64,
+    message: String,
 }
 
 /// The most recent refusals every destination gave, across every reader and transform thread that met one.
@@ -2428,7 +2428,7 @@ pub struct Refusal {
 /// call refusing a hundred thousand rows at once costs this ring exactly one push, and every entry is truncated to
 /// [`MAX_TEXT_LEN`]. Both bounds exist because this is meant to ride every heartbeat.
 #[derive(Default)]
-pub struct RefusalRing {
+pub(crate) struct RefusalRing {
     by_dest: Mutex<HashMap<DestId, VecDeque<Refusal>>>,
     /// When each destination's refusals were last logged: once per [`crate::logs::RELOG_EVERY`] while they go on,
     /// since every batch a blocking destination sends again is refused again.
@@ -2438,7 +2438,7 @@ pub struct RefusalRing {
 impl RefusalRing {
     /// Record one refusal event for `dest`, worded as `exemplar` -- the one row a caller with many to choose from
     /// picked to stand for the call. Oldest dropped past [`REFUSAL_RING_CAP`].
-    pub fn record(&self, dest: DestId, exemplar: &str) {
+    fn record(&self, dest: DestId, exemplar: &str) {
         let entry = Refusal {
             at_millis: now_millis(),
             message: truncate(exemplar, MAX_TEXT_LEN),
@@ -2458,7 +2458,7 @@ impl RefusalRing {
     }
 
     /// `dest`'s refusals, oldest first. Empty for a destination that has refused nothing.
-    pub fn snapshot(&self, dest: DestId) -> Vec<Refusal> {
+    fn snapshot(&self, dest: DestId) -> Vec<Refusal> {
         self.by_dest
             .lock()
             .get(&dest)
@@ -2467,7 +2467,7 @@ impl RefusalRing {
     }
 
     /// `dest`'s refusals as heartbeat facts, ready to append to that destination's egress thread report.
-    pub fn heartbeat_facts(&self, dest: DestId) -> Vec<crate::heartbeat::MetricSampleDto> {
+    pub(crate) fn heartbeat_facts(&self, dest: DestId) -> Vec<crate::heartbeat::MetricSampleDto> {
         self.snapshot(dest)
             .into_iter()
             .map(|r| crate::heartbeat::MetricSampleDto {
@@ -2526,7 +2526,7 @@ impl Reader {
     /// Write `smeltr_source_in_flight` if the outstanding count moved since it was last written. Called on every
     /// step, and once more when the reader stops, so the series a redeployed reader inherits under the same thread
     /// label says what its predecessor left behind.
-    pub fn report_in_flight(&mut self) {
+    pub(crate) fn report_in_flight(&mut self) {
         if self.commits.depth() != self.reported_in_flight {
             self.reported_in_flight = self.commits.depth();
             let source_label = self.source_id.to_string();
@@ -3088,7 +3088,7 @@ struct RouteTap {
 /// What each destination writes of a row, and, for those that write Parquet, each route's record as their columns
 /// (`CompiledTopology::records`).
 #[derive(Default)]
-pub struct Columnar {
+struct Columnar {
     dests: HashSet<DestId>,
     /// By route, `None` for the rows no pipeline ran on.
     schemas: HashMap<Option<u32>, parquet::Schema>,
@@ -3107,7 +3107,7 @@ struct RouteColumns<'a> {
 }
 
 impl Columnar {
-    pub fn of(topology: &CompiledTopology) -> Columnar {
+    fn of(topology: &CompiledTopology) -> Columnar {
         let mut schemas = HashMap::new();
         let mut records = HashMap::new();
         for (&route, record) in topology.records.values().flatten() {
@@ -3748,7 +3748,7 @@ pub struct PreviewedDocument {
 /// One route a record went through, and everything that came out of it.
 pub struct PreviewedRoute {
     /// Index into `CompiledTopology::routes`.
-    pub route: usize,
+    pub(crate) route: usize,
     /// What this route made of the record. More than one document when the pipeline unrolls an array; none when it
     /// or its answer dropped the record, or its answer blocks.
     pub documents: Vec<PreviewedDocument>,
@@ -3762,7 +3762,7 @@ pub struct PreviewedRoute {
 
 /// One record's whole trip.
 pub struct PreviewedRow {
-    pub row: usize,
+    pub(crate) row: usize,
     /// Every route whose condition selected this record, in topology order.
     pub matched: Vec<usize>,
     /// What each matched route made of it. Empty when another record of the sample blocks: a block sends nothing
@@ -3815,10 +3815,10 @@ pub fn preview_routes(
 /// (`config_file::sample`): a paste arrives as text and a capture decodes with its source's encoding, so a preview
 /// decodes nothing and no row can pick up a decode exception the real ingest would not have given it. A record's
 /// bytes are its payload as read.
-pub struct Sample<'a> {
-    pub source: &'a crate::plan::topology::SourceConfig,
-    pub records: &'a [SourceRecord],
-    pub texts: &'a [String],
+pub(crate) struct Sample<'a> {
+    pub(crate) source: &'a crate::plan::topology::SourceConfig,
+    pub(crate) records: &'a [SourceRecord],
+    pub(crate) texts: &'a [String],
 }
 
 /// Route `sample`'s records as if they had arrived through its source, and say where each would go.
@@ -3838,7 +3838,7 @@ pub struct Sample<'a> {
 /// than a preview may hold is reported on that record and the rest of the sample still previews. A live batch
 /// splits on a refusal and retries; a preview cannot, because halving a record's output would answer a question
 /// nobody asked.
-pub fn preview_routes_at(
+pub(crate) fn preview_routes_at(
     topology: &CompiledTopology,
     sample: &Sample,
     budget: MemoryBudget,

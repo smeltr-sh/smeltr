@@ -153,12 +153,12 @@ impl SourceKindDto {
     }
 
     /// The registry a stream's Avro payloads name their schemas in.
-    pub fn schema_registry(&self) -> Option<&SchemaRegistryDto> {
+    pub(crate) fn schema_registry(&self) -> Option<&SchemaRegistryDto> {
         self.spec().schema_registry()
     }
 
     /// How a payload becomes a record, for a source that reads payloads.
-    pub fn read(&self) -> Option<&ReadFormatDto> {
+    pub(crate) fn read(&self) -> Option<&ReadFormatDto> {
         self.spec().read()
     }
 
@@ -168,7 +168,7 @@ impl SourceKindDto {
     }
 
     /// The transport a receiver's senders use: TCP, except for a socket receiver given UDP.
-    pub fn receiver_transport(&self) -> Transport {
+    pub(crate) fn receiver_transport(&self) -> Transport {
         self.spec().receiver_transport()
     }
 
@@ -192,14 +192,14 @@ impl SourceKindDto {
     /// Whether one worker of the group reads this source at a time, the same answer
     /// `plan::topology::SourceKind::single_worker` gives. Asked of a source on its way to a capture, which then goes
     /// to one worker too.
-    pub fn single_worker(&self) -> bool {
+    pub(crate) fn single_worker(&self) -> bool {
         self.spec().single_worker()
     }
 
     /// How this source's record bytes become text, the same answer `plan::topology::SourceKind::encoding` gives.
     /// A label validation would have refused falls back to detection rather than failing here: this is asked of a
     /// source on its way to a capture, where refusing would lose records over a spelling.
-    pub fn encoding(&self) -> Encoding {
+    pub(crate) fn encoding(&self) -> Encoding {
         self.spec().encoding()
     }
 }
@@ -207,18 +207,18 @@ impl SourceKindDto {
 impl SourceDto {
     /// Every credential this source names, by the field naming it. Exhaustive on purpose: a kind added here must
     /// answer, or its credentials would go unnamed, unchecked at deploy and left behind on a version move.
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
+    pub(crate) fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         self.kind.spec().secrets()
     }
 
     /// `secrets`, for the leader to move one onto a new version. Exhaustive as `secrets` is.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    pub(crate) fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         self.kind.spec_mut().secrets_mut()
     }
 
     /// Every address this source reaches over HTTP, by the field naming it. Empty from a kind that is not reached
     /// over HTTP.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
+    pub(crate) fn urls(&self) -> Vec<(&'static str, &str)> {
         self.kind.spec().urls()
     }
 
