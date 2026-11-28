@@ -106,7 +106,7 @@ pub(super) struct Messages {
     taken: usize,
 }
 
-/// Where a framer puts each frame it cuts, in order.
+/// Where a framer puts each frame it finds, in order.
 pub(super) trait Frames {
     fn push(&mut self, frame: &[u8]);
 }
@@ -289,7 +289,8 @@ impl Framer {
         }
         let needed = self.held.len() + bytes.len();
         if needed > self.held.capacity() {
-            // Doubled, but not past the longest frame unless this push needs more, so a long frame is held once.
+            // Doubled, but not past the longest frame the framer accepts unless this push needs more, so a long frame is
+            // held once.
             let grown = needed.max((2 * self.held.capacity()).min(self.max));
             self.held.reserve_exact(grown - self.held.len());
         }
