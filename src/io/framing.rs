@@ -416,7 +416,8 @@ impl Framer {
             Cuts::Syslog if matches!(self.held.get(self.cut), Some(b'1'..=b'9')) => Ok(self.held.len() - self.cut),
             Cuts::Syslog | Cuts::Lines { .. } | Cuts::Breaks => {
                 if self.cut < self.held.len() {
-                    self.held.push(b'\n');
+                    // Grown as any push is, which `growth` tells before.
+                    self.push(b"\n");
                     let frame = self.line(self.cut);
                     self.take(frame, framed)?;
                 }
@@ -666,6 +667,17 @@ mod tests {
             framer.push(&[b'x'; 100]);
         }
         assert_eq!(framer.capacity(), 1000, "doubling would have held 1600");
+    }
+
+    #[test]
+    fn a_last_line_grows_its_framer_by_what_growth_says() {
+        let mut framer = Framer::refusing(Framing::Lines, 1000);
+        for _ in 0..10 {
+            framer.push(&[b'x'; 100]);
+        }
+        let grows = framer.growth(1);
+        framer.finish(&mut Framed::default()).unwrap();
+        assert_eq!(framer.capacity(), 1000 + grows, "a pushed newline doubles to 2000");
     }
     use super::*;
 

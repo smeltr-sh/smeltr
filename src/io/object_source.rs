@@ -1034,6 +1034,9 @@ fn frames(
             shared.hold(framer.growth(n) as u64, runtime)?;
             framer.push(&ready[..n]);
             lines.consume(n);
+        } else {
+            // Finishing may end the last line with a newline.
+            shared.hold(framer.growth(1) as u64, runtime)?;
         }
         // The records framed are a copy of what the framer holds, sent once the reader has room for them.
         shared.wait_for_reader()?;
@@ -1201,6 +1204,12 @@ impl Shared {
     fn hold(&self, bytes: u64, runtime: &tokio::runtime::Runtime) -> Result<(), String> {
         // More than the room and the reserve could ever hold never fits.
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        if !self
+            .holdings
+            .could_hold(self.waiting().counted.total().saturating_add(bytes))
+        {
+            return Err(format!("it needs {bytes} bytes more than the source may hold"));
+        }
         loop {
             let mut freed = std::pin::pin!(self.holdings.freed.notified());
             freed.as_mut().enable();
@@ -1491,6 +1500,16 @@ mod tests {
         assert_eq!(holdings.held() as u64, ROOM, "records queued are held until taken");
         first.forget();
         assert_eq!(holdings.held(), 0, "what a reader never took is given back with it");
+    }
+
+    #[test]
+    fn a_fetch_that_could_never_hold_what_it_needs_ends() {
+        let (holdings, first, _, runtime) = fetches();
+        first.make_current();
+        first.hold(READING, &runtime).unwrap();
+        assert!(first.hold(ROOM + 1, &runtime).is_err(), "it would wait forever");
+        first.forget();
+        assert_eq!(holdings.held(), 0);
     }
 
     #[test]
