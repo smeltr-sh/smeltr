@@ -7,7 +7,7 @@ use parquet::file::metadata::ParquetMetaData;
 
 use super::OwnedRecord;
 use super::files::{FileEncoder, FileFormat, FileRow, Partition};
-use crate::plan::topology::{Compression, Newlines, ObjectFormat};
+use crate::plan::topology::{Compression, GzipLevel, Newlines, ObjectFormat};
 
 /// Rows as lines: NDJSON, a JSON array, one field's text, or bytes as they arrived, compressed as a stream.
 pub struct LineFormat {
@@ -160,7 +160,10 @@ impl Stream {
     fn open(compression: Compression) -> Stream {
         match compression {
             Compression::None => Stream::None(Vec::new()),
-            Compression::Gzip(level) => Stream::Gzip(Box::new(super::gzip::GzipStream::new(level))),
+            Compression::Gzip(GzipLevel::Igzip(level)) => Stream::Gzip(Box::new(super::gzip::GzipStream::new(level))),
+            Compression::Gzip(GzipLevel::Zlib(_)) => {
+                unreachable!("a lines file is gzipped by smeltr, at an igzip level")
+            }
             Compression::Snappy => Stream::Snappy(Box::new(snap::write::FrameEncoder::new(Vec::new()))),
             Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::new(Vec::new()))),
             Compression::Zstd(level) => Stream::Zstd(Box::new(
@@ -266,10 +269,11 @@ mod tests {
     use std::io::Read;
 
     use super::*;
+    use crate::plan::topology::IgzipLevel;
 
     const CODECS: [Compression; 5] = [
         Compression::None,
-        Compression::Gzip(1),
+        Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
         Compression::Snappy,
         Compression::Lz4(0),
         Compression::Zstd(3),

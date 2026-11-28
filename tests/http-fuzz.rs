@@ -14,6 +14,7 @@
 //! back.
 
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
@@ -647,7 +648,7 @@ fn size_of(v: &Value) -> usize {
 /// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw) -> Value {
     let mut b = json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [Value::Object(draw.destination.clone())],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
@@ -755,7 +756,11 @@ fn check_loaded(draw: &Draw, c: &HttpDestinationConfig, named: &[SecretRef]) -> 
     };
     expect("format", format!("{payload:?}"), format!("{:?}", c.payload));
     let compression = match s("compression").unwrap_or("none") {
-        "gzip" => Compression::Gzip(d.get("compressionLevel").and_then(Value::as_u64).unwrap_or(1) as u8),
+        "gzip" => {
+            let level = d.get("compressionLevel").and_then(Value::as_u64).map(|l| l as u8);
+            let level = level.map_or(IgzipLevel::DEFAULT, |l| IgzipLevel::new(l).unwrap());
+            Compression::Gzip(GzipLevel::Igzip(level))
+        }
         _ => Compression::None,
     };
     expect(

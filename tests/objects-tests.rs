@@ -20,6 +20,7 @@ use smeltr::plan::compile::Plan;
 use smeltr::plan::topology::{
     Cloud, Compression, Newlines, ObjectFormat, ObjectsDestinationConfig, Records, S3Access, S3Store,
 };
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 
 /// The destination is the same for every cloud; S3 stands in for them all.
 fn config(format: ObjectFormat, compression: Compression) -> ObjectsDestinationConfig {
@@ -175,7 +176,10 @@ fn decode(codec: Compression, bytes: &[u8]) -> Vec<u8> {
 /// format writes every route's rows alike.
 #[test]
 fn each_prefix_gets_an_object_of_its_own() {
-    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Gzip(1)));
+    let mut f = fixture(&config(
+        ObjectFormat::Ndjson,
+        Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
+    ));
     let refused = f.deliver(vec![
         row(r#"{"n":1}"#, Some("a/")),
         row(r#"{"n":2}"#, Some("b/")),
@@ -280,7 +284,11 @@ fn every_line_format_and_codec_names_types_and_reads_back() {
     for (format, stem, plain_type, rows, lines) in formats {
         for (codec, suffix, packed_type) in [
             (Compression::None, "", plain_type),
-            (Compression::Gzip(1), ".gz", "application/gzip"),
+            (
+                Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
+                ".gz",
+                "application/gzip",
+            ),
             (Compression::Snappy, ".sz", "application/x-snappy-framed"),
             (Compression::Lz4(0), ".lz4", "application/x-lz4"),
             (Compression::Zstd(3), ".zst", "application/zstd"),
@@ -488,7 +496,10 @@ fn batches_within_the_interval_share_one_line_object() {
         (ObjectFormat::Ndjson, "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"),
         (ObjectFormat::Json, "[{\"n\":1},{\"n\":2},{\"n\":3}]\n"),
     ] {
-        let mut f = fixture(&config(format.clone(), Compression::Gzip(1)));
+        let mut f = fixture(&config(
+            format.clone(),
+            Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
+        ));
         assert!(f.hand_over(1, vec![row(r#"{"n":1}"#, None)]).is_empty());
         assert!(
             f.hand_over(2, vec![row(r#"{"n":2}"#, None), row(r#"{"n":3}"#, None)])
@@ -588,7 +599,10 @@ fn a_parquet_object_holds_the_records_columns() {
     let chunk = harness::cut(&plan, &[r#"{"n":1,"msg":"a"}"#, r#"{"n":2,"smeltr":5}"#, r#"{"n":3}"#]);
     let record = harness::record(&plan);
     let mut f = writing(
-        &config(ObjectFormat::Parquet { native_variants: false }, Compression::Gzip(6)),
+        &config(
+            ObjectFormat::Parquet { native_variants: false },
+            Compression::Gzip(GzipLevel::Zlib(6)),
+        ),
         &record,
     );
     let refused = f.hand_over(0, (0..3).map(|at| cut_row(&chunk, at, None)).collect());
@@ -765,7 +779,13 @@ fn a_csv_object_holds_the_records_leaves() {
         ],
     );
     let record = harness::record(&plan);
-    let mut f = writing(&config(ObjectFormat::Csv, Compression::Gzip(1)), &record);
+    let mut f = writing(
+        &config(
+            ObjectFormat::Csv,
+            Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
+        ),
+        &record,
+    );
     let refused = f.hand_over(0, (0..2).map(|at| cut_row(&chunk, at, None)).collect());
     assert!(refused.is_empty(), "{refused:?}");
     assert_eq!(f.finish(), [0]);

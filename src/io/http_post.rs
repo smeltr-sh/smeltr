@@ -19,7 +19,7 @@ use super::http::{
 use super::{IoError, OwnedRecord, Payload};
 use crate::format::bytes_text::BytesForm;
 use crate::plan::topology::{
-    Compression, HeldSecrets, HttpDestinationConfig, LogAnalyticsDestinationConfig, RequestBody,
+    Compression, GzipLevel, HeldSecrets, HttpDestinationConfig, IgzipLevel, LogAnalyticsDestinationConfig, RequestBody,
 };
 
 /// One row as its request carries it.
@@ -35,7 +35,7 @@ pub struct Item {
 pub struct Post {
     /// How rows make a request's body.
     shape: RequestBody,
-    gzip: Option<u8>,
+    gzip: Option<IgzipLevel>,
     /// The URL's trailing slashes, which the transport trims off its base address and this puts back.
     path: String,
     /// Where the next row's part is taken from under [`RequestBody::Single`]. Shared by every clone, though only the
@@ -51,10 +51,7 @@ impl Post {
         Post {
             name: "http",
             shape: config.body,
-            gzip: match config.compression {
-                Compression::Gzip(level) => Some(level),
-                _ => None,
-            },
+            gzip: igzip_level(config.compression),
             path: url[url.trim_end_matches('/').len()..].to_string(),
             next_part: Arc::new(AtomicUsize::new(0)),
         }
@@ -268,8 +265,17 @@ impl Protocol for Post {
     }
 }
 
+/// The gzip level smeltr compresses this destination's bodies at, or `None` when it sends them as they are.
+pub(crate) fn igzip_level(compression: Compression) -> Option<IgzipLevel> {
+    match compression {
+        Compression::Gzip(GzipLevel::Igzip(level)) => Some(level),
+        Compression::None => None,
+        other => unreachable!("this destination's compression is gzip or none, not {other:?}"),
+    }
+}
+
 /// `body` gzipped at level `gzip`, or as it is when `gzip` is `None`.
-pub(crate) fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
+pub(crate) fn compressed(body: Vec<u8>, gzip: Option<IgzipLevel>) -> Vec<u8> {
     let Some(level) = gzip else {
         return body;
     };

@@ -3,13 +3,15 @@
 
 use isal_sys::igzip_lib as isal;
 
+use crate::plan::topology::IgzipLevel;
+
 /// `data` gzipped whole at `level`.
-pub(crate) fn gzip(data: &[u8], level: u8) -> Vec<u8> {
+pub(crate) fn gzip(data: &[u8], level: IgzipLevel) -> Vec<u8> {
     whole(data, level, Wrap::Gzip)
 }
 
 /// `data` as a raw deflate stream at `level`, with no header or trailer: an Avro block's `deflate` codec.
-pub(crate) fn deflate(data: &[u8], level: u8) -> Vec<u8> {
+pub(crate) fn deflate(data: &[u8], level: IgzipLevel) -> Vec<u8> {
     whole(data, level, Wrap::Raw)
 }
 
@@ -27,7 +29,7 @@ pub(crate) struct GzipStream {
 const HOLD: usize = 64 << 10;
 
 impl GzipStream {
-    pub(crate) fn new(level: u8) -> GzipStream {
+    pub(crate) fn new(level: IgzipLevel) -> GzipStream {
         GzipStream {
             deflater: Deflater::new(level, Wrap::Gzip, Mode::Stream),
             held: Vec::with_capacity(HOLD),
@@ -70,7 +72,7 @@ std::thread_local! {
     static WHOLE: std::cell::RefCell<Option<Deflater>> = const { std::cell::RefCell::new(None) };
 }
 
-fn whole(data: &[u8], level: u8, wrap: Wrap) -> Vec<u8> {
+fn whole(data: &[u8], level: IgzipLevel, wrap: Wrap) -> Vec<u8> {
     WHOLE.with_borrow_mut(|kept| {
         let deflater = kept.get_or_insert_with(|| Deflater::sized(isal::ISAL_DEF_LVL3_DEFAULT));
         deflater.start(level, wrap, Mode::Whole);
@@ -123,13 +125,12 @@ enum Mode {
 }
 
 /// The working memory igzip asks for at `level`.
-fn level_buf_size(level: u8) -> u32 {
-    match level {
+fn level_buf_size(level: IgzipLevel) -> u32 {
+    match level.get() {
         0 => isal::ISAL_DEF_LVL0_DEFAULT,
         1 => isal::ISAL_DEF_LVL1_DEFAULT,
         2 => isal::ISAL_DEF_LVL2_DEFAULT,
-        3 => isal::ISAL_DEF_LVL3_DEFAULT,
-        _ => panic!("a gzip level the loader checked, not {level}"),
+        _ => isal::ISAL_DEF_LVL3_DEFAULT,
     }
 }
 
@@ -145,7 +146,7 @@ struct Deflater {
 unsafe impl Send for Deflater {}
 
 impl Deflater {
-    fn new(level: u8, wrap: Wrap, mode: Mode) -> Deflater {
+    fn new(level: IgzipLevel, wrap: Wrap, mode: Mode) -> Deflater {
         let mut deflater = Deflater::sized(level_buf_size(level));
         deflater.start(level, wrap, mode);
         deflater
@@ -163,11 +164,11 @@ impl Deflater {
     }
 
     /// Begins a new stream at `level`. The level buffer must be at least the size `level` asks.
-    fn start(&mut self, level: u8, wrap: Wrap, mode: Mode) {
+    fn start(&mut self, level: IgzipLevel, wrap: Wrap, mode: Mode) {
         let size = level_buf_size(level);
         assert!(
             self.level_buf.len() >= size as usize,
-            "a level buffer for level {level}"
+            "a level buffer for level {level:?}"
         );
         let stream = &mut *self.stream;
         // SAFETY: `stream` is a whole, writable `isal_zstream`.
@@ -177,7 +178,7 @@ impl Deflater {
                 Mode::Stream => isal::isal_deflate_init(stream),
             }
         }
-        stream.level = level.into();
+        stream.level = level.get().into();
         stream.level_buf = if size == 0 {
             std::ptr::null_mut()
         } else {
@@ -231,6 +232,10 @@ mod tests {
 
     use super::*;
 
+    fn at(level: u8) -> IgzipLevel {
+        IgzipLevel::new(level).unwrap()
+    }
+
     fn gunzip(bytes: &[u8]) -> Vec<u8> {
         let mut plain = Vec::new();
         flate2::read::MultiGzDecoder::new(bytes)
@@ -262,7 +267,7 @@ mod tests {
     fn every_level_gzips_what_any_gunzip_reads() {
         for data in [lines(), noise(), Vec::new()] {
             for level in 0..=3 {
-                assert_eq!(gunzip(&gzip(&data, level)), data, "level {level}");
+                assert_eq!(gunzip(&gzip(&data, at(level))), data, "level {level}");
             }
         }
     }
@@ -271,9 +276,9 @@ mod tests {
     fn a_thread_compressing_at_one_level_then_another_starts_each_body_afresh() {
         let data = lines();
         for level in [3, 0, 2, 1, 3] {
-            assert_eq!(gunzip(&gzip(&data, level)), data, "level {level}");
+            assert_eq!(gunzip(&gzip(&data, at(level))), data, "level {level}");
             let mut plain = Vec::new();
-            flate2::read::DeflateDecoder::new(&deflate(&data, level)[..])
+            flate2::read::DeflateDecoder::new(&deflate(&data, at(level))[..])
                 .read_to_end(&mut plain)
                 .unwrap();
             assert_eq!(plain, data, "deflate at level {level}");
@@ -284,7 +289,7 @@ mod tests {
     fn deflate_is_raw() {
         let data = lines();
         let mut plain = Vec::new();
-        flate2::read::DeflateDecoder::new(&deflate(&data, 1)[..])
+        flate2::read::DeflateDecoder::new(&deflate(&data, at(1))[..])
             .read_to_end(&mut plain)
             .unwrap();
         assert_eq!(plain, data);
@@ -293,7 +298,7 @@ mod tests {
     #[test]
     fn a_stream_drained_between_writes_is_one_gzip() {
         for data in [lines(), noise()] {
-            let mut stream = GzipStream::new(1);
+            let mut stream = GzipStream::new(at(1));
             let mut file = Vec::new();
             // Rows, a piece larger than what the stream holds, and rows again.
             for piece in data[..1000]

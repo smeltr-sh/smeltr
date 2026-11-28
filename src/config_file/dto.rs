@@ -1781,7 +1781,10 @@ impl CompressionDto {
     /// `None` for a codec that takes none there.
     pub(crate) fn levels(self, by: Compressor) -> Option<(std::ops::RangeInclusive<u8>, u8)> {
         Some(match (self, by) {
-            (CompressionDto::Gzip, Compressor::Smeltr) => (0..=3, 1),
+            (CompressionDto::Gzip, Compressor::Smeltr) => {
+                use crate::plan::topology::IgzipLevel;
+                (0..=IgzipLevel::MAX, IgzipLevel::DEFAULT.get())
+            }
             (CompressionDto::Gzip, Compressor::Librdkafka | Compressor::Parquet) => (1..=9, 6),
             (CompressionDto::Zstd, Compressor::Librdkafka) => (1..=12, 3),
             (CompressionDto::Zstd, Compressor::Smeltr | Compressor::Parquet) => (1..=22, 3),
@@ -1793,18 +1796,23 @@ impl CompressionDto {
     /// The codec at `level`, or at its default where `by` compresses (`Self::levels`) when `level` is `None`. The
     /// loader has checked `level` against [`Self::levels`].
     pub(crate) fn to_plan(self, level: Option<u8>, by: Compressor) -> crate::plan::topology::Compression {
-        use crate::plan::topology::Compression;
-        let [none, gzip, snappy, lz4, zstd] = Compression::ALL;
-        let codec = match self {
-            CompressionDto::None => none,
-            CompressionDto::Gzip => gzip,
-            CompressionDto::Snappy => snappy,
-            CompressionDto::Lz4 => lz4,
-            CompressionDto::Zstd => zstd,
-        };
-        match level.or_else(|| Some(self.levels(by)?.1)) {
-            Some(l) => codec.at(l),
-            None => codec,
+        use crate::plan::topology::{Compression, GzipLevel, IgzipLevel};
+        let level = level.or_else(|| Some(self.levels(by)?.1));
+        match self {
+            CompressionDto::None => Compression::None,
+            CompressionDto::Snappy => Compression::Snappy,
+            // lz4 takes a level only where librdkafka compresses; elsewhere it carries 0, which nothing reads.
+            CompressionDto::Lz4 => Compression::Lz4(level.unwrap_or(0)),
+            CompressionDto::Zstd | CompressionDto::Gzip => {
+                let level = level.expect("gzip and zstd take a level wherever they are compressed");
+                match (self, by) {
+                    (CompressionDto::Zstd, _) => Compression::Zstd(level),
+                    (_, Compressor::Smeltr) => Compression::Gzip(GzipLevel::Igzip(
+                        IgzipLevel::new(level).expect("a level the loader checked against `levels`"),
+                    )),
+                    (_, Compressor::Librdkafka | Compressor::Parquet) => Compression::Gzip(GzipLevel::Zlib(level)),
+                }
+            }
         }
     }
 }

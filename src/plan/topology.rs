@@ -2837,7 +2837,7 @@ pub enum Newlines {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compression {
     None,
-    Gzip(u8),
+    Gzip(GzipLevel),
     Snappy,
     Lz4(u8),
     Zstd(u8),
@@ -2855,10 +2855,10 @@ impl Compression {
         }
     }
 
-    /// Every codec, each at its default level.
+    /// Every codec, each at the default level of the code that compresses it.
     pub const ALL: [Compression; 5] = [
         Compression::None,
-        Compression::Gzip(6),
+        Compression::Gzip(GzipLevel::Zlib(6)),
         Compression::Snappy,
         Compression::Lz4(0),
         Compression::Zstd(3),
@@ -2867,19 +2867,51 @@ impl Compression {
     /// The codec's level, where it takes one.
     pub fn level(self) -> Option<u8> {
         match self {
-            Compression::Gzip(l) | Compression::Lz4(l) | Compression::Zstd(l) => Some(l),
+            Compression::Gzip(l) => Some(l.get()),
+            Compression::Lz4(l) | Compression::Zstd(l) => Some(l),
             Compression::None | Compression::Snappy => None,
         }
     }
+}
 
-    /// The codec at `level`, where it takes one.
-    pub fn at(self, level: u8) -> Compression {
+/// A gzip level, in the range of the code that compresses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GzipLevel {
+    /// smeltr's own gzip (`io::gzip`).
+    Igzip(IgzipLevel),
+    /// librdkafka's or the parquet writer's zlib, 1 to 9.
+    Zlib(u8),
+}
+
+impl GzipLevel {
+    pub fn get(self) -> u8 {
         match self {
-            Compression::Gzip(_) => Compression::Gzip(level),
-            Compression::Lz4(_) => Compression::Lz4(level),
-            Compression::Zstd(_) => Compression::Zstd(level),
-            Compression::None | Compression::Snappy => self,
+            GzipLevel::Igzip(l) => l.get(),
+            GzipLevel::Zlib(l) => l,
         }
+    }
+}
+
+/// A level ISA-L's igzip compresses at: 0 to 3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IgzipLevel(u8);
+
+impl IgzipLevel {
+    pub const MAX: u8 = 3;
+    /// The level a destination is given when it names none.
+    pub const DEFAULT: IgzipLevel = IgzipLevel(1);
+
+    /// `level` as an igzip level, or `None` where igzip has no such level.
+    pub const fn new(level: u8) -> Option<IgzipLevel> {
+        if level <= IgzipLevel::MAX {
+            Some(IgzipLevel(level))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> u8 {
+        self.0
     }
 }
 

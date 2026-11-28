@@ -18,6 +18,7 @@ use crate::harness;
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::GzipLevel;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -80,7 +81,7 @@ const TIMES: [&str; 3] = [
 const COMPRESSIONS: [(Compression, &str); 5] = [
     (Compression::None, "none"),
     (Compression::Snappy, "snappy"),
-    (Compression::Gzip(6), "gzip"),
+    (Compression::Gzip(GzipLevel::Zlib(6)), "gzip"),
     (Compression::Lz4(0), "lz4"),
     (Compression::Zstd(3), "zstd"),
 ];
@@ -379,7 +380,13 @@ fn case(seed: u64, rng: &mut Rng, coverage: &mut Coverage) -> Case {
     let compression = match compression.level() {
         Some(_) if codec != "lz4" && rng.chance(2) => {
             coverage.reach("compression level");
-            compression.at(1 + rng.below(9) as u8)
+            // The parquet writer's levels.
+            let level = 1 + rng.below(9) as u8;
+            match compression {
+                Compression::Gzip(_) => Compression::Gzip(GzipLevel::Zlib(level)),
+                Compression::Zstd(_) => Compression::Zstd(level),
+                other => other,
+            }
         }
         _ => compression,
     };
