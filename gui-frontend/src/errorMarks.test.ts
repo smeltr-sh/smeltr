@@ -69,6 +69,9 @@ describe('spanRuns', () => {
   });
 
   it('marks the same characters where the text is laid out in lines', () => {
+    // `😀` is four bytes and two units.
+    const emoji = 'a == "😀" && b >)';
+    expect(marked(laidSpanRuns(emoji, emoji, { start: 18, end: 19 }))).toEqual([')']);
     const text = 'a == 1 && b ==)';
     expect(marked(laidSpanRuns(text, 'a == 1\n&& b ==)', { start: 14, end: 15 }))).toEqual([')']);
   });

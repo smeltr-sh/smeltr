@@ -4659,7 +4659,8 @@ impl Compiler<'_> {
             FunctionKind::Drop { cond } => {
                 let cond = match cond.trim() {
                     "" => None,
-                    src => match parse(src, Some(id)) {
+                    // Parsed as written, so its spans are places in the author's text.
+                    _ => match parse(cond, Some(id)) {
                         Ok(e) => Some(e),
                         Err(e) => return self.errors.push(e),
                     },
@@ -5376,6 +5377,16 @@ mod tests {
         assert_eq!(field, Some("body"));
         let (start, end) = span.expect("a parse error has a span");
         assert!(start >= 7 && end as usize <= body.len(), "{start}..{end} in {body:?}");
+
+        let drop = |cond: &str| {
+            let mut p = eval_pipeline(&[]);
+            p.body = vec![Step::Function(FunctionConfig::new(
+                FunctionId::new(0),
+                FunctionKind::Drop { cond: cond.into() },
+            ))];
+            only(&p)
+        };
+        assert_eq!(drop("  x >)"), (Some("condition"), Some((5, 6))));
 
         let (field, span) = only(&eval_pipeline(&[("good", "1"), ("bad", "1 +")]));
         assert_eq!(field, Some("expr"));

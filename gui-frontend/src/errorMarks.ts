@@ -30,7 +30,7 @@ export function laidSpanRuns(
   laid: string,
   span: ByteSpan,
 ): { text: string; mark: boolean }[] {
-  const ink = (s: string, to: number) => [...s.slice(0, to)].filter((c) => !/\s/.test(c)).length;
+  const ink = (s: string, to: number) => s.slice(0, to).replace(/\s/g, '').length;
   const at = (n: number, skip: boolean) => {
     let i = 0;
     for (; i < laid.length && n > 0; i++) if (!/\s/.test(laid[i])) n--;
