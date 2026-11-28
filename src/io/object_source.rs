@@ -23,7 +23,7 @@ use futures_util::StreamExt;
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange, ObjectStore};
 
-use crate::io::avro::Writers;
+use crate::io::avro::SchemaId;
 use crate::io::avro::container::Container;
 use crate::io::framing::{Framer, Messages};
 use crate::io::{
@@ -275,7 +275,7 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
         MAX_RECORD_BYTES,
     )?;
     Ok(Box::new(match &config.avro {
-        Some(avro) => source.reading_avro(avro.writers.clone()),
+        Some(_) => source.reading_avro(),
         None => source,
     }))
 }
@@ -337,9 +337,9 @@ pub struct ObjectSource {
     built: HashMap<String, Arc<dyn ObjectStore>>,
     runtime: Arc<tokio::runtime::Runtime>,
     framing: Framing,
-    /// Where each object is an Avro container file, read in place of `framing`: where each one's schema goes, which
-    /// its values are framed with.
-    avro: Option<Arc<Writers>>,
+    /// Where each object is an Avro container file, read in place of `framing`: the id the next one's schema is framed
+    /// with. Each object's chunks carry its schema, so the id need only tell apart the objects of one batch.
+    avro: Option<u32>,
     visibility: Duration,
     max_record: u64,
     held: HeldMap,
@@ -432,9 +432,9 @@ impl ObjectSource {
         })
     }
 
-    /// This source reading each object as an Avro container file, its schema kept in `writers`.
-    pub fn reading_avro(mut self, writers: Arc<Writers>) -> ObjectSource {
-        self.avro = Some(writers);
+    /// This source reading each object as an Avro container file.
+    pub fn reading_avro(mut self) -> ObjectSource {
+        self.avro = Some(0);
         self
     }
 
@@ -613,8 +613,12 @@ impl ObjectSource {
         let path = Path::parse(&object.key).map_err(|e| format!("the key is no path the store can read: {e}"))?;
         let partition = self.next_partition;
         self.next_partition = self.next_partition.wrapping_add(1);
-        let cutting = match &self.avro {
-            Some(writers) => Cutting::Avro(writers.clone(), self.max_record),
+        let cutting = match &mut self.avro {
+            Some(next) => {
+                let id = SchemaId::new(*next);
+                *next = next.wrapping_add(1);
+                Cutting::Avro(id, self.max_record)
+            }
             None => Cutting::Frames(Framer::refusing(self.framing.clone(), self.max_record as usize)),
         };
         let (tx, blocks) = std::sync::mpsc::channel();
@@ -913,9 +917,8 @@ enum Fetch {
 /// How a fetch cuts an object into records.
 enum Cutting {
     Frames(Framer),
-    /// As an Avro container file: each value framed with the id its schema has in these writers, none longer than this
-    /// many bytes.
-    Avro(Arc<Writers>, u64),
+    /// As an Avro container file: each value framed with this id for its schema, none longer than this many bytes.
+    Avro(SchemaId, u64),
 }
 
 /// Why a fetch stops early: its reader is gone.
@@ -948,7 +951,7 @@ fn fetch(
     };
     let cut = open_object(store, runtime, path, version).and_then(|mut lines| match cutting {
         Cutting::Frames(framer) => frames(&mut *lines, framer, &send),
-        Cutting::Avro(writers, max_record) => values(&mut *lines, &writers, max_record, &send),
+        Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send),
     });
     match cut {
         Ok(()) => drop(send(Fetch::End)),
@@ -991,11 +994,11 @@ fn frames(
     }
 }
 
-/// Reads `lines` as an Avro container file, its schema put in `writers` and each block's values framed with the id it
-/// has there. An empty object has none.
+/// Reads `lines` as an Avro container file, each block's values framed with `id` in a chunk that carries the file's
+/// schema. An empty object has none.
 fn values(
     lines: &mut dyn BufRead,
-    writers: &Writers,
+    id: SchemaId,
     max_record: u64,
     send: &impl Fn(Fetch) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -1003,14 +1006,16 @@ fn values(
         return Ok(());
     }
     let container = Container::open(lines)?;
-    let id = writers.intern(container.schema.clone());
     let nowhere: Arc<str> = Arc::from("");
     while let Some(values) = container.block(lines, max_record)? {
         let mut out = RecordChunkBuilder::new();
         for value in values {
             out.push(&crate::io::avro::frame(id, &value), 0, 0, nowhere.clone(), None);
         }
-        send_rows(out, send)?;
+        if !out.is_empty() {
+            let size = out.size();
+            send(Fetch::Rows(out.into_chunk().written_with(id, container.schema.clone()), size))?;
+        }
     }
     Ok(())
 }
