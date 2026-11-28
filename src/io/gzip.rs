@@ -28,6 +28,18 @@ pub(crate) struct GzipStream {
 /// The input [`GzipStream`] holds before compressing it.
 const HOLD: usize = 64 << 10;
 
+/// What a boxed [`GzipStream`] at `level` holds besides its output: itself, igzip's state, its level's working memory,
+/// and the input it holds.
+pub(crate) fn stream_bytes(level: IgzipLevel) -> usize {
+    size_of::<GzipStream>() + size_of::<isal::isal_zstream>() + level_buf_size(level) as usize + HOLD
+}
+
+/// What [`gzip`] and [`deflate`] keep on each thread that calls them: igzip's state, with the top level's working
+/// memory.
+pub(crate) fn whole_bytes() -> usize {
+    size_of::<isal::isal_zstream>() + level_buf_size(IgzipLevel::MAX) as usize
+}
+
 impl GzipStream {
     pub(crate) fn new(level: IgzipLevel) -> GzipStream {
         let mut deflater = Deflater::sized(level);

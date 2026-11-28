@@ -69,6 +69,8 @@ struct LineEncoder {
     plain_since_take: usize,
     /// What the rows written since the last `take` hold, by `FileRow::bytes`.
     row_bytes_since_take: usize,
+    /// What its codec holds while the file is open (`files::stream_codec_bytes`).
+    codec_bytes: usize,
 }
 
 impl LineEncoder {
@@ -80,6 +82,7 @@ impl LineEncoder {
             taken: 0,
             plain_since_take: 0,
             row_bytes_since_take: 0,
+            codec_bytes: super::files::stream_codec_bytes(compression),
         }
     }
 
@@ -109,6 +112,10 @@ impl FileEncoder for LineEncoder {
 
     fn in_progress_bytes(&self) -> usize {
         self.row_bytes_since_take
+    }
+
+    fn codec_bytes(&self) -> usize {
+        self.codec_bytes
     }
 
     fn take(&mut self) -> Vec<u8> {
@@ -165,7 +172,11 @@ impl Stream {
                 unreachable!("a lines file is gzipped by smeltr, at an igzip level")
             }
             Compression::Snappy => Stream::Snappy(Box::new(snap::write::FrameEncoder::new(Vec::new()))),
-            Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::new(Vec::new()))),
+            // A fixed block, so its buffers are the size `files::LZ4_BYTES` counts, whatever the first line's length.
+            Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::with_frame_info(
+                lz4_flex::frame::FrameInfo::new().block_size(lz4_flex::frame::BlockSize::Max64KB),
+                Vec::new(),
+            ))),
             Compression::Zstd(level) => Stream::Zstd(Box::new(
                 zstd::stream::write::Encoder::new(Vec::new(), level.into()).expect("a zstd level the loader checked"),
             )),
@@ -278,6 +289,55 @@ mod tests {
         Compression::Lz4(0),
         Compression::Zstd(3),
     ];
+
+    /// Each codec's state as `codec_bytes` says, against what the allocator counts it holding besides its output once
+    /// it has compressed a few mebibytes. zstd's context is outside Rust's allocator, so zstd is asked instead.
+    #[test]
+    fn codec_bytes_hold_what_each_codec_holds() {
+        let line: Vec<u8> = (0..4096u32)
+            .map(|i| b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8)
+            .collect();
+        for codec in [
+            Compression::Gzip(GzipLevel::Igzip(IgzipLevel::new(0).unwrap())),
+            Compression::Gzip(GzipLevel::Igzip(IgzipLevel::MAX)),
+            Compression::Snappy,
+            Compression::Lz4(0),
+        ] {
+            let before = crate::core::buffer::allocated_bytes();
+            let mut encoder = LineEncoder::open(false, codec);
+            // A first line longer than any lz4 block: lz4_flex, left to size its block by the first write, would take
+            // 4 MiB.
+            encoder.put(&line.repeat(1024));
+            for _ in 0..1024 {
+                encoder.put(&line);
+            }
+            // Gzip's output is taken, so what is left is its state.
+            if let Stream::Gzip(out) = &mut encoder.stream {
+                drop(out.take());
+            }
+            let output = match &encoder.stream {
+                Stream::Gzip(_) => 0,
+                Stream::Snappy(out) => out.get_ref().capacity(),
+                Stream::Lz4(out) => out.get_ref().capacity(),
+                Stream::None(_) | Stream::Zstd(_) => unreachable!("not measured"),
+            };
+            let held = crate::core::buffer::allocated_bytes() - before - output;
+            let said = encoder.codec_bytes();
+            assert!(
+                (said / 2..=said).contains(&held),
+                "{codec:?} holds {held} bytes, said {said}"
+            );
+        }
+        assert_eq!(LineEncoder::open(false, Compression::None).codec_bytes(), 0);
+        let zstd = |level| LineEncoder::open(false, Compression::Zstd(level)).codec_bytes();
+        assert_eq!(zstd(3), crate::io::files::zstd_bytes(3, None));
+        assert!(
+            zstd(3) > 1 << 20 && zstd(19) > 16 * zstd(3),
+            "{} and {}",
+            zstd(3),
+            zstd(19)
+        );
+    }
 
     fn partition() -> Partition {
         Partition {

@@ -30,6 +30,7 @@
 //! began. The commit happens when the interval has passed since the last one, when the bytes held since the last one
 //! reach [`commit_at`] of the egress budget, or when `flush` asks.
 
+use crate::plan::topology::{Compression, GzipLevel};
 use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -61,9 +62,58 @@ const BEHIND_BYTES: usize = crate::worker::TICK_MAX_BYTES;
 /// the worker reserves for each open file.
 pub const TAKE_BYTES: usize = 32 * 1024 * 1024;
 
-/// What every encoder's open files may buffer together, shared evenly among the encoders started. A file may take more
-/// than `TAKE_BYTES` while others take less: a row group grows to its table's size where few files are open.
-const TAKE_POOL_BYTES: usize = MAX_OPEN_FILES * TAKE_BYTES;
+/// What a snappy frame encoder holds besides its output. `io::lines` holds this and [`LZ4_BYTES`] to what the allocator
+/// counts (`codec_bytes_hold_what_each_codec_holds`).
+const SNAPPY_BYTES: usize = 173 * 1024;
+
+/// What an lz4 frame encoder holds besides its output.
+const LZ4_BYTES: usize = 151 * 1024;
+
+/// What compressing a stream with `codec` holds besides its output: the codec's tables and window, for as long as the
+/// stream is open.
+pub(crate) fn stream_codec_bytes(codec: Compression) -> usize {
+    match codec {
+        Compression::None => 0,
+        Compression::Gzip(GzipLevel::Igzip(level)) => crate::io::gzip::stream_bytes(level),
+        Compression::Gzip(GzipLevel::Zlib(_)) => {
+            unreachable!("a file smeltr writes is gzipped by smeltr, at an igzip level")
+        }
+        Compression::Snappy => SNAPPY_BYTES,
+        Compression::Lz4(_) => LZ4_BYTES,
+        Compression::Zstd(level) => zstd_bytes(level.into(), None),
+    }
+}
+
+/// What a zstd context holds once it has compressed at `level`: a stream of unknown length, or one block of `block`
+/// bytes. zstd sizes its context to the level and the input, and allocates it outside Rust's allocator, so it is asked
+/// rather than counted, once for each level and block.
+pub(crate) fn zstd_bytes(level: i32, block: Option<usize>) -> usize {
+    use zstd::zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer, zstd_sys::ZSTD_EndDirective};
+    /// A level and block zstd was asked about.
+    type Asked = (i32, Option<usize>);
+    static ASKED: Mutex<Vec<(Asked, usize)>> = Mutex::new(Vec::new());
+    if let Some(&(_, bytes)) = ASKED.lock().iter().find(|(asked, _)| *asked == (level, block)) {
+        return bytes;
+    }
+    let mut context = CCtx::create();
+    let mut out = Vec::with_capacity(block.unwrap_or(0) / 2 + 1024);
+    // The level was checked at load and the block fits zstd's bound, so only a context zstd could not allocate fails,
+    // and that one holds nothing.
+    let _ = context.set_parameter(CParameter::CompressionLevel(level));
+    let _ = match block {
+        Some(block) => context.compress2(&mut out, &vec![0; block]).map(|_| ()),
+        None => context
+            .compress_stream2(
+                &mut OutBuffer::around(&mut out),
+                &mut InBuffer::around(&[0]),
+                ZSTD_EndDirective::ZSTD_e_continue,
+            )
+            .map(|_| ()),
+    };
+    let bytes = context.sizeof();
+    ASKED.lock().push(((level, block), bytes));
+    bytes
+}
 
 /// Commits retried at once after a `Conflict` before the destination fails.
 pub(crate) const MAX_CONFLICT_RETRIES: usize = 8;
@@ -246,6 +296,9 @@ pub trait FileEncoder: Send {
     fn write(&mut self, rows: &[FileRow]);
     /// Bytes buffered since the last `take`, as rows hold them.
     fn in_progress_bytes(&self) -> usize;
+    /// What its codec holds besides the bytes it has encoded: for a stream, for as long as the file is open; for a
+    /// codec that compresses each take, until the take in progress is taken.
+    fn codec_bytes(&self) -> usize;
     /// Every encoded byte not yet taken, ending a Parquet row group. Empty when nothing is buffered.
     fn take(&mut self) -> Vec<u8>;
     /// The bytes the finished file will have had so far: taken, plus an estimate of what is buffered.
@@ -326,6 +379,10 @@ impl FileEncoder for ParquetEncoder {
         self.0.in_progress_bytes()
     }
 
+    fn codec_bytes(&self) -> usize {
+        self.0.codec_bytes()
+    }
+
     fn take(&mut self) -> Vec<u8> {
         self.0.take_row_group()
     }
@@ -353,9 +410,10 @@ pub struct FileConfig {
     /// Bytes a data file may reach before it is closed early.
     pub max_file_bytes: usize,
     /// Bytes an encoder buffers before its output goes to the upload: for Parquet, a row group's size. Less where
-    /// every open file's together reach what the worker reserves for them.
+    /// every open file's together reach the buffer.
     pub take_bytes: usize,
-    /// The destination's egress budget; a commit is forced short of it (`commit_at`).
+    /// The destination's egress budget; a commit is forced short of it (`commit_at`). Its open files' takes and codecs
+    /// are held within it too (`Encoder::make_room`).
     pub buffer_bytes: usize,
     /// How long a commit may take, retries included, before the destination fails.
     pub stall_after: Duration,
@@ -638,7 +696,7 @@ struct Shared {
     committer: Mutex<Box<dyn Committer>>,
     /// Files open across every encoder.
     open_files: AtomicUsize,
-    /// Encoders started, which share `TAKE_POOL_BYTES` evenly.
+    /// Encoders started, which share the buffer evenly for their open files (`Encoder::make_room`).
     started: AtomicUsize,
     /// The first failure of an encoder's write, which the writer fails the destination with.
     fault: Mutex<Option<String>>,
@@ -1141,7 +1199,7 @@ impl Encoder {
                 let file = self.open_file(partition.clone())?;
                 self.open.insert(partition.clone(), file);
             }
-            let pooled = self.make_room()?;
+            let pooled = self.make_room(&partition)?;
             let file = self.open.get_mut(&partition).expect("opened above");
             file.last_written = Instant::now();
             let room = (config.take_bytes.saturating_sub(file.encoder.in_progress_bytes()))
@@ -1173,19 +1231,37 @@ impl Encoder {
         Ok(())
     }
 
-    /// How much more this encoder's open files may buffer, within its share of the pool. While they hold all of it,
-    /// the largest take is uploaded first.
-    fn make_room(&mut self) -> Result<usize, String> {
-        let share = TAKE_POOL_BYTES / self.shared.started.load(Ordering::Relaxed).max(1);
+    /// How much more this encoder's open files may hold, within its share of the destination's buffer. A file holds its
+    /// take and its codec's state. While they hold all of the share, the file that holds most gives back: its take is
+    /// uploaded, or with none to upload, it is closed. The file `writing` is never closed here, and its codec is left
+    /// out of the share, so one file per encoder is always written whatever its codec holds.
+    fn make_room(&mut self, writing: &Partition) -> Result<usize, String> {
+        let share = self.shared.config.buffer_bytes / self.shared.started.load(Ordering::Relaxed).max(1);
+        let held = |partition: &Partition, file: &OpenFile| {
+            let codec = if partition == writing {
+                0
+            } else {
+                file.encoder.codec_bytes()
+            };
+            file.encoder.in_progress_bytes() + codec
+        };
         loop {
-            let buffered: usize = self.open.values().map(|f| f.encoder.in_progress_bytes()).sum();
-            if buffered < share {
-                return Ok(share - buffered);
+            let total: usize = self.open.iter().map(|(p, f)| held(p, f)).sum();
+            if total < share || total == 0 {
+                return Ok(share.saturating_sub(total));
             }
-            let largest = (self.open.values_mut())
-                .max_by_key(|f| f.encoder.in_progress_bytes())
-                .expect("a full pool has a file");
-            upload_taken(largest)?;
+            let most = (self.open.iter())
+                .filter(|(p, f)| held(p, f) > 0)
+                .max_by_key(|(p, f)| held(p, f))
+                .map(|(p, _)| p.clone())
+                .expect("a full share has a file holding some of it");
+            let file = self.open.get_mut(&most).expect("found just now");
+            if file.encoder.in_progress_bytes() > 0 {
+                upload_taken(file)?;
+            } else {
+                let file = self.open.remove(&most).expect("found just now");
+                self.close(vec![file])?;
+            }
         }
     }
 

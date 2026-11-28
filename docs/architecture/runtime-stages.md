@@ -159,7 +159,8 @@ destination queues share the rest as one pool. Each queue holds one batch as
 its reserve and borrows above it as far as its pacing asks. While any queue
 wants more than the pool has, each holds an equal share at most, so a busy
 destination takes what idle ones leave and a slow one holds little. Receivers
-share a pool of their own the same way.
+share a pool of their own the same way. A file destination's open files hold
+their encoded records and their codecs' state within its buffer.
 
 Transform has one budget of its own, checked on allocation: the memory it
 takes to turn one batch into another, which no queue cap can see. The logs
