@@ -684,8 +684,8 @@ pub struct HttpTransport {
     /// Signs every request in with a token. Shared by every sender of a destination, so they hold one token
     /// between them.
     sign_in: Option<SharedSignIn>,
-    /// The gzip level every body is sent at. The body and its `Content-Encoding` are both set from this one field,
-    /// so they cannot disagree: a service refuses a plain body that says it is gzip.
+    /// The gzip level every body is compressed at, or `None` to send each plain. The body and its `Content-Encoding`
+    /// are both set from this one field, so they cannot disagree: a service refuses a plain body that says it is gzip.
     gzip: Option<u8>,
 }
 
@@ -719,8 +719,7 @@ impl HttpTransport {
         }
     }
 
-    /// Sends every body compressed with `compression`, gzip or none: the only codecs an HTTP destination's load
-    /// takes.
+    /// Compresses every body with `compression`, which is `Gzip` or `None`: load takes no other codec.
     pub fn compressing(mut self, compression: Compression) -> Self {
         self.gzip = match compression {
             Compression::Gzip(level) => Some(level),
@@ -760,7 +759,7 @@ impl HttpTransport {
 
 impl Transport for HttpTransport {
     fn post(&mut self, path: &str, body: &[u8], budget: Duration) -> Result<Response, IoError> {
-        // Once, before any second try with a new token.
+        // Gzipped once, before the sign-in loop, so a second try with a new token sends the same bytes.
         let gzipped = self.gzip.map(|level| gzip(body, level));
         let body = gzipped.as_deref().unwrap_or(body);
         let Some(sign_in) = self.sign_in.clone() else {
