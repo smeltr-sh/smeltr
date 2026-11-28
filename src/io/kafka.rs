@@ -1251,7 +1251,7 @@ pub struct KafkaDestination {
     _ticket: Option<kerberos::Held>,
 }
 
-/// The most a Kafka source's client holds for each byte a fetch brings over the wire, once the fetch lands: the
+/// What a Kafka source's client is sized to hold for each byte a fetch brings over the wire, once the fetch arrives: the
 /// decompressed records, librdkafka's own record for each (`FETCHED_RECORD_BYTES`), and the slack of the buffers it
 /// decompresses into, which grow by three quarters at a time. A fetch's size counts wire bytes, so compression is what
 /// multiplies it. lz4 records of about 270 bytes measured 8.7.
@@ -1272,7 +1272,7 @@ pub(crate) fn named_brokers(brokers: &str) -> usize {
 }
 
 /// Bytes one fetch request to one broker may carry. Half of the client's ceiling is for the fetches in flight, one per
-/// broker, each as large as [`FETCH_EXPANSION`] times its wire bytes once it lands.
+/// broker, each as large as [`FETCH_EXPANSION`] times its wire bytes once it arrives.
 fn fetch_request_bytes(fetch_bytes: usize, brokers: usize) -> usize {
     (fetch_bytes / 2 / (brokers * FETCH_EXPANSION)).max(LEAST_FETCH_REQUEST_BYTES)
 }
