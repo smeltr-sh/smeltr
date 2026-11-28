@@ -27,7 +27,7 @@
   import type { Attachment } from 'svelte/attachments';
   import { editable } from './access';
   import { lessMotion } from './glide';
-  import type { DeliverRuleDto, RouteDto } from './api';
+  import type { ApiError, DeliverRuleDto, RouteDto } from './api';
   import { answerText, type Answer } from './exceptions';
   import {
     at,
@@ -244,6 +244,13 @@
   function whenError(rule: DeliverRuleDto): string | null {
     const errors = (ruleErrors.get(rule) ?? []).filter((e) => validation?.placed.includes(e));
     return errors.length > 0 ? errors.map((e) => e.message).join('\n') : null;
+  }
+  /** Where in a rule's `when` its first error the compiler places is, or null. */
+  function whenSpan(rule: DeliverRuleDto): ApiError['span'] {
+    return (
+      (ruleErrors.get(rule) ?? []).find((e) => e.span && validation?.placed.includes(e))?.span ??
+      null
+    );
   }
   /** A condition box as the place its save errors are focused: a route's condition, or each error tied to `rule`. */
   function errorPlace(route: RouteDto, rule?: DeliverRuleDto): Attachment<HTMLElement> {
@@ -817,6 +824,7 @@
         ask={askAt?.({ source: route.source })}
         bind:value={() => route.condition ?? '', (v) => setCondition(route, v)}
         forced={validation?.message(route.id, 'condition') ?? null}
+        at={validation?.span(route.id, 'condition') ?? null}
         autocomplete="condition"
         wrap
         placeholder="true; every row"
@@ -891,6 +899,7 @@
         ask={askAt?.({ when: route.id })}
         bind:value={() => rule.when ?? '', (v) => setWhen(route, rule, v)}
         forced={whenError(rule)}
+        at={whenSpan(rule)}
         autocomplete="condition"
         wrap
         placeholder="true; every row"
