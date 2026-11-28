@@ -5161,9 +5161,9 @@
           {
             "name": "compressionLevel",
             "type": "integer",
-            "absent": "gzip's default, 6",
-            "examples": [9],
-            "what": "How hard gzip works: a higher level is slower and compresses more. 1 to 9; none takes no level."
+            "absent": "gzip's default, 1",
+            "examples": [3],
+            "what": "How hard gzip works, from 0, the fastest, to 3, the smallest output. Only gzip takes a level."
           },
           {
             "name": "inFlight",
@@ -5416,9 +5416,9 @@
           {
             "name": "compressionLevel",
             "type": "integer",
-            "absent": "gzip's default, 6",
-            "examples": [9],
-            "what": "How hard gzip works: a higher level is slower and compresses more. 1 to 9; none takes no level."
+            "absent": "gzip's default, 1",
+            "examples": [3],
+            "what": "How hard gzip works, from 0, the fastest, to 3, the smallest output. Only gzip takes a level."
           },
           {
             "name": "inFlight",
