@@ -232,7 +232,7 @@ impl AvroReader {
 
     /// The schema id `payload` names that this reader has not asked for yet. `None` for a payload whose schema is
     /// known, or that names none.
-    pub fn unasked(&mut self, payload: &[u8]) -> Option<SchemaId> {
+    pub(crate) fn unasked(&mut self, payload: &[u8]) -> Option<SchemaId> {
         let (id, _) = unframe(payload).ok()?;
         if self.known.contains(&id) {
             return None;
@@ -246,7 +246,7 @@ impl AvroReader {
 
     /// Asks the registry for schema `id`. Err is a registry that may answer later, and leaves the schema unasked; a
     /// refusal is kept, and every payload naming it is read as one that does not read.
-    pub fn ask(&mut self, id: SchemaId) -> Result<(), IoError> {
+    pub(crate) fn ask(&mut self, id: SchemaId) -> Result<(), IoError> {
         let answer = match self.registry.as_ref().map(|r| fetch(r, id)) {
             Some(Ok(parsed)) => Ok(Arc::new(parsed)),
             Some(Err(Unread::Refused(why))) => Err(why),
@@ -295,7 +295,9 @@ pub(crate) fn decode<'p>(
             ty: ty.clone(),
         })
         .collect();
-    let schemas = writers.of(payloads.clone().filter_map(|p| Some(unframe(p).ok()?.0)));
+    // Each schema once: a batch names few, under many payloads.
+    let ids: std::collections::HashSet<SchemaId> = payloads.clone().filter_map(|p| Some(unframe(p).ok()?.0)).collect();
+    let schemas = writers.of(ids.into_iter());
     let rows = payloads.len();
     let mut columns: Vec<Vec<Value>> = vec![Vec::with_capacity(rows); fields.len()];
     let (mut failed, mut unread, mut newest) = (Vec::new(), Vec::new(), None);
