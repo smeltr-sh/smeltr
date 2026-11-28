@@ -1284,10 +1284,15 @@ fn fetch_request_bytes(fetch_bytes: usize, brokers: usize, least: usize) -> usiz
     (fetch_bytes / 2 / (brokers * FETCH_EXPANSION)).max(least)
 }
 
-/// The decompressed payload librdkafka's queue may hold before it stops fetching: a quarter of `fetchBytes`, so its
-/// buffers, with their slack, stay within a quarter more.
+/// The bytes a decompressed buffer can hold for each four bytes of records in it: librdkafka grows it by three quarters
+/// of its size at a time, so it can hold three quarters more than its records, seven quarters in all.
+const DECOMPRESS_SLACK_QUARTERS: usize = 7;
+
+/// The decompressed payload librdkafka's queue may hold before it stops fetching: as much as fills a quarter of
+/// `fetchBytes` once its buffers' slack is counted. librdkafka's own record for each message takes the other quarter
+/// ([`queue_records`], at [`FETCHED_RECORD_BYTES`] each), and both bounds can be full at once.
 fn queue_payload_bytes(fetch_bytes: usize) -> usize {
-    fetch_bytes / 4
+    fetch_bytes / DECOMPRESS_SLACK_QUARTERS
 }
 
 /// The records librdkafka's queue may hold before it stops fetching: as many as a quarter of `fetchBytes` holds at
@@ -1735,6 +1740,12 @@ mod tests {
         assert!(
             consumer_ceiling(4 << 20, 1, DEFAULT_BATCH_BYTES)
                 <= (4 << 20) + consumer_floor_bytes(1, DEFAULT_BATCH_BYTES)
+        );
+        let queue =
+            queue_payload_bytes(fetch) * DECOMPRESS_SLACK_QUARTERS / 4 + queue_records(fetch) * FETCHED_RECORD_BYTES;
+        assert!(
+            queue <= fetch / 2,
+            "the queue's two bounds, both full, hold half of `fetchBytes`"
         );
         assert_eq!(named_brokers("b1:9092,b2:9092, b3:9092"), 3);
         assert_eq!(named_brokers(""), 1, "it reaches one broker at least");

@@ -39,9 +39,9 @@ use crate::io::{IoError, PartitionLag, SourceRecord, TopicPartition};
 use crate::plan::topology::{HeldSecrets, KafkaSourceConfig, StartPosition};
 
 use super::{
-    CLIENT_ID, FETCH_EXPANSION, FETCHED_RECORD_BYTES, LAG_QUERY_TIMEOUT, LAG_SAMPLE_INTERVAL, MAX_POLL_INTERVAL,
-    PLACE_TIMEOUT, STATS_INTERVAL, apply_client_config, fetch_request_bytes, headers_of, least_fetch_request_bytes,
-    named_brokers, queue_payload_bytes, queue_records, topic_pattern,
+    CLIENT_ID, DECOMPRESS_SLACK_QUARTERS, FETCH_EXPANSION, FETCHED_RECORD_BYTES, LAG_QUERY_TIMEOUT,
+    LAG_SAMPLE_INTERVAL, MAX_POLL_INTERVAL, PLACE_TIMEOUT, STATS_INTERVAL, apply_client_config, fetch_request_bytes,
+    headers_of, least_fetch_request_bytes, named_brokers, queue_payload_bytes, queue_records, topic_pattern,
 };
 
 /// How long the client thread waits in one poll: how soon it sees a stop, a subscription to send, or a reader that
@@ -885,10 +885,6 @@ struct Expansion {
     over: crate::logs::Relog,
     unnamed: crate::logs::Relog,
 }
-
-/// The bytes a decompressed buffer can hold for each four bytes of records in it: librdkafka grows it by three quarters
-/// of its size at a time, so it can hold three quarters more than its records, seven quarters in all.
-const DECOMPRESS_SLACK_QUARTERS: usize = 7;
 
 /// The least received between two weighings: under it, a few records' framing would outweigh what they hold.
 const EXPANSION_SAMPLE_BYTES: u64 = 16 << 20;
