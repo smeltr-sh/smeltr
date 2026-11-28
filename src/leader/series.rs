@@ -1211,7 +1211,8 @@ impl RegistryStore {
 
     /// Every point of one series at one tier, oldest first. A bucket nothing landed in has no row and so no entry
     /// here -- absence, not a zero.
-    pub fn points(&self, metric: &str, subject_key: &str, tier: Tier) -> Result<Vec<(i64, f64)>, StoreError> {
+    #[cfg(test)]
+    pub(crate) fn points(&self, metric: &str, subject_key: &str, tier: Tier) -> Result<Vec<(i64, f64)>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT p.bucket_ms, p.value FROM series s JOIN series_points p ON p.series_id = s.id \
@@ -1226,9 +1227,8 @@ impl RegistryStore {
     }
 
     /// Every subject of `metric` at `tier` with a point at or after `since_ms`, oldest first within each subject --
-    /// what E6's lag-climbing check wants: every source or destination's
-    /// series at once, not one subject looked up at a time. A subject with nothing in range is missing from the
-    /// result outright, the same absence [`RegistryStore::points`] already gives one bucket.
+    /// what E6's lag-climbing check wants: every source or destination's series at once, not one subject looked up at a
+    /// time. A subject with nothing in range is missing from the result outright.
     pub fn series_since(
         &self,
         metric: &str,

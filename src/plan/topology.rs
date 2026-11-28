@@ -770,11 +770,6 @@ impl SourceMeta {
         self
     }
 
-    /// Whether this meta's record keeps the fields it does not declare (`opened`).
-    pub fn is_open(&self) -> bool {
-        self.record.contains(&(Entry::Unclaimed("".into()), DataType::Variant))
-    }
-
     /// `declaring`, allowing a field under an internal key where `internal` says so. A field declared as an object is
     /// its leaves, each a field of the record, and the object's unclaimed fields where it is open (Language).
     fn declare(self, record: Vec<(String, DataType)>, internal: fn(&str) -> bool) -> Result<SourceMeta, String> {
@@ -1513,12 +1508,6 @@ pub struct AvroRead {
 pub struct KafkaProps {
     pub literal: Vec<(String, String)>,
     pub credentials: Vec<(String, SecretRef)>,
-}
-
-impl KafkaProps {
-    pub fn is_empty(&self) -> bool {
-        self.literal.is_empty() && self.credentials.is_empty()
-    }
 }
 
 #[derive(Clone, Debug)]

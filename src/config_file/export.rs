@@ -21,10 +21,6 @@ pub struct Export {
     pub tests: Vec<TestSummary>,
     /// The samples those tests read, by id.
     pub samples: Vec<String>,
-    /// Every secret an exported source or destination names, by name. Only names: a bundle never holds a value.
-    pub secrets: BTreeSet<String>,
-    /// Every certificate an exported source or destination names, by name.
-    pub certificates: BTreeSet<String>,
 }
 
 /// What exporting `pipeline` holds, taken from `merged` (the bundle a group runs), without the objects `left_out`
@@ -116,20 +112,10 @@ pub fn export(
     // Left out after the tests are chosen, so a test stays until it is left out itself.
     retain_file(&mut file, &kept);
 
-    let secrets = (file.sources.iter().flat_map(|s| s.secrets()))
-        .chain(file.destinations.iter().flat_map(|d| d.secrets()))
-        .map(|(_, r)| r.name().to_string())
-        .collect();
-    let certificates = (file.sources.iter().filter_map(|s| s.tls()?.certificate))
-        .chain(file.destinations.iter().filter_map(|d| d.tls()?.certificate))
-        .collect();
-
     Some(Export {
         file,
         tests: tests.into_iter().cloned().collect(),
         samples: samples.into_iter().collect(),
-        secrets,
-        certificates,
     })
 }
 
@@ -223,7 +209,6 @@ mod tests {
         assert!(e.file.routes.is_empty() && e.file.sources.is_empty() && e.file.destinations.is_empty());
         assert_eq!(e.tests.iter().map(|t| &t.id).collect::<Vec<_>>(), ["t-common"]);
         assert_eq!(e.samples, ["s-fw"]);
-        assert!(e.secrets.is_empty() && e.certificates.is_empty());
     }
 
     #[test]
@@ -234,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_include_their_source_destinations_refusals_and_credential_names() {
+    fn routes_include_their_source_destinations_and_refusals() {
         let e = export(&bundle(), &tests(), "fw-normalize", true, &BTreeSet::new()).unwrap();
         assert_eq!(ids(&e.file.routes, |r| &r.id), ["r-fw"]);
         assert_eq!(ids(&e.file.sources, |s| &s.id), ["fw"]);
@@ -246,8 +231,6 @@ mod tests {
             ["t-common", "t-fw-end"]
         );
         assert_eq!(e.samples, ["s-fw", "s-fw-end"]);
-        assert_eq!(e.secrets.into_iter().collect::<Vec<_>>(), ["kafka-password"]);
-        assert_eq!(e.certificates.into_iter().collect::<Vec<_>>(), ["kafka-client"]);
     }
 
     #[test]
@@ -264,7 +247,6 @@ mod tests {
         assert!(e.file.sources.is_empty());
         assert_eq!(e.tests.iter().map(|t| &t.id).collect::<Vec<_>>(), ["t-fw-end"]);
         assert_eq!(e.samples, ["s-fw-end"]);
-        assert!(e.secrets.is_empty() && e.certificates.is_empty());
     }
 
     #[test]

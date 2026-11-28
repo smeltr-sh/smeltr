@@ -12,6 +12,11 @@ pub mod egress;
 pub mod embedded;
 pub mod enrollment_code;
 pub mod expr;
+// The library's tests use only part of this file and `tests/harness` all of it, so a library build would warn of
+// what only the harness uses.
+#[cfg(test)]
+#[allow(dead_code)]
+mod fake;
 pub mod format;
 #[cfg(test)]
 mod fuzz;

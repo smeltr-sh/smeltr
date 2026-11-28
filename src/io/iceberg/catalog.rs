@@ -119,29 +119,29 @@ pub(crate) struct Committed {
 
 /// What must hold of the table for a commit to apply.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Requirement {
-    AssertTableUuid(String),
+pub(crate) enum Requirement {
+    TableUuid(String),
     /// The ref points at this snapshot; `None` asserts the ref does not exist.
-    AssertRefSnapshotId {
+    RefSnapshotId {
         r#ref: String,
         snapshot_id: Option<i64>,
     },
-    AssertCurrentSchemaId(i32),
-    AssertLastAssignedFieldId(i32),
+    CurrentSchemaId(i32),
+    LastAssignedFieldId(i32),
 }
 
 impl Serialize for Requirement {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Requirement::AssertTableUuid(uuid) => json!({"type": "assert-table-uuid", "uuid": uuid}),
+            Requirement::TableUuid(uuid) => json!({"type": "assert-table-uuid", "uuid": uuid}),
             // `snapshot-id` is written even when null: null is what asserts the ref is absent.
-            Requirement::AssertRefSnapshotId { r#ref, snapshot_id } => {
+            Requirement::RefSnapshotId { r#ref, snapshot_id } => {
                 json!({"type": "assert-ref-snapshot-id", "ref": r#ref, "snapshot-id": snapshot_id})
             }
-            Requirement::AssertCurrentSchemaId(id) => {
+            Requirement::CurrentSchemaId(id) => {
                 json!({"type": "assert-current-schema-id", "current-schema-id": id})
             }
-            Requirement::AssertLastAssignedFieldId(id) => {
+            Requirement::LastAssignedFieldId(id) => {
                 json!({"type": "assert-last-assigned-field-id", "last-assigned-field-id": id})
             }
         }
@@ -1099,17 +1099,17 @@ mod tests {
             &ns(),
             "logs",
             &[
-                Requirement::AssertTableUuid("u".into()),
-                Requirement::AssertRefSnapshotId {
+                Requirement::TableUuid("u".into()),
+                Requirement::RefSnapshotId {
                     r#ref: "main".into(),
                     snapshot_id: Some(6),
                 },
-                Requirement::AssertRefSnapshotId {
+                Requirement::RefSnapshotId {
                     r#ref: "audit".into(),
                     snapshot_id: None,
                 },
-                Requirement::AssertCurrentSchemaId(0),
-                Requirement::AssertLastAssignedFieldId(1),
+                Requirement::CurrentSchemaId(0),
+                Requirement::LastAssignedFieldId(1),
             ],
             &[
                 Update::AddSchema {

@@ -1,0 +1,22 @@
+{
+  "type": "record",
+  "name": "app",
+  "fields": [
+    {"name": "ts", "type": "string"},
+    {"name": "level", "type": "string"},
+    {"name": "logger", "type": "string"},
+    {"name": "msg", "type": "string"},
+    {"name": "attempt", "type": "long"},
+    {"name": "order_id", "type": ["null", "string"]},
+    {"name": "user", "type": {"type": "record", "name": "user", "fields": [
+      {"name": "id", "type": "string"},
+      {"name": "tier", "type": "string"}
+    ]}},
+    {"name": "latency_ms", "type": "double"},
+    {"name": "error", "type": ["null", {"type": "record", "name": "error", "fields": [
+      {"name": "type", "type": "string"},
+      {"name": "message", "type": "string"},
+      {"name": "stack", "type": "string"}
+    ]}]}
+  ]
+}

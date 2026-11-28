@@ -996,16 +996,18 @@ impl Store {
             .collect()
     }
 
-    /// `false` if no enrollment code has that id. A spent enrollment code is withdrawn like any other: what it already
-    /// brought in stays enrolled, and what it would have brought in no longer can. The row stays, marked withdrawn:
-    /// which workers it brought in is what an operator acts on next, and deleting it leaves `enrollment_code_uses` rows
-    /// belonging to nothing.
-    pub fn withdraw_enrollment_code(&self, id: &str, now_ms: i64) -> Result<bool, StoreError> {
+    /// The withdrawal [`Store::withdraw_enrollment_code_recorded`] makes, without the row saying who made it.
+    #[cfg(test)]
+    pub(crate) fn withdraw_enrollment_code(&self, id: &str, now_ms: i64) -> Result<bool, StoreError> {
         let conn = self.conn();
         Ok(conn.execute(WITHDRAW_CODE, (id, now_ms))? > 0)
     }
 
-    /// [`Store::withdraw_enrollment_code`] and the row saying who withdrew it, in one transaction.
+    /// Withdraw the enrollment code `id` and write the row saying who withdrew it, in one transaction; `false` if no
+    /// enrollment code has that id. A spent enrollment code is withdrawn like any other: what it already brought in
+    /// stays enrolled, and what it would have brought in no longer can. The row stays, marked withdrawn: which workers
+    /// it brought in is what an operator acts on next, and deleting it leaves `enrollment_code_uses` rows belonging to
+    /// nothing.
     pub(crate) fn withdraw_enrollment_code_recorded(
         &self,
         id: &str,
@@ -1996,17 +1998,16 @@ impl Store {
             .query_row(
                 // One statement, so the hash and the generation are the same moment of this account. Read apart,
                 // a reset landing between them verifies the old password against the new generation.
-                "SELECT c.user_id, c.username, c.password_hash, c.must_change, u.generation
+                "SELECT c.user_id, c.password_hash, c.must_change, u.generation
                    FROM local_credentials c JOIN users u ON u.id = c.user_id
                   WHERE c.username = ?1",
                 (username,),
                 |row| {
                     Ok(LocalCredentialRecord {
                         user_id: row.get(0)?,
-                        username: row.get(1)?,
-                        password_hash: row.get(2)?,
-                        must_change: row.get::<_, i64>(3)? != 0,
-                        generation: row.get(4)?,
+                        password_hash: row.get(1)?,
+                        must_change: row.get::<_, i64>(2)? != 0,
+                        generation: row.get(3)?,
                     })
                 },
             )

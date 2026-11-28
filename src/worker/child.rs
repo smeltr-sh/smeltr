@@ -872,7 +872,6 @@ pub struct RuntimeHandle {
     /// what it wrote: without this join the supervisor could replace the inbox while those frames were still
     /// being decoded into it.
     reader: Option<std::thread::JoinHandle<()>>,
-    pub incarnation: u64,
     pub(crate) commit: String,
 }
 
@@ -982,12 +981,11 @@ impl RuntimeHandle {
         let mut process = crate::process::Contained::spawn(&mut cmd)?;
         // A failure past this point drops `process`, and dropping a `Contained` that was not confirmed dead kills
         // its tree: what was started is ended before the failure is reported, on every such path.
-        let (control, reader, incarnation, commit) = RuntimeHandle::attach(&mut process, spec, inbox)?;
+        let (control, reader, commit) = RuntimeHandle::attach(&mut process, spec, inbox)?;
         Ok(RuntimeHandle {
             process: Box::new(process),
             control,
             reader: Some(reader),
-            incarnation,
             commit,
         })
     }
@@ -997,7 +995,7 @@ impl RuntimeHandle {
         process: &mut crate::process::Contained,
         spec: StartSpec,
         inbox: &Arc<RuntimeInbox>,
-    ) -> std::io::Result<(Control, std::thread::JoinHandle<()>, u64, String)> {
+    ) -> std::io::Result<(Control, std::thread::JoinHandle<()>, String)> {
         let stdin = process.take_stdin().ok_or_else(|| std::io::Error::other("no stdin"))?;
         let stdout = process
             .take_stdout()
@@ -1026,7 +1024,7 @@ impl RuntimeHandle {
                 }
             })?;
         }
-        Ok((control, reader, incarnation, commit))
+        Ok((control, reader, commit))
     }
 
     /// Ask this runtime to serve a capture.
@@ -1724,7 +1722,7 @@ mod tests {
             let opened = opened.clone();
             Box::new(move || {
                 opened.fetch_add(1, Ordering::Relaxed);
-                Ok(Box::new(crate::io::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
+                Ok(Box::new(crate::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
             })
         });
         assert!(obey(read.into_iter().next().unwrap(), &runtime));

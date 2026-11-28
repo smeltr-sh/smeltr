@@ -30,7 +30,8 @@ pub struct MmdbTable {
 impl MmdbTable {
     /// Maps the file once, at compile time -- the same "no filesystem access once compiled" guarantee every other
     /// lookup source gets. A corrupt or unreadable file is a `CompileError` here, never a row-time surprise.
-    pub fn open(path: &std::path::Path) -> Result<MmdbTable, LookupError> {
+    #[cfg(test)]
+    pub(crate) fn open(path: &std::path::Path) -> Result<MmdbTable, LookupError> {
         let shown = path.display().to_string();
         let map =
             super::store::map(path).map_err(|e| LookupError(format!("couldn't open MMDB file `{shown}`: {e}")))?;

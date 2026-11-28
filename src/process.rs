@@ -23,26 +23,11 @@
 //! report that rather than start a replacement.
 
 use std::io;
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 /// How often a wait asks whether the child has ended. The runtime's own drain polls at this rate.
 const POLL: Duration = Duration::from_millis(10);
-
-/// How long a killed tree has to actually end. A process stuck in an uninterruptible call takes its signal only
-/// when it leaves, and waiting on one without a deadline would strand the schedule that ran the command -- which
-/// for a worker is the discovery that would have found the commit replacing what hung.
-const KILL_CONFIRM: Duration = Duration::from_secs(30);
-
-/// What became of a bounded run. Both carry whatever output was read: a killed process is usually the one whose
-/// partial stderr says why it stalled.
-#[derive(Debug)]
-pub enum Outcome {
-    /// The process ended on its own, and everything it spawned released the output pipes.
-    Exited(Output),
-    /// The budget expired. The process tree was killed and reaped.
-    Killed(Output),
-}
 
 /// A child process and everything it spawns, ended as one.
 pub struct Contained {
@@ -89,7 +74,8 @@ impl Contained {
     }
 
     /// This child's process id, which on unix is also its process group's.
-    pub fn id(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) fn id(&self) -> u32 {
         self.child.id()
     }
 
@@ -243,117 +229,6 @@ impl Drop for Contained {
     }
 }
 
-/// Runs `cmd` to completion within `budget`, answering what it wrote. On expiry the process tree is killed and
-/// reaped, so this returns within the budget plus however long the operating system takes to kill.
-///
-/// stdin is closed: a child that reads from a terminal it does not have would wait for one forever.
-pub fn output_within(cmd: &mut Command, budget: Duration) -> io::Result<Outcome> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = Contained::spawn(cmd)?;
-
-    // Each pipe is drained by a thread of its own, because a child that fills one while nobody reads it blocks on
-    // the write and never reaches its own exit.
-    let out = child.take_stdout();
-    let err = child.take_stderr();
-    // Through the fallible builder: a panicking spawn would unwind past the child, and dropping it is what ends
-    // the tree, but a caller that asked for output and got a panic has no error to act on.
-    let reading = Drains::start(out, err)?;
-
-    // Exit alone is not the end: a grandchild holding an output pipe leaves a read outstanding after the child has
-    // gone, and the budget covers that wait too.
-    let deadline = Instant::now() + budget;
-    let mut ended = false;
-    loop {
-        // The drains are asked first and the child only once they are done, and the child is asked without being
-        // reaped: the process id the group is named by is held only while it is unreaped, so the kill below has a
-        // live process or a zombie to aim at rather than an id the system has handed to somebody else.
-        if reading.finished() && child.ended()? {
-            ended = true;
-            break;
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(POLL);
-    }
-
-    if ended {
-        // Both pipes closed and the child gone still leaves room for a descendant that closed its own copies of
-        // the pipes and kept running. Bounded means the whole tree ends here, and the kill comes before the reap
-        // so it names this group rather than one that took its id. The joins are safe without a deadline of their
-        // own: this is only reached once both drains reported themselves finished.
-        child.kill_tree()?;
-        return match child.reap_within(KILL_CONFIRM)? {
-            Some(status) => Ok(Outcome::Exited(reading.collect(status))),
-            None => Err(unconfirmed()),
-        };
-    }
-    child.kill_tree()?;
-    // What makes the joins below bounded is the reads having ended, not the child having exited: a descendant
-    // holds its own copy of these pipes, and one the kill cannot reach keeps them open with the child already
-    // gone. So both drains are what this waits for, and only then is the child reaped -- the same order the loop
-    // above uses, for the same reason. A tree that will not confirm leaves the reads outstanding and is reported
-    // rather than joined.
-    let deadline = Instant::now() + KILL_CONFIRM;
-    while !(reading.finished()) {
-        if Instant::now() >= deadline {
-            return Err(unconfirmed());
-        }
-        std::thread::sleep(POLL);
-    }
-    match child.reap_within(deadline.saturating_duration_since(Instant::now()))? {
-        Some(status) => Ok(Outcome::Killed(reading.collect(status))),
-        None => Err(unconfirmed()),
-    }
-}
-
-/// The one error every unconfirmed ending here reports. A caller that sees it has a tree it must not replace.
-fn unconfirmed() -> io::Error {
-    io::Error::other("a killed process tree would not end, so the command's exit could not be confirmed")
-}
-
-/// A thread reading each of a child's output pipes to its end.
-struct Drains {
-    out: std::thread::JoinHandle<Vec<u8>>,
-    err: std::thread::JoinHandle<Vec<u8>>,
-}
-
-impl Drains {
-    /// A reader for each pipe, or neither.
-    fn start(out: Option<ChildStdout>, err: Option<ChildStderr>) -> io::Result<Drains> {
-        let out = std::thread::Builder::new()
-            .name("smeltr-cmd-stdout".to_string())
-            .spawn(move || drain(out))?;
-        // If this one cannot start, the first ends on its own once the child is dropped and its pipe closes.
-        let err = std::thread::Builder::new()
-            .name("smeltr-cmd-stderr".to_string())
-            .spawn(move || drain(err))?;
-        Ok(Drains { out, err })
-    }
-
-    /// Both pipes read to their end.
-    fn finished(&self) -> bool {
-        self.out.is_finished() && self.err.is_finished()
-    }
-
-    /// What the child wrote, with the status it ended with.
-    fn collect(self, status: ExitStatus) -> Output {
-        Output {
-            status,
-            stdout: self.out.join().unwrap_or_default(),
-            stderr: self.err.join().unwrap_or_default(),
-        }
-    }
-}
-
-fn drain<R: io::Read>(stream: Option<R>) -> Vec<u8> {
-    let mut read = Vec::new();
-    if let Some(mut stream) = stream {
-        let _ = io::Read::read_to_end(&mut stream, &mut read);
-    }
-    read
-}
-
 #[cfg(windows)]
 mod windows {
     use std::io;
@@ -449,93 +324,10 @@ pub(crate) fn shell(unix: &str, windows: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     fn budget() -> Duration {
         Duration::from_millis(200)
-    }
-
-    #[test]
-    fn a_command_that_finishes_inside_its_budget_answers_what_it_wrote() {
-        let mut cmd = Command::new("git");
-        cmd.arg("--version");
-        match output_within(&mut cmd, Duration::from_secs(30)).expect("git --version runs") {
-            Outcome::Exited(out) => {
-                assert!(out.status.success());
-                assert!(String::from_utf8_lossy(&out.stdout).starts_with("git version"));
-            }
-            Outcome::Killed(_) => panic!("git --version outlasted thirty seconds"),
-        }
-    }
-
-    #[test]
-    fn a_command_that_outlasts_its_budget_is_killed() {
-        let started = Instant::now();
-        let mut cmd = shell("sleep 30", "ping -n 31 127.0.0.1 >nul");
-        let outcome = output_within(&mut cmd, budget()).expect("the fake child spawns");
-        assert!(
-            matches!(outcome, Outcome::Killed(_)),
-            "a sleeping process was not killed"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the kill did not follow the budget"
-        );
-    }
-
-    /// The hang this module exists for: the child exits at once, and a grandchild it left behind holds the output
-    /// pipe open. `Command::output` waits for that pipe forever; a bounded run kills the group and the read ends.
-    #[test]
-    fn a_grandchild_holding_the_output_pipe_cannot_outlast_the_budget() {
-        let started = Instant::now();
-        let mut cmd = shell("sleep 30 & exit 0", "start /b ping -n 31 127.0.0.1 & exit 0");
-        let outcome = output_within(&mut cmd, budget()).expect("the fake child spawns");
-        assert!(
-            matches!(outcome, Outcome::Killed(_)),
-            "a grandchild held the pipe and the run was reported as a clean exit"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the pipe outlasted the budget"
-        );
-    }
-
-    /// A descendant that redirects its output away from the pipes lets the run finish on time, and must not
-    /// be what is left of it afterward.
-    #[test]
-    #[cfg(unix)]
-    fn a_quiet_grandchild_does_not_outlive_a_finished_command() {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("sleep 30 >/dev/null 2>&1 & echo $! ; exit 0");
-        // Room for the shell to start and exit on a loaded machine: the test is about the grandchild, not the budget.
-        let outcome = output_within(&mut cmd, Duration::from_secs(5)).expect("sh spawns");
-        let Outcome::Exited(output) = outcome else {
-            panic!("a command that exited was reported as killed");
-        };
-        let grandchild: i32 = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .expect("sh printed a pid");
-        // Signal 0 tests for existence; a killed-but-unreaped grandchild is a zombie the shell's exit reparented
-        // to init, so an answer of "gone" may take a moment.
-        let gone = (0..200).any(|_| {
-            // SAFETY: signal 0 delivers nothing.
-            let alive = unsafe { libc::kill(grandchild, 0) } == 0;
-            if alive {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            !alive
-        });
-        assert!(gone, "the grandchild outlived the command that spawned it");
-    }
-
-    /// What a stalled process wrote before it was killed is what says why it stalled.
-    #[test]
-    fn output_written_before_a_kill_is_kept() {
-        let mut cmd = shell("echo halfway; sleep 30", "echo halfway& ping -n 31 127.0.0.1 >nul");
-        match output_within(&mut cmd, budget()).expect("the fake child spawns") {
-            Outcome::Killed(out) => assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "halfway"),
-            Outcome::Exited(_) => panic!("a sleeping process was reported as a clean exit"),
-        }
     }
 
     /// A killed child that is never waited for stays a zombie holding its process id.

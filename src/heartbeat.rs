@@ -2,7 +2,6 @@
 //! the directive it gets back, and the blocking client that sends it. Every exchange is worker-initiated.
 
 use crate::core::time::millis;
-use std::collections::HashMap;
 
 use crate::core::time::DateTime;
 
@@ -306,25 +305,6 @@ fn intern(name: String) -> &'static str {
 /// once the request has landed, so a failed send leaves the window's counts owed.
 pub(crate) fn peek_for_heartbeat(metrics: &Metrics) -> Vec<MetricSample> {
     metrics.peek_delta(crate::metrics::SUBSCRIBER_HEARTBEAT)
-}
-
-/// Peeked samples as per-thread wire DTOs, keyed by the `thread` label. Every sample carries one: `MetricsHandle`
-/// pushes it on every write.
-pub fn split_by_thread(samples: &[MetricSample]) -> HashMap<String, Vec<MetricSampleDto>> {
-    let mut out: HashMap<String, Vec<MetricSampleDto>> = HashMap::new();
-    for sample in samples {
-        let thread = sample
-            .key
-            .labels
-            .iter()
-            .find(|(k, _)| *k == crate::metrics::THREAD_LABEL)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
-        out.entry(thread)
-            .or_default()
-            .push(MetricSampleDto::from(sample.clone()));
-    }
-    out
 }
 
 /// Advance the heartbeat's cursor past `sent`, once the request landed.
@@ -2219,7 +2199,27 @@ mod tests {
     use super::*;
 
     use crate::metrics::MetricsHandle;
+    use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// Peeked samples as per-thread wire DTOs, keyed by the `thread` label. Every sample carries one: `MetricsHandle`
+    /// pushes it on every write.
+    fn split_by_thread(samples: &[MetricSample]) -> HashMap<String, Vec<MetricSampleDto>> {
+        let mut out: HashMap<String, Vec<MetricSampleDto>> = HashMap::new();
+        for sample in samples {
+            let thread = sample
+                .key
+                .labels
+                .iter()
+                .find(|(k, _)| *k == crate::metrics::THREAD_LABEL)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            out.entry(thread)
+                .or_default()
+                .push(MetricSampleDto::from(sample.clone()));
+        }
+        out
+    }
 
     /// A successful heartbeat: peek, ship, commit.
     fn heartbeat_ok(registry: &Metrics) -> HashMap<String, Vec<MetricSampleDto>> {

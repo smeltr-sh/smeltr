@@ -119,16 +119,6 @@ fn profiles(of: &Value) -> Vec<&str> {
     names.filter_map(Value::as_str).collect()
 }
 
-/// The classes `doc` holds, by name, for a picker.
-pub fn classes(doc: &Value) -> Vec<String> {
-    let names = doc
-        .get("classes")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flat_map(|c| c.keys());
-    names.cloned().collect()
-}
-
 struct Reader<'d> {
     objects: Option<&'d Map<String, Value>>,
     cut: &'d Cut,
@@ -288,7 +278,6 @@ mod tests {
             read(&doc(), "authentication", &odd).unwrap_err(),
             "`maybe` is no OCSF requirement: required, recommended or optional"
         );
-        assert_eq!(classes(&doc()), vec!["authentication".to_string()]);
     }
 
     /// A class taking the profile `host`, whose `device` holds an object `container` adds an attribute to.
