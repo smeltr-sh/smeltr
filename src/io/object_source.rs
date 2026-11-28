@@ -81,9 +81,9 @@ const ZSTD_WINDOW: u64 = 1 << 27;
 /// What a decoder holds at most: zstd's at its largest window.
 const LARGEST_DECODER: u64 = ZSTD_WINDOW + ZSTD_DECODER;
 
-/// The most an object source holds beyond its lane. The objects fetched ahead hold their room, and cutting what their
+/// The most an object source holds beyond its lane. The objects fetched ahead hold their room, and framing what their
 /// framers hold copies it once more before it is queued. The object being read holds its chunk, its queue, its decoder
-/// at its largest, and a record as long as the longest three times over: in its framer, cut, and in the chunk it is
+/// at its largest, and a record as long as the longest three times over: in its framer, framed, and in the chunk it is
 /// sent in.
 pub(crate) const HELD_BYTES: u64 = 2 * ROOM + CHUNK + QUEUED + LARGEST_DECODER + 3 * MAX_RECORD_BYTES;
 
@@ -987,8 +987,8 @@ enum Cutting {
 /// Why a fetch stops early: its reader is gone.
 const READER_GONE: &str = "its reader is gone";
 
-/// Reads the object at `path` to its end, decompressed, cuts it as `cutting` says and sends it into `tx`, counting in
-/// `shared` the bytes sent and not yet taken, whether it waited for the reader and what it holds besides. An error,
+/// Reads the object at `path` to its end, decompressed, frames it as `cutting` says and sends it into `tx`, counting in
+/// `shared` the bytes sent and not yet taken, whether it waited for the reader, and what it holds besides. An error,
 /// after the records before it, says why it is unreadable. Ends early once the receiver of `tx` is dropped.
 fn fetch(
     store: Arc<dyn ObjectStore>,
@@ -1165,7 +1165,8 @@ struct Shared {
     /// What the fetch holds besides the records it queued: its chunk, its decoder and its framer. Changed under its
     /// room's lock.
     holds: AtomicU64,
-    /// Its object is the one being read: it takes what it needs, outside its room. Changed under its room's lock.
+    /// Whether its object is the one being read, which takes what it needs outside its room. Changed under its room's
+    /// lock.
     current: AtomicBool,
     /// What the objects its source fetches ahead hold together.
     room: Arc<Room>,
@@ -1231,24 +1232,24 @@ struct Room {
 }
 
 impl Room {
-    /// Adds `bytes` to what `fetch` holds, first waiting, while its object is fetched ahead, until they fit. Err once
-    /// its reader is gone.
+    /// Adds `bytes` to what `fetch` holds. While its object is fetched ahead, waits until they fit; the object being
+    /// read never waits. Err once its reader is gone.
     fn hold(&self, fetch: &Shared, bytes: u64) -> Result<(), String> {
         let _held = self.admit(fetch, bytes)?;
         fetch.holds.fetch_add(bytes, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Queues `bytes` of records for `fetch`'s reader, first waiting, while its object is fetched ahead, until they
-    /// fit. Err once its reader is gone.
+    /// Queues `bytes` of records for `fetch`'s reader. While its object is fetched ahead, waits until they fit; the
+    /// object being read never waits. Err once its reader is gone.
     fn queue(&self, fetch: &Shared, bytes: u64) -> Result<(), String> {
         let _held = self.admit(fetch, bytes)?;
         fetch.waiting().bytes += bytes;
         Ok(())
     }
 
-    /// The room with `bytes` more of `fetch`'s in it, once they fit or its object is the one read. The lock is held
-    /// until the caller has counted them.
+    /// The room with `bytes` more of `fetch`'s in it. While its object is fetched ahead, waits until they fit; the
+    /// object being read never waits. The lock is held until the caller has counted them. Err once its reader is gone.
     fn admit(&self, fetch: &Shared, bytes: u64) -> Result<MutexGuard<'_, u64>, String> {
         let mut held = self.held.lock();
         loop {
@@ -1307,7 +1308,8 @@ fn decoder_bytes(magic: &[u8]) -> u64 {
     } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
         zstd_window(&magic[4..]).unwrap_or(ZSTD_WINDOW) + ZSTD_DECODER
     } else if magic.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
-        // A frame's blocks are its largest size at most, and the decoder keeps two of them, the last linked to.
+        // A frame's blocks are its largest size at most, and the decoder keeps two: the block it decodes and the one
+        // before, which a linked block may refer to.
         let largest = magic.get(5).map_or(7, |bd| (bd >> 4) & 7).max(4);
         2 * (1 << (2 * u32::from(largest) + 8)) + 16 * 1024
     } else if magic.starts_with(b"\xff\x06\x00\x00sNaPpY") {
