@@ -46,7 +46,7 @@ use crate::plan::topology::{AvroRead, HeldSecrets, SchemaRegistry, Tls};
 const MAGIC: u8 = 0;
 
 /// What a framed payload carries before its value: the magic byte and the schema's id.
-const HEADER: usize = 5;
+pub(crate) const HEADER: usize = 5;
 
 /// `payload`'s schema id and its value's bytes. Err says why it is not Confluent-framed Avro.
 fn unframe(payload: &[u8]) -> Result<(u32, &[u8]), String> {
@@ -65,11 +65,13 @@ fn unframe(payload: &[u8]) -> Result<(u32, &[u8]), String> {
 
 /// `value` written with schema `id`, framed.
 pub(crate) fn frame(id: u32, value: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(HEADER + value.len());
-    out.push(MAGIC);
-    out.extend_from_slice(&id.to_be_bytes());
-    out.extend_from_slice(value);
-    out
+    [&prefix(id)[..], value].concat()
+}
+
+/// What a payload carries before a value written with schema `id`: the magic byte and the id.
+pub(crate) fn prefix(id: u32) -> [u8; HEADER] {
+    let [a, b, c, d] = id.to_be_bytes();
+    [MAGIC, a, b, c, d]
 }
 
 /// A writer's schema: the schema itself and every named schema it references.

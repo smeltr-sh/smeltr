@@ -306,6 +306,21 @@ impl RecordChunkBuilder {
         self.at.push((offset, partition, topic, headers));
     }
 
+    /// A record of `parts` written one after another, read from `topic` at no offset or partition and with no headers,
+    /// so a caller that frames a record need not join the parts in a copy of its own.
+    pub(crate) fn push_parts(&mut self, parts: &[&[u8]], topic: Arc<str>) {
+        let len = parts.iter().map(|p| p.len()).sum();
+        self.time.push(None);
+        if self.raw.fits(len) {
+            self.raw.push_parts(parts);
+        } else {
+            let mut home = self.home.lock();
+            self.raw.push_parts_grow(&mut home.pool, parts);
+        }
+        self.size += len;
+        self.at.push((0, 0, topic, None));
+    }
+
     pub fn len(&self) -> usize {
         self.at.len()
     }

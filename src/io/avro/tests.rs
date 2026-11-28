@@ -479,19 +479,19 @@ fn container_values(file: &[u8]) -> Result<Vec<Vec<i64>>, String> {
     let container = container::Container::open(&mut input)?;
     let reader = GenericDatumReader::builder(container.schema.schema()).build().unwrap();
     let mut blocks = Vec::new();
-    while let Some(values) = container.block(&mut input, 1 << 20)? {
-        blocks.push(
-            values
-                .iter()
-                .map(|v| match reader.read_value(&mut v.as_slice()).unwrap() {
-                    Avro::Record(f) => match f[0].1 {
-                        Avro::Long(n) => n,
-                        _ => unreachable!(),
-                    },
+    while let Some(block) = container.block(&mut input, 1 << 20, &mut |_| Ok(()))? {
+        let mut values = Vec::new();
+        container.values(&block, |mut v| {
+            match reader.read_value(&mut v).unwrap() {
+                Avro::Record(f) => match f[0].1 {
+                    Avro::Long(n) => values.push(n),
                     _ => unreachable!(),
-                })
-                .collect(),
-        );
+                },
+                _ => unreachable!(),
+            }
+            Ok(())
+        })?;
+        blocks.push(values);
     }
     Ok(blocks)
 }
@@ -510,6 +510,34 @@ fn a_container_file_avro_writes_reads_value_by_value() {
 }
 
 #[test]
+fn a_container_block_takes_of_hold_what_it_holds_before_it_holds_it() {
+    let values: Vec<i64> = (0..10_000).collect();
+    for codec in [
+        apache_avro::Codec::Null,
+        apache_avro::Codec::Deflate(Default::default()),
+        apache_avro::Codec::Snappy,
+        apache_avro::Codec::Zstandard(Default::default()),
+    ] {
+        let file = container_file(codec, &values);
+        let mut input = &file[..];
+        let container = container::Container::open(&mut input).unwrap();
+        let mut took = 0;
+        let block = (container.block(&mut input, 1 << 20, &mut |bytes| {
+            took += bytes;
+            Ok(())
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(took, block.held + block.gone, "{codec:?}");
+        assert!(block.held >= block.bytes() as u64, "{codec:?}");
+        let mut input = &file[..];
+        let container = container::Container::open(&mut input).unwrap();
+        let refused = container.block(&mut input, 1 << 20, &mut |_| Err("full".to_string()));
+        assert_eq!(refused.err(), Some("full".to_string()), "{codec:?}");
+    }
+}
+
+#[test]
 fn a_container_file_that_does_not_hold_is_refused() {
     let file = container_file(apache_avro::Codec::Null, &[1, 2]);
     assert!(container_values(b"Obj").unwrap_err().contains("too short"));
@@ -523,7 +551,13 @@ fn a_container_file_that_does_not_hold_is_refused() {
     assert!(container_values(cut).unwrap_err().contains("ends early"));
     let mut input = &file[..];
     let header = container::Container::open(&mut input).unwrap();
-    assert!(header.block(&mut input, 1).unwrap_err().contains("more than 1 bytes"));
+    assert!(
+        header
+            .block(&mut input, 1, &mut |_| Ok(()))
+            .err()
+            .unwrap()
+            .contains("more than 1 bytes")
+    );
 }
 
 #[test]
