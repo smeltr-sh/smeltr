@@ -566,6 +566,7 @@ type HttpRequestsDto = TlsDto & {
   headers?: Record<string, string>;
   /** Header name to where its value lives. */
   credentials?: Record<string, SecretRef>;
+  inFlight?: number;
   maxRequestBytes?: ByteCount;
   bufferBytes?: ByteCount;
   stallAfterSecs?: number;
@@ -685,7 +686,6 @@ export type DestinationDto = {
       /** Absent is `none`. */
       compression?: HttpCompression;
       compressionLevel?: number;
-      inFlight?: number;
     })
   | (HttpRequestsDto & {
       type: 'prometheus';
@@ -693,7 +693,6 @@ export type DestinationDto = {
       url: string;
       /** The remote_write protocol version sent. Absent is `1.0`. */
       version?: '1.0' | '2.0';
-      inFlight?: number;
     })
   | (HttpRequestsDto & {
       type: 'otlp';
@@ -705,7 +704,6 @@ export type DestinationDto = {
       /** Absent is `none`. */
       compression?: HttpCompression;
       compressionLevel?: number;
-      inFlight?: number;
     })
   | (TlsDto &
       EntraSignIn & {
