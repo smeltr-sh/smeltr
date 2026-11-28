@@ -145,6 +145,7 @@ export function bareError(message: string): ApiError {
     item: null,
     field: null,
     rule: null,
+    span: null,
     message,
   };
 }
