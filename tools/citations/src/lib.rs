@@ -23,10 +23,6 @@ mod hot_path;
 /// does not belong here; define it, or cite the whole name it is a fragment of.
 const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     (
-        "_RJEM_MALLOC_CONF",
-        "the environment jemalloc reads its settings from, under tikv-jemalloc-sys's prefix",
-    ),
-    (
         "MALLCTL_ARENAS_ALL",
         "jemalloc's arena index that stands for every arena",
     ),
