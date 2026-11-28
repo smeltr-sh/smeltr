@@ -277,8 +277,6 @@ pub fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
     // `gzip_compress_bound` is the most a body of this length can gzip to, so the buffer is never too small.
     let len = gzip.gzip_compress(&body, &mut out).expect("gzip into its bound");
     out.truncate(len);
-    // A request is held until it is delivered, retries included, so it keeps only what it sends, not the whole bound.
-    out.shrink_to_fit();
     out
 }
 
