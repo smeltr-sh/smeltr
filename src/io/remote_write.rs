@@ -245,7 +245,7 @@ pub fn open(
     let protocol = RemoteWrite::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name));
     let make = || transport(c, &credentials, &config);
     Ok(Box::new(
-        super::http::HttpDestination::new(make(), protocol)
+        super::http::HttpDestinationBuilder::new(protocol)
             .with_subject(name)
             .with_metrics(metrics, id)
             .with_max_request_bytes(c.max_request_bytes)

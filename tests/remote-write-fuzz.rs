@@ -10,7 +10,6 @@
 
 use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -18,14 +17,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use smeltr::io::http::{HttpDestination, Response, Transport, Unwritten, agent_config, credential_headers};
+use smeltr::io::http::{
+    HttpDestination, HttpDestinationBuilder, Response, Transport, Unwritten, agent_config, credential_headers,
+};
 use smeltr::io::prometheus::{Samples, Version, Written};
 use smeltr::io::remote_write::{RemoteWrite, transport};
-use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection};
+use smeltr::io::{IoError, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{DestinationKind, HeldSecrets, PrometheusDestinationConfig, RemoteWriteVersion};
 
 use crate::certs;
+use crate::harness::destination::send_and_wait;
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::receiver::free_loopback;
 use crate::harness::wait_until;
@@ -126,7 +128,7 @@ impl Transport for FuzzStore {
                 }
                 *rng.pick(&[400, 409, 413, 422])
             }
-            // Each costs a backoff of up to the stall threshold, so they are kept rare.
+            // Each hands its batch back, so they are kept rare: a batch meeting one checks nothing after it.
             84..=87 => {
                 let retry_after = *rng.pick(&[None, Some("0"), Some("1"), Some("soon"), Some("-5")]);
                 answered.push("answer retry");
@@ -415,7 +417,7 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     let store = || Lands {
         sent: Arc::clone(&sent),
     };
-    let mut d = HttpDestination::new(store(), RemoteWrite::new(c))
+    let mut d = HttpDestinationBuilder::new(RemoteWrite::new(c))
         .with_max_request_bytes(c.max_request_bytes)
         .with_stall_after(c.stall_after)
         .with_senders_from(store, c.max_in_flight(), c.in_flight);
@@ -446,22 +448,12 @@ impl Transport for Lands {
     }
 }
 
-/// Hands `rows` over as one batch, and waits for its answer when the destination's senders take it.
+/// Hands `rows` over as one batch, and waits for its answer.
 fn deliver<T: Transport>(
     d: &mut HttpDestination<RemoteWrite, T>,
     rows: Vec<OwnedRecord>,
 ) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, mut refused) = d.send(0, Cow::Owned(rows))?;
-    if dispatched == Dispatched::InFlight {
-        d.flush()?;
-        for c in d.poll_completions()? {
-            refused.extend(c.rejections);
-            if let Some(u) = c.undelivered {
-                return Err(u.error);
-            }
-        }
-    }
-    Ok(refused)
+    send_and_wait(d, 0, rows)
 }
 
 /// Every setting of a Prometheus destination, as a bundle names it.
@@ -1063,6 +1055,7 @@ const ROW_OPTIONS: &[&str] = &[
     "answer Retry-After",
     "answer other",
     "a row refused",
+    "a batch throttled",
     "a batch failed by the store",
     "a batch stalled",
     "read 1.0",
@@ -1086,7 +1079,7 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
         usize::MAX => "maxRequestBytes unbounded".to_string(),
         n => format!("maxRequestBytes {n}"),
     });
-    // A throttled answer naps up to the stall threshold, so most are short.
+    // Most are short, so the stall threshold is reached.
     let stall_after = *rng.pick(&[0, 2, 20, 20, 50, 50, 50, 300]);
     coverage.reach(format!("stall {stall_after}ms"));
     let sent = Sent::default();
@@ -1120,9 +1113,10 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
         DestId::new(0),
         "d",
     );
-    let mut d = HttpDestination::new(store, RemoteWrite::new(&config).with_unwritten(unwritten))
+    let mut d = HttpDestinationBuilder::new(RemoteWrite::new(&config).with_unwritten(unwritten))
         .with_max_request_bytes(max_request_bytes)
-        .with_stall_after(config.stall_after);
+        .with_stall_after(config.stall_after)
+        .with_senders(vec![store], 1);
     // Miscounted histograms come only in seeds of their own, which the receiver may refuse, so every other seed
     // holds the round trip to every body.
     let miscount = rng.chance(8);
@@ -1159,6 +1153,8 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
                     coverage.reach("a row refused");
                 }
             }
+            // A store asking for less: the rows go back to egress, with the wait it asked for.
+            Ok(Err(e)) if e.throttled_wait().is_some() => coverage.reach("a batch throttled"),
             // The store's own answer, or the stall threshold passed: an error the destination names.
             Ok(Err(e)) if e.message.starts_with("the store ") => coverage.reach("a batch failed by the store"),
             Ok(Err(e)) if e.message.contains("still undelivered after") => coverage.reach("a batch stalled"),
@@ -1347,12 +1343,10 @@ fn live_run(seed: u64, base: &str, out_of_order: bool, coverage: &mut Coverage) 
         DestId::new(0),
         "d",
     );
-    let mut d = HttpDestination::new(
-        transport(&c, &[], &agent),
-        RemoteWrite::new(&c).with_unwritten(unwritten),
-    )
-    .with_max_request_bytes(c.max_request_bytes)
-    .with_stall_after(c.stall_after);
+    let mut d = HttpDestinationBuilder::new(RemoteWrite::new(&c).with_unwritten(unwritten))
+        .with_max_request_bytes(c.max_request_bytes)
+        .with_stall_after(c.stall_after)
+        .with_senders(vec![transport(&c, &[], &agent)], 1);
     let run = format!(
         "fuzz_{seed}_{}",
         if version == RemoteWriteVersion::V2 { "v2" } else { "v1" }

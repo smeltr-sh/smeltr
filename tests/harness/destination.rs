@@ -322,7 +322,9 @@ pub fn write(
                     return Err(format!("not landed: {}", u.error));
                 };
                 std::thread::sleep(wait);
-                let again = u.rows.iter().map(|&i| rows[i]).collect();
+                // In the batch's order, as egress sends them: each of the batch's requests named its own.
+                let mut again: Vec<usize> = u.rows.iter().map(|&i| rows[i]).collect();
+                again.sort_unstable();
                 hand_over(d, batches, next, (batch, again), &mut pending, &mut refused)?;
                 next += 1;
             }
@@ -488,5 +490,48 @@ pub fn set_tls(d: &mut serde_json::Map<String, serde_json::Value>, tls: ClientTl
     d.insert("trustedAuthorities".into(), serde_json::json!(AUTHORITIES));
     if tls == ClientTls::Presents {
         d.insert("certificate".into(), serde_json::json!("client"));
+    }
+}
+
+/// What a destination answered of one batch: the rows it refused, each carrying its row as egress gives it one, and
+/// what it did not deliver, with why.
+pub struct Answer {
+    pub refused: Vec<Rejection>,
+    pub undelivered: Option<smeltr::io::Undelivered>,
+}
+
+/// Hands `rows` to `d` as batch `batch` and waits for its answer.
+pub fn send_and_answer(
+    d: &mut dyn Destination,
+    batch: smeltr::io::BatchId,
+    rows: Vec<OwnedRecord>,
+) -> Result<Answer, smeltr::io::IoError> {
+    let (dispatched, mut refused) = d.send(batch, Cow::Borrowed(&rows))?;
+    let mut undelivered = None;
+    if dispatched == Dispatched::InFlight {
+        d.flush()?;
+        for c in d.poll_completions()? {
+            refused.extend(c.rejections);
+            undelivered = undelivered.or(c.undelivered);
+        }
+    }
+    for r in &mut refused {
+        if r.record.is_none() {
+            r.record = rows.get(r.doc).cloned();
+        }
+    }
+    Ok(Answer { refused, undelivered })
+}
+
+/// [`send_and_answer`], with what was not delivered as the failure.
+pub fn send_and_wait(
+    d: &mut dyn Destination,
+    batch: smeltr::io::BatchId,
+    rows: Vec<OwnedRecord>,
+) -> Result<Vec<Rejection>, smeltr::io::IoError> {
+    let answer = send_and_answer(d, batch, rows)?;
+    match answer.undelivered {
+        Some(u) => Err(u.error),
+        None => Ok(answer.refused),
     }
 }

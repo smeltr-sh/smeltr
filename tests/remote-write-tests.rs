@@ -3,19 +3,19 @@
 
 use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
-use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
 use prost::Message;
-use smeltr::io::http::{HttpDestination, Response, Transport, agent_config};
+use smeltr::io::http::{HttpDestination, HttpDestinationBuilder, Response, Transport, agent_config};
 use smeltr::io::remote_write::{RemoteWrite, transport};
-use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection};
+use smeltr::io::{IoError, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{HeldSecrets, PrometheusDestinationConfig, RemoteWriteVersion};
 
+use crate::harness::destination::send_and_wait;
 use crate::harness::receiver::free_loopback;
 use crate::harness::wait_until;
 use crate::live;
@@ -181,33 +181,46 @@ impl Transport for ScriptedTransport {
     fn post(&mut self, _path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
         self.sent.lock().push(body.to_vec());
         let status = self.answers.pop_front().expect("the script ran out");
+        // A store asking for less asks for a second's wait, so the wait it asked for can be counted.
+        let headers = match status {
+            429 | 503 => vec![("retry-after".to_string(), "1".to_string())],
+            _ => Vec::new(),
+        };
         Ok(Response {
             status,
-            headers: Vec::new(),
+            headers,
             body: format!("status {status}").into_bytes(),
         })
     }
 }
 
+fn builder() -> HttpDestinationBuilder<RemoteWrite> {
+    HttpDestinationBuilder::new(RemoteWrite::new(&config("http://unused"))).with_stall_after(Duration::from_secs(5))
+}
+
 fn scripted(statuses: &[u16]) -> (HttpDestination<RemoteWrite, ScriptedTransport>, Sent) {
+    scripted_by(statuses, builder())
+}
+
+/// A destination `b` builds, its one sender answering `statuses` in turn.
+fn scripted_by(
+    statuses: &[u16],
+    b: HttpDestinationBuilder<RemoteWrite>,
+) -> (HttpDestination<RemoteWrite, ScriptedTransport>, Sent) {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let transport = ScriptedTransport {
         answers: statuses.iter().copied().collect(),
         sent: Arc::clone(&sent),
     };
-    let d = HttpDestination::new(transport, RemoteWrite::new(&config("http://unused")))
-        .with_stall_after(Duration::from_secs(5));
-    (d, sent)
+    (b.with_senders(vec![transport], 1), sent)
 }
 
-/// Hands `rows` over as one batch, answered before `deliver` returns.
+/// Hands `rows` over as one batch, and waits for its answer.
 fn deliver<T: Transport>(
     d: &mut HttpDestination<RemoteWrite, T>,
     rows: Vec<OwnedRecord>,
 ) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, refused) = d.send(0, Cow::Owned(rows))?;
-    assert_eq!(dispatched, Dispatched::Complete);
-    Ok(refused)
+    send_and_wait(d, 0, rows)
 }
 
 fn decoded(body: &[u8]) -> wire::WriteRequest {
@@ -240,12 +253,19 @@ fn a_refused_request_is_split_to_the_sample_at_fault() {
 #[test]
 fn a_store_asking_to_wait_gets_the_request_again() {
     let registry = Arc::new(smeltr::metrics::Metrics::new());
-    let (d, sent) = scripted(&[503, 429, 204]);
-    let mut d = d.with_metrics(
-        smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"),
-        DestId::new(4),
+    let (mut d, sent) = scripted_by(
+        &[503, 429, 204],
+        builder().with_metrics(
+            smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"),
+            DestId::new(4),
+        ),
     );
     let rows = vec![sample("x", "a", 1.0, "2026-10-11T18:00:00.000000Z")];
+    // Each throttle hands the rows back with the wait the store asked for; egress sends them again after it.
+    for _ in 0..2 {
+        let throttled = deliver(&mut d, rows.clone()).unwrap_err();
+        assert_eq!(throttled.throttled_wait(), Some(Duration::from_secs(1)), "{throttled}");
+    }
     assert!(deliver(&mut d, rows).unwrap().is_empty());
     let sent = sent.lock();
     assert_eq!(sent.len(), 3);
@@ -256,9 +276,9 @@ fn a_store_asking_to_wait_gets_the_request_again() {
         .find(|s| s.key.name == "smeltr_destination_throttled_seconds_total")
         .expect("throttled time counted");
     assert!(throttled.key.labels.contains(&("destination", "4".to_string())));
-    // Two waits, the first two backoffs.
+    // The two waits the store asked for.
     assert!(
-        matches!(throttled.value, smeltr::metrics::MetricValue::FloatCounter(s) if s >= 0.6),
+        matches!(throttled.value, smeltr::metrics::MetricValue::FloatCounter(s) if s == 2.0),
         "{throttled:?}"
     );
 }
@@ -656,7 +676,8 @@ fn every_request_is_remote_write_with_its_headers() {
     };
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
     let credentials = vec![("Authorization".to_string(), "Bearer t-123".to_string())];
-    let mut d = HttpDestination::new(transport(&c, &credentials, &agent), RemoteWrite::new(&c));
+    let mut d =
+        HttpDestinationBuilder::new(RemoteWrite::new(&c)).with_senders(vec![transport(&c, &credentials, &agent)], 1);
     let rows = vec![sample("up", "api", 1.0, "2026-10-11T18:00:00.250000Z")];
     assert!(deliver(&mut d, rows).unwrap().is_empty());
     let (head, body) = served.join().unwrap();
@@ -727,7 +748,7 @@ fn a_2_0_destination_sends_2_0_with_metadata_on_each_series() {
         ..config(&url)
     };
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
-    let mut d = HttpDestination::new(transport(&c, &[], &agent), RemoteWrite::new(&c));
+    let mut d = HttpDestinationBuilder::new(RemoteWrite::new(&c)).with_senders(vec![transport(&c, &[], &agent)], 1);
     let rows = vec![
         row(r#"{"name":"requests_total","type":"sum","isMonotonic":true,"description":"Requests served."}"#),
         row(
@@ -801,7 +822,7 @@ fn prometheus_stores_what_the_destination_sends() {
 
     let c = config(&format!("{base}/api/v1/write"));
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
-    let mut d = HttpDestination::new(transport(&c, &[], &agent), RemoteWrite::new(&c));
+    let mut d = HttpDestinationBuilder::new(RemoteWrite::new(&c)).with_senders(vec![transport(&c, &[], &agent)], 1);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap();

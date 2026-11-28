@@ -14,12 +14,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use smeltr::io::elastic::{Elastic, PendingDoc, bulk_body, classify_response};
-use smeltr::io::http::{HttpDestination, Outcome, Protocol, Response, Transport};
+use smeltr::io::http::{HttpDestination, HttpDestinationBuilder, Outcome, Protocol, Response, Transport};
 use smeltr::io::{Destination, Dispatched, IoError, OutgoingRecord, OwnedRecord, Rejection};
 use smeltr::plan::topology::BulkAction;
 use std::borrow::Cow;
 
-use crate::harness::destination::read_request;
+use crate::harness::destination::{read_request, send_and_answer, send_and_wait};
 
 fn doc(index: &str, body: &str) -> PendingDoc {
     PendingDoc {
@@ -210,7 +210,7 @@ fn a_request_refused_whole_is_split_down_to_the_documents_at_fault() {
         let clean = (200, r#"{"errors":false}"#);
         // [0 1 2 3] refused; [0 1] lands; [2 3] refused; [2] lands; [3] refused alone.
         let (t, sent) = answered(&[Ok(refused), Ok(clean), Ok(refused), Ok(clean), Ok(refused)]);
-        let mut d = HttpDestination::new(t, Elastic::new("logs"));
+        let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
         let rows: Vec<_> = (0..4).map(|n| format!(r#"{{"n":{n}}}"#)).collect();
         let rows: Vec<_> = rows.iter().map(|r| OutgoingRecord::new(r.as_bytes())).collect();
         let rejections = deliver(&mut d, &rows).expect("a refused document is a rejection, not a failed hand-over");
@@ -245,7 +245,7 @@ fn a_document_the_mapping_refuses_is_rejected_alone() {
     let (t, sent) = scripted(&[Ok(
         r#"{"errors":true,"items":[{"create":{"status":400,"error":{"type":"document_parsing_exception","reason":"[1:22] failed to parse: data stream timestamp field [@timestamp] is missing"}}},{"create":{"status":201}},{"create":{"status":400,"error":{"type":"document_parsing_exception","reason":"[1:6] failed to parse field [n] of type [long] in document with id 'tWhPBKEBBF-BgoODp5mw'. Preview of field's value: 'abc'"}}},{"create":{"status":201}},{"create":{"status":400,"error":{"type":"strict_dynamic_mapping_exception","reason":"[1:6] mapping set to strict, dynamic introduction of [b] within [_doc] is not allowed"}}}]}"#,
     )]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     let rows = [
         OutgoingRecord::new(br#"{"msg":"no timestamp"}"#),
         OutgoingRecord::new(br#"{"@timestamp":"2026-10-04T00:00:00Z"}"#),
@@ -331,22 +331,18 @@ fn answered(responses: &[Result<(u16, &str), &str>]) -> (ScriptedTransport, Arc<
     )
 }
 
-/// Hand `rows` over as one batch. These destinations have no senders, so the batch is posted and answered before
-/// `send` returns.
+/// Hand `rows` over as one batch, and wait for its answer.
 fn deliver(
     d: &mut HttpDestination<Elastic, ScriptedTransport>,
     rows: &[OutgoingRecord<'_>],
 ) -> Result<Vec<Rejection>, IoError> {
-    let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    let (dispatched, refused) = d.send(0, Cow::Owned(rows))?;
-    assert_eq!(dispatched, Dispatched::Complete);
-    Ok(refused)
+    send_and_wait(d, 0, rows.iter().map(OwnedRecord::from).collect())
 }
 
 #[test]
 fn a_clean_hand_over_posts_once() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     deliver(
         &mut d,
         &[OutgoingRecord::new(br#"{"a":1}"#), OutgoingRecord::new(br#"{"b":2}"#)],
@@ -359,42 +355,34 @@ fn a_clean_hand_over_posts_once() {
     assert_eq!(sent.lock().len(), 1);
 }
 
-/// The retry carries only the documents that failed. Resending the ones
-/// the cluster already took would duplicate every one of them -- which is
-/// the failure mode that makes "just retry the batch" wrong.
+/// Only the documents that failed go back. Resending the ones the cluster already took would duplicate every one of
+/// them -- which is the failure mode that makes "just retry the batch" wrong.
 #[test]
-fn a_retry_resends_only_the_failed_documents() {
-    let (t, sent) = scripted(&[
-        Ok(r#"{"errors":true,"items":[
+fn only_the_busy_documents_go_back() {
+    let (t, sent) = scripted(&[Ok(r#"{"errors":true,"items":[
             {"create":{"status":201}},
             {"create":{"status":429,"error":{"type":"es_rejected_execution_exception","reason":"busy"}}},
             {"create":{"status":201}}
-        ]}"#),
-        Ok(r#"{"errors":false}"#),
-    ]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
-    deliver(
-        &mut d,
-        &[
-            OutgoingRecord::new(br#"{"n":1}"#),
-            OutgoingRecord::new(br#"{"n":2}"#),
-            OutgoingRecord::new(br#"{"n":3}"#),
-        ],
-    )
-    .unwrap();
-
-    let sent = sent.lock();
-    assert_eq!(sent.len(), 2);
-    assert!(sent[0].contains(r#"{"n":1}"#) && sent[0].contains(r#"{"n":3}"#));
-    assert!(
-        sent[1].contains(r#"{"n":2}"#),
-        "the retry must carry the failed document: {}",
-        sent[1]
+        ]}"#)]);
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
+    let rows = [
+        OutgoingRecord::new(br#"{"n":1}"#),
+        OutgoingRecord::new(br#"{"n":2}"#),
+        OutgoingRecord::new(br#"{"n":3}"#),
+    ];
+    let answer = send_and_answer(&mut d, 0, rows.iter().map(OwnedRecord::from).collect()).unwrap();
+    let undelivered = answer.undelivered.expect("the busy document goes back");
+    assert!(undelivered.error.throttled_wait().is_some(), "{}", undelivered.error);
+    assert_eq!(
+        undelivered.rows,
+        vec![1],
+        "only the busy document, for egress to send again"
     );
-    assert!(
-        !sent[1].contains(r#"{"n":1}"#) && !sent[1].contains(r#"{"n":3}"#),
-        "and must not carry the ones already indexed: {}",
-        sent[1]
+    assert!(answer.refused.is_empty());
+    assert_eq!(
+        sent.lock().len(),
+        1,
+        "the busy document goes back to egress, not again at once"
     );
 }
 
@@ -410,7 +398,7 @@ fn a_permanent_failure_is_reported_as_a_rejection_not_a_flush_error() {
         {"create":{"status":201}},
         {"create":{"status":400,"error":{"type":"mapper_parsing_exception","reason":"bad"}}}
     ]}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     let rejections = deliver(
         &mut d,
         &[OutgoingRecord::new(br#"{"a":1}"#), OutgoingRecord::new(br#"{"a":2}"#)],
@@ -428,27 +416,23 @@ fn a_permanent_failure_is_reported_as_a_rejection_not_a_flush_error() {
     );
 }
 
-/// A rejection's index has to survive a retry, which compacts the pending
-/// list down to only the documents that failed. Document 2 is refused and
-/// document 1 is merely busy, so after the retry the numbering must still
-/// point at the second document handed over, not at its position in the
-/// compacted list.
+/// A refused document and a busy one are each named by their position in the batch, though the request's pending
+/// list is compacted down to the busy ones: the first document is busy and the second refused.
 #[test]
-fn a_rejection_index_survives_a_retry_compaction() {
-    let (t, _sent) = scripted(&[
-        Ok(r#"{"errors":true,"items":[
+fn a_refused_and_a_busy_document_keep_their_positions() {
+    let (t, _sent) = scripted(&[Ok(r#"{"errors":true,"items":[
             {"create":{"status":429,"error":{"type":"es_rejected_execution_exception","reason":"busy"}}},
             {"create":{"status":400,"error":{"type":"mapper_parsing_exception","reason":"bad"}}},
             {"create":{"status":201}}
-        ]}"#),
-        Ok(r#"{"errors":false}"#),
-    ]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
-    let bodies: Vec<String> = (0..3).map(|n| format!("{{\"n\":{n}}}")).collect();
-    let rows: Vec<OutgoingRecord<'_>> = bodies.iter().map(|b| OutgoingRecord::new(b.as_bytes())).collect();
-    let rejections = deliver(&mut d, &rows).unwrap();
-    assert_eq!(rejections.len(), 1);
-    assert_eq!(rejections[0].doc, 1, "the second document handed over");
+        ]}"#)]);
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
+    let rows: Vec<OwnedRecord> = (0..3)
+        .map(|n| OwnedRecord::from(&OutgoingRecord::new(format!("{{\"n\":{n}}}").as_bytes())))
+        .collect();
+    let answer = send_and_answer(&mut d, 0, rows).unwrap();
+    assert_eq!(answer.refused.len(), 1);
+    assert_eq!(answer.refused[0].doc, 1, "the second document handed over");
+    assert_eq!(answer.undelivered.map(|u| u.rows), Some(vec![0]), "the first, busy");
 }
 
 /// A bulk request is newline-delimited, so a document holding a newline would end its line early and every
@@ -460,7 +444,7 @@ fn a_rejection_index_survives_a_retry_compaction() {
 #[test]
 fn a_document_holding_a_newline_is_refused_rather_than_breaking_the_request() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     let rejections = deliver(
         &mut d,
         &[
@@ -492,7 +476,7 @@ fn a_newline_refusal_does_not_shift_a_later_rejection_s_index() {
         {"create":{"status":201}},
         {"create":{"status":400,"error":{"type":"mapper_parsing_exception","reason":"bad"}}}
     ]}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     let rejections = deliver(
         &mut d,
         &[
@@ -511,37 +495,12 @@ fn a_newline_refusal_does_not_shift_a_later_rejection_s_index() {
     );
 }
 
-/// Retries are bounded by total time, not by attempt count, because the
-/// budget belongs to Kafka's poll interval rather than to Elasticsearch.
-#[test]
-fn retries_stop_at_the_flush_budget() {
-    let busy = r#"{"errors":true,"items":[
-        {"create":{"status":429,"error":{"type":"es_rejected_execution_exception","reason":"busy"}}}
-    ]}"#;
-    let (t, sent) = scripted(&vec![Ok(busy); 40]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs")).with_stall_after(Duration::from_millis(300));
-
-    let started = std::time::Instant::now();
-    let e = deliver(&mut d, &[OutgoingRecord::new(br#"{"a":1}"#)]).unwrap_err();
-    let elapsed = started.elapsed();
-
-    assert!(e.to_string().contains("still undelivered"), "{e}");
-    assert!(
-        elapsed < Duration::from_secs(3),
-        "the budget bounds the whole hand-over, not one attempt: {elapsed:?}"
-    );
-    assert!(
-        sent.lock().len() > 1,
-        "it should have retried at least once before giving up"
-    );
-}
-
 /// A row's `__destination.index` picks its index; a row without one goes to the
 /// default.
 #[test]
 fn a_placement_picks_the_index() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("fallback"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("fallback")).with_senders(vec![t], 1);
     deliver(
         &mut d,
         &[
@@ -560,7 +519,7 @@ fn a_placement_picks_the_index() {
 #[test]
 fn a_transport_failure_fails_the_hand_over_and_keeps_nothing() {
     let (t, sent) = scripted(&[Err("connection refused"), Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     let rows = [OutgoingRecord::new(br#"{"a":1}"#), OutgoingRecord::new(br#"{"a":2}"#)];
     let e = deliver(&mut d, &rows).unwrap_err();
     assert!(!e.is_rejection(), "no answer is worth another try: {e}");
@@ -578,7 +537,9 @@ fn a_transport_failure_fails_the_hand_over_and_keeps_nothing() {
 #[test]
 fn a_batch_past_the_bulk_size_is_posted_in_rounds() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#), Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs")).with_max_request_bytes(16);
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs"))
+        .with_max_request_bytes(16)
+        .with_senders(vec![t], 1);
     deliver(
         &mut d,
         &[
@@ -603,7 +564,7 @@ fn a_batch_past_the_bulk_size_is_posted_in_rounds() {
 #[test]
 fn a_row_with_no_doc_id_gets_a_generated_one() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     deliver(
         &mut d,
         &[
@@ -627,7 +588,7 @@ fn a_row_with_no_doc_id_gets_a_generated_one() {
 #[test]
 fn a_document_id_is_not_a_partition_key() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs"));
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![t], 1);
     deliver(&mut d, &[OutgoingRecord::new(b"{}").with_key(Some(b"partition-key"))]).unwrap();
     assert!(
         !sent.lock()[0].contains("partition-key"),
@@ -639,7 +600,7 @@ fn a_document_id_is_not_a_partition_key() {
 #[test]
 fn a_failed_batch_comes_back_beside_the_batch_a_flush_collected() {
     let (sender, _) = scripted(&[Ok(r#"{"errors":false}"#), Err("cluster said no")]);
-    let mut d = HttpDestination::new(scripted(&[]).0, Elastic::new("logs")).with_senders(vec![sender], 1);
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![sender], 1);
     let row = [OwnedRecord::from(&OutgoingRecord::new(br#"{"a":1}"#))];
     assert_eq!(d.send(1, Cow::Borrowed(&row)).unwrap().0, Dispatched::InFlight);
     d.flush().unwrap();
@@ -664,7 +625,7 @@ fn a_busy_document_comes_back_at_once_to_be_sent_again() {
         {"create":{"status":429,"error":{"type":"es_rejected_execution_exception","reason":"busy"}}},
         {"create":{"status":201}}
     ]}"#)]);
-    let mut d = HttpDestination::new(scripted(&[]).0, Elastic::new("logs")).with_senders(vec![sender], 1);
+    let mut d = HttpDestinationBuilder::new(Elastic::new("logs")).with_senders(vec![sender], 1);
     let rows: Vec<OwnedRecord> = (1..=3)
         .map(|n| OwnedRecord::from(&OutgoingRecord::new(format!(r#"{{"n":{n}}}"#).as_bytes())))
         .collect();
