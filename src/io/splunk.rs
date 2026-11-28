@@ -88,7 +88,7 @@ pub fn transport(config: &SplunkHecDestinationConfig, token: &str, agent: &ureq:
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &SplunkHecDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -101,7 +101,7 @@ pub fn open(
     // acknowledgements per channel.
     let make = || transport(c, &token, &config);
     Ok(Box::new(
-        super::http::HttpDestination::new(make(), Hec::new(c))
+        super::http::HttpDestinationBuilder::new(Hec::new(c))
             .with_subject(name)
             .with_metrics(metrics, id)
             .with_max_request_bytes(c.max_request_bytes)

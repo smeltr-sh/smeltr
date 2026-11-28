@@ -24,7 +24,7 @@ use crate::format::json::{write_json_string, write_scalar};
 use crate::plan::topology::Compression;
 
 /// Rows as CSV, each part's file headed by its record's leaves.
-pub struct CsvFormat {
+pub(crate) struct CsvFormat {
     schemas: Vec<Schema>,
     /// Each part's header row, its line break included.
     headers: Vec<Vec<u8>>,
@@ -32,7 +32,7 @@ pub struct CsvFormat {
 }
 
 impl CsvFormat {
-    pub fn new(schemas: Vec<Schema>, compression: Compression) -> CsvFormat {
+    pub(crate) fn new(schemas: Vec<Schema>, compression: Compression) -> CsvFormat {
         let headers = (schemas.iter())
             .map(|s| {
                 let mut names = Vec::new();

@@ -44,7 +44,7 @@ pub fn concat_n(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 /// The table's entry for un-flattened `Str + Str`.
-pub fn concat_str_str(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn concat_str_str(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     concat_n(ctx, ins)
 }
 

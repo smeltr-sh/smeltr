@@ -19,7 +19,7 @@
 //!
 //! Every field is a union with `null`, defaulting to it. A record field's name must be one Avro allows.
 
-pub mod container;
+pub(crate) mod container;
 pub mod registry;
 
 use std::collections::HashMap;
@@ -66,7 +66,7 @@ impl std::fmt::Display for SchemaId {
 }
 
 /// `payload`'s schema id and its value's bytes. Err says why it is not Confluent-framed Avro.
-pub fn unframe(payload: &[u8]) -> Result<(SchemaId, &[u8]), String> {
+fn unframe(payload: &[u8]) -> Result<(SchemaId, &[u8]), String> {
     match payload {
         [MAGIC, a, b, c, d, value @ ..] => Ok((SchemaId(u32::from_be_bytes([*a, *b, *c, *d])), value)),
         [] => Err("an empty payload, which holds no Avro".to_string()),
@@ -81,7 +81,7 @@ pub fn unframe(payload: &[u8]) -> Result<(SchemaId, &[u8]), String> {
 }
 
 /// `value` written with schema `id`, framed.
-pub fn frame(id: SchemaId, value: &[u8]) -> Vec<u8> {
+pub(crate) fn frame(id: SchemaId, value: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER + value.len());
     out.push(MAGIC);
     out.extend_from_slice(&id.0.to_be_bytes());
@@ -97,7 +97,7 @@ pub struct Parsed {
 
 impl Parsed {
     /// `text` and the texts of what it references, which may reference each other.
-    pub fn new(text: &str, referenced: &[String]) -> Result<Parsed, String> {
+    pub(crate) fn new(text: &str, referenced: &[String]) -> Result<Parsed, String> {
         let (schema, referenced) = Schema::parse_str_with_list(text, referenced).map_err(|e| e.to_string())?;
         Ok(Parsed { schema, referenced })
     }
@@ -115,7 +115,7 @@ impl Parsed {
 }
 
 /// The schema `id` names, with every schema it references, asked of `registry`.
-pub fn fetch(registry: &Registry, id: SchemaId) -> Result<Parsed, Unread> {
+fn fetch(registry: &Registry, id: SchemaId) -> Result<Parsed, Unread> {
     let text = registry.schema(id)?;
     let mut seen: Vec<(String, i64)> = Vec::new();
     let mut referenced: Vec<String> = Vec::new();
@@ -533,7 +533,7 @@ const NESTED_RECORDS: usize = 64;
 /// The fields `writer`'s schema declares, as a source declares them: each leaf of its record, a nested record's
 /// named with dots, each typed as `to_value` reads it. A record nested in itself, or past `NESTED_RECORDS`, is one
 /// variant field. Empty for a schema that is no record.
-pub fn fields_of(writer: &Parsed) -> Vec<crate::heartbeat::AvroField> {
+pub(crate) fn fields_of(writer: &Parsed) -> Vec<crate::heartbeat::AvroField> {
     let Ok(resolved) = writer.resolved() else {
         return Vec::new();
     };
@@ -745,7 +745,7 @@ fn is_null(value: &Avro) -> bool {
 }
 
 /// A decimal's text, exact: `unscaled`, its two's complement digits big-endian, over ten to the `scale`.
-pub fn decimal(unscaled: &[u8], scale: usize) -> String {
+fn decimal(unscaled: &[u8], scale: usize) -> String {
     let negative = unscaled.first().is_some_and(|b| b & 0x80 != 0);
     // The magnitude, base 256, most significant first.
     let mut magnitude: Vec<u8> = if negative {
@@ -789,7 +789,7 @@ pub fn decimal(unscaled: &[u8], scale: usize) -> String {
 }
 
 /// Why `name` cannot name an Avro field, if it cannot: Avro's names are a letter or `_`, then letters, digits and `_`.
-pub fn refuse_name(name: &str) -> Option<String> {
+fn refuse_name(name: &str) -> Option<String> {
     let mut chars = name.chars();
     let starts = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
     (!starts || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| {
@@ -798,14 +798,14 @@ pub fn refuse_name(name: &str) -> Option<String> {
 }
 
 /// `schema_of`'s text, and that text parsed.
-pub fn parsed_schema_of(arrow: &ArrowSchema) -> Result<(String, Schema), String> {
+fn parsed_schema_of(arrow: &ArrowSchema) -> Result<(String, Schema), String> {
     let text = schema_of(arrow)?;
     let parsed = Schema::parse_str(&text).map_err(|e| e.to_string())?;
     Ok((text, parsed))
 }
 
 /// A route's record, as Parquet's columns, as an Avro record schema's text. Err names a field Avro cannot name.
-pub fn schema_of(arrow: &ArrowSchema) -> Result<String, String> {
+pub(crate) fn schema_of(arrow: &ArrowSchema) -> Result<String, String> {
     let mut taken = Vec::new();
     let record = record_of(arrow.fields(), "Row", &mut taken)?;
     Ok(record.to_string())
@@ -856,7 +856,7 @@ fn type_of(arrow: &Arrow, name: &str, taken: &mut Vec<String>) -> Result<serde_j
 }
 
 /// Row `row` of `batch`, as a value of the record schema `schema_of` made of its schema.
-pub fn row_of(batch: &RecordBatch, row: usize) -> Avro {
+fn row_of(batch: &RecordBatch, row: usize) -> Avro {
     Avro::Record(
         (batch.schema().fields().iter().zip(batch.columns()))
             .map(|(f, column)| (f.name().clone(), field_value(column.as_ref(), row)))
@@ -909,13 +909,17 @@ struct Written {
 
 /// How a Kafka destination writes its rows as Avro: the registry it registers each record's schema with, and every
 /// schema it has registered.
-pub struct AvroWriter {
+pub(crate) struct AvroWriter {
     registry: Registry,
     written: Vec<Written>,
 }
 
 impl AvroWriter {
-    pub fn new(config: &SchemaRegistry, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<AvroWriter, IoError> {
+    pub(crate) fn new(
+        config: &SchemaRegistry,
+        tls: Option<&Tls>,
+        secrets: &HeldSecrets,
+    ) -> Result<AvroWriter, IoError> {
         Ok(AvroWriter {
             registry: Registry::new(config, tls, secrets)?,
             written: Vec::new(),
@@ -944,7 +948,7 @@ impl AvroWriter {
 
     /// Makes sure `arrow`'s schema is registered for `topic`. Err is a registry that may answer later; a refusal is
     /// kept, and every row of that schema to that topic is refused for it.
-    pub fn register(&mut self, topic: &str, arrow: &SchemaRef) -> Result<(), IoError> {
+    pub(crate) fn register(&mut self, topic: &str, arrow: &SchemaRef) -> Result<(), IoError> {
         let at = self.place(arrow);
         if self.written[at].ids.contains_key(topic) {
             return Ok(());
@@ -963,7 +967,7 @@ impl AvroWriter {
     }
 
     /// An encoder for the rows of one delivery, each of whose schemas `register` has registered for its topic.
-    pub fn encoder(&self) -> Encoder<'_> {
+    pub(crate) fn encoder(&self) -> Encoder<'_> {
         Encoder {
             writer: self,
             datum: HashMap::new(),
@@ -972,14 +976,14 @@ impl AvroWriter {
 }
 
 /// Encodes rows for one delivery: a datum writer per schema, built the first time a row needs it.
-pub struct Encoder<'w> {
+pub(crate) struct Encoder<'w> {
     writer: &'w AvroWriter,
     datum: HashMap<usize, Result<GenericDatumWriter<'w>, String>>,
 }
 
 impl Encoder<'_> {
     /// Row `row` of `batch`, framed for `topic`. Err is why the row is refused.
-    pub fn encode(&mut self, topic: &str, batch: &RecordBatch, row: usize) -> Result<Vec<u8>, String> {
+    pub(crate) fn encode(&mut self, topic: &str, batch: &RecordBatch, row: usize) -> Result<Vec<u8>, String> {
         let arrow = batch.schema_ref();
         let at = self.writer.find(arrow).expect("registered before it is encoded");
         let written = &self.writer.written[at];
@@ -1001,7 +1005,7 @@ impl Encoder<'_> {
 }
 
 /// The subject a topic's values are registered under: Confluent's topic name strategy.
-pub fn subject(topic: &str) -> String {
+fn subject(topic: &str) -> String {
     format!("{topic}-value")
 }
 

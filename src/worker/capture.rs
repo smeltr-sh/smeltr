@@ -110,7 +110,7 @@ impl Filter {
 }
 
 /// One capture in progress on this worker: what it keeps, what it has kept, and what stops it.
-pub struct Session {
+struct Session {
     invitation: CaptureInvitation,
     /// Which admission of its id this is. See [`Admitted`].
     admission: u64,
@@ -350,7 +350,7 @@ impl Session {
 /// the new admission for its own.
 #[derive(Debug, Clone)]
 pub struct Admitted {
-    pub invitation: CaptureInvitation,
+    pub(crate) invitation: CaptureInvitation,
     admission: u64,
 }
 
@@ -388,14 +388,14 @@ pub struct Captures {
 /// Where a worker holds rows a block keeps: a source whose block keeps records, or a destination that keeps rows it
 /// refused. A capture of the one, or at the other, is shown them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum HeldAt {
+pub(crate) enum HeldAt {
     Source(String),
     Destination(String),
 }
 
 /// That something here holds rows a block keeps at `at`, from [`Captures::holding`] until this is dropped. A capture
 /// there admitted meanwhile takes nothing else and reports nothing until it is shown them.
-pub struct Holding {
+pub(crate) struct Holding {
     captures: Arc<Captures>,
     at: HeldAt,
 }
@@ -466,7 +466,7 @@ impl Captures {
     ///
     /// One that already reached a bound is a finished answer and stays: it is what the leader asked for, nothing
     /// else is going to produce it, and the session it belongs to may expire before a replacement could.
-    pub fn set_deployed(&self, deployed: &Arc<crate::metrics::Subjects>) {
+    pub(crate) fn set_deployed(&self, deployed: &Arc<crate::metrics::Subjects>) {
         let mut sessions = self.sessions.lock();
         sessions.retain(|_, s| {
             !s.open()
@@ -480,7 +480,7 @@ impl Captures {
     }
 
     /// Note that something here holds rows a block keeps at `at`, until the returned [`Holding`] is dropped.
-    pub fn holding(self: &Arc<Self>, at: HeldAt) -> Holding {
+    pub(crate) fn holding(self: &Arc<Self>, at: HeldAt) -> Holding {
         *self.holders.lock().entry(at.clone()).or_default() += 1;
         Holding {
             captures: self.clone(),
@@ -489,13 +489,13 @@ impl Captures {
     }
 
     /// Note that an egress thread here sends to `destination`, so a capture there reads what it takes.
-    pub fn send_to(&self, destination: &str) {
+    pub(crate) fn send_to(&self, destination: &str) {
         self.sending.lock().insert(destination.to_string());
     }
 
     /// Note that nothing here sends to `destination` any more. A capture still filling there ends with what it has:
     /// it would otherwise wait out its deadline on a destination nothing feeds.
-    pub fn stop_sending_to(&self, destination: &str) {
+    pub(crate) fn stop_sending_to(&self, destination: &str) {
         self.sending.lock().remove(destination);
         for s in self.sessions.lock().values_mut() {
             if s.open() && s.sends(destination) {
@@ -535,7 +535,7 @@ impl Captures {
     }
 
     /// Offer `rows`, each under its columns, to `at`'s session, while it is still that admission.
-    pub fn offer_sent(&self, at: &AtDestination, rows: Vec<(Vec<CaptureColumn>, CapturedRow)>) {
+    pub(crate) fn offer_sent(&self, at: &AtDestination, rows: Vec<(Vec<CaptureColumn>, CapturedRow)>) {
         let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, &at.session, at.admission) else {
             return;
@@ -555,7 +555,7 @@ impl Captures {
     /// Every row is offered, whatever the capture's filter: that is compiled against a route's output on a transform
     /// thread, and these rows are what holds the destination up. Asked by an egress thread on every pass while it keeps
     /// refused rows, so a worker running no capture at a destination answers from one atomic load.
-    pub fn offer_held_at(
+    pub(crate) fn offer_held_at(
         &self,
         destination: &str,
         shown: &mut HashSet<u64>,
@@ -612,7 +612,7 @@ impl Captures {
 
     /// End `at`'s session with `why`, for a filter that will not compile against a route feeding its destination. A
     /// later admission under the same id is left alone.
-    pub fn fail_at(&self, at: &AtDestination, why: String) {
+    pub(crate) fn fail_at(&self, at: &AtDestination, why: String) {
         let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &at.session, at.admission) {
             s.end = Some(CaptureEnd::Failed(why));
@@ -628,7 +628,7 @@ impl Captures {
     }
 
     /// The tap a deployment attaches to the receiver it runs as `source`, for the captures of it as sent.
-    pub fn raw_tap(self: &Arc<Self>, source: &str) -> Arc<dyn crate::io::raw::RawTap> {
+    pub(crate) fn raw_tap(self: &Arc<Self>, source: &str) -> Arc<dyn crate::io::raw::RawTap> {
         Arc::new(RawCapture {
             captures: self.clone(),
             at: RawAt::Deployed(source.to_string()),
@@ -645,20 +645,20 @@ impl Captures {
     }
 
     /// Whether a deployment is reading `source` right now.
-    pub fn is_deployed(&self, source: &str) -> bool {
+    fn is_deployed(&self, source: &str) -> bool {
         self.deployed.lock().sources.iter().any(|s| s == source)
     }
 
     /// Whether `admitted` needs no reader of its own: it names no source, so it was admitted finished, or a
     /// deployment reading its source serves it, as one does any session that does not read its source itself.
-    pub fn served(&self, admitted: &Admitted) -> bool {
+    pub(crate) fn served(&self, admitted: &Admitted) -> bool {
         let invitation = &admitted.invitation;
         invitation.source.is_none() || invitation.tapped().is_some_and(|source| self.is_deployed(&source.id))
     }
 
     /// Whether any session is watching `source`, by the name the author gave it. Checked before a batch's text is
     /// gathered, so a worker running no capture answers from one atomic load.
-    pub fn watching(&self, source: &str) -> bool {
+    pub(crate) fn watching(&self, source: &str) -> bool {
         if self.reading.load(Ordering::Relaxed) == 0 {
             return false;
         }
@@ -670,7 +670,7 @@ impl Captures {
     /// Called from a transform thread on the batch it is about to run. `decoded` is the batch's records as their
     /// source's `meta` declares them: what a filter reads and a captured record carries. The batch is already
     /// decoded, so a capture never decodes twice.
-    pub fn tap(&self, source: &str, records: &[SourceRecord], meta: &SourceMeta, decoded: &DecodedBatch) {
+    pub(crate) fn tap(&self, source: &str, records: &[SourceRecord], meta: &SourceMeta, decoded: &DecodedBatch) {
         let watching: Vec<(String, u64)> = {
             let mut sessions = self.sessions.lock();
             sessions
@@ -684,7 +684,7 @@ impl Captures {
     }
 
     /// Whether a session watching `source` has an admission not in `shown`: one a block's records are still owed to.
-    pub fn owed_held(&self, source: &str, shown: &HashSet<u64>) -> bool {
+    pub(crate) fn owed_held(&self, source: &str, shown: &HashSet<u64>) -> bool {
         self.sessions
             .lock()
             .values_mut()
@@ -694,7 +694,7 @@ impl Captures {
     /// Offer the records a block holds on `source` to every session watching it whose admission is not in `shown`,
     /// each keeping what its own filter matches under [`EXCEPTION_MESSAGE`], `why` of the same record, and add those
     /// admissions to `shown`. An admission no longer open leaves `shown`.
-    pub fn tap_held(
+    pub(crate) fn tap_held(
         &self,
         source: &str,
         shown: &mut HashSet<u64>,
@@ -717,7 +717,7 @@ impl Captures {
     }
 
     /// Offer records to one admission of a session, for the cold path, which polls a source of its own.
-    pub fn offer(&self, admitted: &Admitted, records: &[SourceRecord], meta: &SourceMeta, decoded: &DecodedBatch) {
+    fn offer(&self, admitted: &Admitted, records: &[SourceRecord], meta: &SourceMeta, decoded: &DecodedBatch) {
         self.fill(
             &admitted.invitation.session,
             admitted.admission,
@@ -829,14 +829,14 @@ impl Captures {
 
     /// Whether `admitted` is still held and still wants records. The cold driver's loop condition: false once its
     /// session is let go, even while a later admission holds the same id.
-    pub fn open(&self, admitted: &Admitted) -> bool {
+    pub(crate) fn open(&self, admitted: &Admitted) -> bool {
         let mut sessions = self.sessions.lock();
         admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission).is_some_and(|s| s.open())
     }
 
     /// Keep what Run found out about `admitted`'s query. `meta`, where given, is the record the worker declared from
     /// the query's columns for a source that declared none, and the session's filter is compiled against it.
-    pub fn describe(&self, admitted: &Admitted, run: crate::heartbeat::SqlRun, meta: Option<SourceMeta>) {
+    fn describe(&self, admitted: &Admitted, run: crate::heartbeat::SqlRun, meta: Option<SourceMeta>) {
         let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission) else {
             return;
@@ -853,7 +853,7 @@ impl Captures {
 
     /// Mark `admitted` finished with `reason`, for a source that would not open or a poll that failed. A later
     /// admission under the same id is left alone.
-    pub fn fail(&self, admitted: &Admitted, reason: impl Into<String>) {
+    pub(crate) fn fail(&self, admitted: &Admitted, reason: impl Into<String>) {
         let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission) {
             s.end = Some(CaptureEnd::Failed(reason.into()));
@@ -862,7 +862,7 @@ impl Captures {
 
     /// End `admitted` with what it has, for a capture that has read all its source gives it. It ends as at its match
     /// count, the bound a leader already knows: the sample is as large as it will get.
-    pub fn end(&self, admitted: &Admitted) {
+    fn end(&self, admitted: &Admitted) {
         let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission)
             && s.open()
@@ -874,7 +874,7 @@ impl Captures {
     /// End every session still filling, keeping what it has. For a runtime that is stopping: its records are
     /// worth more delivered short than lost with the process, and a leader that invites the session again gets a
     /// fresh one in the replacement, never these.
-    pub fn end_all(&self, reason: &str) {
+    pub(crate) fn end_all(&self, reason: &str) {
         for s in self.sessions.lock().values_mut() {
             if s.open() {
                 s.end = Some(CaptureEnd::Failed(reason.to_string()));
@@ -922,7 +922,7 @@ impl Captures {
     }
 
     /// Forget a session the leader has acknowledged.
-    pub fn sent(&self, session: &str) {
+    pub(crate) fn sent(&self, session: &str) {
         let mut sessions = self.sessions.lock();
         sessions.remove(session);
         self.recount(&sessions);
@@ -933,14 +933,14 @@ impl Captures {
     /// out. The transform tap stops offering to it at once; a cold driver sees it gone at its next poll and drops its
     /// source and its copy of the lent credentials; the invitation, and what it lent, go with the session. A finished
     /// session stays until its report is sent: it is this worker's answer, and the leader still takes its reason.
-    pub fn drop_unlisted(&self, listed: &HashSet<String>) {
+    pub(crate) fn drop_unlisted(&self, listed: &HashSet<String>) {
         let mut sessions = self.sessions.lock();
         sessions.retain(|id, s| !s.open() || listed.contains(id));
         self.recount(&sessions);
     }
 
     /// Whether this process holds `session`, filling or finished and waiting for its report to be sent.
-    pub fn holds(&self, session: &str) -> bool {
+    pub(crate) fn holds(&self, session: &str) -> bool {
         self.sessions.lock().contains_key(session)
     }
 }
@@ -1140,13 +1140,13 @@ fn raw_row(read: crate::io::raw::RawRead<'_>, source: &str) -> (Vec<CaptureColum
 /// its filter, and how many more rows and bytes it takes.
 #[derive(Debug, Clone)]
 pub struct AtDestination {
-    pub session: String,
+    pub(crate) session: String,
     /// Which admission of `session` this is. See [`Admitted`].
     pub(crate) admission: u64,
-    pub destination: String,
+    pub(crate) destination: String,
     /// A condition over the row as its pipeline finished it, as a `deliver` rule's `when` reads it.
-    pub filter: Option<String>,
-    pub wanted: usize,
+    pub(crate) filter: Option<String>,
+    pub(crate) wanted: usize,
     /// How many bytes of rows it still takes. A transform thread copies no more than this, since the session would
     /// drop the rest.
     pub room: usize,
@@ -1158,7 +1158,7 @@ pub use crate::plan::tree::UNCLAIMED;
 /// The fields a pipeline writes (`plan::dictionary::record_type`), as a source's record declares its own: each leaf,
 /// and each open object's unclaimed fields. None for a record that is not a struct: its rows are shown by their own
 /// keys.
-pub fn written_fields(record: &DataType) -> Vec<(Entry, DataType)> {
+fn written_fields(record: &DataType) -> Vec<(Entry, DataType)> {
     // An object a pipeline wrote with nothing in it declares no field: here it is an object that holds whatever
     // keys it has.
     fn holding(ty: &DataType) -> DataType {
@@ -1204,7 +1204,7 @@ fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, cr
 }
 
 /// A tapped row's document as its record object, empty where it does not read as one.
-pub fn tapped_object(doc: &[u8]) -> crate::io::RecordObject {
+pub(crate) fn tapped_object(doc: &[u8]) -> crate::io::RecordObject {
     serde_json::from_slice(doc).unwrap_or_default()
 }
 
@@ -1216,7 +1216,7 @@ fn tapped_value(doc: Option<&[u8]>) -> serde_json::Value {
 /// The rows a pipeline finished, read as a capture at a destination shows them, and as a sample of its output holds
 /// them: each under the fields the pipeline writes, then every `__` field its plan holds for the row, which the
 /// document as sent to a destination leaves out.
-pub struct Finished<'a> {
+pub(crate) struct Finished<'a> {
     plan: &'a crate::plan::compile::Plan,
     written: Vec<(Entry, DataType)>,
     internal: Vec<(CaptureColumn, crate::core::id::SlotId)>,
@@ -1224,7 +1224,7 @@ pub struct Finished<'a> {
 
 impl<'a> Finished<'a> {
     /// The rows `plan` finishes, its exceptions tagged under `tag_field`.
-    pub fn of(plan: &'a crate::plan::compile::Plan, tag_field: &str) -> Finished<'a> {
+    pub(crate) fn of(plan: &'a crate::plan::compile::Plan, tag_field: &str) -> Finished<'a> {
         let record = crate::plan::dictionary::record_type(plan, tag_field);
         Finished {
             plan,
@@ -1235,7 +1235,12 @@ impl<'a> Finished<'a> {
 
     /// Row `row` of `batch`, which the plan ran over, whose document as sent to a destination reads as `object`.
     /// Returns the columns and the row under them.
-    pub fn row(&self, batch: &Batch, row: usize, object: crate::io::RecordObject) -> (Vec<CaptureColumn>, CapturedRow) {
+    pub(crate) fn row(
+        &self,
+        batch: &Batch,
+        row: usize,
+        object: crate::io::RecordObject,
+    ) -> (Vec<CaptureColumn>, CapturedRow) {
         let mut doc = Vec::new();
         let fields = (self.internal.iter())
             .map(|(_, slot)| {
@@ -1251,7 +1256,7 @@ impl<'a> Finished<'a> {
 
 /// `sent`, a row as a capture at a destination shows it, with its `__destination` values in `DESTINATION_COLUMNS`
 /// order after the rest.
-pub fn place(
+pub(crate) fn place(
     sent: &mut (Vec<CaptureColumn>, CapturedRow),
     destination: [Option<String>; crate::heartbeat::DESTINATION_COLUMNS.len()],
 ) {
@@ -1331,21 +1336,21 @@ fn held_row(record: &crate::io::OwnedRecord, why: &str) -> (Vec<CaptureColumn>, 
 /// source nothing is running -- which is exactly when a deployment is most likely to start underneath it. Several
 /// workers capturing the same session share this id and so split the partitions rather than each reading all of
 /// them.
-pub fn capture_group_id(session: &str) -> String {
+fn capture_group_id(session: &str) -> String {
     format!("smeltr-capture-{session}")
 }
 
 /// The `thread` label every capture reports under. One label for all of them, never the session id: a label is
 /// structural (design doc, Observability) and the key count has to stay bounded by the topology, where sessions are
 /// unbounded over time. Which session a number came from is the capture's own panel to answer, not the series'.
-pub const CAPTURE_LABEL: &str = "capture";
+pub(crate) const CAPTURE_LABEL: &str = "capture";
 
 /// The invitation's source, rewritten to read without advancing anything: its own consumer group, and starting at
 /// `from`, or at the end so a capture shows what is arriving now.
 ///
 /// Nothing on this path commits -- there is no `CommitTracker` on it at all -- so the group id never accumulates an
 /// offset and the source is left exactly as it was found.
-pub fn cold_source_config(
+fn cold_source_config(
     source: &crate::config_file::SourceDto,
     session: &str,
     from: Option<crate::config_file::StartPositionDto>,

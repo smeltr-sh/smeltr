@@ -10,14 +10,14 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 /// Which store a connection is, for the lines [`say_statements`] says.
-pub enum Store {
+pub(crate) enum Store {
     Leader,
     Registry,
 }
 
 /// Say at trace each statement `conn` runs, with how long it took. The text is the statement as written, with its
 /// parameters as placeholders, so no value it binds is said.
-pub fn say_statements(conn: &mut Connection, store: Store) -> rusqlite::Result<()> {
+pub(crate) fn say_statements(conn: &mut Connection, store: Store) -> rusqlite::Result<()> {
     // SQLite takes a plain function, so each store has its own.
     fn leader(event: rusqlite::trace::TraceEvent<'_>) {
         said("leader.db", event);
@@ -53,7 +53,7 @@ pub fn say_statements(conn: &mut Connection, store: Store) -> rusqlite::Result<(
 ///
 /// A step is appended and never edited: a file that has had it keeps its number forever. A file stopped anywhere in
 /// a step is left at the version before it, and the next start runs that step again.
-pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Result<(), String> {
+pub(crate) fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Result<(), String> {
     let applied: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("reading {store}'s version: {e}"))?;
@@ -133,7 +133,7 @@ pub fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str]) -> Res
 }
 
 /// Whether a build that knows `known` steps may use a store whose `min_reader` is as given.
-pub fn check(store: &str, min_reader: usize, known: usize) -> Result<(), String> {
+fn check(store: &str, min_reader: usize, known: usize) -> Result<(), String> {
     if min_reader > known {
         return Err(format!(
             "{store} needs a smeltr that knows {min_reader} of its steps, and this one knows {known}. A newer build \
@@ -150,7 +150,7 @@ pub fn check(store: &str, min_reader: usize, known: usize) -> Result<(), String>
 ///
 /// A change to what stored values mean, with no change to the schema, is a step too: one made only of a comment
 /// saying what changed, which counts as breaking.
-pub fn is_additive(step: &str) -> bool {
+pub(crate) fn is_additive(step: &str) -> bool {
     // What the statements say with comments dropped and every quoted string or name emptied, so neither can hide
     // or fake a keyword or a `;`.
     let mut code = String::new();
@@ -201,13 +201,13 @@ pub struct RepoStep {
     pub source: &'static str,
     /// Safe to run twice: a step and the version that records it cannot be written together, so a leader stopped
     /// between them runs the step again.
-    pub run: fn(&Path) -> Result<(), String>,
-    pub additive: bool,
+    run: fn(&Path) -> Result<(), String>,
+    pub(crate) additive: bool,
 }
 
 /// Every step the config repository has taken, oldest first, each in a file of its own. Append; never edit one that
 /// has shipped.
-pub const REPO_STEPS: &[RepoStep] = &[];
+pub(crate) const REPO_STEPS: &[RepoStep] = &[];
 
 /// Where the repository keeps how many steps it has had and its `min_reader`: its own git config, which is the
 /// leader's alone and never part of history a remote could hold.
@@ -215,7 +215,7 @@ const REPO_VERSION_KEY: &str = "smeltr.steps";
 const REPO_MIN_READER_KEY: &str = "smeltr.minReader";
 
 /// Record that the repository just created at `repo_path` has every step there is.
-pub fn stamp_new_repo(repo_path: &Path) -> Result<(), String> {
+pub(crate) fn stamp_new_repo(repo_path: &Path) -> Result<(), String> {
     let min_reader = REPO_STEPS.iter().rposition(|step| !step.additive).map_or(0, |i| i + 1);
     set_repo_key(repo_path, REPO_MIN_READER_KEY, min_reader)?;
     set_repo_key(repo_path, REPO_VERSION_KEY, REPO_STEPS.len())

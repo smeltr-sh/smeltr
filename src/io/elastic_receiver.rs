@@ -18,41 +18,41 @@ use crate::format::json::write_json_string;
 use crate::format::json_scan::{Next, Reader};
 
 /// What a document is filed under, as `hec::Filed` is.
-pub type Filed = super::hec::Filed;
+pub(crate) type Filed = super::hec::Filed;
 
 /// The keys a document is filed under, beside `hec::NAMED`'s `index`, by the `__source` field each is read as.
-pub const ID: &str = "id";
-pub const PIPELINE: &str = "pipeline";
+pub(crate) const ID: &str = "id";
+pub(crate) const PIPELINE: &str = "pipeline";
 
 /// `hec::NAMED`'s key for the index, so a document's index is read as a HEC event's is.
 const INDEX: &str = super::hec::NAMED[3];
 
 /// What answering one action holds at most, besides the body it was read from: its item, kept until the request is
 /// answered, and the item's JSON once it is.
-pub const ANSWER_BYTES: usize = 256;
+const ANSWER_BYTES: usize = 256;
 
 /// What reading `body` and answering its actions holds at most: the body, and an answer for each line, as each line
 /// may be an action. Known before `body` is read, so a request too large to answer is refused before it is.
-pub fn holds(body: &[u8]) -> usize {
+pub(crate) fn holds(body: &[u8]) -> usize {
     let lines = body.iter().filter(|b| **b == b'\n').count() + 1;
     body.len().saturating_add(lines.saturating_mul(ANSWER_BYTES))
 }
 
 /// The Elasticsearch version a receiver names itself as, which a client checks before it sends.
-pub const VERSION: &str = "8.17.0";
+const VERSION: &str = "8.17.0";
 
 /// What a request's path and query name for each action that names none itself.
 #[derive(Default)]
-pub struct Defaults<'a> {
-    pub index: Option<&'a str>,
-    pub pipeline: Option<&'a str>,
+pub(crate) struct Defaults<'a> {
+    pub(crate) index: Option<&'a str>,
+    pub(crate) pipeline: Option<&'a str>,
 }
 
 /// Why a whole bulk request is refused: Elasticsearch's error type and its reason.
 #[derive(Debug, PartialEq)]
-pub struct Invalid {
-    pub kind: &'static str,
-    pub reason: String,
+pub(crate) struct Invalid {
+    pub(crate) kind: &'static str,
+    pub(crate) reason: String,
 }
 
 impl Invalid {
@@ -72,7 +72,7 @@ impl Invalid {
 }
 
 /// The documents of a bulk body that are taken, cut one at a time.
-pub struct Documents {
+pub(crate) struct Documents {
     body: Vec<u8>,
     /// Each taken document's place in `body` and what it is filed under, in the order sent.
     taken: std::vec::IntoIter<(Range<usize>, Filed)>,
@@ -80,14 +80,14 @@ pub struct Documents {
 
 impl Documents {
     /// The next taken document, as sent, and what it is filed under.
-    pub fn next_record(&mut self) -> Option<(Vec<u8>, Filed)> {
+    pub(crate) fn next_record(&mut self) -> Option<(Vec<u8>, Filed)> {
         let (range, filed) = self.taken.next()?;
         Some((self.body[range].to_vec(), filed))
     }
 }
 
 /// The answer to each action of a bulk body, in the order they were sent.
-pub struct Items {
+pub(crate) struct Items {
     items: Vec<Item>,
 }
 
@@ -102,7 +102,7 @@ struct Item {
 impl Items {
     /// The bulk answer once the taken documents are delivered, as JSON: `took`, `errors` and an item per action. Each
     /// item is written as it is made, so answering holds the answer's bytes and one item.
-    pub fn answer(&self, took: Duration) -> Vec<u8> {
+    pub(crate) fn answer(&self, took: Duration) -> Vec<u8> {
         let took = u64::try_from(took.as_millis()).unwrap_or(u64::MAX);
         let errors = self.items.iter().any(|item| item.failed.is_some());
         let mut answer = format!(r#"{{"took":{took},"errors":{errors},"items":["#).into_bytes();
@@ -146,7 +146,7 @@ impl Item {
 
 /// `body`'s documents and the answer to each of its actions, or why the whole request is refused. Every line is read
 /// here, so none of a refused request is taken.
-pub fn read(body: Vec<u8>, defaults: Defaults<'_>) -> Result<(Documents, Items), Invalid> {
+pub(crate) fn read(body: Vec<u8>, defaults: Defaults<'_>) -> Result<(Documents, Items), Invalid> {
     let mut lines = Lines {
         body: &body,
         at: 0,
@@ -325,7 +325,7 @@ fn generated_id() -> String {
 }
 
 /// An Elasticsearch error body, as JSON: its `error`, of `kind` for `reason`, and the `status` it is answered with.
-pub fn error(status: u16, kind: &str, reason: &str) -> Vec<u8> {
+pub(crate) fn error(status: u16, kind: &str, reason: &str) -> Vec<u8> {
     let (mut kind_json, mut reason_json) = (Vec::new(), Vec::new());
     write_json_string(kind.as_bytes(), &mut kind_json);
     write_json_string(reason.as_bytes(), &mut reason_json);
@@ -341,12 +341,12 @@ pub fn error(status: u16, kind: &str, reason: &str) -> Vec<u8> {
 
 /// What `GET /_license` answers, as JSON: a basic license, active, which a Beat checks it may send under before it
 /// sends.
-pub fn license() -> Vec<u8> {
+pub(crate) fn license() -> Vec<u8> {
     br#"{"license":{"status":"active","uid":"c2tlbHRyLWxpY2Vuc2U","type":"basic","issue_date":"2024-12-11T00:00:00.000Z","issue_date_in_millis":1733875200000,"max_nodes":1000,"max_resource_units":null,"issued_to":"smeltr","issuer":"smeltr","start_date_in_millis":-1}}"#.to_vec()
 }
 
 /// What `GET /` answers, as JSON: the cluster a receiver names itself as, at [`VERSION`].
-pub fn cluster() -> Vec<u8> {
+pub(crate) fn cluster() -> Vec<u8> {
     format!(
         r#"{{"name":"smeltr","cluster_name":"smeltr","cluster_uuid":"c2tlbHRyLXJlY2VpdmVy","version":{{"number":"{VERSION}","build_flavor":"default","build_type":"docker","build_hash":"0000000000000000000000000000000000000000","build_date":"2024-12-11T12:08:05.663969764Z","build_snapshot":false,"lucene_version":"9.12.0","minimum_wire_compatibility_version":"7.17.0","minimum_index_compatibility_version":"7.0.0"}},"tagline":"You Know, for Search"}}"#
     )

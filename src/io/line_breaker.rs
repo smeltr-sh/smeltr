@@ -90,7 +90,7 @@ impl LineBreaker {
     /// The events it breaks off `bytes`, which start an event, each a range of `bytes`, in order. An event of nothing
     /// but whitespace is passed over. Once the stream has `ended`, the bytes after the last break are its last event;
     /// until then they are left, from [`Events::rest`] on, for more to come.
-    pub fn events<'a>(&'a self, bytes: &'a [u8], ended: bool) -> Events<'a> {
+    pub(crate) fn events<'a>(&'a self, bytes: &'a [u8], ended: bool) -> Events<'a> {
         Events {
             line_breaker: self,
             bytes,
@@ -101,7 +101,7 @@ impl LineBreaker {
 }
 
 /// The events a [`LineBreaker`] breaks off a stream's bytes, from [`LineBreaker::events`].
-pub struct Events<'a> {
+pub(crate) struct Events<'a> {
     line_breaker: &'a LineBreaker,
     bytes: &'a [u8],
     ended: bool,
@@ -110,7 +110,7 @@ pub struct Events<'a> {
 
 impl Events<'_> {
     /// Where the bytes not yet taken as events start: the end of `bytes` once an ended stream's last event is taken.
-    pub fn rest(&self) -> usize {
+    pub(crate) fn rest(&self) -> usize {
         self.at
     }
 }
@@ -145,24 +145,24 @@ impl Iterator for Events<'_> {
 /// since is at least 1/[`SEARCH_GROWTH`] of all that is held, so a whole message is found as it arrives, and bytes
 /// trickling in cost no more than [`SEARCH_GROWTH`] times their number in searching.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Searched(usize);
+pub(crate) struct Searched(usize);
 
 /// What part of the held bytes must be new before they are searched again.
-pub const SEARCH_GROWTH: usize = 16;
+const SEARCH_GROWTH: usize = 16;
 
 impl Searched {
     /// Whether `held` bytes, of which the first were searched in vain before, are worth searching again.
-    pub fn due(self, held: usize) -> bool {
+    pub(crate) fn due(self, held: usize) -> bool {
         held > self.0 && (held - self.0) * SEARCH_GROWTH >= held
     }
 
     /// The `held` bytes were searched, and no break found in them.
-    pub fn missed(&mut self, held: usize) {
+    pub(crate) fn missed(&mut self, held: usize) {
         self.0 = held;
     }
 
     /// A break was found: what follows it is yet to be searched.
-    pub fn found(&mut self) {
+    pub(crate) fn found(&mut self) {
         self.0 = 0;
     }
 }

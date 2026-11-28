@@ -12,12 +12,12 @@ pub struct ElasticReceiverDto {
     /// Whether a request is answered only once every destination has its records, rather than as soon as it is
     /// received.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub answer_after_delivery: bool,
+    answer_after_delivery: bool,
     /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`, as
     /// `Authorization: ApiKey` (the key as sent, or the `id:key` it encodes), or as the password of
     /// `Authorization: Basic`, whose user is not read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tokens: BTreeMap<String, SecretRefDto>,
+    tokens: BTreeMap<String, SecretRefDto>,
 }
 
 impl ReceiverKindDto for ElasticReceiverDto {

@@ -9,16 +9,17 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use smeltr::core::batch::Batch;
-use smeltr::io::http::{HttpDestination, agent_config};
+use smeltr::io::http::{HttpDestinationBuilder, agent_config};
 use smeltr::io::otlp::Encoding;
 use smeltr::io::otlp::export::Otlp;
-use smeltr::io::{Destination, Dispatched, OwnedRecord, Source, SourceRecord, build_source, http_post};
+use smeltr::io::{Destination, OwnedRecord, Source, SourceRecord, build_source, http_post};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{
     Compression, DestinationKind, HeldSecrets, OtlpDestinationConfig, Receiver, ReceiverConfig, SecretRef, Signal,
     SourceKind, SourceMeta,
 };
 
+use crate::harness::destination::send_and_wait;
 use crate::harness::receiver::free_loopback;
 use crate::harness::{Env, code, compile_ok_for};
 
@@ -153,11 +154,8 @@ fn round_trip(signal: Signal, export: &Value, items: usize, compression: Compres
     let transport = http_post::transport_as(&config.http, Encoding::Protobuf.content_type(), &[], &agent);
     let rows = carried(signal, &received);
     let delivered = std::thread::spawn(move || {
-        let mut d = HttpDestination::new(transport, Otlp::new(&config));
-        d.send(0, Cow::Owned(rows)).map(|(dispatched, refused)| {
-            assert_eq!(dispatched, Dispatched::Complete);
-            refused.into_iter().map(|r| r.reason).collect::<Vec<_>>()
-        })
+        let mut d = HttpDestinationBuilder::new(Otlp::new(&config)).with_senders(vec![transport], 1);
+        send_and_wait(&mut d, 0, rows).map(|refused| refused.into_iter().map(|r| r.reason).collect::<Vec<_>>())
     });
     let arrived = take(&mut second, items);
     let refused = delivered.join().unwrap().expect("delivers");
@@ -322,7 +320,7 @@ fn a_row_of_no_resource_lands_and_a_row_otlp_cannot_take_is_refused() {
         row(&format!(r#"{{"traceId":"{TRACE}","spanId":"short"}}"#)),
     ];
     let delivered = std::thread::spawn(move || {
-        let mut d = HttpDestination::new(transport, Otlp::new(&config));
+        let mut d = HttpDestinationBuilder::new(Otlp::new(&config)).with_senders(vec![transport], 1);
         d.send(0, Cow::Owned(rows)).map(|(_, refused)| refused)
     });
     let arrived = read(Signal::Traces, &take(&mut second, 1));

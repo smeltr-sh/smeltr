@@ -57,7 +57,7 @@ pub struct Contained {
 
 impl Contained {
     /// Spawns `cmd` under a group of its own. The caller owns the command's stdio configuration.
-    pub fn spawn(cmd: &mut Command) -> io::Result<Contained> {
+    pub(crate) fn spawn(cmd: &mut Command) -> io::Result<Contained> {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -93,15 +93,15 @@ impl Contained {
         self.child.id()
     }
 
-    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+    pub(crate) fn take_stdin(&mut self) -> Option<ChildStdin> {
         self.child.stdin.take()
     }
 
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+    pub(crate) fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.child.stdout.take()
     }
 
-    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+    pub(crate) fn take_stderr(&mut self) -> Option<ChildStderr> {
         self.child.stderr.take()
     }
 
@@ -125,7 +125,7 @@ impl Contained {
     ///
     /// Reaping the child first and killing afterward would name an id the system may have handed to somebody
     /// else, so a reaped child is not signaled: the order is enforced here rather than asked of each caller.
-    pub fn kill_tree(&mut self) -> io::Result<()> {
+    pub(crate) fn kill_tree(&mut self) -> io::Result<()> {
         #[cfg(unix)]
         {
             // A reaped child's id is released and may already name somebody else's group. There is nothing of
@@ -164,7 +164,7 @@ impl Contained {
     /// live process or as a zombie. So a caller that means to kill the group asks this, kills, and only then
     /// reaps; asking [`finished`](Self::finished) first releases the id, and the kill would name whatever the
     /// system handed it to next.
-    pub fn ended(&mut self) -> io::Result<bool> {
+    pub(crate) fn ended(&mut self) -> io::Result<bool> {
         if self.reaped.is_some() {
             return Ok(true);
         }
@@ -203,7 +203,7 @@ impl Contained {
     /// named by. It is polled rather than waited on because the thing being waited for may be a process wedged
     /// in an uninterruptible kernel call, which takes its signal only on leaving and would hold a blocking wait
     /// for as long as that is. `None` is an ending the caller cannot confirm, and reports rather than waits out.
-    pub fn reap_within(&mut self, budget: Duration) -> io::Result<Option<ExitStatus>> {
+    pub(crate) fn reap_within(&mut self, budget: Duration) -> io::Result<Option<ExitStatus>> {
         let deadline = Instant::now() + budget;
         loop {
             if let Some(status) = self.try_reap()? {
@@ -368,14 +368,14 @@ mod windows {
 
     /// A job object holding one process tree. Dropping it kills what it holds, which is what contains a runtime
     /// child when its supervisor dies.
-    pub struct Job(HANDLE);
+    struct Job(HANDLE);
 
     // SAFETY: a job handle is not thread-affine, and `Drop` closes it exactly once.
     unsafe impl Send for Job {}
     unsafe impl Sync for Job {}
 
     impl Job {
-        pub fn create() -> io::Result<Job> {
+        fn create() -> io::Result<Job> {
             // SAFETY: an unnamed job with default security, which is what both null arguments ask for.
             let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if handle.is_null() {
@@ -399,7 +399,7 @@ mod windows {
             Ok(job)
         }
 
-        pub fn adopt(&self, child: &Child) -> io::Result<()> {
+        fn adopt(&self, child: &Child) -> io::Result<()> {
             // SAFETY: a live job handle and a live process handle the `Child` still owns.
             if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) } == 0 {
                 return Err(io::Error::last_os_error());
@@ -407,7 +407,7 @@ mod windows {
             Ok(())
         }
 
-        pub fn terminate(&self) -> io::Result<()> {
+        fn terminate(&self) -> io::Result<()> {
             // SAFETY: a live job handle. Terminating an empty job succeeds.
             if unsafe { TerminateJobObject(self.0, 1) } == 0 {
                 return Err(io::Error::last_os_error());

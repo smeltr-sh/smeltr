@@ -6,35 +6,35 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct EventHubsSourceDto {
     /// The namespace: its name in Azure's public cloud, its host name in another cloud, or `host:port`.
-    pub namespace: String,
+    pub(crate) namespace: String,
     /// The event hubs it reads, each a Kafka topic.
-    pub event_hubs: Vec<String>,
-    pub consumer_group: String,
+    pub(crate) event_hubs: Vec<String>,
+    pub(crate) consumer_group: String,
     /// The namespace's or an event hub's connection string. At most one of it, `clientSecret` and
     /// `managedIdentityClientId`; none signs in as the host's managed identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connection_string: Option<SecretRefDto>,
+    connection_string: Option<SecretRefDto>,
     #[serde(flatten)]
-    pub sign_in: EntraSignInDto,
+    pub(crate) sign_in: EntraSignInDto,
     #[serde(default, skip_serializing_if = "StartPositionDto::is_default")]
-    pub start: StartPositionDto,
+    pub(crate) start: StartPositionDto,
     /// `None` is an unbounded streaming source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop: Option<StopPositionDto>,
+    pub(crate) stop: Option<StopPositionDto>,
     /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `FetchBytes::DEFAULT` without a memory
     /// figure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fetch_bytes: Option<FetchBytes>,
+    pub(crate) fetch_bytes: Option<FetchBytes>,
     /// How this source's record bytes become text. See [`EncodingLabel`].
     #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-    pub encoding: EncodingLabel,
+    encoding: EncodingLabel,
     /// Where its payloads are Avro: the registry holding each writer's schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_registry: Option<SchemaRegistryDto>,
+    schema_registry: Option<SchemaRegistryDto>,
     #[serde(default, flatten)]
-    pub read: ReadFormatDto,
+    read: ReadFormatDto,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl SourceSpec for EventHubsSourceDto {

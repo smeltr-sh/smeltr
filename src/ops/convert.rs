@@ -17,7 +17,7 @@ use crate::ops::OpKernel;
 
 /// Whether `col` is already the text a `Str` blend wants. An unbound column counts: it has no values to render, and
 /// nothing reads one.
-pub fn is_text(col: &Column) -> bool {
+fn is_text(col: &Column) -> bool {
     col.is_unbound() || col.data_type() == DataType::Str
 }
 
@@ -25,7 +25,7 @@ pub fn is_text(col: &Column) -> bool {
 ///
 /// A scalar renders as `toString` does; a container renders as its JSON, as `tag::json_text` gives it on the same
 /// table. A caller holding text keeps its own column ([`is_text`]).
-pub fn stringify(ctx: &mut Ctx, col: &Column) -> Column {
+fn stringify(ctx: &mut Ctx, col: &Column) -> Column {
     let ty = col.data_type();
     debug_assert!(!is_text(col), "text is already text; the caller keeps its column");
     match ty {
@@ -171,13 +171,13 @@ pub fn parse_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// A parse function's call: `kernel`, and a `CoercionRefused` on each row whose arguments are all there and whose
 /// text did not read. A blank text is null and clean, as the coercion table has it. The kernels stay quiet for the
 /// parser and the lookup, which owe their own exceptions.
-pub fn read_or_refuse(ctx: &mut Ctx, ins: &[&Column], kernel: OpKernel) -> Column {
+pub(crate) fn read_or_refuse(ctx: &mut Ctx, ins: &[&Column], kernel: OpKernel) -> Column {
     refuse(ctx, ins, kernel, true)
 }
 
 /// `read_or_refuse` for a conversion that reads every value, blank included, so its only null is an argument it
 /// cannot read: `decode`, `encode`, `parseBytes`, `toString(bytes, form)`.
-pub fn convert_or_refuse(ctx: &mut Ctx, ins: &[&Column], kernel: OpKernel) -> Column {
+pub(crate) fn convert_or_refuse(ctx: &mut Ctx, ins: &[&Column], kernel: OpKernel) -> Column {
     refuse(ctx, ins, kernel, false)
 }
 
@@ -196,7 +196,7 @@ fn refuse(ctx: &mut Ctx, ins: &[&Column], kernel: OpKernel, blank_is_clean: bool
 }
 
 /// `parseHex(value)` is `parseInt(value, 16)`: a `0x` prefix is accepted.
-pub fn parse_hex(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn parse_hex(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let mut radix = Column::alloc(ctx.pool, &DataType::I64, len);
     radix.i64_mut().unwrap().values.fill(16);
@@ -223,7 +223,7 @@ pub(crate) fn timeparse_duration(s: &str) -> Option<i64> {
 }
 
 /// `parseDuration(value)`: the count of microseconds `toString` writes, read back. A miss is null.
-pub fn parse_duration(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn parse_duration(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let v = ins[0].var().unwrap();
     map_i64(ctx, &DataType::Duration, len, &[Some(v.validity)], |i| {
@@ -235,7 +235,7 @@ pub fn parse_duration(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// `parseTime(value, format)` for one format known when the plan compiled: what the convert pass after a parse runs over a declared
 /// `datetime` field. The year a yearless format lacks comes from the batch's `now()`, as it does with no reference.
-pub fn parse_time_with_format(ctx: &mut Ctx, value: &Column, fmt: &str) -> Column {
+pub(crate) fn parse_time_with_format(ctx: &mut Ctx, value: &Column, fmt: &str) -> Column {
     let len = value.len();
     if let Some(e) = short_circuit_empty(&[value], &DataType::DateTime, len) {
         return e;
@@ -296,14 +296,14 @@ pub fn parse_time(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 // ---------------------------------------------------------------------------
 
 /// Whether a column of `from` is already what `to` asks for, so the coercion is the column itself.
-pub fn coerce_is_identity(from: &DataType, to: &DataType) -> bool {
+pub(crate) fn coerce_is_identity(from: &DataType, to: &DataType) -> bool {
     from == to
 }
 
 /// The coercion table (design doc, Language) applied at run time: every row of `col` becomes `to`, or
 /// null with a `CoercionRefused` exception. A blank text under a number, bool or time is null and clean. A refused
 /// element refuses the row's whole array; a refused leaf of a struct is null on its own.
-pub fn coerce(ctx: &mut Ctx, col: &Column, to: &DataType) -> Column {
+pub(crate) fn coerce(ctx: &mut Ctx, col: &Column, to: &DataType) -> Column {
     let (out, refused) = coerce_with_refusals(ctx, col, to);
     if let Some(refused) = refused {
         for row in (0..col.len()).filter(|&r| bits::get_row(&refused, r)) {
@@ -315,7 +315,7 @@ pub fn coerce(ctx: &mut Ctx, col: &Column, to: &DataType) -> Column {
 
 /// `coerce`, with the refused rows as a bitmap for the caller to raise: an array's element refusals are its
 /// rows', not the child's, and a parser owes its own field exception rather than a coercion's.
-pub fn coerce_with_refusals(ctx: &mut Ctx, col: &Column, to: &DataType) -> (Column, Option<Vec<u64>>) {
+fn coerce_with_refusals(ctx: &mut Ctx, col: &Column, to: &DataType) -> (Column, Option<Vec<u64>>) {
     let len = col.len();
     let from = col.data_type();
     if col.is_unbound() {
@@ -519,7 +519,7 @@ pub(crate) fn in_i64_range(f: f64) -> bool {
 
 /// A time read from text: in `format`, or else by the automatic reading, which tries first the shape that matched
 /// last (`hint`). A reading with no year takes it from `now`.
-pub fn read_time(s: &str, format: Option<&str>, hint: &mut usize, now: i64) -> Option<i64> {
+pub(crate) fn read_time(s: &str, format: Option<&str>, hint: &mut usize, now: i64) -> Option<i64> {
     match format {
         Some(fmt) => timeparse::parse_with_format_at(s, fmt, Some(now)),
         None => timeparse::parse_auto_hinted_at(s, *hint, Some(now)).map(|(us, i)| {
@@ -667,7 +667,7 @@ fn build_scalars(ctx: &mut Ctx, to: &DataType, values: &[Option<Scalar>]) -> Col
 /// `decode(bytes, label)`: the bytes read as text in the encoding the label names, `"auto"` included, as a source's
 /// `encoding` reads its records. Bytes that do not decode become U+FFFD. Null where the label names no encoding, or
 /// names `"none"`.
-pub fn decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let (Some(v), Some(labels)) = (side::var(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Str, len);
@@ -715,7 +715,7 @@ pub(crate) fn decode_each<'b>(
 
 /// `encode(text, label)`: the text's bytes in the charset the label names. Null where the label names none, names
 /// `"auto"`, which detects and so has nothing to write, or where the charset cannot spell a character of the text.
-pub fn encode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn encode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let (Some(v), Some(labels)) = (side::str(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Bytes, len);
@@ -763,7 +763,7 @@ fn encode_text(text: &str, charset: Charset, out: &mut Vec<u8>) -> bool {
 
 /// `parseBytes(text)` and `parseBytes(text, form)`: the bytes `toString` wrote as this text, in the form named
 /// (`format::bytes_text`), base64 where none is. Null where the text is not that form, or the form is no form.
-pub fn parse_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn parse_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let v = ins[0].var().unwrap();
     let forms = ins.get(1).and_then(|c| side::var(c));

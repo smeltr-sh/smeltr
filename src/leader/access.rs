@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 /// The area every group draws on.
-pub const SHARED: &str = "shared";
+const SHARED: &str = "shared";
 
 /// What a person may do in one area. Ordered: each level includes every level before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
@@ -188,7 +188,7 @@ impl Access {
     }
 
     /// The areas `self` reads, or `None` when it reads every one.
-    pub fn viewed(&self) -> Option<Vec<String>> {
+    pub(crate) fn viewed(&self) -> Option<Vec<String>> {
         match self {
             Access::Administrator => None,
             Access::Areas(areas) => Some(areas.keys().cloned().collect()),

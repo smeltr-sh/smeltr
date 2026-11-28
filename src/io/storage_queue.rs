@@ -30,10 +30,10 @@ const GET_MAX: usize = 32;
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The suffix of the queue a message is moved to once it has been received `max_deliveries` times.
-pub const POISON_SUFFIX: &str = "-poison";
+pub(crate) const POISON_SUFFIX: &str = "-poison";
 
 /// One Storage queue, reached at its URL.
-pub struct StorageQueue {
+pub(crate) struct StorageQueue {
     queue_url: String,
     poison_url: String,
     /// Every blob a notification names is under one of these addresses: the account's blob service, and its Data
@@ -58,7 +58,7 @@ struct Failed {
 impl StorageQueue {
     /// The queue at `queue_url`, announcing blobs in `access`'s account, signed with `azure`'s credentials, its calls
     /// run on `runtime`.
-    pub fn new(
+    pub(crate) fn new(
         queue_url: &str,
         access: &AzureAccess,
         max_deliveries: u32,

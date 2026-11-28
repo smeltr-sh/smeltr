@@ -49,14 +49,14 @@ pub enum Step {
 /// The keys the schemas a pipeline produces type, under a dynamic parse's target, as a tree of names: a key the parse
 /// lays into the unclaimed fields at one of them is converted to its type as it is laid.
 #[derive(Debug, Default)]
-pub struct SchemaKeys {
+pub(crate) struct SchemaKeys {
     /// Each name's keys, and its type where a schema types it. The first is the target's.
     nodes: Vec<(std::collections::HashMap<String, usize>, Option<DataType>)>,
 }
 
 impl SchemaKeys {
     /// The tree of `typed`, each a name under the target and its type. `None` where `typed` is empty.
-    pub fn new(typed: impl IntoIterator<Item = (String, DataType)>) -> Option<SchemaKeys> {
+    pub(crate) fn new(typed: impl IntoIterator<Item = (String, DataType)>) -> Option<SchemaKeys> {
         let mut keys = SchemaKeys {
             nodes: vec![Default::default()],
         };
@@ -153,7 +153,7 @@ impl Discovered {
 
 /// One batch's walk. `'d` is the batch's lifetime: a staged key or value may borrow straight from a row's bytes or
 /// from an object's prior unclaimed fields, so `collapse` must run before that borrow ends.
-pub struct Spread<'d> {
+pub(crate) struct Spread<'d> {
     nodes: Vec<Node>,
     fields: Vec<(SlotId, DataType, String, TypedBuilder)>,
     objects: Vec<Unclaimed<'d>>,
@@ -184,7 +184,7 @@ pub struct Spread<'d> {
     /// parse's exception.
     converts: bool,
     /// What the row just scanned lost, which `parse_batch` marks.
-    pub lost: Lost,
+    pub(crate) lost: Lost,
     /// The keys a produced schema types: a value laid at one of them is converted to its type.
     schema: Option<std::sync::Arc<SchemaKeys>>,
     /// Rows where a value laid at a key `schema` types did not fit its type, with the key, the value and the type.
@@ -197,17 +197,17 @@ pub struct Spread<'d> {
 
 /// What a row's read lost. Each is a warning on the row.
 #[derive(Copy, Clone, Default, Debug, PartialEq)]
-pub struct Lost {
+pub(crate) struct Lost {
     /// Text that names no character became U+FFFD.
-    pub replaced: bool,
+    pub(crate) replaced: bool,
     /// A number an f64 cannot hold became no value.
-    pub non_finite: bool,
+    pub(crate) non_finite: bool,
 }
 
 impl<'d> Spread<'d> {
     /// `objects` take the keys `fields` does not name; each one's `under` is read from `batch`. Where `ctx` tallies
     /// fields, for a preview, it also keeps what each unclaimed key held.
-    pub fn new(
+    fn new(
         rows: usize,
         fields: &[Output],
         objects: &[ParseObject],
@@ -305,7 +305,7 @@ impl<'d> Spread<'d> {
     }
 
     /// Start walking row `row`, a row after the last one walked. A source calls it before the row's first key.
-    pub fn row(&mut self, row: usize, pool: &mut BufferPool) {
+    pub(crate) fn row(&mut self, row: usize, pool: &mut BufferPool) {
         while self.row < row {
             self.flush(pool);
             self.row += 1;
@@ -316,7 +316,7 @@ impl<'d> Spread<'d> {
 
     /// Enter `key` of the object the walk is at. `object` says the value is an object, which the walk can go into.
     /// Each `enter` is followed by the value the step asks for and then `leave`.
-    pub fn enter(&mut self, key: Cow<'d, str>, object: bool) -> Step {
+    pub(crate) fn enter(&mut self, key: Cow<'d, str>, object: bool) -> Step {
         let mut n = 1;
         if self.split_dots && key.contains('.') {
             n = 0;
@@ -338,7 +338,7 @@ impl<'d> Spread<'d> {
     }
 
     /// Leave the key `enter` entered last.
-    pub fn leave(&mut self) {
+    pub(crate) fn leave(&mut self) {
         let n = self.groups.pop().expect("a key was entered");
         self.keys.truncate(self.keys.len() - n);
         self.frames.truncate(self.frames.len() - n);
@@ -409,13 +409,13 @@ impl<'d> Spread<'d> {
     }
 
     /// Where a declared leaf's value is written, whole.
-    pub fn whole<'s>(&'s mut self, pool: &'s mut BufferPool) -> Slot<'s> {
+    pub(crate) fn whole<'s>(&'s mut self, pool: &'s mut BufferPool) -> Slot<'s> {
         let i = self.stamped();
         Slot::new(&mut self.fields[i].3, self.row, pool)
     }
 
     /// Write a declared leaf's scalar value.
-    pub fn whole_scalar(&mut self, tag: &Tag<'_>, pool: &mut BufferPool) {
+    pub(crate) fn whole_scalar(&mut self, tag: &Tag<'_>, pool: &mut BufferPool) {
         let i = self.stamped();
         self.fields[i].3.set(self.row, Cell::Tag(tag), pool);
     }
@@ -430,7 +430,7 @@ impl<'d> Spread<'d> {
     }
 
     /// A key repeats at `path` inside the value at the walk's key: a contradiction, where the parse keeps that key.
-    pub fn repeated(&mut self, path: &[Cow<'_, str>]) {
+    pub(crate) fn repeated(&mut self, path: &[Cow<'_, str>]) {
         let f = *self.frames.last().expect("a key was entered");
         let leaf = f.node.and_then(|n| self.nodes[n].leaf);
         if f.tally_only || leaf.is_some_and(|i| !keeps(&self.fields[i].1, path)) {
@@ -443,7 +443,7 @@ impl<'d> Spread<'d> {
     }
 
     /// A declared leaf's value, as text: straight into its builder.
-    pub fn text(&mut self, text: &str, quoted: bool, pool: &mut BufferPool) {
+    pub(crate) fn text(&mut self, text: &str, quoted: bool, pool: &mut BufferPool) {
         let i = self.leaf();
         if self.stamp() {
             self.contradicted();
@@ -458,29 +458,29 @@ impl<'d> Spread<'d> {
 
     /// Stage text for field `index` of the `fields` `new` was given, on the row being walked: for a parser whose
     /// names its configuration fixes, which resolves each once.
-    pub fn set_text_at(&mut self, index: usize, text: &str, quoted: bool, pool: &mut BufferPool) {
+    pub(crate) fn set_text_at(&mut self, index: usize, text: &str, quoted: bool, pool: &mut BufferPool) {
         self.fields[index].3.set(self.row, Cell::Text { text, quoted }, pool);
     }
 
     /// The buffer a `Copy` value's encoding is written into, how many keys deep it sits (an object the value holds
     /// has its keys at that depth), and whether a key under it splits at its dots.
-    pub fn copy(&mut self) -> (&mut Vec<u8>, usize, bool) {
+    pub(crate) fn copy(&mut self) -> (&mut Vec<u8>, usize, bool) {
         self.copy_start = self.arena.len();
         (&mut self.arena, self.keys.len(), self.split_dots)
     }
 
     /// The value written since `copy` is not kept: it was null, or the source walks it instead.
-    pub fn uncopy(&mut self) {
+    pub(crate) fn uncopy(&mut self) {
         self.arena.truncate(self.copy_start);
     }
 
     /// Lay the value written since `copy`.
-    pub fn copied(&mut self) {
+    pub(crate) fn copied(&mut self) {
         self.lay(None);
     }
 
     /// A `Copy` value that is text.
-    pub fn copy_text(&mut self, text: &str, quoted: bool) {
+    pub(crate) fn copy_text(&mut self, text: &str, quoted: bool) {
         let guess = self.discovered.is_some().then(|| text_tag(text, quoted));
         variant::put_str(self.copy().0, text);
         self.lay(guess);
@@ -613,7 +613,7 @@ impl<'d> Spread<'d> {
 
     /// The value that arrived at the key `enter` just refused, where the schema declares an object: kept so the row's
     /// mark can show it.
-    pub fn refused(&mut self, value: Encoded) {
+    pub(crate) fn refused(&mut self, value: Encoded) {
         self.not_objects.last_mut().expect("a refused key").3 = Some(tag::json_text(value));
     }
 
@@ -673,7 +673,7 @@ impl<'d> Spread<'d> {
     /// `UnparsableField` on that row, and each row whose keys contradict as a `KeyContradiction`. Each object's
     /// unclaimed fields are last: one object per row of the keys laid there, null where a row has none.
     /// Each exception names what it read under `input`.
-    pub fn collapse(mut self, ctx: &mut Ctx, input: SlotId) -> Vec<(SlotId, Column)> {
+    fn collapse(mut self, ctx: &mut Ctx, input: SlotId) -> Vec<(SlotId, Column)> {
         while self.row < self.rows {
             self.flush(ctx.pool);
             self.row += 1;
@@ -752,7 +752,7 @@ impl<'d> Spread<'d> {
 /// Whether each row is selected by `guard` and kept by `live` (`Instr::live`); a missing one selects every row. A
 /// parser visits only these: a row it skips lays nothing, so its unclaimed fields stay as they were and its fields are
 /// null. The guard's blend discards that null, and the serializer never reads a dropped row.
-pub fn selected(batch: &Batch, guard: Option<SlotId>, live: Option<SlotId>) -> Vec<bool> {
+pub(crate) fn selected(batch: &Batch, guard: Option<SlotId>, live: Option<SlotId>) -> Vec<bool> {
     let mut rows = vec![true; batch.rows()];
     for mask in [guard, live].into_iter().flatten() {
         let mask = batch.peek(mask).bool().expect("a guard is Bool");
@@ -765,7 +765,7 @@ pub fn selected(batch: &Batch, guard: Option<SlotId>, live: Option<SlotId>) -> V
 
 /// One format's reading of a row into a `Spread`. A scanner is made once per batch, which is where its format's
 /// per-batch setup goes.
-pub trait Scanner {
+pub(crate) trait Scanner {
     /// The parser's name, as the pipeline calls it.
     const NAME: &'static str;
     /// What a row's scan reuses from the last row's, borrowing the row's bytes.
@@ -793,7 +793,7 @@ pub trait Scanner {
 
 /// Scan every row `taken` selects into `outputs` and the unclaimed fields of `objects`. A row that does not parse is
 /// marked on `input_slot`: a parse exception or, for a variant, a refused conversion.
-pub fn parse_batch<S: Scanner>(
+pub(crate) fn parse_batch<S: Scanner>(
     scanner: S,
     input_slot: SlotId,
     outputs: &[Output],
@@ -843,7 +843,7 @@ pub fn parse_batch<S: Scanner>(
 /// A parse of `ParserKind::Variant`: each row's variant laid into the outputs and the unclaimed fields as a parse lays
 /// its keys. A value that does not fit the type its name declares is a refused conversion, and so is a row that holds
 /// a value that is not an object. A null row lays nothing.
-pub struct Variant;
+pub(crate) struct Variant;
 
 impl Scanner for Variant {
     const NAME: &'static str = "";
@@ -1066,7 +1066,7 @@ fn keeps(mut ty: &DataType, path: &[Cow<'_, str>]) -> bool {
 
 /// This row's raw bytes, or `None` when there is nothing to parse: a null row, a variant row that holds no
 /// string, or an input column that is not text-shaped at all.
-pub fn row_bytes(col: &Column, row: usize) -> Option<&[u8]> {
+pub(crate) fn row_bytes(col: &Column, row: usize) -> Option<&[u8]> {
     if let Ok(v) = col.variant() {
         return match v.validity.is_valid(row).then(|| variant::read(v.get(row)))? {
             Value::Str(s) => Some(s.as_bytes()),

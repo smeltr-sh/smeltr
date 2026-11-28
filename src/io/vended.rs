@@ -13,7 +13,7 @@ use crate::io::objects::RENEW_BEFORE;
 type Renew = dyn Fn() -> Result<(Arc<AwsCredential>, SystemTime), String> + Send + Sync;
 
 /// AWS credentials a service vends, renewed [`RENEW_BEFORE`] they expire.
-pub struct Vended {
+pub(crate) struct Vended {
     /// Who vends them, as an error names it: `the catalog`, `Unity Catalog`.
     what: String,
     renew: Arc<Renew>,
@@ -24,7 +24,7 @@ pub struct Vended {
 impl Vended {
     /// Starts from `first`, the credentials already vended and when they expire. `renew` blocks: it runs
     /// on tokio's blocking pool, one renewal at a time. `what` names the service in an error.
-    pub fn new(
+    pub(crate) fn new(
         what: String,
         first: (Arc<AwsCredential>, SystemTime),
         renew: impl Fn() -> Result<(Arc<AwsCredential>, SystemTime), String> + Send + Sync + 'static,
