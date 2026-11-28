@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(ended, End::Gone { partial: 0 });
         let messages: Vec<String> = admitted.iter().flat_map(|(m, _)| m.clone()).collect();
         assert_eq!(messages, ["<13>a", "<13>b", "<13>c"]);
-        // Each admission counts the bytes of its messages, as the inbox counts them.
+        // Each admission counts the bytes of its payloads, as the inbox counts them.
         let (first, bytes) = &admitted[0];
         assert_eq!(*bytes, first.iter().map(String::len).sum::<usize>());
     }

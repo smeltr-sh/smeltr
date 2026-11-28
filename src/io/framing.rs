@@ -98,10 +98,10 @@ impl LengthPrefix {
     }
 }
 
-/// The frames cut from a stream, each a record, framed straight into the chunk the reader takes them in.
+/// The payloads framed from a stream, held in the chunk the reader takes them in.
 pub(super) struct Framed {
     records: RecordChunkBuilder,
-    /// The topic each record is read from: none.
+    /// The topic each payload is read from: none.
     nowhere: Arc<str>,
 }
 
@@ -115,7 +115,7 @@ impl Default for Framed {
 }
 
 impl Framed {
-    /// The records `push` frames.
+    /// The payloads `push` frames.
     pub(super) fn of(push: impl FnOnce(&mut Framed)) -> Framed {
         let mut framed = Framed::default();
         push(&mut framed);
@@ -130,7 +130,7 @@ impl Framed {
         self.records.is_empty()
     }
 
-    /// What its records hold, as the inbox counts them.
+    /// What its payloads hold, as the inbox counts them.
     pub(super) fn size(&self) -> usize {
         self.records.size()
     }

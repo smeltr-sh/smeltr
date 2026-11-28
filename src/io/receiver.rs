@@ -1084,7 +1084,7 @@ pub(super) enum Cutter {
     Events(hec::Events),
     /// Records cut already, each filed under its own.
     Each(s2s_receiver::Cuts),
-    /// Records framed already, filed under nothing.
+    /// Payloads framed already, filed under nothing.
     Framed(Framed),
     Otlp(otlp::Export),
     Samples(prometheus::Samples),
