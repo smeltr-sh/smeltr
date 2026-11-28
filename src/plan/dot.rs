@@ -12,7 +12,7 @@ use crate::plan::resolve::{ResourceBuilder, SymbolTable, resolve};
 
 /// What a `.` follows.
 #[derive(Debug)]
-pub enum Before {
+pub(crate) enum Before {
     /// No value: the dot is in a string or a comment, or it is a number's decimal point. A number literal is never
     /// read as a value before a dot, since `1.` is how a decimal starts.
     Nothing,
@@ -25,7 +25,7 @@ pub enum Before {
 /// What the `.` at byte `dot` of `src` follows: the longest run of tokens ending at it that parses as one operand, so
 /// `a == b.` follows `b` and `f(x).` follows `f(x)`. A call binds tighter than any operator, so the longest such run
 /// is the one the call will take.
-pub fn before_dot(src: &str, dot: usize) -> Before {
+pub(crate) fn before_dot(src: &str, dot: usize) -> Before {
     read(src, dot).map_or(Before::Nothing, |(_, before, _)| before)
 }
 
@@ -70,14 +70,14 @@ fn read(src: &str, dot: usize) -> Option<(Vec<Spanned>, Before, usize)> {
 /// bind are bound: the statements before it, then a statement that reads what the dot follows, starting at byte `at`,
 /// then a `}` for each block still open.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Cut {
-    pub body: String,
-    pub at: u32,
+pub(crate) struct Cut {
+    pub(crate) body: String,
+    pub(crate) at: u32,
 }
 
 /// The `Cut` for the `.` at byte `dot` of a code step's body, `src`. `None` where the dot follows no value, or only
 /// the record.
-pub fn cut_at(src: &str, dot: usize) -> Option<Cut> {
+pub(crate) fn cut_at(src: &str, dot: usize) -> Option<Cut> {
     let (toks, before, start) = read(src, dot)?;
     if !matches!(before, Before::Value(_)) || start == dot {
         return None;
@@ -109,14 +109,14 @@ fn is_operand(e: &Expr) -> bool {
 }
 
 /// The type `e` has read against `syms`. `None` where it does not resolve.
-pub fn type_in(e: &Expr, syms: &SymbolTable) -> Option<DataType> {
+pub(crate) fn type_in(e: &Expr, syms: &SymbolTable) -> Option<DataType> {
     resolve(e, &mut syms.clone(), &mut ResourceBuilder::default())
         .ok()
         .map(|ir| ir.ty)
 }
 
 /// An object's fields, by key, each with its type. None for any other type.
-pub fn fields_of(ty: &DataType) -> &[(String, DataType)] {
+pub(crate) fn fields_of(ty: &DataType) -> &[(String, DataType)] {
     match ty {
         DataType::Struct(fields, _) => fields,
         _ => &[],
@@ -125,16 +125,16 @@ pub fn fields_of(ty: &DataType) -> &[(String, DataType)] {
 
 /// A function a call on a value may name: what its first parameter takes, and whether that takes `ty`.
 #[derive(Debug, PartialEq, serde::Serialize)]
-pub struct Method {
-    pub name: &'static str,
+pub(crate) struct Method {
+    pub(crate) name: &'static str,
     /// The types it takes, as a type error spells them: `i64/f64`.
-    pub takes: String,
-    pub fits: bool,
+    pub(crate) takes: String,
+    pub(crate) fits: bool,
 }
 
 /// Each function a call on a value of `ty` may name. None where only a row knows the type, a variant or null: any of
 /// them may fit.
-pub fn methods_for(ty: &DataType) -> Vec<Method> {
+pub(crate) fn methods_for(ty: &DataType) -> Vec<Method> {
     if matches!(ty, DataType::Variant | DataType::Null) {
         return Vec::new();
     }

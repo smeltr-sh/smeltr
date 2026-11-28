@@ -120,11 +120,19 @@ again. A delivery unit that failed waits its own backoff, so the ones
 delivered beside it do not wait on it; only a destination where nothing is
 delivered backs off as a whole.
 
-Egress paces what is in flight to what the link carries: the rate
-acknowledgments come back at, times the least round trip they take. That
-target is its queue's budget, never over the destination's limit and never
-under two batches. A destination that asks to be sent less has its target
-cut, and raised again as it stops asking.
+Egress paces each destination with BBR (Bottleneck Bandwidth and Round-trip
+propagation time), as the IETF draft
+[draft-ietf-ccwg-bbr](https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/)
+specifies it, with a batch for a packet and for the send quantum.
+It hands over a batch only while the congestion window has room for it, or
+nothing is in flight, and the pacing rate allows it. The window is never over
+the destination's limit and never under four batches; the queue's
+budget is the window and one batch ready behind it. An answer that asks to be
+sent less (429, 503, or a full queue) counts as loss. Its rows come back to
+egress as soon as it is answered and go again after the wait the destination
+asked for, so the model hears a throttle within the round trip that drew it, as
+TCP hears a loss. A destination that delivers a batch in order waits a throttle
+out itself, since its rows cannot go back behind those after them.
 
 A full queue refuses a batch at once and never holds the thread that offered
 it. The refused batch waits and transform passes over that source until the

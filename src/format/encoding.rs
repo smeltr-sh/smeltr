@@ -11,11 +11,11 @@
 use std::borrow::Cow;
 
 /// One of encoding_rs' static encodings.
-pub type Charset = &'static encoding_rs::Encoding;
+pub(crate) type Charset = &'static encoding_rs::Encoding;
 
 /// What `auto` falls back to when the bytes are neither UTF-8 nor UTF-16. Every byte maps to a character, so the
 /// fallback never fails — it can only be wrong, which is why it is marked.
-pub const FALLBACK: Charset = encoding_rs::WINDOWS_1252;
+const FALLBACK: Charset = encoding_rs::WINDOWS_1252;
 
 /// A source's declared encoding.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
@@ -58,7 +58,7 @@ impl Encoding {
 
     /// Decode one record. The `Cow` borrows for the common case: UTF-8 input, valid. `None` reads no text, so its
     /// record decodes to nothing.
-    pub fn decode<'b>(&self, bytes: &'b [u8]) -> Decoded<'b> {
+    pub(crate) fn decode<'b>(&self, bytes: &'b [u8]) -> Decoded<'b> {
         match self {
             Encoding::None => Decoded::borrowed(""),
             Encoding::Auto => decode_auto(bytes),
@@ -75,12 +75,12 @@ impl Encoding {
 }
 
 /// A decoded record, and what the decoder had to do to get it. Both flags become exceptions, which mark the row.
-pub struct Decoded<'b> {
-    pub text: Cow<'b, str>,
+pub(crate) struct Decoded<'b> {
+    pub(crate) text: Cow<'b, str>,
     /// Bytes that did not decode were replaced with U+FFFD.
-    pub replaced: bool,
+    pub(crate) replaced: bool,
     /// `auto` found no BOM, invalid UTF-8, and no UTF-16 pattern, and fell back to this encoding.
-    pub guessed: Option<Charset>,
+    pub(crate) guessed: Option<Charset>,
 }
 
 impl<'b> Decoded<'b> {

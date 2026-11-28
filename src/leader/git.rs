@@ -23,31 +23,31 @@ use super::store::Actor;
 /// refused it, which is what a route answers it at (`envelope::Refusal`).
 #[derive(Debug)]
 pub struct GitError {
-    pub kind: ErrorKind,
-    pub message: String,
+    pub(crate) kind: ErrorKind,
+    pub(crate) message: String,
 }
 
 impl GitError {
-    pub fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(message: impl Into<String>) -> Self {
         GitError {
             kind: ErrorKind::Failed,
             message: message.into(),
         }
     }
 
-    pub fn conflict(message: impl Into<String>) -> Self {
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
         GitError::of(ErrorKind::Conflict, message)
     }
 
-    pub fn not_found(message: impl Into<String>) -> Self {
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
         GitError::of(ErrorKind::NotFound, message)
     }
 
-    pub fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         GitError::of(ErrorKind::Invalid, message)
     }
 
-    pub fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
         GitError {
             kind,
             message: message.into(),
@@ -345,7 +345,7 @@ pub fn seed_first_commit(repo_path: &Path, edits: &[FileEdit], message: &str) ->
 /// A slash separates segments and nothing else: `owner/what-they-are-doing` is how a fleet with more than one
 /// author keeps names apart, and it is what the storyboards draw. Every segment is checked on its own, so a
 /// separator can never smuggle in a `..` or an empty component that a joined path would collapse.
-pub fn check_branch_name(branch: &str) -> Result<(), GitError> {
+pub(crate) fn check_branch_name(branch: &str) -> Result<(), GitError> {
     let refused = || {
         Err(GitError::invalid(format!(
             "unsafe branch name {branch:?}: only letters, digits, '-', '_', '.' and '/' as a separator are \
@@ -850,7 +850,7 @@ fn delete_ref(repo: &gix::Repository, reference: &str, at: Option<gix::ObjectId>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeEntry {
     /// Git's own mode: `100644` a file, `040000` a directory, `120000` a symlink.
-    pub mode: String,
+    mode: String,
     pub name: String,
 }
 
@@ -858,18 +858,18 @@ impl TreeEntry {
     /// Git stores a symlink as a blob holding its target text and never follows one resolving a path, so a symlink in
     /// a tree is not a way out of it -- but reading one hands back the target string as though it were the file, so it
     /// is refused where a file is wanted.
-    pub fn is_symlink(&self) -> bool {
+    pub(crate) fn is_symlink(&self) -> bool {
         self.mode == "120000"
     }
 
-    pub fn is_dir(&self) -> bool {
+    pub(crate) fn is_dir(&self) -> bool {
         self.mode == "040000"
     }
 }
 
 /// Whether `commit` and its tree are in the repository. [`list_tree`] reads a commit or tree it does not have as
 /// empty, which is not the same as a commit that holds nothing.
-pub fn has_commit(repo_path: &Path, commit: &str) -> Result<bool, GitError> {
+pub(crate) fn has_commit(repo_path: &Path, commit: &str) -> Result<bool, GitError> {
     let repo = open(repo_path)?;
     Ok(tree_at(&repo, commit).is_ok_and(|tree| repo.find_tree(tree).is_ok()))
 }
@@ -938,7 +938,7 @@ impl OpenTree {
 
     /// The entries of the directory at `path`, the root when empty. A path that is not a directory here is
     /// "nothing here", which is how an absent `shared/` or `pipelines/` reads.
-    pub fn list(&self, path: &str) -> Result<Vec<TreeEntry>, GitError> {
+    pub(crate) fn list(&self, path: &str) -> Result<Vec<TreeEntry>, GitError> {
         if self.root.is_err() {
             return Ok(vec![]);
         }
@@ -1318,7 +1318,7 @@ pub struct Change {
 }
 
 /// What a change without a reason is closed with: git has no empty commit message, and the absence is worth saying.
-pub const NO_REASON: &str = "Closed without a reason";
+const NO_REASON: &str = "Closed without a reason";
 
 /// Names the deployer on a deploy commit, since git's own two slots are spoken for: the author wrote the content
 /// and the committer is the leader that wrote the object.
@@ -1982,7 +1982,7 @@ fn saves(repo_path: &Path, branch: &str) -> Result<Vec<TimelineEvent>, GitError>
 }
 
 /// Forget a change entirely, which is what deleting its branch means.
-pub fn delete_change(repo_path: &Path, branch: &str) -> Result<(), GitError> {
+fn delete_change(repo_path: &Path, branch: &str) -> Result<(), GitError> {
     check_branch_name(branch)?;
     delete_ref(&open(repo_path)?, &change_ref(branch), None)
 }
@@ -1998,7 +1998,7 @@ pub use merge::{BringCurrent, BroughtCurrent, Choices, Conflict, Conflicts, Pick
 /// bundle that will not load is one no worker in that group can run. A caller that refuses names the first and says
 /// what did not happen as a result, because that differs -- a merge leaves the branch alone, a deploy leaves `main`
 /// alone.
-pub fn groups_that_do_not_load(repo_path: &Path, tree: &str) -> Result<Vec<(String, String)>, GitError> {
+fn groups_that_do_not_load(repo_path: &Path, tree: &str) -> Result<Vec<(String, String)>, GitError> {
     Ok(super::tree::groups_at(repo_path, tree)?
         .into_iter()
         .filter_map(|group| {
@@ -2051,14 +2051,14 @@ fn deploy_change_from(data_dir: &Path, branch: &str, tip: Option<&str>, author: 
 /// A change squashed onto `main`'s head, every check of an approval passed, and nothing moved yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Squash {
-    pub branch: String,
-    pub title: String,
+    branch: String,
+    title: String,
     /// The squash commit, whose one parent is `head`.
-    pub commit: String,
+    pub(crate) commit: String,
     /// `main`'s head it was squashed onto.
-    pub head: String,
+    pub(crate) head: String,
     /// The branch's tip that was squashed. A save since is not part of the squash, and keeps the branch.
-    pub tip: String,
+    pub(crate) tip: String,
 }
 
 /// Squash `branch` onto `main` as Approve would deploy it, refusing what Approve refuses, and move nothing: the commit
@@ -2069,7 +2069,7 @@ pub fn squash_change(data_dir: &Path, branch: &str, author: &Actor) -> Result<Sq
 
 /// [`squash_change`] of `branch` while it is at `tip`, refused once it has moved: what a caller judged is what is
 /// squashed.
-pub fn squash_change_at(data_dir: &Path, branch: &str, tip: &str, author: &Actor) -> Result<Squash, GitError> {
+pub(crate) fn squash_change_at(data_dir: &Path, branch: &str, tip: &str, author: &Actor) -> Result<Squash, GitError> {
     squash_change_from(data_dir, branch, Some(tip), author)
 }
 
@@ -2155,7 +2155,7 @@ fn squash_change_from(
 }
 
 /// Move `main` and the fleet to `squash` and delete its branch: the rest of an approval.
-pub fn deploy_squash(data_dir: &Path, squash: &Squash, author: &Actor) -> Result<(), GitError> {
+pub(crate) fn deploy_squash(data_dir: &Path, squash: &Squash, author: &Actor) -> Result<(), GitError> {
     let (repo, branch) = (repo_path(data_dir), squash.branch.as_str());
     // A rollback holds the fleet through an approval: only a release ends it.
     let git = open(&repo)?;
@@ -2258,7 +2258,7 @@ fn check_deployable(repo: &Path, commit: &str) -> Result<(), GitError> {
 /// Why the fleet does not run `commit` once `main` is there: the first group that does not load at `commit` but does
 /// where the fleet runs, or is not there at all. `None` when deploying it would break nothing that runs now. The rule
 /// Approve keeps, so a fix to one group lands while another is still broken.
-pub fn worse_than_running(repo_path: &Path, commit: &str) -> Result<Option<String>, GitError> {
+pub(crate) fn worse_than_running(repo_path: &Path, commit: &str) -> Result<Option<String>, GitError> {
     let broken_now = match deployed(repo_path) {
         Some(running) => groups_that_do_not_load(repo_path, &running)?,
         None => Vec::new(),
@@ -2271,13 +2271,13 @@ pub fn worse_than_running(repo_path: &Path, commit: &str) -> Result<Option<Strin
 
 /// What the leader knows of each branch on the remote it follows, under this prefix: `main` as last fetched, and every
 /// other branch as last pushed (`leader::remote`). Hidden from workers.
-pub const HOST_REFS: &str = "refs/remotes/origin/";
+const HOST_REFS: &str = "refs/remotes/origin/";
 
 /// Where the `main` of the remote this leader follows lands when fetched (`leader::remote`).
-pub const FETCHED_MAIN_REF: &str = "refs/remotes/origin/main";
+pub(crate) const FETCHED_MAIN_REF: &str = "refs/remotes/origin/main";
 
 /// The commit the fleet runs. Served to workers (`upload_pack`), alone of the leader's own refs.
-pub const DEPLOYED_REF: &str = "refs/smeltr/deployed";
+pub(crate) const DEPLOYED_REF: &str = "refs/smeltr/deployed";
 
 /// One marker per move of [`DEPLOYED_REF`], newest last. Hidden from workers: it is the leader's bookkeeping.
 const DEPLOY_LOG_REF: &str = "refs/smeltr/deploys";
@@ -2309,15 +2309,15 @@ pub fn deployed(repo_path: &Path) -> Option<String> {
 /// What a deployment can read in the `group` and `shared` folders of a commit: each entry's name and object id, with
 /// `samples/` and `tests/` left out. `None` for a folder the commit does not hold.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ContentId {
-    pub group: Option<Vec<(String, gix::ObjectId)>>,
-    pub shared: Option<Vec<(String, gix::ObjectId)>>,
+pub(crate) struct ContentId {
+    pub(crate) group: Option<Vec<(String, gix::ObjectId)>>,
+    pub(crate) shared: Option<Vec<(String, gix::ObjectId)>>,
 }
 
 impl ContentId {
     /// A name for what a group runs that the leader can store. It is the same for two commits exactly when their
     /// `ContentId`s are equal.
-    pub fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         let mut hasher = twox_hash::XxHash64::with_seed(0);
         for (folder, entries) in [("group", &self.group), ("shared", &self.shared)] {
             std::hash::Hasher::write(&mut hasher, folder.as_bytes());
@@ -2342,7 +2342,7 @@ impl ContentId {
 /// compared equal to a running deployment that had no `shared/` -- so a commit that added one during a passing
 /// failure was represented without ever being deployed. A path the commit does not hold answers `None`, and a
 /// failure to read the commit at all is the only other case.
-pub fn content_id(repo_dir: &Path, commit: &str, group_id: &str) -> Result<ContentId, String> {
+pub(crate) fn content_id(repo_dir: &Path, commit: &str, group_id: &str) -> Result<ContentId, String> {
     let repo = gix::open(repo_dir).map_err(|e| format!("opening {}: {e}", repo_dir.display()))?;
     let root = repo
         .rev_parse_single(format!("{commit}^{{tree}}").as_str())
@@ -2481,7 +2481,7 @@ fn swap_edit(
 /// it stays where it was.
 ///
 /// Every lookup file `commit` names must already be in the store; the caller fetches them first.
-pub fn follow(repo_path: &Path, commit: &str) -> Result<(), GitError> {
+pub(crate) fn follow(repo_path: &Path, commit: &str) -> Result<(), GitError> {
     let short = short(commit);
     let worse = worse_than_running(repo_path, commit)?.is_some();
     let git = open(repo_path)?;
@@ -2547,7 +2547,7 @@ fn rolled_back(git: &gix::Repository) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hold {
     /// What the fleet runs.
-    pub commit: String,
+    pub(crate) commit: String,
     /// `main`'s head, which it does not.
     pub head: String,
     /// Commits on `main` the fleet does not run.
@@ -2642,9 +2642,9 @@ pub struct FileChange {
     pub path: String,
     /// `A`, `M` or `D`. Rename detection is off, so a move is an add and a delete -- which is what a bundle's
     /// one-file-per-pipeline layout means anyway.
-    pub status: String,
-    pub added: u32,
-    pub removed: u32,
+    status: String,
+    added: u32,
+    removed: u32,
 }
 
 /// What two revisions differ in: each file, and the hunks of all of them or of one.
@@ -2952,7 +2952,7 @@ fn patch(
 
 /// What one file's change between `before` and `after` adds and removes, as a branch's file list shows it. `status`
 /// is `A`, `M` or `D`.
-pub fn file_change(path: String, status: &str, before: &[u8], after: &[u8]) -> FileChange {
+fn file_change(path: String, status: &str, before: &[u8], after: &[u8]) -> FileChange {
     // A binary file has no lines to count, which is the `-` git writes for both.
     let (added, removed) = if is_binary(before) || is_binary(after) {
         (0, 0)
@@ -2973,7 +2973,7 @@ pub fn file_change(path: String, status: &str, before: &[u8], after: &[u8]) -> F
 /// What the file's presence, mode and blob ids did is not repeated here: the response carries a `files` list beside
 /// this text, and the path, the status and the counts are already on it. The naming line stays, because it is what
 /// separates one file's hunks from the next's.
-pub fn file_patch(at: &str, before: &[u8], after: &[u8]) -> Result<String, GitError> {
+fn file_patch(at: &str, before: &[u8], after: &[u8]) -> Result<String, GitError> {
     let mut out = format!("diff --git a/{at} b/{at}\n");
     if is_binary(before) || is_binary(after) {
         out.push_str(&format!("Binary files a/{at} and b/{at} differ\n"));
@@ -3206,7 +3206,7 @@ fn blob_paths(changes: &[gix::object::tree::diff::ChangeDetached]) -> Vec<String
 
 /// What the host made of a push.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Pushed {
+pub(crate) enum Pushed {
     Done,
     /// The host's branch was not where the lease said: someone else pushed to it.
     Refused,
@@ -3215,7 +3215,7 @@ pub enum Pushed {
 /// A pack of what `tips` reach and no commit of `haves` does: what a holder of `haves` lacks to take `tips` -- a git
 /// host the leader pushes to, or a worker fetching from it. A have this repository does not hold, or that is not a
 /// commit, tells nothing here and is passed over.
-pub fn pack_reaching(repo_path: &Path, tips: &[&str], haves: &[&str]) -> Result<Vec<u8>, GitError> {
+pub(crate) fn pack_reaching(repo_path: &Path, tips: &[&str], haves: &[&str]) -> Result<Vec<u8>, GitError> {
     let failed = |e: &dyn std::fmt::Display| GitError::failed(format!("packing {}: {e}", tips.join(", ")));
     let repo = open(repo_path)?;
     let tips = tips
@@ -3245,7 +3245,7 @@ pub fn pack_reaching(repo_path: &Path, tips: &[&str], haves: &[&str]) -> Result<
 
 /// One pack of `commits` and the objects `expansion` reaches from them, written in memory: a configuration
 /// repository holds its files and the pointers to lookup files, never their bytes.
-pub fn pack_of(
+pub(crate) fn pack_of(
     repo_path: &Path,
     hash: gix::hash::Kind,
     commits: Vec<gix::ObjectId>,
@@ -3285,13 +3285,13 @@ pub fn pack_of(
 }
 
 /// The loose objects past which a repository is packed: git's own `gc.auto` default.
-pub const LOOSE_LIMIT: usize = 6700;
+const LOOSE_LIMIT: usize = 6700;
 
 /// The packs past which a repository's packs are merged: git's own `gc.autoPackLimit` default. A fetch adds one.
-pub const PACK_LIMIT: usize = 50;
+pub(crate) const PACK_LIMIT: usize = 50;
 
 /// How many loose objects and how many packs the repository at `repo_path` holds.
-pub fn object_files(repo_path: &Path) -> (usize, usize) {
+pub(crate) fn object_files(repo_path: &Path) -> (usize, usize) {
     let objects = repo_path.join("objects");
     let count = |dir: &Path, wanted: &dyn Fn(&str) -> bool| {
         std::fs::read_dir(dir)
@@ -3320,7 +3320,7 @@ const PRUNE_AFTER: Duration = Duration::from_secs(14 * 24 * 3600);
 /// written as a second, dated by the newest of it, so it still expires; the rest goes. A marker holds the commit it
 /// names as a parent, so what a marker names is kept with it. The new packs are written before anything is removed,
 /// and a pack whose index is not there yet -- a fetch still writing it -- or that git was told to keep is left alone.
-pub fn pack(repo_path: &Path) -> Result<(), GitError> {
+pub(crate) fn pack(repo_path: &Path) -> Result<(), GitError> {
     let (loose, packs) = object_files(repo_path);
     if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
         return Ok(());
@@ -3519,7 +3519,7 @@ fn loose_objects(repo_path: &Path) -> Result<Vec<(PathBuf, gix::ObjectId, std::t
 }
 
 /// Write `pack` into `dir` with its index, and answer where the pack is.
-pub fn store_pack(dir: &Path, hash: gix::hash::Kind, pack: &[u8]) -> Result<PathBuf, String> {
+pub(crate) fn store_pack(dir: &Path, hash: gix::hash::Kind, pack: &[u8]) -> Result<PathBuf, String> {
     let written = gix_pack::Bundle::write_to_directory(
         &mut &pack[..],
         Some(dir),
@@ -3538,7 +3538,7 @@ pub fn store_pack(dir: &Path, hash: gix::hash::Kind, pack: &[u8]) -> Result<Path
 
 /// Remove a pack. The index first: a pack without one is not looked in, and an index without its pack would be. A
 /// pack still mapped cannot go on Windows, and goes with the next pass.
-pub fn remove_pack(pack: &Path) {
+pub(crate) fn remove_pack(pack: &Path) {
     let _ = std::fs::remove_file(pack.with_extension("idx")).and_then(|()| std::fs::remove_file(pack));
     for extension in ["rev", "bitmap", "mtimes"] {
         let _ = std::fs::remove_file(pack.with_extension(extension));
@@ -3546,7 +3546,7 @@ pub fn remove_pack(pack: &Path) {
 }
 
 /// The `.pack` files in `dir`.
-pub fn packs_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn packs_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
     Ok(entries
         .flatten()
@@ -3561,7 +3561,7 @@ pub fn host_branches(repo_path: &Path) -> Result<std::collections::HashMap<Strin
 }
 
 /// Every branch here, `main` among them, and where: [`list_branches`] without the walks that count commits.
-pub fn branch_tips(repo_path: &Path) -> Result<std::collections::HashMap<String, String>, GitError> {
+pub(crate) fn branch_tips(repo_path: &Path) -> Result<std::collections::HashMap<String, String>, GitError> {
     tips_under(repo_path, "refs/heads/")
 }
 
@@ -3585,7 +3585,7 @@ fn tips_under(repo_path: &Path, prefix: &str) -> Result<std::collections::HashMa
 }
 
 /// Record that the host's `branch` is at `tip`, or that it has none. Only the leader's push and fetch write these.
-pub fn record_host_branch(repo_path: &Path, branch: &str, tip: Option<&str>) -> Result<(), GitError> {
+pub(crate) fn record_host_branch(repo_path: &Path, branch: &str, tip: Option<&str>) -> Result<(), GitError> {
     check_branch_name(branch)?;
     let repo = open(repo_path)?;
     let name = format!("{HOST_REFS}{branch}");
@@ -3615,7 +3615,7 @@ pub fn record_host_branch(repo_path: &Path, branch: &str, tip: Option<&str>) -> 
 
 /// Forget everything the leader knew of a host: what it fetched and what it pushed. Called when the remote changes,
 /// since none of it is about the new one.
-pub fn forget_host(repo_path: &Path) -> Result<(), GitError> {
+pub(crate) fn forget_host(repo_path: &Path) -> Result<(), GitError> {
     for branch in host_branches(repo_path)?.into_keys() {
         record_host_branch(repo_path, &branch, None)?;
     }

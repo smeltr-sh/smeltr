@@ -4,23 +4,23 @@
 
 pub mod arith;
 pub mod arrayops;
-pub mod byteops;
+pub(crate) mod byteops;
 pub mod civil;
 pub mod cmp;
 pub mod convert;
 pub mod datetime;
-pub mod hashops;
+pub(crate) mod hashops;
 pub mod logic;
 pub mod netops;
 pub mod objectops;
 pub(crate) mod pieces;
-pub mod rebuildops;
+mod rebuildops;
 pub mod stdfuncs;
 pub mod strops;
 pub mod table;
 pub mod timeparse;
-pub mod useragent;
-pub mod webops;
+mod useragent;
+pub(crate) mod webops;
 
 use crate::core::column::Column;
 use crate::core::ctx::Ctx;
@@ -125,7 +125,7 @@ pub(crate) mod helpers {
 
     /// The position index `i` names among `n` elements, counting from the end when negative: `-1` is the last. `None`
     /// outside them. What `at`, `remove` and an element write read and write.
-    pub fn position(i: i64, n: usize) -> Option<usize> {
+    pub(crate) fn position(i: i64, n: usize) -> Option<usize> {
         let n = n as i64;
         let i = if i < 0 { i + n } else { i };
         (0..n).contains(&i).then_some(i as usize)
@@ -133,24 +133,24 @@ pub(crate) mod helpers {
 
     /// The position index `i` names among `n` elements, counting from the end when negative, clamped to `0..=n`:
     /// a gap between elements, as `insert` and `slice` take one.
-    pub fn clamped(i: i64, n: usize) -> usize {
+    pub(crate) fn clamped(i: i64, n: usize) -> usize {
         let n = n as i64;
         (if i < 0 { i + n } else { i }).clamp(0, n) as usize
     }
 
     /// What a row's label names, read once per run of the same label: a charset, a number's type, a byte order. A
     /// label that is a constant is read once. `None` for a label `read` does not know, or that is not UTF-8.
-    pub struct Labels<'a, T> {
+    pub(crate) struct Labels<'a, T> {
         read: fn(&str) -> Option<T>,
         last: Option<(&'a [u8], Option<T>)>,
     }
 
     impl<'a, T: Copy> Labels<'a, T> {
-        pub fn new(read: fn(&str) -> Option<T>) -> Self {
+        pub(crate) fn new(read: fn(&str) -> Option<T>) -> Self {
             Labels { read, last: None }
         }
 
-        pub fn get(&mut self, label: &'a [u8]) -> Option<T> {
+        pub(crate) fn get(&mut self, label: &'a [u8]) -> Option<T> {
             match self.last {
                 Some((l, t)) if l == label => t,
                 _ => {
@@ -169,13 +169,13 @@ pub(crate) mod helpers {
     /// One kernel operand as the loop reads it: a row of the column, or the one value a constant column holds for
     /// every row. A kernel body is generic over this, so the loop over rows is a slice loop and the loop over a
     /// constant reads a register.
-    pub trait Operand<T: Copy> {
+    pub(crate) trait Operand<T: Copy> {
         fn at(&self, i: usize) -> T;
     }
 
     /// A fixed-width operand as one slice, for a loop over three operands. A constant fills a `Vec`, outside the
     /// pool.
-    pub trait Rows<T: Copy>: Operand<T> {
+    pub(crate) trait Rows<T: Copy>: Operand<T> {
         fn rows(&self, len: usize) -> Cow<'_, [T]>;
     }
 
@@ -214,7 +214,7 @@ pub(crate) mod helpers {
 
     /// The constant form of an operand.
     #[derive(Clone, Copy)]
-    pub struct One<T>(pub T);
+    pub(crate) struct One<T>(pub(crate) T);
 
     impl<T: Copy> Operand<T> for One<T> {
         #[inline(always)]
@@ -253,7 +253,7 @@ pub(crate) mod helpers {
     /// generic over `Operand`. A loop that builds a string per row reads `at` and `is_valid` straight off the `Side`,
     /// a match per row that costs nothing beside the row's own work. A loop over three operands takes each as a
     /// slice through `Rows`, a constant filled once.
-    pub enum Side<'a, R, T> {
+    pub(crate) enum Side<'a, R, T> {
         Rows(R, &'a Validity),
         One(T),
     }
@@ -261,7 +261,7 @@ pub(crate) mod helpers {
     impl<'a, R, T> Side<'a, R, T> {
         /// Whether row `i` holds a value. A constant does in every row.
         #[inline]
-        pub fn is_valid(&self, i: usize) -> bool {
+        pub(crate) fn is_valid(&self, i: usize) -> bool {
             match self {
                 Side::Rows(_, v) => v.is_valid(i),
                 Side::One(_) => true,
@@ -269,7 +269,7 @@ pub(crate) mod helpers {
         }
 
         /// The bitmap, for `alloc_with_merged_validity`. A constant has none.
-        pub fn validity(&self) -> Option<&'a Validity> {
+        pub(crate) fn validity(&self) -> Option<&'a Validity> {
             match self {
                 Side::Rows(_, v) => Some(v),
                 Side::One(_) => None,
@@ -280,7 +280,7 @@ pub(crate) mod helpers {
     impl<'a> Side<'a, StrRows<'a>, &'a str> {
         /// Row `i`'s text.
         #[inline]
-        pub fn get(&self, i: usize) -> &'a str {
+        pub(crate) fn get(&self, i: usize) -> &'a str {
             match self {
                 Side::Rows(r, _) => r.get(i),
                 Side::One(s) => s,
@@ -290,7 +290,7 @@ pub(crate) mod helpers {
 
     impl Side<'_, VarLen<'_>, &[u8]> {
         /// The bytes `len` rows hold: what a builder reserves. A constant holds its length in every row.
-        pub fn total_bytes(&self, len: usize) -> usize {
+        pub(crate) fn total_bytes(&self, len: usize) -> usize {
             match self {
                 Side::Rows(v, _) => v.total_bytes(),
                 Side::One(s) => s.len() * len,
@@ -320,7 +320,7 @@ pub(crate) mod helpers {
     /// The accessors that build a `Side`, named for the column accessor each one wraps so a macro can take the
     /// accessor's name and call both. `None` where the column accessor answers `Err`: the column is neither rows of
     /// the type nor a constant of it.
-    pub mod side {
+    pub(crate) mod side {
         use super::*;
 
         fn fixed<'a, T: Copy>(
@@ -334,7 +334,7 @@ pub(crate) mod helpers {
             }
         }
 
-        pub fn i64(c: &Column) -> Option<Side<'_, &[i64], i64>> {
+        pub(crate) fn i64(c: &Column) -> Option<Side<'_, &[i64], i64>> {
             fixed(
                 c.i64(),
                 match c.constant_value() {
@@ -343,7 +343,7 @@ pub(crate) mod helpers {
                 },
             )
         }
-        pub fn f64(c: &Column) -> Option<Side<'_, &[f64], f64>> {
+        pub(crate) fn f64(c: &Column) -> Option<Side<'_, &[f64], f64>> {
             fixed(
                 c.f64(),
                 match c.constant_value() {
@@ -352,7 +352,7 @@ pub(crate) mod helpers {
                 },
             )
         }
-        pub fn datetime(c: &Column) -> Option<Side<'_, &[i64], i64>> {
+        pub(crate) fn datetime(c: &Column) -> Option<Side<'_, &[i64], i64>> {
             fixed(
                 c.datetime(),
                 match c.constant_value() {
@@ -361,7 +361,7 @@ pub(crate) mod helpers {
                 },
             )
         }
-        pub fn duration(c: &Column) -> Option<Side<'_, &[i64], i64>> {
+        pub(crate) fn duration(c: &Column) -> Option<Side<'_, &[i64], i64>> {
             fixed(
                 c.duration(),
                 match c.constant_value() {
@@ -370,7 +370,7 @@ pub(crate) mod helpers {
                 },
             )
         }
-        pub fn str(c: &Column) -> Option<Side<'_, StrRows<'_>, &str>> {
+        pub(crate) fn str(c: &Column) -> Option<Side<'_, StrRows<'_>, &str>> {
             match (c.str(), c.constant_value()) {
                 (Ok(r), _) => {
                     let validity = r.rows().validity;
@@ -380,7 +380,7 @@ pub(crate) mod helpers {
                 (Err(_), _) => None,
             }
         }
-        pub fn var(c: &Column) -> Option<Side<'_, VarLen<'_>, &[u8]>> {
+        pub(crate) fn var(c: &Column) -> Option<Side<'_, VarLen<'_>, &[u8]>> {
             match (c.var(), c.constant_value()) {
                 (Ok(v), _) => {
                     let validity = v.validity;
@@ -415,7 +415,7 @@ pub(crate) mod helpers {
     /// every row, so it drops out of the AND. No bitmap at all and the result is valid in every row. An `Empty` input
     /// has no bitmap either and is null in every row; `expr::eval` has already answered for it, before
     /// the kernel ran.
-    pub fn alloc_with_merged_validity(
+    pub(crate) fn alloc_with_merged_validity(
         ctx: &mut Ctx,
         out_ty: &DataType,
         len: usize,
@@ -446,7 +446,7 @@ pub(crate) mod helpers {
 
     /// A column of `ty` (`I64`, `DateTime` or `Duration`) holding `f`'s value on each row. A row is null where a bitmap
     /// in `inputs` says so, and `f` is not asked for it, or where `f` answers `None`.
-    pub fn map_i64(
+    pub(crate) fn map_i64(
         ctx: &mut Ctx,
         ty: &DataType,
         len: usize,
@@ -464,7 +464,7 @@ pub(crate) mod helpers {
     }
 
     /// `map_i64` for an `F64` column.
-    pub fn map_f64(
+    pub(crate) fn map_f64(
         ctx: &mut Ctx,
         len: usize,
         inputs: &[Option<&Validity>],
@@ -494,7 +494,7 @@ pub(crate) mod helpers {
     /// `parseInt`, `parseFloat` and `parseTime`, which the convert pass after a parse calls itself, and `communityId`,
     /// which reads an unbound port but not an unbound address, so checks only its addresses and transport.
     #[inline]
-    pub fn short_circuit_empty(ins: &[&Column], out_ty: &DataType, len: usize) -> Option<Column> {
+    pub(crate) fn short_circuit_empty(ins: &[&Column], out_ty: &DataType, len: usize) -> Option<Column> {
         if ins.iter().any(|c| c.is_unbound()) {
             Some(Column::empty(out_ty.clone(), len))
         } else {
@@ -504,7 +504,7 @@ pub(crate) mod helpers {
 
     /// A numeric column's values as `f64`, widening `I64`. This is the one place the I64 -> F64 widening is written.
     /// `None` for a non-numeric column.
-    pub fn f64_values(c: &Column) -> Option<Cow<'_, [f64]>> {
+    pub(crate) fn f64_values(c: &Column) -> Option<Cow<'_, [f64]>> {
         if let Ok(f) = c.f64() {
             Some(Cow::Borrowed(f.values))
         } else {
@@ -519,7 +519,7 @@ pub(crate) mod helpers {
     /// The table is stated for the rows of one dynamically-parsed column; this is the same question asked across the
     /// columns a kernel was handed, and it takes the same answer: `null` takes the other's type, at any depth. What an
     /// unbound input contributes is the caller's to decide.
-    pub fn blend_types(types: impl IntoIterator<Item = DataType>) -> Option<DataType> {
+    pub(crate) fn blend_types(types: impl IntoIterator<Item = DataType>) -> Option<DataType> {
         let mut it = types.into_iter();
         let first = it.next()?;
         Some(it.fold(first, |acc, t| acc.unify(&t).unwrap_or(DataType::Variant)))
@@ -527,7 +527,7 @@ pub(crate) mod helpers {
 
     /// A fixed-width 8-byte column's values as `i64` (`I64`, `DateTime`, `Duration` share one storage shape). `None`
     /// otherwise.
-    pub fn i64_values(c: &Column) -> Option<(&[i64], &Validity)> {
+    pub(crate) fn i64_values(c: &Column) -> Option<(&[i64], &Validity)> {
         [c.i64(), c.datetime(), c.duration()]
             .into_iter()
             .flatten()
@@ -550,7 +550,7 @@ pub(crate) mod testing {
 
     /// Four rows of `ty`: the value `one_of` gives, a null, a zero or empty, and an edge that overflows when added to
     /// a small constant. An array's rows are two elements, null, none, and two elements, over those four as its child.
-    pub fn rows_of(p: &mut BufferPool, ty: &DataType) -> Column {
+    pub(crate) fn rows_of(p: &mut BufferPool, ty: &DataType) -> Column {
         match ty {
             I64 | DateTime | Duration => {
                 let mut c = Column::alloc(p, ty, 4);
@@ -602,7 +602,7 @@ pub(crate) mod testing {
     }
 
     /// One value of `ty`. It is in `rows_of`, so a search finds it, and the text is a unit `duration` knows.
-    pub fn one_of(ty: &DataType) -> Scalar {
+    pub(crate) fn one_of(ty: &DataType) -> Scalar {
         match ty {
             I64 => Scalar::I64(2),
             F64 => Scalar::F64(2.0),
@@ -616,7 +616,7 @@ pub(crate) mod testing {
     }
 
     /// A kernel's output: each row as JSON or `None` for null, the type, and the exceptions it raised.
-    pub fn run(
+    pub(crate) fn run(
         p: &mut BufferPool,
         k: OpKernel,
         ins: &[&Column],

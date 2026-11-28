@@ -37,7 +37,7 @@ const MAX_INLINED_CALLS: usize = 10_000;
 
 pub struct InlineError {
     pub span: Span,
-    pub message: String,
+    pub(crate) message: String,
 }
 
 /// A function a name holds.
@@ -74,10 +74,10 @@ pub(crate) const RESERVED_PREFIXES: [&str; 2] = ["__inl", LOCAL_PREFIX];
 
 /// The prefix of a user's local that a function can name, renamed so no call site captures it (`lexical`). It carries
 /// the user's name, and every message gives that name.
-pub(crate) const LOCAL_PREFIX: &str = "__loc";
+const LOCAL_PREFIX: &str = "__loc";
 
 /// `text` with every local `lexical` renamed under the name the user wrote.
-pub fn user_names(text: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn user_names(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains(LOCAL_PREFIX) {
         return std::borrow::Cow::Borrowed(text);
     }
@@ -264,7 +264,7 @@ fn declared_local<'a>(stmts: &'a [Stmt], local: &impl Fn(&str) -> bool) -> Optio
 
 /// Hoist every `function` and inline every call: an early `return` leaves the call's `Body`. The result has no
 /// `Function` or `Return` in it.
-pub fn expand(stmts: &[Stmt]) -> Result<Vec<Stmt>, InlineError> {
+pub(crate) fn expand(stmts: &[Stmt]) -> Result<Vec<Stmt>, InlineError> {
     check_reserved_names(stmts)?;
 
     let prelude = parse::parse_block(PRELUDE).unwrap_or_else(|e| panic!("the prelude parses: {}", e.message));
@@ -393,7 +393,7 @@ fn arrow_in(stmt: &Stmt, name: &str) -> bool {
 }
 
 /// Whether `name` is one the inliner makes, which the user never wrote.
-pub fn is_temporary(name: &str) -> bool {
+pub(crate) fn is_temporary(name: &str) -> bool {
     name.starts_with("__inl")
 }
 

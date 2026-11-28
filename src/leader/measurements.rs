@@ -85,69 +85,69 @@ impl Measurements {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeReading {
-    pub group: String,
-    pub kind: NodeKind,
+    group: String,
+    kind: NodeKind,
     /// The author's id, as `map::MapNode::author_id` names it.
-    pub id: String,
+    id: String,
     /// Rows per second over the newest closed bucket: read for a source, acknowledged for a destination. Absent when
     /// that bucket is older than the last [`CURRENT_BUCKETS`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate: Option<f64>,
+    rate: Option<f64>,
     /// When the newest bucket holding any report for this node closed. Present with `rate` absent, it says how
     /// stale the last reading is.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_seen_millis: Option<i64>,
+    last_seen_millis: Option<i64>,
     /// A destination's queues, across the workers of its group.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub queue: Option<QueueSummary>,
+    queue: Option<QueueSummary>,
     /// A source's Kafka lag in records, summed over its partitions' current readings.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lag: Option<f64>,
+    lag: Option<f64>,
     /// The worker holding a single-worker source at the place it reads now.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub holder: Option<String>,
+    holder: Option<String>,
     /// When this leader last heard from `holder`. Absent with `holder` present: not heard since the leader started.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub holder_heard_millis: Option<i64>,
+    holder_heard_millis: Option<i64>,
     /// How many items that hold's ledger keeps. Present with `holder`; 0 for a source that keeps a cursor instead.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ledger_entries: Option<u64>,
+    ledger_entries: Option<u64>,
     /// A source's rows per second that no route claimed, over the same current bucket as `rate`. Absent when that
     /// bucket is not current.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unmatched: Option<f64>,
+    unmatched: Option<f64>,
     /// A source's normal rows per second at this time of day (`throughput`). Absent while it has too little
     /// history to have one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected: Option<Expected>,
+    expected: Option<Expected>,
     /// The warning catalog's warnings naming this node in this group, one per condition.
-    pub warnings: Vec<warnings::Warning>,
+    warnings: Vec<warnings::Warning>,
 }
 
 /// The rates a source's normal holds, in rows per second.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub struct Expected {
-    pub low: f64,
-    pub high: f64,
+struct Expected {
+    low: f64,
+    high: f64,
 }
 
 /// One destination's queues, summed up the way a card draws them: by its busiest worker, never by an average that
 /// would hide one full worker among idle ones.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct QueueSummary {
+struct QueueSummary {
     /// The fullest current worker's held bytes over its budget. Can pass 1. Absent when no current worker reports.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub busiest: Option<f64>,
+    busiest: Option<f64>,
     /// Current workers at or past [`NEAR_CAPACITY`].
-    pub near_capacity: u32,
+    near_capacity: u32,
     /// Workers whose current heartbeat reports this queue.
-    pub fresh: u32,
+    fresh: u32,
     /// Workers that reported this queue but whose last heartbeat is stale.
-    pub stale: u32,
+    stale: u32,
     /// Every worker the leader knows in this group, silent ones included: each runs every destination its group
     /// deploys, so this is how many queues there should be.
-    pub workers: u32,
+    workers: u32,
 }
 
 /// Who holds the single-worker sources: every hold the store keeps, and the holds that are at the place their

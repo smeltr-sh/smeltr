@@ -29,37 +29,37 @@ pub enum BringCurrent {
 pub struct Conflicts {
     pub main: String,
     pub work: String,
-    pub conflicts: Vec<Conflict>,
+    pub(crate) conflicts: Vec<Conflict>,
 }
 
 /// One path both sides changed, or one object of a section file (`id`). Each version is its text, `None` on a side
 /// that does not have it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Conflict {
-    pub path: String,
+    pub(crate) path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub base: Option<String>,
-    pub main: Option<String>,
-    pub work: Option<String>,
+    pub(crate) id: Option<String>,
+    base: Option<String>,
+    main: Option<String>,
+    work: Option<String>,
 }
 
 /// The author's answer to `Conflicts`: the two tips they were shown, and a side for every conflict.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Choices {
-    pub main: String,
-    pub work: String,
-    pub picks: Vec<Pick>,
+    pub(crate) main: String,
+    pub(crate) work: String,
+    pub(crate) picks: Vec<Pick>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pick {
-    pub path: String,
+    pub(crate) path: String,
     #[serde(default)]
-    pub id: Option<String>,
-    pub side: config_file::Side,
+    pub(crate) id: Option<String>,
+    pub(crate) side: config_file::Side,
 }
 
 /// Bring `branch` up to date with `main`, so its review is against what is running now.

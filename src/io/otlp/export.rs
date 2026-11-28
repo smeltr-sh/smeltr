@@ -345,7 +345,7 @@ fn by_metric(resources: Nested<(Arc<Family>, DataPoint)>) -> Nested<Metric> {
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &OtlpDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,

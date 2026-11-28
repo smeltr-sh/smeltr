@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::io::client_credentials::TokenAuth;
 
 /// The most a discovery document may hold.
-pub const MAX_DISCOVERY: usize = 64 * 1024;
+pub(crate) const MAX_DISCOVERY: usize = 64 * 1024;
 
 /// Whether `url` may be an issuer: `https://`, or `http://` to this host alone (a local Keycloak, a test). It names a
 /// host and no user, query or fragment, since the issuer is compared character for character with what the provider
@@ -21,7 +21,7 @@ pub fn check_issuer(url: &str) -> Result<(), String> {
 }
 
 /// `url`'s scheme, once it passes the issuer's rule; an endpoint may also carry a query (RFC 6749 3.1).
-pub fn check_url(url: &str, query_allowed: bool) -> Result<&'static str, String> {
+pub(crate) fn check_url(url: &str, query_allowed: bool) -> Result<&'static str, String> {
     if url.is_empty() || !url.chars().all(|c| c.is_ascii_graphic()) || url.contains('\\') {
         return Err(format!(
             "{url:?} is not a URL: it is empty or holds spaces or backslashes"
@@ -59,21 +59,21 @@ pub fn check_url(url: &str, query_allowed: bool) -> Result<&'static str, String>
 /// What a provider's discovery document says. Every field is the provider's word, checked only by [`read`] and
 /// [`Document::endpoint`].
 #[derive(serde::Deserialize)]
-pub struct Discovery {
-    pub issuer: Option<String>,
-    pub authorization_endpoint: Option<String>,
-    pub token_endpoint: Option<String>,
-    pub jwks_uri: Option<String>,
+pub(crate) struct Discovery {
+    issuer: Option<String>,
+    pub(crate) authorization_endpoint: Option<String>,
+    pub(crate) token_endpoint: Option<String>,
+    pub(crate) jwks_uri: Option<String>,
     #[serde(default)]
-    pub response_types_supported: Vec<String>,
-    pub code_challenge_methods_supported: Option<Vec<String>>,
-    pub token_endpoint_auth_methods_supported: Option<Vec<String>>,
-    pub id_token_signing_alg_values_supported: Option<Vec<String>>,
+    pub(crate) response_types_supported: Vec<String>,
+    pub(crate) code_challenge_methods_supported: Option<Vec<String>>,
+    pub(crate) token_endpoint_auth_methods_supported: Option<Vec<String>>,
+    pub(crate) id_token_signing_alg_values_supported: Option<Vec<String>>,
 }
 
 /// A discovery document that names the issuer it was read for.
-pub struct Document {
-    pub found: Discovery,
+pub(crate) struct Document {
+    pub(crate) found: Discovery,
     url: String,
     scheme: &'static str,
 }
@@ -81,7 +81,7 @@ pub struct Document {
 impl Document {
     /// `value`, the endpoint the document names as `field`, once it passes the issuer's URL rule over the issuer's
     /// scheme.
-    pub fn endpoint(&self, field: &str, value: Option<String>) -> Result<String, String> {
+    pub(crate) fn endpoint(&self, field: &str, value: Option<String>) -> Result<String, String> {
         let url = &self.url;
         let value = value.ok_or_else(|| format!("{url} names no {field}"))?;
         let ok = check_url(&value, true).map_err(|e| format!("its {field}: {e}"))?;
@@ -96,13 +96,13 @@ impl Document {
 }
 
 /// Where `issuer`'s discovery document is.
-pub fn address(issuer: &str) -> String {
+pub(crate) fn address(issuer: &str) -> String {
     // OpenID Connect Discovery 4: a trailing slash is removed before the well-known path is appended.
     format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'))
 }
 
 /// `body`, read from [`address`] of `issuer`. Refused unless it names `issuer` exactly.
-pub fn read(issuer: &str, body: &[u8]) -> Result<Document, String> {
+pub(crate) fn read(issuer: &str, body: &[u8]) -> Result<Document, String> {
     let scheme = check_url(issuer, false)?;
     let url = address(issuer);
     let found: Discovery =
@@ -118,7 +118,7 @@ pub fn read(issuer: &str, body: &[u8]) -> Result<Document, String> {
 }
 
 /// How `issuer`'s token endpoint takes a client secret, from the methods its document lists.
-pub fn secret_auth(issuer: &str, methods: Option<&[String]>) -> Result<TokenAuth, String> {
+pub(crate) fn secret_auth(issuer: &str, methods: Option<&[String]>) -> Result<TokenAuth, String> {
     // OAuth 2.0 Authorization Server Metadata 2: absent means client_secret_basic.
     match methods {
         None => Ok(TokenAuth::Basic),
@@ -132,7 +132,7 @@ pub fn secret_auth(issuer: &str, methods: Option<&[String]>) -> Result<TokenAuth
 
 /// What an app signing in at `issuer` needs from its document: the token endpoint, and the client authentication
 /// methods it lists, when it lists them. A blocking GET over `agent`, bounded by `timeout`.
-pub fn token_endpoint(
+pub(crate) fn token_endpoint(
     agent: &ureq::Agent,
     timeout: Duration,
     issuer: &str,
@@ -167,7 +167,7 @@ pub fn token_endpoint(
 }
 
 /// At most 200 bytes of what a provider sent, as one line of text.
-pub fn said(bytes: &[u8]) -> String {
+pub(crate) fn said(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..bytes.len().min(200)])
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })

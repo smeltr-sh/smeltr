@@ -33,7 +33,7 @@ use crate::core::variant;
 use crate::heartbeat::{LedgerEntry, MAX_CURSOR, MAX_LEDGER_ENTRY, MAX_LEDGER_ITEM};
 
 /// The most rows comparing values reads in one poll. Each is a ledger entry the leader keeps.
-pub const MAX_COMPARED_ROWS: u32 = 1_000_000;
+const MAX_COMPARED_ROWS: u32 = 1_000_000;
 
 /// The most a poll's result may hold, by [`held`]. The whole result is held while it is handed out, so this is what a
 /// source holds beyond its lane.
@@ -41,13 +41,13 @@ pub const MAX_RESULT_BYTES: usize = 256 * 1024 * 1024;
 
 /// About the bytes `row` takes in memory: its own allocation, and each value's. A narrow cell costs more held than its
 /// eight bytes of record.
-pub fn held(row: &[Value]) -> usize {
+pub(crate) fn held(row: &[Value]) -> usize {
     std::mem::size_of::<Vec<Value>>() + row.iter().map(Value::held).sum::<usize>()
 }
 
 /// The innermost cause beneath `e`: what a driver's own wrappers hide when the server sent no message, such as which
 /// certificate check failed under "error performing TLS handshake".
-pub fn cause(e: &(dyn std::error::Error + 'static)) -> String {
+pub(crate) fn cause(e: &(dyn std::error::Error + 'static)) -> String {
     let mut cause = e;
     while let Some(inner) = cause.source() {
         cause = inner;
@@ -56,7 +56,7 @@ pub fn cause(e: &(dyn std::error::Error + 'static)) -> String {
 }
 
 /// Why a driver stops reading a result past [`MAX_RESULT_BYTES`].
-pub fn too_large() -> String {
+pub(crate) fn too_large() -> String {
     format!(
         "this poll's result holds more than {} MiB; read fewer rows a poll with a smaller batch, or fewer or \
          narrower fields",
@@ -67,11 +67,11 @@ pub fn too_large() -> String {
 /// A result: its columns' names, and each row's values in that order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rows {
-    pub columns: Vec<String>,
+    pub(crate) columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
     /// The columns of a type the driver cannot read, read as their text. Their values cannot be bound back as
     /// their own type, so none can be remembered.
-    pub as_text: Vec<String>,
+    pub(crate) as_text: Vec<String>,
 }
 
 /// One column of a result, as the database describes it without running the query.
@@ -91,7 +91,7 @@ pub struct Described {
 /// A read of a whole table estimated past this many rows is a full scan Run reports. Below it, reading the whole table
 /// each poll costs about what an index lookup would; above it, every poll re-reads a table that grows, a load on a
 /// database smeltr does not own.
-pub const FULL_SCAN_ROWS: u64 = 100_000;
+const FULL_SCAN_ROWS: u64 = 100_000;
 
 /// What the database plans for a poll's statement.
 #[derive(Clone, Debug, PartialEq)]
@@ -106,7 +106,7 @@ pub enum Verdict {
 impl Verdict {
     /// `FullScan`, with the largest of `scans` (each a relation and the rows it reads), if that is past
     /// [`FULL_SCAN_ROWS`]; otherwise `Indexed` through `indexes`, returning about `rows`.
-    pub fn of(scans: impl IntoIterator<Item = (String, u64)>, indexes: Vec<String>, rows: u64) -> Verdict {
+    pub(crate) fn of(scans: impl IntoIterator<Item = (String, u64)>, indexes: Vec<String>, rows: u64) -> Verdict {
         match scans
             .into_iter()
             .filter(|(_, read)| *read > FULL_SCAN_ROWS)
@@ -151,23 +151,23 @@ pub trait Driver: Send {
 }
 
 /// The longest a driver waits for the server to accept its connection.
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// The longest a [`Shell`] waits on one open, and on one call's work. A poll's statement is bounded by its batch, so
 /// work past this is a database that has stopped answering, and the connection is dropped rather than waited on.
-pub const CALL_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// How much sooner than [`CALL_TIMEOUT`] the server stops a statement.
-pub const STATEMENT_MARGIN: Duration = Duration::from_secs(10);
+pub(crate) const STATEMENT_MARGIN: Duration = Duration::from_secs(10);
 
 /// One call's work on a driver's connection.
-pub type Work<'c, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + 'c>>;
+type Work<'c, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + 'c>>;
 
 /// Why a call's work failed, and whether the connection went with it.
-pub struct Failure {
-    pub text: String,
+pub(crate) struct Failure {
+    pub(crate) text: String,
     /// The connection is gone, or in a state not worth finding out: the next call opens another.
-    pub broken: bool,
+    pub(crate) broken: bool,
     /// It may have been gone before this call reached the server, so the call can be made again on a new one.
-    pub found_closed: bool,
+    pub(crate) found_closed: bool,
 }
 
 impl From<String> for Failure {
@@ -181,7 +181,7 @@ impl From<String> for Failure {
 }
 
 /// One database's connection, as a [`Shell`] opens and watches it.
-pub trait Connection: Sized {
+pub(crate) trait Connection: Sized {
     /// The database as a message names it: "PostgreSQL".
     const NAME: &'static str;
     /// What `open` takes, with every secret resolved, kept to open again after a break.
@@ -198,7 +198,7 @@ pub trait Connection: Sized {
 
 /// A driver's connection and the runtime it runs on. The client libraries are async, so the shell owns a small
 /// runtime and waits on it. The connection is opened on first use and opened again on the call after it breaks.
-pub struct Shell<C: Connection> {
+pub(crate) struct Shell<C: Connection> {
     opening: C::Opening,
     runtime: tokio::runtime::Runtime,
     connection: Option<C>,
@@ -206,7 +206,7 @@ pub struct Shell<C: Connection> {
 
 impl<C: Connection> Shell<C> {
     /// Connects lazily, on the first call.
-    pub fn new(opening: C::Opening) -> Result<Shell<C>, IoError> {
+    pub(crate) fn new(opening: C::Opening) -> Result<Shell<C>, IoError> {
         // Current-thread is enough: every call is a `block_on`, and the connection is driven while one runs.
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -222,7 +222,7 @@ impl<C: Connection> Shell<C> {
     /// Runs `work` on the connection, opening it first when there is none or it broke. A connection that closed
     /// while idle is only found closed when used, so `work` that finds it so runs once more on a new one; every
     /// statement a driver runs is read-only, so running it again changes nothing.
-    pub fn call<T>(&mut self, work: impl for<'c> Fn(&'c mut C) -> Work<'c, T>) -> Result<T, String> {
+    pub(crate) fn call<T>(&mut self, work: impl for<'c> Fn(&'c mut C) -> Work<'c, T>) -> Result<T, String> {
         let reused = self.connection.as_ref().is_some_and(|c| !c.closed());
         match self.attempt(&work) {
             Err(failure) if reused && failure.found_closed => self.attempt(&work),
@@ -444,17 +444,17 @@ impl<D: Driver + 'static> SqlSource<D> {
     }
 
     /// Whether a poll has answered and every row it read is handed out: what Run waits for, since it reads once.
-    pub fn read_once(&self) -> bool {
+    pub(crate) fn read_once(&self) -> bool {
         self.answered > 0 && self.pending.is_none()
     }
 
     /// Reads at most `rows` a poll from here on, in the position modes. Run reads fewer than a poll does.
-    pub fn read_at_most(&mut self, rows: u32) {
+    pub(crate) fn read_at_most(&mut self, rows: u32) {
         self.config.batch = rows;
     }
 
     /// The statement this source's next poll runs, and the values it binds. Run shows exactly this.
-    pub fn next_statement(&self) -> (Statement, Vec<Value>) {
+    fn next_statement(&self) -> (Statement, Vec<Value>) {
         let from = match (&self.cursor, &self.from) {
             (Some(_), _) => ReadFrom::LastRow,
             (None, Some(_)) => ReadFrom::Start,
@@ -467,7 +467,7 @@ impl<D: Driver + 'static> SqlSource<D> {
 
     /// What the database plans for the next poll, judged. `None` while a statement is running, since the driver is
     /// on its thread.
-    pub fn plan(&mut self) -> Option<Result<Verdict, String>> {
+    pub(crate) fn plan(&mut self) -> Option<Result<Verdict, String>> {
         let (statement, values) = self.next_statement();
         self.driver.as_mut().map(|driver| driver.plan(&statement, &values))
     }

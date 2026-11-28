@@ -15,21 +15,21 @@ pub enum Node {
 
 /// A slot's place in the tree: the leaf at a name, or the unclaimed fields of the object at a name. `""` is the root.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Place {
+pub(crate) enum Place {
     Leaf(String),
     Unclaimed(String),
 }
 
 impl Place {
     /// The name the place sits at: the leaf's, or the object's.
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         match self {
             Place::Leaf(n) | Place::Unclaimed(n) => n,
         }
     }
 
     /// The same place under `prefix`.
-    pub fn under(&self, prefix: &str) -> Place {
+    pub(crate) fn under(&self, prefix: &str) -> Place {
         match self {
             Place::Leaf(n) => Place::Leaf(join(prefix, n)),
             Place::Unclaimed(n) => Place::Unclaimed(join(prefix, n)),
@@ -48,18 +48,18 @@ impl std::fmt::Display for Place {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Object {
-    pub fields: BTreeMap<String, Node>,
+    pub(crate) fields: BTreeMap<String, Node>,
     /// The keys a spread laid here that no field takes: a variant object per row. An object that has them is open
     /// (`DataType::Struct`'s second field): a read reaches them, each value a variant, and a write by key puts one
     /// there. One that has none is closed.
     pub unclaimed: Option<SlotId>,
     /// Keys of `unclaimed` that are gone, though its column still holds them: a step claimed each, and a rename then
     /// took the name away. Every reader of the column leaves them out, so the rename moves no data.
-    pub removed: Vec<String>,
+    pub(crate) removed: Vec<String>,
 }
 
 /// The root object's name in a pipeline: `$`, as in `$["@timestamp"]`. The tree's own name for it is `""`.
-pub const ROOT: &str = "$";
+pub(crate) const ROOT: &str = "$";
 
 /// How a capture names the column of its root's unclaimed fields: a column holding one object per row, of every key
 /// no field claims. No path spells it, so no field takes it.
@@ -67,13 +67,13 @@ pub const UNCLAIMED: &str = "...";
 
 /// How a capture names the column of the unclaimed fields of the object `name`: `destination....`, and `UNCLAIMED`
 /// for the root, whose name is `""`. No path spells it.
-pub fn unclaimed_entry(name: &str) -> String {
+pub(crate) fn unclaimed_entry(name: &str) -> String {
     join(name, UNCLAIMED)
 }
 
 /// The object whose unclaimed fields a capture's column `entry` holds (`unclaimed_entry`): `""` for the root; `None`
 /// for a field's column.
-pub fn unclaimed_object(entry: &str) -> Option<&str> {
+pub(crate) fn unclaimed_object(entry: &str) -> Option<&str> {
     let object = entry.strip_suffix(UNCLAIMED)?;
     match object.strip_suffix('.') {
         Some(object) => (!object.is_empty()).then_some(object),
@@ -83,18 +83,18 @@ pub fn unclaimed_object(entry: &str) -> Option<&str> {
 
 /// Whether `key`, a field of the root, is the engine's own: `__live` and a source's metadata. The serializer leaves
 /// them out of the record, and `$` does too.
-pub fn is_internal(key: &str) -> bool {
+pub(crate) fn is_internal(key: &str) -> bool {
     key.starts_with("__")
 }
 
 /// Whether `key` is written bare in a name: it is not empty and holds none of `.` `[` `]` `"` `\`. Any other key is
 /// written as a JSON string in brackets, `labels["app.kubernetes.io/name"]`, the way code reads it.
-pub fn is_plain(key: &str) -> bool {
+pub(crate) fn is_plain(key: &str) -> bool {
     !key.is_empty() && !key.bytes().any(|b| matches!(b, b'.' | b'[' | b']' | b'"' | b'\\'))
 }
 
 /// Append `key`, one key, to the name `path`.
-pub fn push_key(path: &mut String, key: &str) {
+pub(crate) fn push_key(path: &mut String, key: &str) {
     if is_plain(key) {
         if !path.is_empty() {
             path.push('.');
@@ -108,7 +108,7 @@ pub fn push_key(path: &mut String, key: &str) {
 }
 
 /// `key`, a key a parser read, as a name: one key, or with `split_dots` a key at each of its dots.
-pub fn name_of(key: &str, split_dots: bool) -> Cow<'_, str> {
+pub(crate) fn name_of(key: &str, split_dots: bool) -> Cow<'_, str> {
     let plain = match split_dots {
         true => key.split('.').all(is_plain),
         false => is_plain(key),
@@ -125,7 +125,7 @@ pub fn name_of(key: &str, split_dots: bool) -> Cow<'_, str> {
 }
 
 /// `key`, one key, as a name.
-pub fn spell(key: &str) -> Cow<'_, str> {
+pub(crate) fn spell(key: &str) -> Cow<'_, str> {
     if is_plain(key) {
         return Cow::Borrowed(key);
     }
@@ -159,7 +159,7 @@ fn first(name: &str) -> (Cow<'_, str>, usize, usize) {
 }
 
 /// The first key of `name`, and the rest of the name below it where there is one.
-pub fn split_first(name: &str) -> (Cow<'_, str>, Option<&str>) {
+pub(crate) fn split_first(name: &str) -> (Cow<'_, str>, Option<&str>) {
     let (key, _, rest) = first(name);
     (key, (rest < name.len()).then(|| &name[rest..]))
 }
@@ -217,7 +217,7 @@ fn keys(name: &str) -> impl Iterator<Item = (Cow<'_, str>, usize)> {
 }
 
 /// `rest`, the rest of a name past the nesting bound, as the one key it is there: decoded where it spells one key.
-pub fn rest_key(rest: &str) -> Cow<'_, str> {
+pub(crate) fn rest_key(rest: &str) -> Cow<'_, str> {
     match first(rest) {
         (key, end, _) if end == rest.len() => key,
         _ => Cow::Borrowed(rest),
@@ -226,23 +226,23 @@ pub fn rest_key(rest: &str) -> Cow<'_, str> {
 
 /// The keys of `name`, decoded, `MAX_NESTING` at most: past the bound the rest of a name is one key, as the
 /// serializer writes it.
-pub fn segments(name: &str) -> impl Iterator<Item = Cow<'_, str>> {
+pub(crate) fn segments(name: &str) -> impl Iterator<Item = Cow<'_, str>> {
     keys(name).map(|(key, _)| key)
 }
 
 /// The keys of the object `name`, decoded; the root's name is `""`, and it has no keys.
-pub fn object_keys(name: &str) -> impl Iterator<Item = Cow<'_, str>> {
+pub(crate) fn object_keys(name: &str) -> impl Iterator<Item = Cow<'_, str>> {
     segments(name).filter(move |_| !name.is_empty())
 }
 
 /// The first key of `name`, as `name` spells it.
-pub fn head(name: &str) -> &str {
+pub(crate) fn head(name: &str) -> &str {
     &name[..first(name).1]
 }
 
 /// `text`, a name as written, with the `$.` that names the record before it taken off: `$` is the record, so
 /// `$.a` is the name `a` and `$["a.b"]` the name `["a.b"]`. Any other text is as it was.
-pub fn under_record(text: &str) -> &str {
+pub(crate) fn under_record(text: &str) -> &str {
     match text.strip_prefix(ROOT) {
         Some(rest) if rest.starts_with('[') => rest,
         Some(rest) if rest.len() > 1 && rest.starts_with('.') => &rest[1..],
@@ -251,7 +251,7 @@ pub fn under_record(text: &str) -> &str {
 }
 
 /// `name` and `path`, a name under it, joined. Under `$`, the record, `path` is its own name.
-pub fn join(name: &str, path: &str) -> String {
+pub(crate) fn join(name: &str, path: &str) -> String {
     match (name.is_empty() || name == ROOT && !path.is_empty(), path.is_empty()) {
         (true, _) => path.to_string(),
         (_, true) => name.to_string(),
@@ -261,7 +261,7 @@ pub fn join(name: &str, path: &str) -> String {
 }
 
 /// The name of the key `key` of the object `name`. Under `$`, the record, it is the key's own name.
-pub fn child(name: &str, key: &str) -> String {
+pub(crate) fn child(name: &str, key: &str) -> String {
     let mut out = match name {
         ROOT => String::new(),
         name => name.to_string(),
@@ -271,7 +271,7 @@ pub fn child(name: &str, key: &str) -> String {
 }
 
 /// `name`'s path from `prefix`, an object at or above it: what `join` joined to `prefix`.
-pub fn key_under<'n>(prefix: &str, name: &'n str) -> &'n str {
+pub(crate) fn key_under<'n>(prefix: &str, name: &'n str) -> &'n str {
     match name.strip_prefix(prefix) {
         Some(rest) if !prefix.is_empty() => rest.strip_prefix('.').unwrap_or(rest),
         _ => name,
@@ -279,7 +279,7 @@ pub fn key_under<'n>(prefix: &str, name: &'n str) -> &'n str {
 }
 
 /// The object `name` sits in, and its key there. The root's own fields sit in `""`.
-pub fn parent(name: &str) -> (&str, Cow<'_, str>) {
+pub(crate) fn parent(name: &str) -> (&str, Cow<'_, str>) {
     let (mut above, mut end, mut key) = (0, 0, Cow::Borrowed(""));
     for (k, e) in keys(name) {
         (above, end, key) = (end, e, k);
@@ -288,7 +288,7 @@ pub fn parent(name: &str) -> (&str, Cow<'_, str>) {
 }
 
 /// The names of the objects above `name`, the outermost first.
-pub fn ancestors(name: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn ancestors(name: &str) -> impl Iterator<Item = &str> {
     let mut ends = keys(name).map(|(_, end)| end).peekable();
     std::iter::from_fn(move || {
         let end = ends.next()?;
@@ -298,7 +298,7 @@ pub fn ancestors(name: &str) -> impl Iterator<Item = &str> {
 
 /// Read `text`, a name as a person writes one in a step's field, into its spelling here: keys joined by dots, a key
 /// that is not plain as a JSON string in brackets. The error says what is wrong with it.
-pub fn parse_name(text: &str) -> Result<String, String> {
+pub(crate) fn parse_name(text: &str) -> Result<String, String> {
     let mut out = String::new();
     let mut rest = under_record(text);
     while !rest.is_empty() {
@@ -346,7 +346,7 @@ pub fn parse_name(text: &str) -> Result<String, String> {
 }
 
 /// `key` as a JSON string.
-pub fn spell_quoted(key: &str) -> String {
+pub(crate) fn spell_quoted(key: &str) -> String {
     serde_json::to_string(key).expect("a str is JSON")
 }
 
@@ -376,7 +376,7 @@ impl Object {
     }
 
     /// `object`, to change it.
-    pub fn object_mut(&mut self, name: &str) -> Option<&mut Object> {
+    pub(crate) fn object_mut(&mut self, name: &str) -> Option<&mut Object> {
         if name.is_empty() {
             return Some(self);
         }
@@ -400,7 +400,7 @@ impl Object {
 
     /// The leaf a path under it meets on the way to `name`: the longest name before one of `name`'s dots that is a
     /// leaf, with its slot.
-    pub fn leaf_above<'n>(&self, name: &'n str) -> Option<(&'n str, SlotId)> {
+    pub(crate) fn leaf_above<'n>(&self, name: &'n str) -> Option<(&'n str, SlotId)> {
         let mut at = self;
         let keys: Vec<(Cow<str>, usize)> = keys(name).collect();
         for (key, end) in &keys[..keys.len().saturating_sub(1)] {
@@ -415,7 +415,7 @@ impl Object {
 
     /// The deepest object on the way to `name`, with its name, and the rest of `name` below it. `name` itself is
     /// not reached: a leaf or a missing name ends the walk at the object above it.
-    pub fn deepest<'s, 'n>(&'s self, name: &'n str) -> (&'s Object, &'n str, &'n str) {
+    pub(crate) fn deepest<'s, 'n>(&'s self, name: &'n str) -> (&'s Object, &'n str, &'n str) {
         let mut at = self;
         let mut end = 0;
         let keys: Vec<(Cow<str>, usize)> = keys(name).collect();
@@ -430,14 +430,14 @@ impl Object {
     }
 
     /// Remove the node at `name`. The objects above it stay, empty or not: each still claims its key.
-    pub fn take(&mut self, name: &str) -> Option<Node> {
+    pub(crate) fn take(&mut self, name: &str) -> Option<Node> {
         let (parent, key) = parent(name);
         self.object_mut(parent)?.fields.remove(key.as_ref())
     }
 
     /// Put `node` at `name`, making each object on the way, and return what was there. A leaf on the way becomes an
     /// object: a write under a leaf is refused before it gets here.
-    pub fn put(&mut self, name: &str, node: Node) -> Option<Node> {
+    pub(crate) fn put(&mut self, name: &str, node: Node) -> Option<Node> {
         let segs: Vec<Cow<str>> = segments(name).collect();
         let (last, path) = segs.split_last().expect("a name has a segment");
         let mut at = self;
@@ -470,7 +470,7 @@ impl Object {
     }
 
     /// Every object under this one that holds unclaimed fields, this one included as `""`, with its slot.
-    pub fn unclaimed_slots(&self) -> Vec<(String, SlotId)> {
+    pub(crate) fn unclaimed_slots(&self) -> Vec<(String, SlotId)> {
         let mut out: Vec<(String, SlotId)> = self.unclaimed.map(|u| (String::new(), u)).into_iter().collect();
         self.walk("", &mut |name, node| {
             if let Node::Object(Object { unclaimed: Some(u), .. }) = node {
@@ -481,7 +481,7 @@ impl Object {
     }
 
     /// Every slot the tree names, by its place: its leaves and its unclaimed fields.
-    pub fn places(&self) -> Vec<(Place, SlotId)> {
+    pub(crate) fn places(&self) -> Vec<(Place, SlotId)> {
         let mut out: Vec<(Place, SlotId)> = self.leaves().into_iter().map(|(n, s)| (Place::Leaf(n), s)).collect();
         out.extend(
             self.unclaimed_slots()
@@ -492,12 +492,12 @@ impl Object {
     }
 
     /// Every slot the tree names.
-    pub fn slots(&self) -> Vec<SlotId> {
+    pub(crate) fn slots(&self) -> Vec<SlotId> {
         self.places().into_iter().map(|(_, s)| s).collect()
     }
 
     /// The slot at `place`.
-    pub fn slot(&self, place: &Place) -> Option<SlotId> {
+    pub(crate) fn slot(&self, place: &Place) -> Option<SlotId> {
         match place {
             Place::Leaf(n) => self.leaf(n),
             Place::Unclaimed(n) => self.object(n)?.unclaimed,
@@ -505,7 +505,7 @@ impl Object {
     }
 
     /// Every object under this one, with its name, parents before children. This one is not among them.
-    pub fn objects(&self) -> Vec<(String, &Object)> {
+    pub(crate) fn objects(&self) -> Vec<(String, &Object)> {
         let mut out = Vec::new();
         self.walk("", &mut |name, node| {
             if let Node::Object(o) = node {

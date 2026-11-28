@@ -60,7 +60,7 @@ pub fn split_line_into<'d>(line: &'d [u8], c: &CsvConfig, trusted_utf8: bool, fi
 /// `line` with the text of each column `blank` names taken out, its delimiters and every other byte kept, so each
 /// column after a blank one keeps its place. A blank quoted column loses its quotes. `None` where `line` does not
 /// split whole, which leaves nothing safe to cut.
-pub fn blank_columns(line: &[u8], c: &CsvConfig, blank: impl Fn(usize) -> bool) -> Option<Vec<u8>> {
+pub(crate) fn blank_columns(line: &[u8], c: &CsvConfig, blank: impl Fn(usize) -> bool) -> Option<Vec<u8>> {
     let record = trim_trailing_newline(line);
     let mut out = Vec::with_capacity(line.len());
     let mut whole = true;

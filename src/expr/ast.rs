@@ -3,31 +3,31 @@
 
 use crate::core::column::DataType;
 
-pub use crate::ops::{BinOp, UnOp};
+use crate::ops::{BinOp, UnOp};
 
 /// Byte offsets into the source text.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub struct Span {
-    pub start: u32,
-    pub end: u32,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
 }
 
 impl Span {
-    pub fn new(start: usize, end: usize) -> Span {
+    pub(crate) fn new(start: usize, end: usize) -> Span {
         Span {
             start: start as u32,
             end: end as u32,
         }
     }
 
-    pub fn join(self, other: Span) -> Span {
+    pub(crate) fn join(self, other: Span) -> Span {
         Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         }
     }
 
-    pub fn slice<'a>(&self, src: &'a str) -> &'a str {
+    pub(crate) fn slice<'a>(&self, src: &'a str) -> &'a str {
         &src[self.start as usize..self.end as usize]
     }
 }
@@ -35,21 +35,21 @@ impl Span {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 /// Every flag here reaches the regex engine: one that did nothing would read as if it meant something. `replaceFirst`
 /// and `replaceAll` say how many matches are replaced, so no flag does.
-pub struct RegexFlags {
-    pub case_insensitive: bool,
-    pub multi_line: bool,
-    pub dot_matches_newline: bool,
+pub(crate) struct RegexFlags {
+    pub(crate) case_insensitive: bool,
+    pub(crate) multi_line: bool,
+    pub(crate) dot_matches_newline: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PatternSrc {
-    pub source: String,
-    pub flags: RegexFlags,
+    pub(crate) source: String,
+    pub(crate) flags: RegexFlags,
 }
 
 /// Where a value meets a declared type.
 #[derive(Clone, Debug)]
-pub enum Site {
+pub(crate) enum Site {
     /// Parameter `param` of `function`.
     Argument { function: String, param: String },
     /// A return, or a field of one, named as an error names it: "the return of `f`".
@@ -70,18 +70,18 @@ impl std::fmt::Display for Site {
 
 #[derive(Clone, Debug)]
 pub struct Expr {
-    pub span: Span,
-    pub kind: ExprKind,
+    pub(crate) span: Span,
+    pub(crate) kind: ExprKind,
 }
 
 impl Expr {
-    pub fn new(span: Span, kind: ExprKind) -> Expr {
+    pub(crate) fn new(span: Span, kind: ExprKind) -> Expr {
         Expr { span, kind }
     }
 
     /// The expressions directly inside this one, in source order: the order a rewrite hoists their statements in. An
     /// arrow's body is statements of its own, so it has none.
-    pub fn children(&self) -> Vec<&Expr> {
+    fn children(&self) -> Vec<&Expr> {
         match &self.kind {
             ExprKind::Literal(_) | ExprKind::Field(_) | ExprKind::Regex(_) | ExprKind::Arrow(_) => Vec::new(),
             ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
@@ -97,7 +97,7 @@ impl Expr {
     }
 
     /// `children`, to rewrite in place.
-    pub fn children_mut(&mut self) -> Vec<&mut Expr> {
+    pub(crate) fn children_mut(&mut self) -> Vec<&mut Expr> {
         match &mut self.kind {
             ExprKind::Literal(_) | ExprKind::Field(_) | ExprKind::Regex(_) | ExprKind::Arrow(_) => Vec::new(),
             ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
@@ -113,13 +113,13 @@ impl Expr {
     }
 
     /// The first `Some` `f` gives on this expression or one inside it, outermost first, in source order.
-    pub fn find_map<T>(&self, f: &mut impl FnMut(&Expr) -> Option<T>) -> Option<T> {
+    pub(crate) fn find_map<T>(&self, f: &mut impl FnMut(&Expr) -> Option<T>) -> Option<T> {
         f(self).or_else(|| self.children().into_iter().find_map(|c| c.find_map(f)))
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum ExprKind {
+pub(crate) enum ExprKind {
     Literal(Value),
     /// A dotted chain is one identifier (`source.ip`), collapsed by the lexer.
     Field(String),
@@ -193,7 +193,7 @@ pub enum Value {
 
 impl Value {
     /// `None` for `Null`, which inhabits every type.
-    pub fn data_type(&self) -> Option<DataType> {
+    pub(crate) fn data_type(&self) -> Option<DataType> {
         Some(match self {
             Value::Null => return None,
             Value::Bool(_) => DataType::Bool,
@@ -210,11 +210,11 @@ impl Value {
 /// A function: a declared `function`'s or an arrow's. Every call is inlined by `expr::inline`. A parameter or return
 /// with a type must have it at every call; one without takes its value's type, as a `let` does.
 #[derive(Clone, Debug)]
-pub struct Function {
-    pub params: Vec<String>,
-    pub param_types: Vec<Option<DataType>>,
-    pub ret: Option<DataType>,
-    pub body: Vec<Stmt>,
+pub(crate) struct Function {
+    pub(crate) params: Vec<String>,
+    pub(crate) param_types: Vec<Option<DataType>>,
+    pub(crate) ret: Option<DataType>,
+    pub(crate) body: Vec<Stmt>,
 }
 
 /// A block a row can leave before its end. A row leaves every region from the innermost out to the one it leaves.
@@ -234,12 +234,12 @@ pub enum Region {
 
 /// A `catch`: its name, the kinds it takes by position in `ExceptionKind::KINDS` (none for every kind a `try`
 /// catches), and its body.
-pub type Catch = (Option<String>, Vec<usize>, Vec<Stmt>);
+pub(crate) type Catch = (Option<String>, Vec<usize>, Vec<Stmt>);
 
 /// A statement in a `Code` block. Structural restrictions (where `return`, `break` and `target[index] = v` may appear)
 /// are checked by `expr::inline` and `plan::compile`, not by the parser.
 #[derive(Clone, Debug)]
-pub enum Stmt {
+pub(crate) enum Stmt {
     /// `typed` for `name: type = value`, the one write that changes a bound name's type.
     Assign {
         target: String,
@@ -329,7 +329,7 @@ pub enum Stmt {
 
 impl Stmt {
     /// The expressions this statement holds itself, outside its blocks, in source order.
-    pub fn exprs(&self) -> Vec<&Expr> {
+    pub(crate) fn exprs(&self) -> Vec<&Expr> {
         match self {
             Stmt::Assign { value: e, .. }
             | Stmt::Let { value: e, .. }
@@ -352,7 +352,7 @@ impl Stmt {
     }
 
     /// `exprs`, to rewrite in place.
-    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+    pub(crate) fn exprs_mut(&mut self) -> Vec<&mut Expr> {
         match self {
             Stmt::Assign { value: e, .. }
             | Stmt::Let { value: e, .. }
@@ -376,7 +376,7 @@ impl Stmt {
 
     /// The blocks nested in this statement: an `if`'s two branches, a loop's body and a `while`'s `next`, a
     /// function's body.
-    pub fn blocks(&self) -> Vec<&[Stmt]> {
+    fn blocks(&self) -> Vec<&[Stmt]> {
         match self {
             Stmt::If { then, else_, .. } => vec![then, else_],
             Stmt::Try { body, catches, finally } => (std::iter::once(body).chain(catches.iter().map(|c| &c.2)))
@@ -395,7 +395,7 @@ impl Stmt {
     }
 
     /// `blocks`, to rewrite in place.
-    pub fn blocks_mut(&mut self) -> Vec<&mut Vec<Stmt>> {
+    pub(crate) fn blocks_mut(&mut self) -> Vec<&mut Vec<Stmt>> {
         match self {
             Stmt::If { then, else_, .. } => vec![then, else_],
             Stmt::Try { body, catches, finally } => (std::iter::once(body).chain(catches.iter_mut().map(|c| &mut c.2)))
@@ -414,7 +414,7 @@ impl Stmt {
 
     /// The first `Some` `f` gives on a statement in `stmts` or in a block nested in one, in source order, entering the
     /// blocks only of a statement `enter` accepts.
-    pub fn find_map<'s, T>(
+    pub(crate) fn find_map<'s, T>(
         stmts: &'s [Stmt],
         enter: &impl Fn(&Stmt) -> bool,
         f: &mut impl FnMut(&'s Stmt) -> Option<T>,
@@ -430,7 +430,7 @@ impl Stmt {
     }
 
     /// Whether `f` holds for a statement `find_map` would visit.
-    pub fn any(stmts: &[Stmt], enter: &impl Fn(&Stmt) -> bool, f: &mut impl FnMut(&Stmt) -> bool) -> bool {
+    pub(crate) fn any(stmts: &[Stmt], enter: &impl Fn(&Stmt) -> bool, f: &mut impl FnMut(&Stmt) -> bool) -> bool {
         Stmt::find_map(stmts, enter, &mut |s| f(s).then_some(())).is_some()
     }
 }

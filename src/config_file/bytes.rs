@@ -74,12 +74,12 @@ pub fn exact(bytes: usize) -> String {
 }
 
 /// Serializes a byte count as [`exact`] text.
-pub fn serialize<S: Serializer>(bytes: &usize, serializer: S) -> Result<S::Ok, S::Error> {
+pub(crate) fn serialize<S: Serializer>(bytes: &usize, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&exact(*bytes))
 }
 
 /// Deserializes a byte count from a number of bytes or [`parse`] text.
-pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<usize, D::Error> {
+pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<usize, D::Error> {
     struct ByteCount;
     impl<'de> Visitor<'de> for ByteCount {
         type Value = usize;

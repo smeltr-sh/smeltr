@@ -7,20 +7,20 @@ use serde::{Deserialize, Serialize};
 pub struct SftpSourceDto {
     /// Absolute, or under the user's home directory. Empty is the home directory.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub directory: String,
+    directory: String,
     #[serde(flatten)]
-    pub access: SftpAccessDto,
+    pub(crate) access: SftpAccessDto,
     #[serde(flatten)]
-    pub framing: FramingSettingsDto,
+    framing: FramingSettingsDto,
     #[serde(default, flatten)]
-    pub read: ReadFormatDto,
+    read: ReadFormatDto,
     /// How this source's record bytes become text. See [`EncodingLabel`].
     #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-    pub encoding: EncodingLabel,
+    encoding: EncodingLabel,
     #[serde(flatten)]
-    pub listing: ListingDto,
+    listing: ListingDto,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl SourceSpec for SftpSourceDto {

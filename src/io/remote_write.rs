@@ -42,16 +42,19 @@
 //!
 //! A store refuses a point older than its series' newest, and Prometheus appends a `TimeSeries`' samples before its
 //! histograms. So a series' points in a request go oldest first, one `TimeSeries` for each run of samples or of
-//! histograms among them, a row's exemplars with its point's run and their own oldest first.
+//! histograms among them, a row's exemplars with its point's run and their own oldest first. Requests go side by side,
+//! so nothing orders one request against another: a store takes points that arrive out of order only within its
+//! out-of-order window.
 //!
 //! What an answer means, as Prometheus and every remote_write store answer:
 //!
 //! | status | meaning |
 //! |---|---|
-//! | 2xx | landed |
-//! | 2xx to 2.0 naming nothing written | the destination stalls: the store takes 1.0 alone, reading 2.0 as empty |
+//! | 2xx | delivered |
+//! | 202 to 2.0 naming nothing written | delivered: the store took it and has not counted it yet |
+//! | other 2xx to 2.0 naming nothing written | the destination stalls: the store takes 1.0 alone, reading 2.0 as empty |
 //! | 429, 5xx | retried, backing off |
-//! | 400, 409, 413, 422 to 2.0 naming something written | landed; what it did not write counts as unwritten |
+//! | 400, 409, 413, 422 to 2.0 naming something written | delivered; what it did not write counts as unwritten |
 //! | 400, 409, 413, 422 | split until the row at fault is alone, which is refused |
 //! | 415 to 2.0 | the destination stalls: the store takes 1.0 alone |
 //! | anything else | the destination stalls, naming the status |
@@ -63,7 +66,7 @@ use std::sync::Arc;
 
 use prost::Message;
 
-use super::http::{HttpTransport, Order, Outcome, Protocol, Response, Unwritten};
+use super::http::{HttpTransport, Outcome, Protocol, Response, Unwritten};
 use super::prometheus::{
     BucketSpan, Exemplar, ExemplarV2, Histogram, HistogramCount, HistogramZeroCount, Label, MetadataV2, MetricMetadata,
     MetricType, NAME_LABEL, ResetHint, Sample, TimeSeries, TimeSeriesV2,
@@ -150,8 +153,7 @@ pub struct Item {
     metadata: Option<MetricMetadata>,
 }
 
-/// The time of a row that is metadata alone. It has none, and a store orders no metadata against points, so it goes
-/// first: a family's metadata then lands in the first request of its batch, no later than its points.
+/// The time of a row that is metadata alone, which has none.
 const METADATA_TIME: i64 = i64::MIN;
 
 /// What a row sends of one series.
@@ -232,7 +234,7 @@ pub fn transport(
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &PrometheusDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -242,13 +244,14 @@ pub fn open(
     let credentials = super::http::credential_headers("prometheus destination", &c.credentials, secrets)?;
     let config = super::http::agent_config(c.tls.as_ref(), secrets)?;
     let protocol = RemoteWrite::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name));
-    // No senders: every request goes from this thread, so one lands before the next is sent.
+    let make = || transport(c, &credentials, &config);
     Ok(Box::new(
-        super::http::HttpDestination::new(transport(c, &credentials, &config), protocol)
+        super::http::HttpDestinationBuilder::new(protocol)
             .with_subject(name)
             .with_metrics(metrics, id)
             .with_max_request_bytes(c.max_request_bytes)
-            .with_stall_after(c.stall_after),
+            .with_stall_after(c.stall_after)
+            .with_senders_from(make, c.max_in_flight(), c.in_flight),
     ))
 }
 
@@ -1034,12 +1037,6 @@ impl Protocol for RemoteWrite {
         &self.path
     }
 
-    /// A store refuses a point older than its series' newest, so a batch goes oldest first across its requests, its
-    /// metadata alone before all.
-    fn order(&self) -> Option<Order<Item>> {
-        Some(|a, b| a.time.cmp(&b.time))
-    }
-
     /// `name` a non-empty string, `time` a datetime, and `attributes` absent, null, or an object whose values are
     /// strings, numbers or booleans. An attribute that is null or the empty string is no label, as Prometheus reads a
     /// label with no value. JSON holds no NaN or infinity, so a number that was one arrives as none.
@@ -1238,9 +1235,10 @@ impl Protocol for RemoteWrite {
         let timeseries = self.timeseries(items);
         let request = match self.version {
             RemoteWriteVersion::V1 => {
-                // Each family's metadata, the first of the batch's order.
+                // Each family's metadata once: a record of metadata alone says it over a point's description.
                 let mut families: HashSet<&str> = HashSet::new();
-                let metadata = (items.iter())
+                let (alone, points): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.time == METADATA_TIME);
+                let metadata = (alone.into_iter().chain(points))
                     .filter_map(|item| item.metadata.as_ref())
                     .filter(|m| families.insert(&m.metric_family_name))
                     .cloned()
@@ -1257,10 +1255,13 @@ impl Protocol for RemoteWrite {
     fn read(&self, response: &Response, items: &[Self::Item]) -> Result<Outcome, IoError> {
         let count = items.len();
         match response.status {
-            // A 2.0 receiver names what it wrote, if only none. A 1.0 one that reads the request as 1.0's finds nothing
-            // in it and says nothing; Prometheus' own sender takes a 2xx that wrote nothing as a failure too.
+            // A 2.0 receiver names what it wrote, if only none, except in a 202, which says it has not counted yet. A
+            // 1.0 one that reads the request as 1.0's finds nothing in it and says nothing, so the 2.0 spec says a sender
+            // should take any other 2xx that names nothing as a 415, Unsupported Media Type.
             200..=299
-                if self.version == RemoteWriteVersion::V2 && !WRITTEN.iter().any(|h| response.header(h).is_some()) =>
+                if self.version == RemoteWriteVersion::V2
+                    && response.status != 202
+                    && !WRITTEN.iter().any(|h| response.header(h).is_some()) =>
             {
                 Err(IoError::transient(format!(
                     "the store took a remote_write 2.0 request without saying what it wrote, as a store of only 1.0 \
@@ -2218,14 +2219,6 @@ mod tests {
     }
 
     #[test]
-    fn metadata_goes_before_every_point() {
-        let order = protocol().order().unwrap();
-        let alone = admit(r#"{"name":"x"}"#).unwrap();
-        let point = admit(r#"{"time":"0001-01-01T00:00:00Z","name":"x","value":1}"#).unwrap();
-        assert_eq!(order(&alone, &point), std::cmp::Ordering::Less);
-    }
-
-    #[test]
     fn a_point_with_a_description_or_unit_carries_its_family_s_metadata() {
         let item = admit(&format!(
             r#"{{{T},"name":"x","description":"d","type":"histogram","aggregationTemporality":2,"count":1,"sum":1,
@@ -2491,7 +2484,7 @@ mod tests {
     }
 
     #[test]
-    fn a_2_0_answer_that_says_nothing_written_stalls_the_destination_naming_1_0() {
+    fn a_2_0_answer_other_than_202_that_says_nothing_written_stalls_the_destination_naming_1_0() {
         let answer = |headers: &[(&str, &str)]| Response {
             status: 204,
             headers: (headers.iter()).map(|(n, v)| (n.to_string(), v.to_string())).collect(),
@@ -2509,6 +2502,14 @@ mod tests {
         assert!(
             protocol().read(&answer(&[]), &samples(1)).unwrap().is_clean(),
             "1.0 has no such headers"
+        );
+        let accepted = Response {
+            status: 202,
+            ..answer(&[])
+        };
+        assert!(
+            v2.read(&accepted, &samples(1)).unwrap().is_clean(),
+            "a 202 has not counted yet"
         );
     }
 
