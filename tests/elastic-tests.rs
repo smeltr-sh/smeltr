@@ -671,7 +671,10 @@ fn a_busy_document_comes_back_at_once_to_be_sent_again() {
     assert_eq!(d.send(1, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
     d.flush().unwrap();
     let done = d.poll_completions().unwrap();
-    let busy = done[0].undelivered.as_ref().expect("the busy document was not delivered");
+    let busy = done[0]
+        .undelivered
+        .as_ref()
+        .expect("the busy document was not delivered");
     assert_eq!(busy.rows, vec![1]);
     assert_eq!(
         busy.error.throttled_wait(),

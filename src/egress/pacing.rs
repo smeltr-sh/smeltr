@@ -474,7 +474,7 @@ impl Pacing {
         let departed = self.next_send_time.max(began);
         // A thread that waits for the pacing rate wakes late, and a late send is never made up: so the lateness comes
         // off the next gap, up to half of it, as Linux's TCP pacing takes OS jitter into account
-        // (`tcp_update_skb_after_send`).
+        // (tcp_update_skb_after_send, in net/ipv4/tcp_output.c).
         let gap = Duration::from_secs_f64(bytes as f64 / self.pacing_rate.max(1.0));
         let late = began.saturating_duration_since(self.next_send_time);
         self.next_send_time = departed + gap - (gap / 2).min(late);

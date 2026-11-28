@@ -768,7 +768,15 @@ fn run(
                     } else {
                         clear_stall(metrics, id, name, &mut stalled, &mut backoff);
                     }
-                    finish(queue, returns, metrics, (id, name), delivery_unit, rejections, &mut again);
+                    finish(
+                        queue,
+                        returns,
+                        metrics,
+                        (id, name),
+                        delivery_unit,
+                        rejections,
+                        &mut again,
+                    );
                 }
                 // Refusals seen at hand-over wait for the acknowledgment, so one completion carries every refusal
                 // against a batch. Handed to the transport is not delivered: `Dispatched::InFlight` means only that, so
@@ -831,7 +839,14 @@ fn run(
                             note_stall(metrics, id, name, &undelivered.error, &mut stalled);
                             failures = true;
                         }
-                        let rest = remainder(queue, metrics, id, owed.delivery_unit, owed.rejections, &undelivered.rows);
+                        let rest = remainder(
+                            queue,
+                            metrics,
+                            id,
+                            owed.delivery_unit,
+                            owed.rejections,
+                            &undelivered.rows,
+                        );
                         if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
                             let c = Completion {
                                 throttled: throttled.is_some(),
