@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-use super::framing::{Framer, Framing, Malformed, Messages, Truncations};
+use super::framing::{Framer, Frames, Framing, Malformed, Messages, Truncations};
 use super::receiver::{Closed, Connection, Counted, Cutter, Held, STREAM_STEP};
 use crate::plan::topology::SocketReceiverConfig;
 

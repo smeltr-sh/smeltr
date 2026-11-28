@@ -106,12 +106,19 @@ pub(super) struct Messages {
     taken: usize,
 }
 
-impl Messages {
-    pub(super) fn push(&mut self, message: &[u8]) {
+/// Where a framer puts each frame it cuts, in order.
+pub(super) trait Frames {
+    fn push(&mut self, frame: &[u8]);
+}
+
+impl Frames for Messages {
+    fn push(&mut self, message: &[u8]) {
         self.bytes.extend_from_slice(message);
         self.ends.push(self.bytes.len() as u32);
     }
+}
 
+impl Messages {
     pub(super) fn is_empty(&self) -> bool {
         self.taken == self.ends.len()
     }
@@ -280,6 +287,12 @@ impl Framer {
             self.held.drain(..self.cut);
             self.cut = 0;
         }
+        let needed = self.held.len() + bytes.len();
+        if needed > self.held.capacity() {
+            // Doubled, but not past the longest frame unless this push needs more, so a long frame is held once.
+            let grown = needed.max((2 * self.held.capacity()).min(self.max));
+            self.held.reserve_exact(grown - self.held.len());
+        }
         self.held.extend_from_slice(bytes);
     }
 
@@ -290,14 +303,14 @@ impl Framer {
 
     /// Like `cut`, but the line breaker searches everything held, however little arrived since it last searched,
     /// because nothing more is coming.
-    pub(super) fn cut_whole(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
+    pub(super) fn cut_whole(&mut self, messages: &mut impl Frames) -> Result<(), Malformed> {
         self.searched.found();
         self.cut(messages)
     }
 
     /// Adds every frame held whole to `messages`, in order. What follows the last stays held for the next push. A
     /// refused frame leaves the frames before it in `messages`.
-    pub(super) fn cut(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
+    pub(super) fn cut(&mut self, messages: &mut impl Frames) -> Result<(), Malformed> {
         loop {
             if !self.discard() {
                 return Ok(());
@@ -311,7 +324,7 @@ impl Framer {
 
     /// Adds a whole frame to `messages` and moves past it. `false` for a partial frame, which stays held. A frame over
     /// the largest is refused where the framer does not truncate.
-    fn take(&mut self, frame: Frame, messages: &mut Messages) -> Result<bool, Malformed> {
+    fn take(&mut self, frame: Frame, messages: &mut impl Frames) -> Result<bool, Malformed> {
         let next = match frame {
             Frame::Message(start, end, next) => {
                 self.put(start, end, messages);
@@ -338,7 +351,7 @@ impl Framer {
         Ok(true)
     }
 
-    fn put(&self, start: usize, end: usize, messages: &mut Messages) {
+    fn put(&self, start: usize, end: usize, messages: &mut impl Frames) {
         match self.cuts {
             Cuts::Lines { escaped: true } => messages.push(&unescape_line(&self.held[start..end])),
             _ => messages.push(&self.held[start..end]),
@@ -390,7 +403,7 @@ impl Framer {
     /// The stream's end: adds a last frame that needs no end of its own, a line, an event or an object, to
     /// `messages`. A frame whose length says more was to come is dropped, and `Ok` says how many bytes of it there
     /// were.
-    pub(super) fn finish(&mut self, messages: &mut Messages) -> Result<usize, Malformed> {
+    pub(super) fn finish(&mut self, messages: &mut impl Frames) -> Result<usize, Malformed> {
         self.end_discarding();
         if !self.discard() {
             return Ok(0);
@@ -443,7 +456,7 @@ impl Framer {
 
     /// Adds what a line breaker holds to `messages` as though the stream had ended, its sender having gone quiet, and
     /// reads on. A counted frame not yet whole stays held.
-    pub(super) fn flush(&mut self, messages: &mut Messages) -> Result<(), Malformed> {
+    pub(super) fn flush(&mut self, messages: &mut impl Frames) -> Result<(), Malformed> {
         if self.discarding == Discarding::Break {
             self.end_discarding();
         }
@@ -458,7 +471,7 @@ impl Framer {
 
     /// Cuts every frame held, nothing more to come, up to an octet-counted frame not yet whole, whose length held it
     /// returns.
-    fn end_broken(&mut self, line_breaker: &LineBreaker, messages: &mut Messages) -> Result<usize, Malformed> {
+    fn end_broken(&mut self, line_breaker: &LineBreaker, messages: &mut impl Frames) -> Result<usize, Malformed> {
         loop {
             if !self.discard() {
                 return Ok(0);
@@ -645,6 +658,15 @@ impl Framer {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_long_frame_is_held_in_no_more_than_the_longest() {
+        let mut framer = Framer::refusing(Framing::Lines, 1000);
+        for _ in 0..10 {
+            framer.push(&[b'x'; 100]);
+        }
+        assert_eq!(framer.capacity(), 1000, "doubling would have held 1600");
+    }
     use super::*;
 
     const MAX: usize = 64;
