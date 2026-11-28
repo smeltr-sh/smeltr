@@ -554,7 +554,7 @@ impl Egress {
     }
 
     /// Have each sender the destination spawns past those it started with borrow `bytes` from the pool this queue
-    /// borrows from, held for as long as the destination lives. The pacing target is then held to what the pool
+    /// borrows from, held for as long as the destination lives. The pacing window is then held to what the pool
     /// lends besides, so the senders and the bytes they carry share one share. Without a pool, nothing is charged.
     pub fn charging_senders(self, bytes: usize) -> Egress {
         let _ = self.queue.sender_bytes.set(bytes);
@@ -848,11 +848,10 @@ fn run(
                             &undelivered.rows,
                         );
                         if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
-                            let c = Completion {
-                                throttled: throttled.is_some(),
-                                ..paced
-                            };
-                            p.abandoned(queue, c, paced.bytes.saturating_sub(rest.bytes));
+                            // A batch whose rows went in several requests may have a throttle among them under
+                            // another failure: the batch was throttled all the same.
+                            let throttled = throttled.is_some() || c.throttled;
+                            p.abandoned(queue, paced, paced.bytes.saturating_sub(rest.bytes), throttled);
                         }
                         // The pacing model answers a throttle, so it takes no backoff of its own: the rows go again
                         // once the wait the service asked for is over.
@@ -864,13 +863,7 @@ fn run(
                     }
                     any_delivered = true;
                     if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
-                        p.completed(
-                            queue,
-                            Completion {
-                                throttled: c.throttled,
-                                ..paced
-                            },
-                        );
+                        p.completed(queue, paced, c.throttled);
                     }
                     finish(
                         queue,
@@ -1127,7 +1120,7 @@ fn take_back_all(
 ) {
     for (_, o) in owner.drain() {
         if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
-            p.abandoned(queue, paced, 0);
+            p.abandoned(queue, paced, 0, false);
         }
         again.push(failed(o.delivery_unit));
     }

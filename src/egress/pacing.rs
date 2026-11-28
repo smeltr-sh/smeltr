@@ -16,7 +16,7 @@
 //!     ProbeBW_CRUISE --> ProbeBW_REFILL: time to probe
 //!     ProbeBW_REFILL --> ProbeBW_UP: one round
 //!     ProbeBW_UP --> ProbeBW_DOWN: rate plateau, or too much loss
-//!     ProbeBW_DOWN --> ProbeRTT: min_rtt 10 s old
+//!     ProbeBW_DOWN --> ProbeRTT: min_rtt 10 s old, from any state
 //!     ProbeRTT --> ProbeBW_CRUISE: 200 ms and a round
 //!     ProbeRTT --> Startup: pipe not yet full
 //! ```
@@ -103,7 +103,7 @@ const FULL_BW_COUNT: u32 = 3;
 /// What the model knew when a batch was handed to the destination, kept with the batch until it comes back: the
 /// draft's per-packet state.
 #[derive(Clone, Copy, Debug)]
-pub struct Sent {
+struct Sent {
     /// P.send_time.
     send_time: Instant,
     /// P.delivered.
@@ -124,18 +124,16 @@ pub struct Sent {
 
 /// One delivery, as the model is told of it.
 #[derive(Clone, Copy, Debug)]
-pub struct Completion {
-    /// The bytes acknowledged.
-    pub bytes: usize,
+pub(super) struct Completion {
+    /// The bytes handed over.
+    pub(super) bytes: usize,
     /// What [`Pacing::dispatched`] answered for the batch.
-    pub sent: Sent,
-    /// The destination asked to be sent less while delivering it.
-    pub throttled: bool,
+    sent: Sent,
 }
 
 /// Whether a batch of some size may be sent now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Gate {
+pub(super) enum Gate {
     Send,
     /// The pacing rate has it due this much later.
     Wait(Duration),
@@ -145,7 +143,7 @@ pub enum Gate {
 
 /// BBR.state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
+enum State {
     Startup,
     Drain,
     ProbeBwDown,
@@ -224,12 +222,13 @@ struct RateSample {
 }
 
 /// The BBR model and sender state for one destination.
+///
+/// Bytes are counted in `f64`, as the draft's arithmetic is: every count stays far under 2^53, so each is exact, and a
+/// window read back as bytes truncates to whole ones.
 #[derive(Debug)]
-pub struct Pacing {
-    /// C.SMSS: one batch.
+struct Pacing {
+    /// C.SMSS and C.send_quantum: one batch.
     smss: f64,
-    /// C.send_quantum: one batch.
-    send_quantum: f64,
     /// The receiver's window: the destination's share of the pool, or its stated buffer.
     ceiling: f64,
 
@@ -282,7 +281,6 @@ pub struct Pacing {
     extra_acked_delivered: u64,
     extra_acked_filter: MaxFilter,
     extra_acked: f64,
-    max_inflight: f64,
     inflight_longterm: f64,
     inflight_shortterm: f64,
     bw_latest: f64,
@@ -316,18 +314,15 @@ pub struct Pacing {
 
 impl Pacing {
     /// A flow whose send quantum is a batch of `batch` bytes, held to `ceiling`: OnInit.
-    pub fn new(batch: usize, ceiling: usize, now: Instant) -> Pacing {
-        let mut seed = RandomState::new().build_hasher();
-        seed.write_usize(batch);
-        Pacing::seeded(batch, ceiling, now, seed.finish())
+    fn new(batch: usize, ceiling: usize, now: Instant) -> Pacing {
+        Pacing::seeded(batch, ceiling, now, RandomState::new().build_hasher().finish())
     }
 
     fn seeded(batch: usize, ceiling: usize, now: Instant, rng: u64) -> Pacing {
-        let (smss, send_quantum) = (batch.max(1) as f64, batch.max(1) as f64);
+        let smss = batch.max(1) as f64;
         let mut p = Pacing {
             smss,
-            send_quantum,
-            ceiling: (ceiling as f64).max(send_quantum),
+            ceiling: (ceiling as f64).max(smss),
             delivered: 0,
             delivered_time: now,
             first_send_time: now,
@@ -362,7 +357,6 @@ impl Pacing {
             extra_acked_delivered: 0,
             extra_acked_filter: MaxFilter::default(),
             extra_acked: 0.0,
-            max_inflight: 0.0,
             inflight_longterm: f64::INFINITY,
             inflight_shortterm: f64::INFINITY,
             bw_latest: 0.0,
@@ -392,60 +386,44 @@ impl Pacing {
             idle_restart: false,
             rng,
         };
-        // InitPacingRate, with no round trip yet: one millisecond stands for it.
-        p.pacing_rate = STARTUP_PACING_GAIN * INITIAL_CWND * smss / 0.001;
+        // With no round trip yet, one millisecond stands for it.
+        p.init_pacing_rate(Duration::from_millis(1));
         p.enter_startup();
         p
     }
 
     /// What the destination may have in flight: the lesser of cwnd and the receiver's window.
-    pub fn target(&self) -> usize {
-        self.window() as usize
-    }
-
     fn window(&self) -> f64 {
         self.cwnd.min(self.ceiling)
     }
 
     /// What the egress queue may hold: the window, and one batch ready behind it. Never past the ceiling.
-    pub fn queue_bytes(&self) -> usize {
-        (self.window() + self.send_quantum).min(self.ceiling).max(self.window()) as usize
+    fn queue_bytes(&self) -> usize {
+        (self.window() + self.smss).min(self.ceiling).max(self.window()) as usize
     }
 
     /// The receiver's window. Moves as the pool's share does.
-    pub fn set_ceiling(&mut self, ceiling: usize) {
-        self.ceiling = (ceiling as f64).max(self.send_quantum);
-    }
-
-    /// BBR.min_rtt, once there is one.
-    pub fn round_trip(&self) -> Option<Duration> {
-        self.min_rtt
-    }
-
-    /// BBR.max_bw, in bytes a second.
-    pub fn rate(&self) -> f64 {
-        self.max_bw
+    fn set_ceiling(&mut self, ceiling: usize) {
+        self.ceiling = (ceiling as f64).max(self.smss);
     }
 
     /// How far a probe above the link's measured capacity would stand below the ceiling, in bytes: 0 once the link
     /// carries at least the ceiling over the probe's gain. A model held at its ceiling measures no more than the
     /// ceiling lets through, so this is as near as it can come to saying the ceiling, not the link, is the bound.
-    pub fn headroom(&self) -> usize {
+    fn headroom(&self) -> usize {
         let wanted = self
-            .round_trip()
+            .min_rtt
             .map_or(0.0, |rtt| PROBE_UP_PACING_GAIN * self.max_bw * rtt.as_secs_f64());
         (self.ceiling - wanted).max(0.0) as usize
     }
 
     /// Whether a batch of `bytes` may go now: cwnd and the receiver's window must have room for it, unless nothing is
     /// in flight, and the pacing rate must have it due.
-    pub fn gate(&mut self, bytes: usize, now: Instant) -> Gate {
+    fn gate(&mut self, bytes: usize, now: Instant) -> Gate {
         // OnTransmit, before the batch goes: a flow restarting from idle paces it at the restarted rate.
         self.handle_restart_from_idle(now);
         if self.inflight > 0 && (self.inflight + bytes as u64) as f64 > self.window() {
-            if self.cwnd <= self.ceiling {
-                self.cwnd_limited_now = true;
-            }
+            self.mark_cwnd_limited();
             return Gate::Full;
         }
         match self.next_send_time.checked_duration_since(now) {
@@ -456,8 +434,8 @@ impl Pacing {
 
     /// CheckIfApplicationLimited: the source has `nothing_to_send` while the window has room for a batch, so the
     /// samples of the next round trip say how fast it produces, not how fast the link carries.
-    pub fn check_app_limited(&mut self, nothing_to_send: bool) {
-        if nothing_to_send && self.inflight as f64 + self.send_quantum <= self.window() {
+    fn check_app_limited(&mut self, nothing_to_send: bool) {
+        if nothing_to_send && self.inflight as f64 + self.smss <= self.window() {
             self.mark_app_limited();
         }
     }
@@ -466,9 +444,16 @@ impl Pacing {
         self.app_limited = (self.delivered + self.inflight).max(1);
     }
 
+    /// cwnd is full. Only cwnd counts: a sender the receiver's window holds back is not cwnd-limited.
+    fn mark_cwnd_limited(&mut self) {
+        if self.cwnd <= self.ceiling {
+            self.cwnd_limited_now = true;
+        }
+    }
+
     /// A batch of `bytes` whose handoff to the destination began at `began` and ended at `now`: OnPacketSent.
     /// The answer goes back with its [`Completion`].
-    pub fn dispatched(&mut self, bytes: usize, began: Instant, now: Instant) -> Sent {
+    fn dispatched(&mut self, bytes: usize, began: Instant, now: Instant) -> Sent {
         let bytes = bytes as u64;
         // The batch departs when its handoff begins, so the handoff is spent from its own pacing delay.
         let departed = self.next_send_time.max(began);
@@ -486,8 +471,8 @@ impl Pacing {
         let sent_before = self.sent;
         self.sent += bytes;
         self.inflight += bytes;
-        if self.inflight as f64 + self.send_quantum > self.cwnd && self.cwnd <= self.ceiling {
-            self.cwnd_limited_now = true;
+        if self.inflight as f64 + self.smss > self.cwnd {
+            self.mark_cwnd_limited();
         }
         Sent {
             send_time,
@@ -502,21 +487,21 @@ impl Pacing {
     }
 
     /// A batch handed over failed but for `delivered` of its bytes, and what failed goes back to be sent again. What
-    /// was delivered is acknowledged. What failed is lost only when the destination was asked to send less (`c.throttled`):
+    /// was delivered is acknowledged. What failed is lost only when the destination was asked to send less (`throttled`):
     /// any other failure, a reset or an error, says nothing of how full the path is, so it is in flight no longer and
     /// signals nothing.
-    pub fn abandoned(&mut self, c: Completion, delivered: usize, now: Instant) {
+    fn abandoned(&mut self, c: Completion, delivered: usize, throttled: bool, now: Instant) {
         let bytes = c.bytes as u64;
         let delivered = (delivered as u64).min(bytes);
-        let lost = if c.throttled { bytes - delivered } else { 0 };
+        let lost = if throttled { bytes - delivered } else { 0 };
         self.answered(c.sent, bytes, delivered, lost, now);
     }
 
-    /// A batch came back acknowledged whole. One the destination was asked to send less for while delivering it is
-    /// also congestion, as an ECN CE mark is: its bytes are delivered and count as lost.
-    pub fn completed(&mut self, c: Completion, now: Instant) {
+    /// A batch came back acknowledged whole. One the destination was asked to send less for while delivering it
+    /// (`throttled`) is also congestion, as an ECN CE mark is: its bytes are delivered and count as lost.
+    fn completed(&mut self, c: Completion, throttled: bool, now: Instant) {
         let bytes = c.bytes as u64;
-        self.answered(c.sent, bytes, bytes, if c.throttled { bytes } else { 0 }, now);
+        self.answered(c.sent, bytes, bytes, if throttled { bytes } else { 0 }, now);
     }
 
     /// The answer for a batch of `size` bytes sent as `p`: `acked` of them acknowledged, and `lost` marked lost.
@@ -541,8 +526,7 @@ impl Pacing {
         self.first_send_time = p.send_time;
         let rtt = now.saturating_duration_since(p.send_time);
         if self.lifetime_min_rtt.is_none() && !rtt.is_zero() {
-            // InitPacingRate, now that there is a round trip.
-            self.pacing_rate = STARTUP_PACING_GAIN * INITIAL_CWND * self.smss / rtt.as_secs_f64();
+            self.init_pacing_rate(rtt);
         }
         if self.lifetime_min_rtt.is_none_or(|m| rtt < m) {
             self.lifetime_min_rtt = Some(rtt);
@@ -573,7 +557,7 @@ impl Pacing {
         self.update_congestion_signals(&rs);
         self.update_ack_aggregation(&rs, now);
         self.check_full_bw_reached(&rs);
-        self.check_startup_done(&rs);
+        self.check_startup_done(&rs, now);
         self.check_drain_done(now);
         self.update_probe_bw_cycle_phase(&rs, now);
         self.update_min_rtt(rtt, now);
@@ -778,9 +762,7 @@ impl Pacing {
     }
 
     fn quantization_budget(&self, cap: f64) -> f64 {
-        let mut cap = cap
-            .max(OFFLOAD_BUDGET * self.send_quantum)
-            .max(MIN_PIPE_CWND * self.smss);
+        let mut cap = cap.max(OFFLOAD_BUDGET * self.smss).max(MIN_PIPE_CWND * self.smss);
         if self.state == State::ProbeBwUp {
             cap += 2.0 * self.smss;
         }
@@ -790,11 +772,6 @@ impl Pacing {
     /// Inflight(bw, gain).
     fn inflight(&self, bw: f64, gain: f64) -> f64 {
         self.quantization_budget(self.bdp_multiple(bw, gain))
-    }
-
-    fn update_max_inflight(&mut self) {
-        let cap = self.bdp_multiple(self.bw, self.cwnd_gain) + self.extra_acked;
-        self.max_inflight = self.quantization_budget(cap);
     }
 
     /// TargetInflight.
@@ -832,9 +809,11 @@ impl Pacing {
         }
     }
 
-    fn check_startup_done(&mut self, rs: &RateSample) {
+    fn check_startup_done(&mut self, rs: &RateSample, now: Instant) {
         self.check_startup_high_loss(rs);
         if self.state == State::Startup && self.full_bw_reached {
+            // The cycle timer runs from the pipe filling, not from the flow's start.
+            self.cycle_ended_at = now;
             self.state = State::Drain;
             self.pacing_gain = DRAIN_PACING_GAIN;
             self.cwnd_gain = DEFAULT_CWND_GAIN;
@@ -860,7 +839,6 @@ impl Pacing {
         if self.state == State::Drain
             && ((self.inflight as f64) <= self.inflight(self.bw, 1.0) || self.round_count > self.drain_start_round + 3)
         {
-            self.cwnd_gain = DEFAULT_CWND_GAIN;
             self.start_probe_bw_down(now);
         }
     }
@@ -1125,6 +1103,11 @@ impl Pacing {
 
     // Control parameters (draft §5.6).
 
+    /// InitPacingRate, over a round trip of `rtt`.
+    fn init_pacing_rate(&mut self, rtt: Duration) {
+        self.pacing_rate = STARTUP_PACING_GAIN * INITIAL_CWND * self.smss / rtt.as_secs_f64();
+    }
+
     fn set_pacing_rate_with_gain(&mut self, gain: f64) {
         let rate = gain * self.bw * (100.0 - PACING_MARGIN_PERCENT) / 100.0;
         if self.full_bw_reached || rate > self.pacing_rate {
@@ -1149,11 +1132,12 @@ impl Pacing {
     }
 
     fn set_cwnd(&mut self, rs: &RateSample) {
-        self.update_max_inflight();
+        // BBRUpdateMaxInflight.
+        let max_inflight = self.quantization_budget(self.bdp_multiple(self.bw, self.cwnd_gain) + self.extra_acked);
         let acked = rs.newly_acked as f64;
         if self.full_bw_reached {
-            self.cwnd = (self.cwnd + acked).min(self.max_inflight);
-        } else if self.cwnd < self.max_inflight || (self.delivered as f64) < INITIAL_CWND * self.smss {
+            self.cwnd = (self.cwnd + acked).min(max_inflight);
+        } else if self.cwnd < max_inflight || (self.delivered as f64) < INITIAL_CWND * self.smss {
             self.cwnd += acked;
         }
         self.cwnd = self.cwnd.max(MIN_PIPE_CWND * self.smss);
@@ -1213,34 +1197,35 @@ impl Pacer {
         Completion {
             bytes,
             sent: self.model.dispatched(bytes, began, Instant::now()),
-            throttled: false,
         }
     }
 
-    /// Tell the model a batch failed but for `delivered` of its bytes, and goes back to be sent again: throttled, if
-    /// `c.throttled`. Carries its window to the queue as [`Pacer::completed`] does.
-    pub(super) fn abandoned(&mut self, queue: &Queue, c: Completion, delivered: usize) {
-        self.answered(queue, |model, now| model.abandoned(c, delivered, now));
+    /// Tell the model a batch failed but for `delivered` of its bytes, and goes back to be sent again: `throttled`, if
+    /// the destination asked to be sent less. Carries its window to the queue as [`Pacer::completed`] does.
+    pub(super) fn abandoned(&mut self, queue: &Queue, c: Completion, delivered: usize, throttled: bool) {
+        self.answered(queue, |model, now| model.abandoned(c, delivered, throttled, now));
     }
 
-    /// Tell the model a batch came back, and carry its window to the queue and the metrics when it moves. The ceiling
-    /// is read each time: the pool's share moves as other queues come and go. The model's headroom under the ceiling
-    /// is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a destination memory holds back.
-    pub(super) fn completed(&mut self, queue: &Queue, c: Completion) {
-        self.answered(queue, |model, now| model.completed(c, now));
+    /// Tell the model a batch came back, `throttled` if the destination asked to be sent less while delivering it, and
+    /// carry its window to the queue and the metrics when it moves. The ceiling is read each time: the pool's share
+    /// moves as other queues come and go. The model's headroom under the ceiling is averaged over time and reported
+    /// every [`HEADROOM_EVERY`]: none for long is a destination memory holds back.
+    pub(super) fn completed(&mut self, queue: &Queue, c: Completion, throttled: bool) {
+        self.answered(queue, |model, now| model.completed(c, throttled, now));
     }
 
     fn answered(&mut self, queue: &Queue, answer: impl FnOnce(&mut Pacing, Instant)) {
+        let now = Instant::now();
         let before = self.model.queue_bytes();
         let ceiling = queue.share();
         self.model.set_ceiling(ceiling);
-        answer(&mut self.model, Instant::now());
+        answer(&mut self.model, now);
         if self.model.queue_bytes() != before {
             queue.set_budget(self.model.queue_bytes());
             note_queue_budget(&self.metrics, self.id, queue);
         }
         let share = self.model.headroom() as f64 / ceiling.max(1) as f64;
-        if let Some(mean) = self.headroom.add(share, Instant::now()) {
+        if let Some(mean) = self.headroom.add(share, now) {
             let label = self.id.to_string();
             self.metrics.gauge(
                 "smeltr_destination_pace_headroom_ratio",
@@ -1329,8 +1314,8 @@ mod tests {
         start: Instant,
         now: Instant,
         link_free: Instant,
-        /// (acknowledged at, completion), soonest last.
-        out: Vec<(Instant, Completion)>,
+        /// (acknowledged at, completion, throttled), soonest last.
+        out: Vec<(Instant, Completion, bool)>,
         source_next: Instant,
         sent: u64,
         /// (when, bytes) of each acknowledgment, and how many were throttled.
@@ -1357,6 +1342,11 @@ mod tests {
             }
         }
 
+        /// A 20 ms path at 1 GiB/s, a product of about five batches, with room for 256.
+        fn lan() -> Sim {
+            Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)))
+        }
+
         fn has_batch(&self) -> bool {
             self.path.offered.is_none() || self.now >= self.source_next
         }
@@ -1379,7 +1369,7 @@ mod tests {
                     self.p.check_app_limited(true);
                     next = next.min(self.source_next);
                 }
-                if let Some((at, _)) = self.out.last() {
+                if let Some((at, ..)) = self.out.last() {
                     next = next.min(*at);
                 }
                 self.now = next.max(self.now);
@@ -1398,27 +1388,20 @@ mod tests {
             let late = if span == 0 { 0 } else { (self.sent * 7919) % span };
             self.sent += 1;
             let at = self.link_free + self.path.rtt + Duration::from_micros(late);
-            self.out.push((
-                at,
-                Completion {
-                    bytes: BATCH,
-                    sent,
-                    throttled,
-                },
-            ));
-            self.out.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+            self.out.push((at, Completion { bytes: BATCH, sent }, throttled));
+            self.out.sort_by_key(|(at, ..)| std::cmp::Reverse(*at));
             if let Some(rate) = self.path.offered {
                 self.source_next = self.source_next.max(self.now) + Duration::from_secs_f64(BATCH as f64 / rate);
             }
         }
 
         fn acknowledge(&mut self) {
-            while self.out.last().is_some_and(|(at, _)| *at <= self.now) {
-                let (at, c) = self.out.pop().expect("one is due");
+            while self.out.last().is_some_and(|(at, ..)| *at <= self.now) {
+                let (at, c, throttled) = self.out.pop().expect("one is due");
                 self.p.check_app_limited(!self.has_batch());
-                self.p.completed(c, at);
+                self.p.completed(c, throttled, at);
                 self.acks.push((at, c.bytes as u64));
-                self.throttled += usize::from(c.throttled);
+                self.throttled += usize::from(throttled);
                 if self.states.last() != Some(&self.p.state) {
                     self.states.push(self.p.state);
                 }
@@ -1445,8 +1428,7 @@ mod tests {
 
     #[test]
     fn startup_ends_once_the_rate_plateaus_and_measures_the_link() {
-        // A 20 ms path at 1 GiB/s: a product of about 20 batches.
-        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
+        let mut s = Sim::lan();
         s.run_to(2.0);
         assert!(s.p.full_bw_reached, "the pipe filled");
         assert_eq!(&s.states[..2], &[State::Startup, State::Drain], "{:?}", s.states);
@@ -1455,21 +1437,21 @@ mod tests {
             "drained into ProbeBW: {:?}",
             s.states
         );
-        let error = (s.p.rate() - GIB).abs() / GIB;
-        assert!(error < 0.02, "max_bw within 2% of the link: {} vs {GIB}", s.p.rate());
+        let error = (s.p.max_bw - GIB).abs() / GIB;
+        assert!(error < 0.02, "max_bw within 2% of the link: {} vs {GIB}", s.p.max_bw);
     }
 
     #[test]
     fn probe_bw_keeps_the_link_full_without_holding_far_past_the_product() {
-        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
+        let mut s = Sim::lan();
         s.run_to(8.0);
         let carried = s.throughput(4.0, 8.0);
         assert!(carried > 0.9 * GIB, "carries the link: {carried} of {GIB}");
         let bdp = GIB * 0.02;
         assert!(
-            (s.p.target() as f64) < 3.0 * bdp,
+            s.p.window() < 3.0 * bdp,
             "the window stays near the product: {} vs {bdp}",
-            s.p.target()
+            s.p.window()
         );
         let cycles: Vec<_> = s.states.iter().filter(|s| **s == State::ProbeBwUp).collect();
         assert!(!cycles.is_empty(), "it probes for more: {:?}", s.states);
@@ -1506,29 +1488,29 @@ mod tests {
             "app-limited rounds without loss stay in Startup"
         );
 
-        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
+        let mut s = Sim::lan();
         s.run_to(3.0);
-        let measured = s.p.rate();
+        let measured = s.p.max_bw;
         s.path.offered = Some(0.1 * GIB);
         s.source_next = s.now;
         s.run_to(8.0);
         assert!(
-            s.p.rate() >= 0.95 * measured,
+            s.p.max_bw >= 0.95 * measured,
             "a source sending a tenth of the link leaves the estimate: {} vs {measured}",
-            s.p.rate()
+            s.p.max_bw
         );
     }
 
     #[test]
     fn a_min_rtt_ten_seconds_old_is_measured_again_in_probe_rtt() {
-        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
-        let mut least = usize::MAX;
+        let mut s = Sim::lan();
+        let mut least = f64::INFINITY;
         let mut t = 0.0;
         while t < 13.0 {
             t += 0.001;
             s.run_to(t);
             if s.p.state == State::ProbeRtt {
-                least = least.min(s.p.target());
+                least = least.min(s.p.window());
             }
         }
         let i = s
@@ -1542,7 +1524,7 @@ mod tests {
             s.states
         );
         assert!(
-            least as f64 <= (0.5 * GIB * 0.02).max(MIN_PIPE_CWND * BATCH as f64) + 1.0,
+            least <= (0.5 * GIB * 0.02).max(MIN_PIPE_CWND * BATCH as f64) + 1.0,
             "cwnd held to ProbeRTTCwnd: {least}"
         );
         assert_eq!(s.p.cwnd_gain, DEFAULT_CWND_GAIN, "and its gain restored");
@@ -1550,7 +1532,7 @@ mod tests {
 
     #[test]
     fn a_source_idle_past_the_min_rtt_window_skips_probe_rtt() {
-        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
+        let mut s = Sim::lan();
         s.run_to(3.0);
         s.path.offered = Some(1.0);
         s.source_next = s.now + Duration::from_secs(11);
@@ -1558,7 +1540,6 @@ mod tests {
         s.path.offered = None;
         let before = s.states.len();
         s.run_to(14.2);
-        assert!(s.p.idle_restart || s.states.len() >= before, "restarted from idle");
         assert!(
             !s.states[before..].contains(&State::ProbeRtt),
             "idle drained the queue: no ProbeRTT {:?}",
@@ -1576,9 +1557,9 @@ mod tests {
         );
         s.run_to(5.0);
         assert!(
-            s.p.target() >= 4 * BATCH,
+            s.p.window() >= 4.0 * BATCH as f64,
             "BBR.MinPipeCwnd is four packets, and a packet is a batch: {}",
-            s.p.target()
+            s.p.window()
         );
         let carried = s.throughput(3.0, 5.0);
         assert!(carried > 0.9 * 100.0 * MIB as f64, "and the link stays full: {carried}");
@@ -1615,7 +1596,7 @@ mod tests {
         let ceiling = 5 * BATCH;
         let mut s = Sim::new(BATCH, ceiling, Path::new(GIB, Duration::from_millis(20)));
         s.run_to(3.0);
-        assert!(s.p.target() <= ceiling, "{}", s.p.target());
+        assert!(s.p.window() <= ceiling as f64, "{}", s.p.window());
         assert!(s.p.queue_bytes() <= ceiling);
         assert_eq!(s.p.headroom(), 0, "the link is wider than the ceiling");
 
@@ -1664,12 +1645,12 @@ mod tests {
         s.run_to(5.0);
         s.path.capacity = 0.1 * GIB;
         s.run_to(120.0);
-        let rate = s.p.rate() / GIB;
+        let rate = s.p.max_bw / GIB;
         assert!(rate < 0.15, "the rate falls to the link: {rate:.2} GiB/s");
         assert!(
-            s.p.target() <= 16 * BATCH,
-            "the window comes back down: {} MiB",
-            s.p.target() / MIB
+            s.p.window() <= 16.0 * BATCH as f64,
+            "the window comes back down: {:.0} MiB",
+            s.p.window() / MIB as f64
         );
         let carried = s.throughput(60.0, 120.0) / GIB;
         assert!(carried > 0.09, "the link stays full: {carried:.3} GiB/s");
@@ -1680,16 +1661,16 @@ mod tests {
     /// the window comes back down to the narrower link.
     #[test]
     fn a_link_that_narrows_without_loss_brings_the_model_down_within_a_few_cycle_timers() {
-        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
+        let mut s = Sim::lan();
         s.run_to(30.0);
         s.path.capacity = 0.1 * GIB;
         s.run_to(120.0);
-        let rate = s.p.rate() / GIB;
+        let rate = s.p.max_bw / GIB;
         assert!(rate < 0.15, "the rate falls to the link: {rate:.2} GiB/s");
         assert!(
-            s.p.target() <= 16 * BATCH,
-            "the window comes back down: {} MiB",
-            s.p.target() / MIB
+            s.p.window() <= 16.0 * BATCH as f64,
+            "the window comes back down: {:.0} MiB",
+            s.p.window() / MIB as f64
         );
         let carried = s.throughput(90.0, 120.0) / GIB;
         assert!(carried > 0.09, "the link stays full: {carried:.3} GiB/s");
@@ -1697,7 +1678,7 @@ mod tests {
 
     #[test]
     fn sends_are_spaced_at_the_pacing_rate() {
-        let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
+        let mut s = Sim::lan();
         s.run_to(4.0);
         let before = s.p.next_send_time;
         let rate = s.p.pacing_rate;
@@ -1736,18 +1717,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_failed_batch_leaves_flight_signalling_nothing_and_what_was_delivered_is_acknowledged() {
+    /// A flow with one batch handed over at `now`, and what its answer tells the model.
+    fn one_batch_out() -> (Pacing, Completion, Instant) {
         let now = Instant::now();
         let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
         let sent = p.dispatched(BATCH, now, now);
+        (p, Completion { bytes: BATCH, sent }, now)
+    }
+
+    #[test]
+    fn a_failed_batch_leaves_flight_signalling_nothing_and_what_was_delivered_is_acknowledged() {
+        let (mut p, c, now) = one_batch_out();
         assert_eq!(p.inflight, BATCH as u64);
-        let c = Completion {
-            bytes: BATCH,
-            sent,
-            throttled: false,
-        };
-        p.abandoned(c, BATCH / 4, now + Duration::from_millis(10));
+        p.abandoned(c, BATCH / 4, false, now + Duration::from_millis(10));
         assert_eq!(p.inflight, 0, "nothing in flight");
         assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter was delivered");
         assert_eq!(p.lost, 0, "a failure is no congestion");
@@ -1760,15 +1742,8 @@ mod tests {
 
     #[test]
     fn a_throttled_batch_is_lost_for_what_goes_again_and_acknowledged_for_what_was_delivered() {
-        let now = Instant::now();
-        let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
-        let sent = p.dispatched(BATCH, now, now);
-        let c = Completion {
-            bytes: BATCH,
-            sent,
-            throttled: true,
-        };
-        p.abandoned(c, BATCH / 4, now + Duration::from_millis(10));
+        let (mut p, c, now) = one_batch_out();
+        p.abandoned(c, BATCH / 4, true, now + Duration::from_millis(10));
         assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter was delivered");
         assert_eq!(p.lost, (BATCH - BATCH / 4) as u64, "the rest was asked for less: lost");
         assert!(p.recovery.is_some(), "a loss starts recovery");
@@ -1776,17 +1751,8 @@ mod tests {
 
     #[test]
     fn a_batch_delivered_throttled_is_acknowledged_then_marked() {
-        let now = Instant::now();
-        let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
-        let sent = p.dispatched(BATCH, now, now);
-        p.completed(
-            Completion {
-                bytes: BATCH,
-                sent,
-                throttled: true,
-            },
-            now + Duration::from_millis(10),
-        );
+        let (mut p, c, now) = one_batch_out();
+        p.completed(c, true, now + Duration::from_millis(10));
         assert_eq!(p.delivered, BATCH as u64, "it was delivered");
         assert_eq!(p.lost, BATCH as u64, "and marks congestion");
         assert_eq!(

@@ -5,7 +5,7 @@
 //! so throughput stays at `1/round-trip`. Overlapping round trips is what moves it.
 //!
 //! The pool sets no limit of its own. What is in flight is bounded by the egress queue in front of it, which holds
-//! the pacing target (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
+//! the pacing window (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
 //! a batch's side by side, and reports the batch once its last request is answered. It spawns a sender when every one
 //! it has is busy, up to the sender count; the configured figure is how many it starts with. A request the destination
 //! asks to be sent less (429) is answered at once with its rows undelivered and the wait the destination asked for,
