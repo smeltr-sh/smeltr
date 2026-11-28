@@ -14,7 +14,9 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::http::{HttpDestination, HttpTransport, Outcome, Protocol, Response, push_json_string};
+use super::http::{
+    HttpDestination, HttpDestinationBuilder, HttpTransport, Outcome, Protocol, Response, push_json_string,
+};
 use super::{IoError, OwnedRecord, Payload};
 use crate::format::bytes_text::BytesForm;
 use crate::plan::topology::{
@@ -121,7 +123,7 @@ pub(crate) fn destination_of<P: Protocol>(
     metrics: crate::metrics::MetricsHandle,
     id: crate::core::id::DestId,
 ) -> HttpDestination<P, HttpTransport> {
-    HttpDestination::new(make(), protocol)
+    HttpDestinationBuilder::new(protocol)
         .with_subject(subject)
         .with_metrics(metrics, id)
         .with_max_request_bytes(config.max_request_bytes)

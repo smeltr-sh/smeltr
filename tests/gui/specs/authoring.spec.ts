@@ -4162,8 +4162,8 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
     .last()
     .selectOption('prom-write-token');
   await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
-  // One request at a time keeps each series in order, so there is no concurrency to set.
-  await expect(dialog.getByRole('spinbutton', { name: /^starting concurrency/ })).toHaveCount(0);
+  // Requests go side by side, as every request destination's do.
+  await dialog.getByRole('spinbutton', { name: /^starting concurrency/ }).fill('8');
   await dialog.screenshot({ path: test.info().outputPath('prometheus-destination-form.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
@@ -4178,6 +4178,7 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
       url: 'https://prometheus.example.com/api/v1/write',
       version: '2.0',
       credentials: { Authorization: { secret: 'prom-write-token', version: 1 } },
+      inFlight: 8,
     },
   ]);
 

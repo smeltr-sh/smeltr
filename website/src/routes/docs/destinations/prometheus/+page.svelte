@@ -176,8 +176,9 @@
     request go oldest first.
   </p>
   <p>
-    The destination sends one request at a time, and each is delivered before the next is sent, so a
-    series' samples arrive in order.
+    The destination sends requests side by side, as many at once as <code>inFlight</code> starts with
+    and its buffer affords, so nothing orders one request against another. A store that refuses a sample
+    older than its series' newest takes those only within its out-of-order window.
   </p>
 
   <h2 id="answers">Answers</h2>

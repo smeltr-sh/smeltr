@@ -10,7 +10,7 @@ pub struct PrometheusDestinationDto {
     url: String,
     /// `"1.0"` (default) or `"2.0"`.
     #[serde(default, skip_serializing_if = "RemoteWriteVersionDto::is_default")]
-    pub(crate) version: RemoteWriteVersionDto,
+    version: RemoteWriteVersionDto,
     /// Header name -> its value, committed to the config repository.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     headers: BTreeMap<String, String>,
@@ -19,14 +19,16 @@ pub struct PrometheusDestinationDto {
     credentials: BTreeMap<String, SecretRefDto>,
     #[serde(flatten)]
     tls: TlsDto,
+    #[serde(default, skip_serializing_if = "InFlight::is_default")]
+    in_flight: InFlight,
     #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-    pub(crate) max_request_bytes: RequestBytes,
+    max_request_bytes: RequestBytes,
     /// Unset means the default, or one whole request if that is larger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub(crate) stall_after_secs: StallAfter,
+    stall_after_secs: StallAfter,
     #[serde(flatten, default)]
     unknown: NoUnknownKeys,
 }
@@ -39,6 +41,7 @@ impl DestinationSpec for PrometheusDestinationDto {
             headers,
             credentials,
             tls,
+            in_flight,
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
@@ -52,7 +55,7 @@ impl DestinationSpec for PrometheusDestinationDto {
                 zone_urls: None,
                 request_field: "maxRequestBytes",
                 tls,
-                in_flight: None,
+                in_flight: Some(*in_flight),
                 request_bytes: max_request_bytes.0,
                 request_limits: (RequestBytes::MIN, RequestBytes::MAX),
                 request_what: "a request size",
@@ -80,6 +83,7 @@ impl DestinationSpec for PrometheusDestinationDto {
             headers,
             credentials,
             tls,
+            in_flight,
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
@@ -93,6 +97,7 @@ impl DestinationSpec for PrometheusDestinationDto {
             headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
             tls: to_tls(tls, of, Side::Client),
+            in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
             max_request_bytes: max_request_bytes.0,
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),

@@ -51,7 +51,6 @@
     sizeDefault,
     sizeHelp,
     requests = 'Requests',
-    concurrent = true,
     including = 'retries included',
   }: {
     value: RequestDelivery;
@@ -61,27 +60,23 @@
     sizeHelp: Snippet;
     /** What is in flight, as "Requests" or "Bulk requests". */
     requests?: string;
-    /** Whether the destination sends more than one request at once; one that does not has no concurrency to set. */
-    concurrent?: boolean;
     /** What one batch's delivery time counts besides the request, as "retries included". */
     including?: string;
   } = $props();
 </script>
 
-{#if concurrent}
-  <Field optional field="inFlight" label="starting concurrency">
-    {#snippet help()}
-      {requests} in flight at once when the destination starts, per worker; it adapts from there.
-    {/snippet}
-    <input
-      type="number"
-      min={LIMITS.inFlight.min}
-      max={LIMITS.inFlight.max}
-      value={d.inFlight ?? LIMITS.inFlight.default}
-      oninput={(e) => (d.inFlight = numberOrUnset(e.currentTarget))}
-    />
-  </Field>
-{/if}
+<Field optional field="inFlight" label="starting concurrency">
+  {#snippet help()}
+    {requests} in flight at once when the destination starts, per worker; it adapts from there.
+  {/snippet}
+  <input
+    type="number"
+    min={LIMITS.inFlight.min}
+    max={LIMITS.inFlight.max}
+    value={d.inFlight ?? LIMITS.inFlight.default}
+    oninput={(e) => (d.inFlight = numberOrUnset(e.currentTarget))}
+  />
+</Field>
 <Field optional field={size} label={sizeLabel} help={sizeHelp}>
   <BytesInput value={d[size]} fallback={sizeDefault} onchange={(n) => (d[size] = n)} />
 </Field>
