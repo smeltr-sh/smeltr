@@ -24,6 +24,9 @@ runs:
       run: |
         choco install nasm ninja --no-progress -y
         "C:\Program Files\NASM" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+    # The checks build with the newest stable, so the cache's key must name it, not the runner image's.
+    - shell: bash
+      run: rustup update stable --no-self-update
     - if: inputs.cache == 'true'
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
