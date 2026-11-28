@@ -146,6 +146,9 @@ impl Kind {
             Kind::Prometheus => (SourceMeta::prometheus_receiver(), "name"),
             _ => return record.bytes().unwrap().to_vec(),
         };
+        // A request's one record, as transform decodes it.
+        let decoded = crate::harness::receiver::decoded(&meta, std::slice::from_ref(record));
+        let record = &decoded[0];
         let column = record
             .chunk
             .column(meta.record().iter().position(|(n, _)| n.field() == Some(name)).unwrap());

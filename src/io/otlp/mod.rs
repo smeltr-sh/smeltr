@@ -16,8 +16,10 @@ use std::sync::Arc;
 use prost::Message as _;
 
 use super::hec::Filed;
+use crate::core::buffer::BufferPool;
+use crate::core::column::{Column, DataType};
 use crate::core::variant;
-use crate::plan::topology::Signal;
+use crate::plan::topology::{Entry, Signal};
 
 pub mod export;
 mod json;
@@ -160,18 +162,97 @@ pub enum Cell {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Row(pub Vec<Option<Cell>>);
 
-impl Row {
-    /// Bytes it holds, for the inbox's accounting.
-    pub(crate) fn size(&self) -> usize {
-        (self.0.iter().flatten())
-            .map(|cell| match cell {
-                Cell::Int(_) | Cell::Float(_) => size_of::<i64>(),
-                Cell::Bool(_) => 1,
-                Cell::Text(text) => text.len(),
-                Cell::Variant(bytes) => bytes.len(),
-            })
-            .sum()
-    }
+/// `rows`, typed rows of a record of `fields`, as its columns.
+pub(crate) fn columns(rows: &[Row], fields: &[(Entry, DataType)], pool: &mut BufferPool) -> Vec<Column> {
+    use crate::core::column::{StrBuilder, VarType};
+
+    let mismatch = |name: &Entry, ty: &DataType| -> ! { unreachable!("{name} is a {ty}, and a row gave it otherwise") };
+    (fields.iter().enumerate())
+        .map(|(at, (name, ty))| {
+            let cells = rows.iter().map(|r| r.0[at].as_ref());
+            match ty {
+                DataType::I64 | DataType::DateTime | DataType::F64 | DataType::Bool => {
+                    let mut column = Column::alloc(pool, ty, rows.len());
+                    match ty {
+                        DataType::Bool => {
+                            let out = column.bool_mut().expect("a column of its own type");
+                            for (row, cell) in cells.enumerate() {
+                                match cell {
+                                    Some(Cell::Bool(b)) => _ = crate::core::bits::set_row(out.values, row, *b),
+                                    None => out.validity.set_valid(row, false),
+                                    Some(_) => mismatch(name, ty),
+                                }
+                            }
+                        }
+                        DataType::F64 => {
+                            let out = column.f64_mut().expect("a column of its own type");
+                            for (row, cell) in cells.enumerate() {
+                                match cell {
+                                    Some(Cell::Float(f)) => out.values[row] = *f,
+                                    None => out.validity.set_valid(row, false),
+                                    Some(_) => mismatch(name, ty),
+                                }
+                            }
+                        }
+                        _ => {
+                            let out = match ty {
+                                DataType::DateTime => column.datetime_mut(),
+                                _ => column.i64_mut(),
+                            }
+                            .expect("a column of its own type");
+                            for (row, cell) in cells.enumerate() {
+                                match cell {
+                                    Some(Cell::Int(i)) => out.values[row] = *i,
+                                    None => out.validity.set_valid(row, false),
+                                    Some(_) => mismatch(name, ty),
+                                }
+                            }
+                        }
+                    }
+                    column
+                }
+                DataType::Str | DataType::Variant => {
+                    let var = if *ty == DataType::Str {
+                        VarType::Str
+                    } else {
+                        VarType::Variant
+                    };
+                    fn bytes(cell: Option<&Cell>, var: VarType) -> Result<Option<&[u8]>, ()> {
+                        match cell {
+                            Some(Cell::Text(t)) if var == VarType::Str => Ok(Some(t.as_bytes())),
+                            Some(Cell::Variant(v)) if var == VarType::Variant => Ok(Some(v)),
+                            None => Ok(None),
+                            Some(_) => Err(()),
+                        }
+                    }
+                    let bytes = |cell| bytes(cell, var).unwrap_or_else(|()| mismatch(name, ty));
+                    let mut b = StrBuilder::new(pool, var, rows.len());
+                    b.reserve(pool, cells.clone().filter_map(bytes).map(<[u8]>::len).sum());
+                    for cell in cells {
+                        match bytes(cell) {
+                            Some(v) => b.push(v),
+                            None => b.push_null(),
+                        }
+                    }
+                    b.finish()
+                }
+                // An array or struct cell is a variant the decoder wrote in its type's shape.
+                DataType::Array(_) | DataType::Struct(..) => {
+                    let values = cells.map(|cell| match cell {
+                        Some(Cell::Variant(v)) => Some(crate::format::typed::Cell::Variant(
+                            crate::core::variant::Encoded::check(v),
+                        )),
+                        None => None,
+                        Some(_) => mismatch(name, ty),
+                    });
+                    let (column, failed) = crate::format::typed::build(values, rows.len(), ty, 0, pool);
+                    assert!(failed.is_empty(), "{name}: a row's variant is not a {ty}");
+                    column
+                }
+                _ => unreachable!("a typed record has no {ty} field"),
+            }
+        })
+        .collect()
 }
 
 /// What a protobuf export of `signal` will hold once decoded, in bytes, read from its wire form without decoding it,
@@ -269,7 +350,26 @@ impl Export {
         })
     }
 
+    /// A request of `signal` in `encoding`, decoded, or why it does not decode within `limit` bytes: what decoding
+    /// holds at once is read from its wire form first, and a request that would hold more is not decoded.
+    pub fn read(signal: Signal, encoding: Encoding, body: &[u8], limit: usize) -> Result<Export, String> {
+        let peak = match encoding {
+            Encoding::Protobuf => decoded_size(signal, body)?,
+            Encoding::Json => json_peak(signal, body),
+        };
+        if peak > limit {
+            return Err(format!(
+                "an export holds up to {peak} bytes while it is decoded, and a request decodes within {limit}"
+            ));
+        }
+        match encoding {
+            Encoding::Protobuf => Export::protobuf(signal, body),
+            Encoding::Json => Export::json(signal, body),
+        }
+    }
+
     /// What this request holds decoded, as [`decoded_size`] reads it from its wire form.
+    #[cfg(test)]
     pub(crate) fn decoded_size(&self) -> usize {
         let (signal, body) = match self {
             Export::Logs(logs) => (Signal::Logs, logs.encoded()),
@@ -854,19 +954,5 @@ mod tests {
             json_peak(Signal::Logs, plain.as_bytes()),
             "what a string holds makes no message"
         );
-    }
-
-    #[test]
-    fn a_row_holds_what_its_cells_do() {
-        let row = Row(vec![
-            Some(Cell::Int(1)),
-            None,
-            Some(Cell::Float(1.5)),
-            Some(Cell::Bool(true)),
-            Some(Cell::Text("abc".into())),
-            Some(Cell::Variant(vec![0; 7])),
-        ]);
-        assert_eq!(row.size(), 8 + 8 + 1 + 3 + 7);
-        assert_eq!(Row::default().size(), 0);
     }
 }

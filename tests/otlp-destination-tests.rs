@@ -68,8 +68,9 @@ pub fn post(at: SocketAddr, signal: Signal, content_type: &str, body: &[u8]) -> 
     answer.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
-/// `n` records of `source`, each batch committed once read, so its sender hears it answered.
-fn take(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
+/// `n` records of `source`, a receiver of `signal`, decoded on transform, each batch committed once read, so its
+/// sender hears it answered.
+fn take(source: &mut Box<dyn Source>, signal: Signal, n: usize) -> Vec<SourceRecord> {
     let mut records = Vec::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while records.len() < n {
@@ -80,7 +81,7 @@ fn take(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
         );
         let batch = source.poll_batch(1000, 1 << 24, Duration::from_millis(100)).unwrap();
         crate::harness::receiver::commit(source, &batch);
-        records.extend(batch);
+        records.extend(crate::harness::receiver::decoded(&SourceMeta::otlp(signal), &batch));
     }
     records
 }
@@ -146,7 +147,7 @@ fn round_trip(signal: Signal, export: &Value, items: usize, compression: Compres
     let (mut first, mut second) = (receiver(from, signal), receiver(to, signal));
     let body = export.to_string().into_bytes();
     let sent = std::thread::spawn(move || post(from, signal, "application/json", &body));
-    let received = take(&mut first, items);
+    let received = take(&mut first, signal, items);
     assert_eq!(sent.join().unwrap(), 200);
 
     let config = destination(to, signal, compression);
@@ -157,7 +158,7 @@ fn round_trip(signal: Signal, export: &Value, items: usize, compression: Compres
         let mut d = HttpDestinationBuilder::new(Otlp::new(&config)).with_senders(vec![transport], 1);
         send_and_wait(&mut d, 0, rows).map(|refused| refused.into_iter().map(|r| r.reason).collect::<Vec<_>>())
     });
-    let arrived = take(&mut second, items);
+    let arrived = take(&mut second, signal, items);
     let refused = delivered.join().unwrap().expect("delivers");
     assert!(refused.is_empty(), "refused: {refused:?}");
     (read(signal, &received), read(signal, &arrived))
@@ -280,7 +281,7 @@ fn a_pipeline_writes_under_a_points_buckets() {
     let mut source = receiver(at, Signal::Metrics);
     let body = metrics.to_string().into_bytes();
     let sent = std::thread::spawn(move || post(at, Signal::Metrics, "application/json", &body));
-    let received = take(&mut source, 1);
+    let received = take(&mut source, Signal::Metrics, 1);
     assert_eq!(sent.join().unwrap(), 200);
 
     let meta = SourceMeta::otlp(Signal::Metrics);
@@ -323,7 +324,7 @@ fn a_row_of_no_resource_lands_and_a_row_otlp_cannot_take_is_refused() {
         let mut d = HttpDestinationBuilder::new(Otlp::new(&config)).with_senders(vec![transport], 1);
         d.send(0, Cow::Owned(rows)).map(|(_, refused)| refused)
     });
-    let arrived = read(Signal::Traces, &take(&mut second, 1));
+    let arrived = read(Signal::Traces, &take(&mut second, Signal::Traces, 1));
     let refused = delivered.join().unwrap().expect("delivers");
     assert_eq!(
         arrived,

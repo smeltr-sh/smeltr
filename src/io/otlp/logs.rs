@@ -127,6 +127,7 @@ impl Logs {
         Ok(Logs::new(request))
     }
 
+    #[cfg(test)]
     pub(super) fn encoded(&self) -> Vec<u8> {
         self.request.encode_to_vec()
     }
@@ -357,7 +358,6 @@ mod tests {
         };
         let read = read(&request);
         assert_eq!(shown_row(&read[0].0), json!({}));
-        assert_eq!(read[0].0.size(), 0);
         assert!(read[0].1.is_empty(), "an empty resource and scope file nothing");
         assert_eq!(shown_row(&read[1].0), json!({}), "less than a microsecond is no time");
     }

@@ -172,11 +172,7 @@ impl SourceRecord {
     /// The bytes this record holds: what it read, every header it kept, and what its chunk files it under, which a
     /// reader that needs rows copies to each. What batch and queue limits count.
     pub(crate) fn size(&self) -> usize {
-        let filed: usize = self
-            .chunk
-            .filed()
-            .into_iter()
-            .flatten()
+        let filed: usize = (self.chunk.filed(self.row as usize).into_iter().flat_map(|f| f.iter()))
             .map(|(k, v)| k.len() + v.len())
             .sum();
         self.read_size() + headers_size(&self.headers) + filed
@@ -421,9 +417,9 @@ pub struct RecordChunk {
     failed: Vec<(u32, usize, String)>,
     /// Where its buffers go back to: the reader thread's that built it, if one did.
     home: Option<Arc<crate::sync::Mutex<Home>>>,
-    /// What every record of it is filed under (`hec::Filed`), where its source files them under one value. A record's
-    /// own `headers` are `None` then.
-    filed: Option<Arc<hec::Filed>>,
+    /// What its records are filed under (`hec::Filed`), where its source files them: none, one value every record
+    /// shares, or one a row. A record's own `headers` are `None` then.
+    filed: Vec<Arc<hec::Filed>>,
     /// Each row's time as its source stamped it, in microseconds since the epoch, where its source stamps one.
     time: Option<Vec<Option<i64>>>,
     /// What each row's values hold, counted once when the chunk is made: every limit asks it of each record.
@@ -451,7 +447,7 @@ impl RecordChunk {
             columns,
             failed,
             home: None,
-            filed: None,
+            filed: Vec::new(),
             time: None,
             avro: None,
         }
@@ -469,14 +465,25 @@ impl RecordChunk {
     }
 
     /// This chunk, its every record filed under `filed`.
+    #[cfg(test)]
     pub(crate) fn filed_under(mut self, filed: Arc<hec::Filed>) -> RecordChunk {
-        self.filed = Some(filed);
+        self.filed = vec![filed];
         self
     }
 
-    /// What every record of this chunk is filed under, where they share one value.
-    pub fn filed(&self) -> Option<&hec::Filed> {
-        self.filed.as_deref()
+    /// This chunk, each row filed under its own of `filed`.
+    pub fn filed_each(mut self, filed: Vec<Arc<hec::Filed>>) -> RecordChunk {
+        assert_eq!(filed.len(), self.len(), "a value per row");
+        self.filed = filed;
+        self
+    }
+
+    /// What row `row` is filed under, where its source files it.
+    pub fn filed(&self, row: usize) -> Option<&Arc<hec::Filed>> {
+        match &self.filed[..] {
+            [shared] => Some(shared),
+            each => each.get(row),
+        }
     }
 
     /// Row `row`'s time as its source stamped it, in microseconds since the epoch, or `None` where it stamped none.
@@ -530,7 +537,10 @@ impl RecordChunk {
             })
             .collect();
         let mut chunk = RecordChunk::new(columns, failed);
-        chunk.filed = self.filed.clone();
+        chunk.filed = match &self.filed[..] {
+            [_, _, ..] => rows.iter().map(|&row| self.filed[row as usize].clone()).collect(),
+            shared => shared.to_vec(),
+        };
         chunk.avro = self.avro.clone();
         chunk.time = (self.time.as_ref()).map(|time| rows.iter().map(|&row| time[row as usize]).collect());
         chunk

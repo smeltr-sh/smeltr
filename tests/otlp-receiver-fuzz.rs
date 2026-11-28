@@ -221,15 +221,23 @@ struct Filed {
     scope_attributes: Option<T>,
 }
 
-fn read_back(signal: Signal, records: &[SourceRecord]) -> Vec<Got> {
+/// The records `payloads` decode into on transform.
+fn read_back(signal: Signal, payloads: &[SourceRecord]) -> Vec<Got> {
     let meta = SourceMeta::otlp(signal);
+    let mut pool = smeltr::core::buffer::BufferPool::new();
+    let (records, _, _) = meta.decode_requests(payloads, &mut pool).unwrap_or_default();
     (records.iter())
         .map(|record| {
             let fields = (meta.record().iter().enumerate())
                 .map(|(i, (name, _))| (name.to_string(), column_t(record.chunk.column(i), record.row as usize)))
                 .collect();
             let mut filed = Filed::default();
-            for (key, value) in record.chunk.filed().into_iter().flatten() {
+            for (key, value) in record
+                .chunk
+                .filed(record.row as usize)
+                .into_iter()
+                .flat_map(|f| f.iter())
+            {
                 let text = || String::from_utf8(value.clone()).unwrap();
                 match key.as_str() {
                     "resource" => filed.resource = Some(variant_t(variant::Encoded::check(value))),
@@ -2594,20 +2602,47 @@ fn http_request(g: &mut Gen, settings: &Settings, order: &mut Order, sent: &mut 
         order.reach("a body that inflates past its limit");
         order.decide(true, Expected::Otlp(413, answered_in));
     }
-    if let Some(spoil) = spoil {
-        order.reach(spoil);
-        order.decide(true, Expected::Otlp(400, answered_in));
-    }
-    // What the export holds counts only where its records are read back.
-    content.into_iter().for_each(|label| order.reach(label));
+    let records = read(order, spoil, content, signal, &export, remote);
     order.decide(true, Expected::Otlp(200, answered_in));
-    sent.records = Some((signal, records_of(&export, remote)));
+    sent.records = Some((signal, records));
     sent.headers
         .extend(content_type.map(|t| ("content-type", t.to_string())));
     sent.headers
         .extend(content_encoding.map(|e| ("content-encoding", e.to_string())));
     sent.headers.extend(authorization.map(|a| ("authorization", a)));
     sent.body = body;
+}
+
+/// The records an export taken reads back as: those it holds, or, where it is spoiled, one record that says it does
+/// not decode. What it holds counts only where its records are read back.
+fn read(
+    order: &mut Order,
+    spoil: Option<&str>,
+    content: Vec<String>,
+    signal: Signal,
+    export: &Export,
+    remote: &str,
+) -> Vec<Got> {
+    match spoil {
+        Some(spoil) => {
+            order.reach(spoil);
+            let meta = SourceMeta::otlp(signal);
+            let fields = meta
+                .record()
+                .iter()
+                .map(|(name, _)| (name.to_string(), T::Null))
+                .collect();
+            vec![Got {
+                fields,
+                filed: Filed::default(),
+                remote: remote.into(),
+            }]
+        }
+        None => {
+            content.into_iter().for_each(|label| order.reach(label));
+            records_of(export, remote)
+        }
+    }
 }
 
 fn grpc_request(g: &mut Gen, settings: &Settings, order: &mut Order, sent: &mut Sent, remote: &str) {
@@ -2706,14 +2741,9 @@ fn grpc_request(g: &mut Gen, settings: &Settings, order: &mut Order, sent: &mut 
         order.reach("a body that inflates past its limit");
         order.decide(true, Expected::Grpc(3));
     }
-    if let Some(spoil) = spoil {
-        order.reach(spoil);
-        order.decide(true, Expected::Grpc(3));
-    }
-    // What the export holds counts only where its records are read back.
-    content.into_iter().for_each(|label| order.reach(label));
+    let records = read(order, spoil, content, signal, &export, remote);
     order.decide(true, Expected::Grpc(0));
-    sent.records = Some((signal, records_of(&export, remote)));
+    sent.records = Some((signal, records));
     sent.headers
         .extend(content_type.map(|t| ("content-type", t.to_string())));
     sent.headers

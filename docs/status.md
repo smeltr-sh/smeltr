@@ -75,7 +75,7 @@ document's systems.
 | area | status |
 |---|---|
 | Delivery: routes, exception answers, `Unmatched`/`Unprocessable`/`Refused` (Runtime stages) | built |
-| Only transform touches a record (Runtime stages) | not built. The OTLP and Prometheus receivers decode in their reader. A reader reads each record's offset and size. Egress sends record by record on its own thread, and a Kafka destination encodes Avro there |
+| Only transform touches a record (Runtime stages) | not built. A reader reads each record's offset and size. Egress sends record by record on its own thread, and a Kafka destination encodes Avro there |
 | Reader/transform split, `Lane`s (Runtime stages) | built |
 | Egress: one thread per destination behind a `bufferBytes` queue (Runtime stages) | built |
 | A destination paced to its link, `egress::pacing`, and the pool's equal shares while queues contend (Runtime stages) | built |
@@ -195,7 +195,7 @@ catalog's volume entry both wait on it.
 - **Scaling past one bundle** (Scope): nothing tells an operator a source is a consumer group rather than a topic.
 - **Browser tests reach only what a user story names,** and none reads Kafka or Elasticsearch.
 - **The array functions take an array of scalars** (Language). `slice`, `remove`, `resize`, `concat`, `+`, `includes`, `indexOf` and `join` refuse an array of arrays or of objects.
-- **A typed source's NaN or infinity reaches the language.** The language's `f64` holds neither, but Avro, Postgres, MySQL and the OTLP and Prometheus receivers write one into an `f64` field as it is (`values::column`, `receiver::rows_chunk`), so a field `x` holds it while `x + 0` is null with an exception. A source that reads text refuses it.
+- **A typed source's NaN or infinity reaches the language.** The language's `f64` holds neither, but Avro, Postgres, MySQL and the OTLP and Prometheus receivers write one into an `f64` field as it is (`values::column`, `otlp::columns`), so a field `x` holds it while `x + 0` is null with an exception. A source that reads text refuses it.
 
 ### GUI
 

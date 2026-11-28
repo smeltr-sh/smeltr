@@ -10,8 +10,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use smeltr::core::error::ExceptionKind;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{ConnectionLimits, HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind};
+use smeltr::plan::topology::{
+    ConnectionLimits, HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind, SourceMeta,
+};
 
 use crate::certs::{self, Authority, Issued};
 use crate::harness::fuzz::Rng;
@@ -413,6 +416,40 @@ pub fn poll_until(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
         records.extend(source.poll_batch(100, 1 << 20, Duration::from_millis(100)).unwrap());
     }
     records
+}
+
+/// At least `n` records of `meta`'s receiver, decoded on transform from the requests polled from `source`, waiting up
+/// to ten seconds for them. Each carries its request's offset, so committing it commits the request.
+pub fn poll_decoded(source: &mut Box<dyn Source>, meta: &SourceMeta, n: usize) -> Vec<SourceRecord> {
+    let mut records = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while records.len() < n {
+        assert!(Instant::now() < deadline, "only {} records arrived", records.len());
+        records.extend(decoded(
+            meta,
+            &source.poll_batch(100, 1 << 20, Duration::from_millis(100)).unwrap(),
+        ));
+    }
+    records
+}
+
+/// The records `payloads`, requests of `meta`'s receiver, decode into on transform.
+pub fn decoded(meta: &SourceMeta, payloads: &[SourceRecord]) -> Vec<SourceRecord> {
+    let mut pool = smeltr::core::buffer::BufferPool::new();
+    meta.decode_requests(payloads, &mut pool)
+        .map_or_else(Vec::new, |(records, ..)| records)
+}
+
+/// Why the next request polled from `source`, of `meta`'s receiver, does not decode on transform, once committed.
+pub fn undecoded(source: &mut Box<dyn Source>, meta: &SourceMeta) -> String {
+    let payloads = poll_until(source, 1);
+    let mut pool = smeltr::core::buffer::BufferPool::new();
+    let decoded = meta.decode(&payloads, None::<&[&str]>, None, None, &mut pool);
+    let why =
+        (decoded.noted.iter()).find_map(|(_, _, kind, why)| (*kind == ExceptionKind::Unparsable).then(|| why.clone()));
+    decoded.batch.reclaim(&mut pool);
+    commit(source, &payloads);
+    why.flatten().expect("a request that does not decode")
 }
 
 /// Commits every record of `records`, as far as each partition's last.
