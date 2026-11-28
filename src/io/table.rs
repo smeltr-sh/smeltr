@@ -18,11 +18,11 @@ use crate::ops::civil::{MICROS_PER_DAY, civil_from_days, valid_date_days};
 use crate::plan::topology::Records;
 
 /// A row group's size where a table sets none: Iceberg's default, and Spark's for Delta.
-pub const ROW_GROUP_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const ROW_GROUP_BYTES: usize = 128 * 1024 * 1024;
 
 /// A primitive column type, as both formats have it.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Kind {
+pub(crate) enum Kind {
     Boolean,
     /// Delta's 8-bit integer.
     Byte,
@@ -43,7 +43,7 @@ pub enum Kind {
 
 impl Kind {
     /// The Parquet type a column of this kind is written as, where it is narrower than any record type (`parquet::narrows`).
-    pub fn narrowed(&self) -> Option<Arrow> {
+    pub(crate) fn narrowed(&self) -> Option<Arrow> {
         Some(match self {
             Kind::Byte => Arrow::Int8,
             Kind::Short => Arrow::Int16,
@@ -92,7 +92,7 @@ pub enum Literal {
 }
 
 /// The one record every route writing here writes. A table has one schema.
-pub fn one_record(records: Option<&Records>) -> Result<&DataType, String> {
+pub(crate) fn one_record(records: Option<&Records>) -> Result<&DataType, String> {
     let mut found: Option<&DataType> = None;
     for record in records.into_iter().flatten().map(|(_, record)| record) {
         match found {
@@ -107,7 +107,11 @@ pub fn one_record(records: Option<&Records>) -> Result<&DataType, String> {
 
 /// The column at `names` in `batch`, or None when the record does not write it, or a struct on the way to it is null
 /// on row `at`: a column the table keeps and the record does not write is null in its files.
-pub fn column_at(batch: &arrow_array::RecordBatch, names: &[String], at: usize) -> Result<Option<ArrayRef>, String> {
+pub(crate) fn column_at(
+    batch: &arrow_array::RecordBatch,
+    names: &[String],
+    at: usize,
+) -> Result<Option<ArrayRef>, String> {
     let Some(mut column) = batch.column_by_name(&names[0]).cloned() else {
         return Ok(None);
     };
@@ -131,12 +135,12 @@ pub fn column_at(batch: &arrow_array::RecordBatch, names: &[String], at: usize) 
 }
 
 /// `valid_date_days` for parts read as signed numbers; None for a negative or oversized one.
-pub fn date_days(y: i64, m: i64, d: i64) -> Option<i64> {
+pub(crate) fn date_days(y: i64, m: i64, d: i64) -> Option<i64> {
     valid_date_days(y, u32::try_from(m).ok()?, u32::try_from(d).ok()?)
 }
 
 /// `want` numbers joined by `-`, the first of which may carry a sign.
-pub fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
+pub(crate) fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
     let (negative, body) = match s.as_bytes().first()? {
         b'-' => (true, &s[1..]),
         b'+' => (false, &s[1..]),
@@ -156,7 +160,7 @@ pub fn signed_parts(s: &str, want: usize) -> Option<Vec<i64>> {
 }
 
 /// Days since 1970-01-01 of `2026-10-10`, its year signed.
-pub fn parse_date(s: &str) -> Option<i64> {
+pub(crate) fn parse_date(s: &str) -> Option<i64> {
     let [y, m, d] = signed_parts(s, 3)?[..] else {
         return None;
     };
@@ -164,7 +168,7 @@ pub fn parse_date(s: &str) -> Option<i64> {
 }
 
 /// Microseconds of `2026-10-10T13:05:09.000123`; the fraction may have up to six digits, or be left out.
-pub fn parse_timestamp(s: &str) -> Option<i64> {
+pub(crate) fn parse_timestamp(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
     let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
     let [h, m, sec] = hms
@@ -184,7 +188,7 @@ pub fn parse_timestamp(s: &str) -> Option<i64> {
 }
 
 /// The bytes of `s`, two hex digits for each.
-pub fn unhex(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
     (s.len().is_multiple_of(2) && s.is_ascii()).then_some(())?;
     (0..s.len())
         .step_by(2)
@@ -193,7 +197,7 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 }
 
 /// Row `at` of `column` as a value of the table's `kind`; None when null.
-pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Result<Option<Literal>, String> {
+pub(crate) fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Result<Option<Literal>, String> {
     // A field that never holds a value is a null column, which keeps no null buffer.
     if column.data_type() == &Arrow::Null || column.is_null(at) {
         return Ok(None);
@@ -242,7 +246,7 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
 
 /// Escapes `s` as Java's `URLEncoder` does: letters, digits and `.-*_` as they are, a space as `+`, every other byte
 /// of its UTF-8 as `%XX`.
-pub fn url_encode(s: &str) -> String {
+pub(crate) fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
         match b {
@@ -255,7 +259,7 @@ pub fn url_encode(s: &str) -> String {
 }
 
 /// A date as Java's LocalDate writes it: four digits of year, more with a `+` past 9999.
-pub fn iso_date(days: i64) -> String {
+pub(crate) fn iso_date(days: i64) -> String {
     let (y, m, d) = civil_from_days(days);
     let year = match y {
         10_000.. => format!("+{y}"),
@@ -267,7 +271,7 @@ pub fn iso_date(days: i64) -> String {
 
 /// A row group's min or max as the footer holds it.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Bound {
+pub(crate) enum Bound {
     Boolean(bool),
     Int(i32),
     Long(i64),
@@ -295,20 +299,20 @@ impl Bound {
 
 /// One leaf column's statistics across a file's row groups.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ColumnStats {
+pub(crate) struct ColumnStats {
     /// Compressed bytes.
-    pub size: i64,
+    pub(crate) size: i64,
     /// Values, nulls included.
-    pub values: i64,
+    pub(crate) values: i64,
     /// `None` when a row group does not count them.
-    pub nulls: Option<i64>,
+    pub(crate) nulls: Option<i64>,
     /// The least and the greatest value. `None` when the column takes no bounds or a row group with values lacks them.
-    pub bounds: Option<(Bound, Bound)>,
+    pub(crate) bounds: Option<(Bound, Bound)>,
 }
 
 /// The statistics of leaf `column` of the file `metadata` describes. `kind` is its type when the format keeps bounds
 /// for it; a leaf inside a list or a map, and a timestamp not in microseconds, has none.
-pub fn column_stats(metadata: &ParquetMetaData, column: usize, kind: Option<&Kind>) -> ColumnStats {
+pub(crate) fn column_stats(metadata: &ParquetMetaData, column: usize, kind: Option<&Kind>) -> ColumnStats {
     let descr = metadata.file_metadata().schema_descr().column(column);
     let micros = match descr.logical_type_ref() {
         Some(LogicalType::Timestamp(t)) => matches!(t.unit, ParquetTimeUnit::MICROS),

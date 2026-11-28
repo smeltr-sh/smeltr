@@ -9,7 +9,7 @@ use tracing::field::{Field, Visit};
 /// A detail field's value. Scalars only: a SIEM indexes these without being told a schema, and deep nesting is
 /// what makes those mappings painful.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Value {
+pub(crate) enum Value {
     Str(String),
     Int(i64),
     Uint(u64),
@@ -20,26 +20,26 @@ pub enum Value {
 /// One log, owned, on its way to the consumers.
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub timestamp: SystemTime,
-    pub level: tracing::Level,
+    pub(crate) timestamp: SystemTime,
+    pub(crate) level: tracing::Level,
     /// The part of smeltr it is about: a call site's `tracing` target. A library's line takes the class of the span
     /// of ours it was said inside, and has none outside any.
-    pub class: Option<Cow<'static, str>>,
+    pub(crate) class: Option<Cow<'static, str>>,
     /// What happened: a call site's `tracing` name, `finished` for a span's end, and a library's own name for its
     /// line.
     pub r#type: Cow<'static, str>,
     /// The outside service the code that said it talks to (`levels::service`).
-    pub service: Option<Cow<'static, str>>,
+    pub(crate) service: Option<Cow<'static, str>>,
     /// The constant sentence for this site. Anything that varies belongs in `fields`.
-    pub message: String,
+    pub(crate) message: String,
     /// What varied this time. `subject` by convention names the identity the event is about -- a destination, a
     /// source, a commit -- and never a position.
-    pub fields: Vec<(Cow<'static, str>, Value)>,
+    pub(crate) fields: Vec<(Cow<'static, str>, Value)>,
     /// Attached by the layer. A call site does not know which worker it is running in and should not have to say.
-    pub worker: Option<&'static str>,
-    pub thread: Option<String>,
+    pub(crate) worker: Option<&'static str>,
+    pub(crate) thread: Option<String>,
     /// Raised while this process was delivering logs, so it goes to the console and no further.
-    pub local_only: bool,
+    pub(crate) local_only: bool,
     /// This event's number in this process's life. With the process's boot id it is what lets the leader take the
     /// same batch twice -- which a retried heartbeat does -- without writing it twice.
     pub seq: u64,
@@ -51,10 +51,10 @@ pub struct Event {
 /// library of a record that came through the facade -- needed because `tracing-log` dispatches every record from
 /// one callsite per level, so the event's own metadata says only `"log"`.
 #[derive(Default)]
-pub struct Collect {
-    pub message: String,
-    pub fields: Vec<(Cow<'static, str>, Value)>,
-    pub log_target: Option<String>,
+pub(crate) struct Collect {
+    pub(crate) message: String,
+    pub(crate) fields: Vec<(Cow<'static, str>, Value)>,
+    pub(crate) log_target: Option<String>,
 }
 
 impl Collect {

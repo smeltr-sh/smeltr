@@ -280,6 +280,25 @@ fn read_sources(files: &mut dyn FileSet, version: Option<u32>) -> Result<Vec<Sou
     })
 }
 
+/// `destinations.json`, brought from the bundle's version to the current one, as [`read_sources`] brings sources.
+fn read_destinations(files: &mut dyn FileSet, version: Option<u32>) -> Result<Vec<DestinationDto>, BundleError> {
+    const PATH: &str = "destinations.json";
+    let Some(bytes) = files.read(PATH).map_err(|e| io_err(PATH, e))? else {
+        return Ok(Vec::new());
+    };
+    if version == Some(CURRENT_VERSION) {
+        return parse_json(PATH, &bytes);
+    }
+    let upgraded = serde_json::from_slice(&bytes).and_then(|mut destinations: Vec<serde_json::Value>| {
+        upgrade::destinations(version.unwrap_or(0), &mut destinations);
+        serde_json::from_value(serde_json::Value::Array(destinations))
+    });
+    upgraded.map_err(|source| BundleError::Json {
+        path: PATH.to_string(),
+        source,
+    })
+}
+
 /// A current bundle's sources parse as they are, so an error keeps its line and column.
 fn sources_at(version: Option<u32>, bytes: &[u8]) -> Result<Vec<SourceDto>, serde_json::Error> {
     if version == Some(CURRENT_VERSION) {
@@ -338,11 +357,13 @@ fn read_parts(files: &mut dyn FileSet, at: &str) -> Result<Parts, BundleError> {
         schemas.push(read_per_file(files, "schema", &path, named, |s: &SchemaDto| &s.id)?);
     }
 
-    let sources = read_sources(files, manifest.as_ref().map(|m| m.version)).map_err(|e| at_path(e, at))?;
+    let version = manifest.as_ref().map(|m| m.version);
+    let sources = read_sources(files, version).map_err(|e| at_path(e, at))?;
+    let destinations = read_destinations(files, version).map_err(|e| at_path(e, at))?;
     Ok(Parts {
         manifest,
         sources,
-        destinations: read_optional_array(files, "destinations.json").map_err(|e| at_path(e, at))?,
+        destinations,
         routes: read_optional_array(files, "routes.json").map_err(|e| at_path(e, at))?,
         lookup_tables: read_optional_array(files, "lookup-tables.json").map_err(|e| at_path(e, at))?,
         grok_patterns: read_optional_array(files, GROK_PATTERNS_FILE).map_err(|e| at_path(e, at))?,
@@ -413,7 +434,7 @@ pub fn load_bundle_dir(root: &Path) -> Result<LoadedSystem, BundleError> {
 /// Read and validate one bundle out of `files`. A relative lookup path in it resolves against `at`, which is where
 /// `files` reads from -- a directory, or a commit.
 #[tracing::instrument(level = "trace", target = "deploy", name = "a bundle load", skip_all, fields(at = %at))]
-pub fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
+fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
     let mut parts = read_parts(files, "")?;
     let Some(manifest) = parts.manifest.take() else {
         return Err(io_err("system.json", std::io::ErrorKind::NotFound.into()));
@@ -427,14 +448,14 @@ pub const GROUPS_DIR: &str = "groups";
 pub const SHARED_DIR: &str = "shared";
 
 /// A bundle's section files: each a JSON array of objects keyed by a unique `id`.
-pub const SECTION_FILES: [&str; 5] = [
+pub(crate) const SECTION_FILES: [&str; 5] = [
     "sources.json",
     "destinations.json",
     "routes.json",
     LOOKUP_TABLES_FILE,
     GROK_PATTERNS_FILE,
 ];
-pub const LOOKUP_TABLES_FILE: &str = "lookup-tables.json";
+pub(crate) const LOOKUP_TABLES_FILE: &str = "lookup-tables.json";
 pub const GROK_PATTERNS_FILE: &str = "grok-patterns.json";
 /// The directories of a bundle's per-file objects, one JSON file per object named by `slugify` of its id.
 pub const PIPELINES_DIR: &str = "pipelines";
@@ -458,7 +479,7 @@ pub fn is_safe_group_id(group_id: &str) -> bool {
 }
 
 /// The message an unsafe id is refused with, written once so every caller says the same thing.
-pub fn unsafe_group_id(group_id: &str) -> String {
+fn unsafe_group_id(group_id: &str) -> String {
     format!(
         "unsafe worker group id {group_id:?}: only letters, digits, '-', '_' and '.' are allowed, \
          it may not start with '.', and it must be 1-100 characters"
@@ -468,7 +489,7 @@ pub fn unsafe_group_id(group_id: &str) -> String {
 /// Whether `name` is usable as a secret's name. A name is written into a bundle, listed in the GUI, and bound into
 /// the sealing of its own value, so it has to be stable and unambiguous across all three: one spelling, no
 /// whitespace to lose, and nothing that reads differently in JSON than on screen.
-pub fn is_safe_secret_name(name: &str) -> bool {
+pub(crate) fn is_safe_secret_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 100
         && name
@@ -477,7 +498,7 @@ pub fn is_safe_secret_name(name: &str) -> bool {
 }
 
 /// The message an unusable secret name is refused with, written once so every caller says the same thing.
-pub fn unsafe_secret_name(name: &str) -> String {
+pub(crate) fn unsafe_secret_name(name: &str) -> String {
     format!(
         "unusable secret name {name:?}: only letters, digits, '-', '_' and '.' are allowed, \
          and it must be 1-100 characters"
@@ -788,10 +809,10 @@ fn read_per_file_lenient<T: DeserializeOwned>(
 /// `FileSet`'s listings as plain functions, so a lenient read can be handed one.
 mod files_under {
     use super::FileSet;
-    pub fn pipelines(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
+    pub(crate) fn pipelines(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
         files.pipeline_paths()
     }
-    pub fn schemas(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
+    pub(crate) fn schemas(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
         files.schema_paths()
     }
 }

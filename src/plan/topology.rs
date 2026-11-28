@@ -56,7 +56,7 @@ impl SourceMeta {
     /// (`heartbeat::UnmatchedStreams`): a HEC or S2S sender's sourcetype, an Elasticsearch sender's index, an
     /// object's bucket and directory prefix (`object_prefix`), and otherwise the record's topic, which a receiver
     /// fills with the sender's address and Kafka with the topic read. `None` where a sender named nothing.
-    pub fn stream_key<'r>(&self, record: &'r crate::io::SourceRecord) -> Option<std::borrow::Cow<'r, str>> {
+    pub(crate) fn stream_key<'r>(&self, record: &'r crate::io::SourceRecord) -> Option<std::borrow::Cow<'r, str>> {
         match self.kind {
             "hecReceiver" | "s2sReceiver" => filed(record, "sourcetype").map(String::from_utf8_lossy),
             "elasticReceiver" => filed(record, "index").map(String::from_utf8_lossy),
@@ -74,7 +74,7 @@ impl SourceMeta {
 
     /// The `__source` field that names what [`Self::stream_key`] files a record under, where a sender is counted
     /// under it (`streams::SenderTally`). `None` where the kind declares none.
-    pub fn stream_field(&self) -> Option<&'static str> {
+    pub(crate) fn stream_field(&self) -> Option<&'static str> {
         let declares = |field: &str| self.source.iter().any(|(f, _)| *f == field);
         match self.kind {
             "hecReceiver" | "s2sReceiver" => Some("__source.sourcetype"),
@@ -88,7 +88,7 @@ impl SourceMeta {
     /// condition takes its bucket and every key under its prefix, so it also takes a stream filed under a longer
     /// prefix, which is the most a condition can say without the prefix rule itself. `None` where this kind files
     /// no field a condition could read.
-    pub fn stream_condition(&self, key: &str) -> Option<String> {
+    pub(crate) fn stream_condition(&self, key: &str) -> Option<String> {
         let literal = |s: &str| serde_json::to_string(s).expect("a string serializes");
         // A sender that names nothing is keyed as the empty key, and its field reads null.
         let filed_as = |field: &str, key: &str| match key {
@@ -140,7 +140,7 @@ pub struct SourceMeta {
 
 /// The entries of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
 /// `const`; a source whose record is configured declares it when it is built.
-pub type RecordFields = std::borrow::Cow<'static, [(Entry, DataType)]>;
+type RecordFields = std::borrow::Cow<'static, [(Entry, DataType)]>;
 
 /// One entry of a record: a field, by its name, or the unclaimed fields of an open object, by the object's name. The
 /// root's name is `""`.
@@ -167,7 +167,7 @@ impl Entry {
     }
 
     /// The keys of the field, or of the object whose unclaimed fields it is.
-    pub fn keys(&self) -> Vec<String> {
+    pub(crate) fn keys(&self) -> Vec<String> {
         let (Entry::Field(name) | Entry::Unclaimed(name)) = self;
         crate::plan::tree::object_keys(name)
             .map(std::borrow::Cow::into_owned)
@@ -175,7 +175,7 @@ impl Entry {
     }
 
     /// Its place in the compiler's name tree.
-    pub fn place(&self) -> crate::plan::tree::Place {
+    pub(crate) fn place(&self) -> crate::plan::tree::Place {
         match self {
             Entry::Field(name) => crate::plan::tree::Place::Leaf(name.to_string()),
             Entry::Unclaimed(object) => crate::plan::tree::Place::Unclaimed(object.to_string()),
@@ -195,7 +195,7 @@ impl Entry {
 pub const SOURCE_BYTES: &str = "__source.bytes";
 
 /// The `__destination` field a pipeline sets to give a row its document ID.
-pub const DOC_ID: &str = "__destination.id";
+pub(crate) const DOC_ID: &str = "__destination.id";
 
 /// The `__source` fields that read a record's topic, each under the name its kind gives it.
 const TOPIC_FIELDS: [&str; 4] = ["__source.topic", "__source.url", "__source.remote", "__source.database"];
@@ -617,7 +617,7 @@ impl SourceMeta {
     };
 
     /// What a MySQL or MariaDB source's record carries before it declares its fields, which every one does.
-    pub const MYSQL: SourceMeta = SourceMeta {
+    pub(crate) const MYSQL: SourceMeta = SourceMeta {
         kind: "mysql",
         record: PAYLOAD_RECORD,
         source: SQL_FIELDS,
@@ -757,13 +757,13 @@ impl SourceMeta {
 
     /// `declaring`, the record open (`opened`): an Avro record's. It may declare no field, and keeps every top-level
     /// field then.
-    pub fn declaring_open(self, record: Vec<(String, DataType)>) -> Result<SourceMeta, String> {
+    pub(crate) fn declaring_open(self, record: Vec<(String, DataType)>) -> Result<SourceMeta, String> {
         Ok(self.declare(record, |_| false)?.opened())
     }
 
     /// This meta with its record open: every top-level field of a payload no declared field claims is kept, as the
     /// root's unclaimed fields.
-    pub fn opened(mut self) -> SourceMeta {
+    pub(crate) fn opened(mut self) -> SourceMeta {
         let mut record = self.record.into_owned();
         record.push((Entry::Unclaimed("".into()), DataType::Variant));
         self.record = record.into();
@@ -856,7 +856,7 @@ impl SourceMeta {
         self.record.iter().filter_map(|(entry, ty)| Some((entry.field()?, ty)))
     }
 
-    pub fn record_len(&self) -> usize {
+    pub(crate) fn record_len(&self) -> usize {
         self.record.len()
     }
 
@@ -876,18 +876,18 @@ impl SourceMeta {
     }
 
     /// How this source's payload becomes `_raw`'s text.
-    pub fn encoding(&self) -> Encoding {
+    pub(crate) fn encoding(&self) -> Encoding {
         self.encoding
     }
 
     /// Whether this source's record is its payload decoded, `_raw`: it reads bytes and decodes them.
-    pub fn decodes(&self) -> bool {
+    pub(crate) fn decodes(&self) -> bool {
         self.reads_bytes() && !self.record.is_empty()
     }
 
     /// Whether this source hands over each record's payload as it read it, as `__source.bytes`. Its chunk is then
     /// one `bytes` column, the payloads, and its record is `_raw`, each payload decoded with the source's encoding.
-    pub fn reads_bytes(&self) -> bool {
+    fn reads_bytes(&self) -> bool {
         self.source.iter().any(|(name, _)| *name == SOURCE_BYTES)
     }
 
@@ -910,7 +910,7 @@ impl SourceMeta {
     }
 
     /// The `__source` field at `slot`, if one is there.
-    pub fn source_field_at(&self, slot: crate::core::id::SlotId) -> Option<usize> {
+    fn source_field_at(&self, slot: crate::core::id::SlotId) -> Option<usize> {
         slot.index()
             .checked_sub(self.source_slot(0).index())
             .filter(|i| *i < self.source.len())
@@ -923,7 +923,7 @@ impl SourceMeta {
     /// extractor staying behind at the old index.
     ///
     /// Each row whose value had bytes that did not decode, replaced with U+FFFD, is pushed to `repaired`.
-    pub fn column(
+    fn column(
         &self,
         field: usize,
         records: &[crate::io::SourceRecord],
@@ -1077,12 +1077,12 @@ impl SourceMeta {
 impl SourceMeta {
     /// `record`'s payload as the source read it, before any decoding: its `__source.bytes`. `None` for a source
     /// that declares none.
-    pub fn read_bytes<'r>(&self, record: &'r crate::io::SourceRecord) -> Option<&'r [u8]> {
+    pub(crate) fn read_bytes<'r>(&self, record: &'r crate::io::SourceRecord) -> Option<&'r [u8]> {
         if self.reads_bytes() { record.bytes() } else { None }
     }
 
     /// `read_bytes` of each of `records`, looking up each chunk's bytes once rather than once a record.
-    pub fn read_bytes_each<'r>(
+    pub(crate) fn read_bytes_each<'r>(
         &self,
         records: &'r [crate::io::SourceRecord],
     ) -> impl Iterator<Item = Option<&'r [u8]>> + 'r {
@@ -1104,7 +1104,7 @@ impl SourceMeta {
 
     /// What a destination writing `field`'s bytes takes of `record`: its `__source.bytes`, or a `bytes` field of its
     /// record. `None` for a null, or a field it does not have, which loading refuses (`check_bytes_fields`).
-    pub fn field_bytes(&self, record: &crate::io::SourceRecord, field: &str) -> Option<Vec<u8>> {
+    pub(crate) fn field_bytes(&self, record: &crate::io::SourceRecord, field: &str) -> Option<Vec<u8>> {
         if field == SOURCE_BYTES {
             return self.read_bytes(record).map(<[u8]>::to_vec);
         }
@@ -1137,7 +1137,7 @@ impl SourceMeta {
 
     /// The text of `record`'s field `field`, as a destination writing one field's text takes it: its decoded `text`
     /// for `_raw`, or a row's field. `None` for a field the record does not have, or a null.
-    pub fn record_text(&self, record: &crate::io::SourceRecord, text: &str, field: &str) -> Option<Vec<u8>> {
+    pub(crate) fn record_text(&self, record: &crate::io::SourceRecord, text: &str, field: &str) -> Option<Vec<u8>> {
         if self.reads_bytes() {
             (self.decodes() && field == "_raw").then(|| text.as_bytes().to_vec())
         } else {
@@ -1310,7 +1310,7 @@ impl SourceKind {
     }
 
     /// Sets a Kafka source's `fetchBytes`. Other kinds have none.
-    pub fn set_fetch_bytes(&mut self, bytes: usize) {
+    pub(crate) fn set_fetch_bytes(&mut self, bytes: usize) {
         if let SourceKind::Kafka(k) = self {
             k.fetch_bytes = bytes;
         }
@@ -1486,9 +1486,9 @@ pub struct Senders {
 /// A Confluent Schema Registry: where it is, and who signs in to it. Reached under its connector's TLS.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SchemaRegistry {
-    pub url: String,
+    pub(crate) url: String,
     /// Basic auth: the user, and where the password lives. `None` signs in as no one.
-    pub basic: Option<(String, SecretRef)>,
+    pub(crate) basic: Option<(String, SecretRef)>,
 }
 
 /// How a source reads its payloads as Avro, into a record of its own (`io::avro`).
@@ -1496,7 +1496,7 @@ pub struct SchemaRegistry {
 pub struct AvroRead {
     /// Where a stream's payloads are Confluent-framed: the registry holding each writer's schema. `None` for an
     /// object, a container file holding its own.
-    pub registry: Option<SchemaRegistry>,
+    pub(crate) registry: Option<SchemaRegistry>,
     /// What a record carries: the record each payload is read into, and its source's `__source` fields but its
     /// bytes.
     pub meta: SourceMeta,
@@ -1605,7 +1605,7 @@ impl Placement {
     pub const ALL: [Placement; 3] = [Placement::Topic, Placement::Index, Placement::Prefix];
 
     /// Its name under `__destination`.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Placement::Topic => "topic",
             Placement::Index => "index",
@@ -1625,7 +1625,7 @@ impl Placement {
 
 /// Every DLQ a refusal at `dest` can reach, given each destination's own list: its DLQs, theirs, and so on, each once,
 /// nearest first. Load refuses a chain that leads back to where it started; this ends regardless.
-pub fn dlq_chain(named: &HashMap<DestId, Vec<DestId>>, dest: DestId) -> Vec<DestId> {
+pub(crate) fn dlq_chain(named: &HashMap<DestId, Vec<DestId>>, dest: DestId) -> Vec<DestId> {
     let mut chain: Vec<DestId> = Vec::new();
     let mut next = 0;
     let mut at = dest;
@@ -1669,7 +1669,7 @@ pub fn take_zone(url: &mut String, zone_urls: &mut std::collections::BTreeMap<St
 
 impl DestinationKind {
     /// The TLS this destination speaks, where it speaks any of its own.
-    pub fn tls(&self) -> Option<&Tls> {
+    pub(crate) fn tls(&self) -> Option<&Tls> {
         match self {
             DestinationKind::Kafka(k) => k.tls.as_ref(),
             DestinationKind::Elasticsearch(e) => e.tls.as_ref(),
@@ -1741,7 +1741,7 @@ impl DestinationKind {
     }
 
     /// How long one batch may take to deliver before it is a stall.
-    pub fn stall_after(&self) -> std::time::Duration {
+    pub(crate) fn stall_after(&self) -> std::time::Duration {
         match self {
             DestinationKind::Kafka(k) => k.stall_after,
             DestinationKind::Elasticsearch(e) => e.stall_after,
@@ -1781,7 +1781,7 @@ impl DestinationKind {
 
     /// Whether the destination writes files, and so acknowledges a batch only once the file holding it is
     /// committed: when it holds most of its buffer, or its interval passes.
-    pub fn writes_files(&self) -> bool {
+    pub(crate) fn writes_files(&self) -> bool {
         matches!(
             self,
             DestinationKind::Objects(_) | DestinationKind::Iceberg(_) | DestinationKind::Delta(_)
@@ -1790,7 +1790,7 @@ impl DestinationKind {
 
     /// The destination's `bufferBytes`: all it holds of what it has not yet delivered, egress's queue and, for Kafka,
     /// librdkafka's own queue together.
-    pub fn buffer_bytes(&self) -> usize {
+    pub(crate) fn buffer_bytes(&self) -> usize {
         match self {
             DestinationKind::Kafka(k) => k.buffer_bytes,
             kind => kind.queue_bytes(),
@@ -1798,7 +1798,7 @@ impl DestinationKind {
     }
 
     /// Sets the destination's `bufferBytes`.
-    pub fn set_buffer_bytes(&mut self, bytes: usize) {
+    pub(crate) fn set_buffer_bytes(&mut self, bytes: usize) {
         match self {
             DestinationKind::Kafka(k) => k.buffer_bytes = bytes,
             DestinationKind::Elasticsearch(e) => e.buffer_bytes = bytes,
@@ -1814,7 +1814,7 @@ impl DestinationKind {
     }
 
     /// Whether this destination may hold a variant as Parquet's variant, and so reads its bytes (`parquet::Schema`).
-    pub fn holds_native_variants(&self) -> bool {
+    pub(crate) fn holds_native_variants(&self) -> bool {
         match self {
             DestinationKind::Iceberg(_) | DestinationKind::Delta(_) => true,
             DestinationKind::Objects(o) => o.format == ObjectFormat::Parquet { native_variants: true },
@@ -1947,7 +1947,7 @@ pub struct SplunkHecDestinationConfig {
 
 impl SplunkHecDestinationConfig {
     /// The most requests this destination may have outstanding at once. See `ElasticDestinationConfig::max_in_flight`.
-    pub fn max_in_flight(&self) -> usize {
+    pub(crate) fn max_in_flight(&self) -> usize {
         (self.buffer_bytes / self.max_request_bytes.max(1)).clamp(1, MAX_SENDERS)
     }
 }
@@ -2074,7 +2074,7 @@ pub struct HttpDestinationConfig {
 
 impl HttpDestinationConfig {
     /// The most requests this destination may have outstanding at once. See `ElasticDestinationConfig::max_in_flight`.
-    pub fn max_in_flight(&self) -> usize {
+    pub(crate) fn max_in_flight(&self) -> usize {
         (self.buffer_bytes / self.max_request_bytes.max(1)).clamp(1, MAX_SENDERS)
     }
 }
@@ -2269,7 +2269,7 @@ pub struct ConnectionLimits {
 
 impl ConnectionLimits {
     /// The most a receiver, or a worker's receivers together, may hold.
-    pub const MOST: usize = 1_000_000;
+    pub(crate) const MOST: usize = 1_000_000;
 }
 
 /// Which protocol a receiver speaks.
@@ -2331,7 +2331,7 @@ pub enum Transport {
 }
 
 impl Transport {
-    pub fn is_tcp(&self) -> bool {
+    pub(crate) fn is_tcp(&self) -> bool {
         *self == Transport::Tcp
     }
 }
@@ -2399,10 +2399,10 @@ pub struct SqlConfig {
     pub database: SqlDatabase,
     pub source: crate::io::sql_source::SqlSourceConfig,
     /// The record `source.fields` declares.
-    pub meta: SourceMeta,
+    pub(crate) meta: SourceMeta,
     /// The database, the mode and a digest of the query and what the mode remembers by: what its progress is kept
     /// under, so a source pointed at another database, or changed in what it reads, starts afresh.
-    pub place: String,
+    pub(crate) place: String,
 }
 
 /// Which database an SQL source reads, and how it connects.
@@ -2430,7 +2430,7 @@ impl SqlDatabase {
     }
 
     /// `host:port/database`: where it reads, as a place names it.
-    pub fn address(&self) -> String {
+    pub(crate) fn address(&self) -> String {
         let (host, port, database) = match self {
             SqlDatabase::Postgres(p) => (&p.host, p.port, &p.database),
             SqlDatabase::MySql(m) => (&m.host, m.port, &m.database),
@@ -2486,12 +2486,12 @@ pub enum OktaSignIn {
 
 impl OktaLogsConfig {
     /// The System Log's address in this org.
-    pub fn logs_url(&self) -> String {
+    pub(crate) fn logs_url(&self) -> String {
         format!("{}/api/v1/logs", self.org)
     }
 
     /// Where a service app signs in: the org authorization server, the one that grants Okta's own API scopes.
-    pub fn token_url(&self) -> String {
+    pub(crate) fn token_url(&self) -> String {
         format!("{}/oauth2/v1/token", self.org)
     }
 }
@@ -2717,7 +2717,7 @@ pub struct SftpStore {
 impl SftpStore {
     /// The directory as a URL without a trailing slash. A directory under the home directory is named from `~`, so it
     /// never reads as an absolute one.
-    pub fn address(&self) -> String {
+    pub(crate) fn address(&self) -> String {
         let a = &self.access;
         let directory = match self.directory.trim_end_matches('/') {
             "" if self.directory.starts_with('/') => String::new(),
@@ -2807,7 +2807,7 @@ pub enum ObjectFormat {
 impl ObjectFormat {
     /// The name of the format that writes the route's record as columns (`CompiledTopology::records`), `None` for the
     /// line formats, which write each row as egress made it.
-    pub fn column_format(&self) -> Option<&'static str> {
+    pub(crate) fn column_format(&self) -> Option<&'static str> {
         match self {
             ObjectFormat::Parquet { .. } => Some("Parquet"),
             ObjectFormat::Avro => Some("Avro"),
@@ -2837,7 +2837,7 @@ pub enum Newlines {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compression {
     None,
-    Gzip(u8),
+    Gzip(GzipLevel),
     Snappy,
     Lz4(u8),
     Zstd(u8),
@@ -2855,10 +2855,10 @@ impl Compression {
         }
     }
 
-    /// Every codec, each at its default level.
+    /// Every codec, each at the default level of the code that compresses it.
     pub const ALL: [Compression; 5] = [
         Compression::None,
-        Compression::Gzip(6),
+        Compression::Gzip(GzipLevel::Zlib(6)),
         Compression::Snappy,
         Compression::Lz4(0),
         Compression::Zstd(3),
@@ -2867,19 +2867,51 @@ impl Compression {
     /// The codec's level, where it takes one.
     pub fn level(self) -> Option<u8> {
         match self {
-            Compression::Gzip(l) | Compression::Lz4(l) | Compression::Zstd(l) => Some(l),
+            Compression::Gzip(l) => Some(l.get()),
+            Compression::Lz4(l) | Compression::Zstd(l) => Some(l),
             Compression::None | Compression::Snappy => None,
         }
     }
+}
 
-    /// The codec at `level`, where it takes one.
-    pub fn at(self, level: u8) -> Compression {
+/// A gzip level, in the range of the code that compresses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GzipLevel {
+    /// smeltr's own gzip (`io::gzip`).
+    Igzip(IgzipLevel),
+    /// librdkafka's or the parquet writer's zlib, 1 to 9.
+    Zlib(u8),
+}
+
+impl GzipLevel {
+    pub fn get(self) -> u8 {
         match self {
-            Compression::Gzip(_) => Compression::Gzip(level),
-            Compression::Lz4(_) => Compression::Lz4(level),
-            Compression::Zstd(_) => Compression::Zstd(level),
-            Compression::None | Compression::Snappy => self,
+            GzipLevel::Igzip(l) => l.get(),
+            GzipLevel::Zlib(l) => l,
         }
+    }
+}
+
+/// A level ISA-L's igzip compresses at: 0 to 3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IgzipLevel(u8);
+
+impl IgzipLevel {
+    pub const MAX: IgzipLevel = IgzipLevel(3);
+    /// The level a destination is given when it names none.
+    pub const DEFAULT: IgzipLevel = IgzipLevel(1);
+
+    /// `level` as an igzip level, or `None` where igzip has no such level.
+    pub const fn new(level: u8) -> Option<IgzipLevel> {
+        if level <= IgzipLevel::MAX.0 {
+            Some(IgzipLevel(level))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> u8 {
+        self.0
     }
 }
 
@@ -2896,7 +2928,7 @@ pub enum Acks {
 
 impl Acks {
     /// librdkafka's `acks` value.
-    pub fn as_property(self) -> &'static str {
+    pub(crate) fn as_property(self) -> &'static str {
         match self {
             Acks::None => "0",
             Acks::One => "1",
@@ -2992,13 +3024,13 @@ pub struct KafkaDestinationConfig {
 
 impl KafkaDestinationConfig {
     /// The egress queue's share of `buffer_bytes`.
-    pub fn queue_bytes(&self) -> usize {
+    fn queue_bytes(&self) -> usize {
         self.buffer_bytes / 2
     }
 
     /// The producer's share of `buffer_bytes`: its queue's bound (`queue.buffering.max.kbytes`), and what its
     /// batches are sized from at deployment.
-    pub fn producer_bytes(&self) -> usize {
+    pub(crate) fn producer_bytes(&self) -> usize {
         self.buffer_bytes - self.queue_bytes()
     }
 }
@@ -3034,13 +3066,13 @@ pub struct RouteConfig {
 /// on the ingest batch and only ever sees the record as it arrived). `compile_route` has no pipeline in scope; `compile_topology` has
 /// both.
 #[derive(Clone, Debug)]
-pub struct CompiledDeliverRule {
+pub(crate) struct CompiledDeliverRule {
     /// `None` matches every surviving row — the catch-all.
-    pub when: Option<Ir>,
-    pub to: Vec<DestId>,
+    pub(crate) when: Option<Ir>,
+    pub(crate) to: Vec<DestId>,
     /// Regex literals in `when`, compiled once. Evaluation points `Ctx::patterns` at this, exactly as `route_masks`
     /// does for `cond`.
-    pub compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
+    pub(crate) compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
 }
 
 /// One delivery rule: an optional condition over the pipeline's *output*, and the destinations a matching row goes to.
@@ -3058,9 +3090,9 @@ pub struct DeliverRule {
 /// The sources whose `fetchBytes` and the destinations whose `bufferBytes` the bundle leaves out. Each holds its default
 /// here, and a worker with a memory figure sizes it to that memory (`worker::memory::fit`).
 #[derive(Clone, Debug, Default)]
-pub struct Fitted {
-    pub sources: std::collections::BTreeSet<SourceId>,
-    pub destinations: std::collections::BTreeSet<DestId>,
+pub(crate) struct Fitted {
+    pub(crate) sources: std::collections::BTreeSet<SourceId>,
+    pub(crate) destinations: std::collections::BTreeSet<DestId>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3068,7 +3100,7 @@ pub struct TopologyConfig {
     pub sources: Vec<SourceConfig>,
     pub destinations: Vec<DestinationConfig>,
     /// What the bundle leaves for the worker to size. See [`Fitted`].
-    pub fitted: Fitted,
+    pub(crate) fitted: Fitted,
     pub routes: Vec<RouteConfig>,
     /// The group's answer to every exception kind. See `CompiledTopology::on_exception`.
     pub on_exception: OnException,
@@ -3088,7 +3120,7 @@ impl TopologyConfig {
     /// A route with no `cond` takes every row, so one makes the source's routing total. Anything narrower answers
     /// `true`, a source with no routes at all included: whether a set of conditions is exhaustive is a question about
     /// the expression language, and a wrong `false` hides a path rows are really taking.
-    pub fn falls_through(&self, source: SourceId) -> bool {
+    pub(crate) fn falls_through(&self, source: SourceId) -> bool {
         !self.routes.iter().any(|r| r.source == source && r.cond.is_none())
     }
 }
@@ -3107,7 +3139,7 @@ pub struct NamedSecret {
 pub struct NamedCertificate {
     pub name: String,
     /// What to say when it is missing, e.g. `source "in"`.
-    pub what: String,
+    pub(crate) what: String,
 }
 
 /// A variable set to the empty string counts as unset, matching `startup_config`: that is what an unset
@@ -3152,7 +3184,7 @@ impl HeldSecrets {
     /// process that will use them. The one place a value is read back out: it crosses to a runtime on a private
     /// pipe and nowhere else, and a runtime is given what its own bundle quotes rather than everything this worker
     /// has ever been sent.
-    pub fn deliveries_for(
+    pub(crate) fn deliveries_for(
         &self,
         wanted: &[NamedSecret],
         presented: &[NamedCertificate],
@@ -3216,7 +3248,7 @@ impl HeldSecrets {
 
     /// Drops everything `wanted` and `presented` do not name -- what a worker does once a deployment has loaded, so
     /// the versions it carries are the ones something runs on rather than every one it has ever been sent.
-    pub fn keep_only(&mut self, wanted: &[NamedSecret], presented: &[NamedCertificate]) {
+    pub(crate) fn keep_only(&mut self, wanted: &[NamedSecret], presented: &[NamedCertificate]) {
         self.stored.retain(|(name, version), _| {
             wanted.iter().any(|s| {
                 matches!(&s.reference, SecretRef::LeaderStored { name: n, version: v } if n == name && v == version)
@@ -3228,7 +3260,7 @@ impl HeldSecrets {
 
     /// Every `(name, version)` held, certificates included, which is what a worker tells the leader so it is sent
     /// only what it lacks.
-    pub fn versions(&self) -> Vec<(String, i64)> {
+    pub(crate) fn versions(&self) -> Vec<(String, i64)> {
         let certificates = self.certificates.iter().map(|(n, c)| (n.clone(), c.version));
         self.stored.keys().cloned().chain(certificates).collect()
     }
@@ -3243,12 +3275,12 @@ impl HeldSecrets {
     }
 
     /// The version of the certificate `name` this holder has, which is its newest.
-    pub fn certificate_version(&self, name: &str) -> Option<i64> {
+    pub(crate) fn certificate_version(&self, name: &str) -> Option<i64> {
         self.certificates.get(name).map(|held| held.version)
     }
 
     /// The chain and private key of the certificate `name`, PEM both, at the newest version this worker holds.
-    pub fn certificate(&self, name: &str) -> Option<(String, String)> {
+    pub(crate) fn certificate(&self, name: &str) -> Option<(String, String)> {
         let held = self.certificates.get(name)?;
         Some((held.chain.clone(), held.key.clone()))
     }
@@ -3260,7 +3292,7 @@ impl HeldSecrets {
 ///
 /// A free function rather than a method, so [`crate::worker::capture`]'s cold path -- which builds one source and
 /// never has a whole [`TopologyConfig`] to ask -- can run the same check on the one it has.
-pub fn certificate_error(tls: &Tls, held: &HeldSecrets) -> Option<String> {
+pub(crate) fn certificate_error(tls: &Tls, held: &HeldSecrets) -> Option<String> {
     let (chain, _) = held.certificate(tls.certificate.as_ref()?)?;
     crate::io::trust::refuse_unless_usable(&chain, tls.side)
         .err()
@@ -3276,7 +3308,7 @@ pub fn certificate_error(tls: &Tls, held: &HeldSecrets) -> Option<String> {
 
 impl TopologyConfig {
     /// The TLS every connector of this bundle speaks, where it speaks any of its own.
-    pub fn tls(&self) -> impl Iterator<Item = &Tls> {
+    fn tls(&self) -> impl Iterator<Item = &Tls> {
         let sources = self.sources.iter().filter_map(|s| s.kind.tls());
         let destinations = self.destinations.iter().filter_map(|d| d.kind.tls());
         sources.chain(destinations)
@@ -3284,7 +3316,7 @@ impl TopologyConfig {
 
     /// The named credentials and certificates this worker cannot obtain, as ready-to-print lines. Empty means the
     /// bundle can be deployed here.
-    pub fn missing_secrets(&self, held: &HeldSecrets) -> Vec<String> {
+    pub(crate) fn missing_secrets(&self, held: &HeldSecrets) -> Vec<String> {
         let secrets = self
             .named_secrets
             .iter()
@@ -3312,7 +3344,7 @@ impl TopologyConfig {
     /// Every connector whose certificate cannot be presented the way it presents it, among the certificates this
     /// worker holds. Checked wherever a commit is about to run, so a certificate a far end would refuse is refused
     /// before anything is torn down rather than discovered at the handshake, after it already has been.
-    pub fn certificate_errors(&self, held: &HeldSecrets) -> Vec<String> {
+    pub(crate) fn certificate_errors(&self, held: &HeldSecrets) -> Vec<String> {
         self.tls().filter_map(|tls| certificate_error(tls, held)).collect()
     }
 }
@@ -3327,27 +3359,27 @@ impl TopologyConfig {
 pub struct CompiledRoute {
     /// `RouteConfig::id`, carried through compiling so a caller holding only the compiled form can still name the
     /// route -- the map, and route preview's own report of which route a row matched.
-    pub id: String,
+    pub(crate) id: String,
     /// `RouteConfig::name`.
-    pub name: String,
-    pub source: SourceId,
-    pub cond: Option<Ir>,
-    pub pipeline: usize,
+    pub(crate) name: String,
+    pub(crate) source: SourceId,
+    pub(crate) cond: Option<Ir>,
+    pub(crate) pipeline: usize,
     /// This route's own delivery rules, destinations resolved to `DestId`s and each `when` compiled against the target
     /// pipeline's *output*.
-    pub deliver: Vec<CompiledDeliverRule>,
+    pub(crate) deliver: Vec<CompiledDeliverRule>,
     /// Every regex literal `cond` interned, compiled once here — this route's own counterpart to
     /// `Plan::compiled_patterns`. A route condition resolves against its own disjoint `ResourceBuilder` (see this
     /// struct's doc), so it cannot share a target pipeline's `compiled_patterns`; `route_masks` points `Ctx::patterns`
     /// at this before evaluating `cond`, the same way `plan::exec::run` points it at `Plan::compiled_patterns`.
-    pub compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
+    pub(crate) compiled_patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
     /// `RouteConfig::on_exception`.
-    pub on_exception: OnException,
+    pub(crate) on_exception: OnException,
 }
 
 impl CompiledRoute {
     /// Whether this route sends rows to `dest`: a `deliver` rule's or an exception answer's target.
-    pub fn delivers_to(&self, dest: DestId) -> bool {
+    pub(crate) fn delivers_to(&self, dest: DestId) -> bool {
         self.deliver.iter().any(|rule| rule.to.contains(&dest))
             || self.on_exception.answers.iter().any(|a| a.targets().contains(&dest))
     }
@@ -3376,14 +3408,14 @@ impl CompiledTopology {
 
     /// Every destination `route` writes a row to: those it delivers to, those its exceptions' answers deliver to, and
     /// down each one's DLQ chain, since a DLQ answers for what it refuses with its own policy.
-    pub fn written_by(&self, route: &CompiledRoute) -> Vec<DestId> {
+    pub(crate) fn written_by(&self, route: &CompiledRoute) -> Vec<DestId> {
         let delivered = route.deliver.iter().flat_map(|rule| rule.to.iter().copied());
         let answered = route.on_exception.answers.iter().flat_map(|a| a.targets()).copied();
         self.with_dlqs(delivered.chain(answered).collect())
     }
 
     /// `dests` and every DLQ down their chains, each once. `dlq_of` already holds each whole chain.
-    pub fn with_dlqs(&self, mut dests: Vec<DestId>) -> Vec<DestId> {
+    pub(crate) fn with_dlqs(&self, mut dests: Vec<DestId>) -> Vec<DestId> {
         let salvage: Vec<DestId> = dests
             .iter()
             .filter_map(|d| self.dlq_of.get(d))
@@ -3399,7 +3431,7 @@ impl CompiledTopology {
     /// The destinations `source`'s routes deliver to: what the flow goes to, and none of the places a row goes
     /// when it fails, matches nothing, or cannot be processed. Those are in `destinations_reachable_from` and carry a
     /// trickle beside this.
-    pub fn delivery_destinations_from(&self, source: SourceId) -> Vec<DestId> {
+    pub(crate) fn delivery_destinations_from(&self, source: SourceId) -> Vec<DestId> {
         let mut out: Vec<DestId> = self
             .routes
             .iter()
@@ -3412,7 +3444,7 @@ impl CompiledTopology {
     }
 }
 
-pub fn compile_routes(routes: &[RouteConfig], metas: &SourceMetas) -> Result<Vec<CompiledRoute>, Vec<CompileError>> {
+fn compile_routes(routes: &[RouteConfig], metas: &SourceMetas) -> Result<Vec<CompiledRoute>, Vec<CompileError>> {
     let mut out = Vec::with_capacity(routes.len());
     let mut errors = Vec::new();
     for (i, r) in routes.iter().enumerate() {
@@ -3471,10 +3503,10 @@ pub struct CompiledTopology {
     pub routes: Vec<CompiledRoute>,
     /// Keyed by the source whose metadata the plan was compiled against, and the pipeline id. Keyed by the metadata a
     /// plan was compiled against, so sources that declare the same fields share one. Reach it with `plan_for`.
-    pub pipelines: HashMap<(SourceMeta, usize), Plan>,
+    pub(crate) pipelines: HashMap<(SourceMeta, usize), Plan>,
     /// What each source declared when these plans were compiled. The runtime reads it from here rather than being told
     /// separately, so a plan's `reads_meta` and the fields the batch is built from cannot disagree.
-    pub metas: SourceMetas,
+    pub(crate) metas: SourceMetas,
     /// The group's answer to every exception kind (design doc, Exception taxonomy). The runtime reads `Unmatched` and
     /// `Unprocessable` here: neither reaches a route that could answer for it.
     pub on_exception: OnException,
@@ -3487,7 +3519,7 @@ pub struct CompiledTopology {
     pub records: HashMap<DestId, Records>,
     /// Each destination that may hold a variant as Parquet's variant (`DestinationKind::holds_native_variants`).
     /// Filled with `dlq_of`.
-    pub native_variants: HashSet<DestId>,
+    pub(crate) native_variants: HashSet<DestId>,
     /// What each destination writes of a row (`DestinationKind::payload`). Filled with `dlq_of`; one missing writes the
     /// record.
     pub payloads: HashMap<DestId, Payload>,
@@ -3506,12 +3538,12 @@ impl std::fmt::Debug for CompiledTopology {
 
 impl CompiledTopology {
     /// What `dest` writes of a row. One no destination config names, a worker's built by hand, writes the record.
-    pub fn payload(&self, dest: DestId) -> Payload {
+    pub(crate) fn payload(&self, dest: DestId) -> Payload {
         self.payloads.get(&dest).cloned().unwrap_or(Payload::Record)
     }
 
     /// The forms a row bound for `dest` keeps for `dlqs`, the DLQs down its chain: each one's, but `dest`'s own.
-    pub fn kept<'d>(&self, dest: DestId, dlqs: impl IntoIterator<Item = &'d DestId>) -> Vec<Payload> {
+    pub(crate) fn kept<'d>(&self, dest: DestId, dlqs: impl IntoIterator<Item = &'d DestId>) -> Vec<Payload> {
         let own = self.payload(dest);
         let mut kept = Vec::new();
         for &dlq in dlqs {
@@ -3524,7 +3556,7 @@ impl CompiledTopology {
     }
 
     /// Every field a destination writes as text, each once, sorted.
-    pub fn text_fields(&self) -> Vec<String> {
+    pub(crate) fn text_fields(&self) -> Vec<String> {
         let mut fields: Vec<String> = Vec::new();
         for p in self.payloads.values() {
             if let Payload::Text { field } = p
@@ -3548,12 +3580,12 @@ impl CompiledTopology {
     }
 
     /// Each route that sends rows to `dest`, with its index.
-    pub fn delivering(&self, dest: DestId) -> impl Iterator<Item = (usize, &CompiledRoute)> {
+    pub(crate) fn delivering(&self, dest: DestId) -> impl Iterator<Item = (usize, &CompiledRoute)> {
         self.routes.iter().enumerate().filter(move |(_, r)| r.delivers_to(dest))
     }
 
     /// A route's finished record, as a condition over it reads it.
-    pub fn output_of(&self, route: &CompiledRoute) -> SymbolTable {
+    pub(crate) fn output_of(&self, route: &CompiledRoute) -> SymbolTable {
         let meta = self.meta_for(route.source);
         let plan = (self.plan_for(route.source, route.pipeline))
             .expect("compile_topology validated every route's pipeline id");
@@ -3562,7 +3594,11 @@ impl CompiledTopology {
 
     /// A capture filter at `dest`, compiled against the output of each route delivering there, by route index. A
     /// filter runs on each of them it compiles on, since they may give `dest` rows of different shapes.
-    pub fn capture_filters(&self, dest: DestId, src: &str) -> Vec<(usize, Result<OutputCondition, CompileError>)> {
+    pub(crate) fn capture_filters(
+        &self,
+        dest: DestId,
+        src: &str,
+    ) -> Vec<(usize, Result<OutputCondition, CompileError>)> {
         self.delivering(dest)
             .map(|(idx, r)| {
                 let plan = (self.plan_for(r.source, r.pipeline))
@@ -3793,7 +3829,7 @@ pub(crate) fn output_symbols(plan: &Plan, tag_field: &str, meta: &SourceMeta) ->
 }
 
 /// A condition over a finished batch, and the patterns `Ctx::patterns` is pointed at to evaluate it.
-pub type OutputCondition = (
+type OutputCondition = (
     Ir,
     crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
 );

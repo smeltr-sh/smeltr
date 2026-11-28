@@ -7,8 +7,8 @@ names its least-squares slope over the last TREND logs: a loss too small to
 pass for more than noise on one day still shows as a falling line. Under it,
 the change the least-squares line makes over every log against the current
 reference: whether the pipeline has been getting faster or slower since the
-reference was pinned. A ratio against another reference measures something
-else, so it is drawn but left out of that line.
+reference was pinned. A ratio against another reference, or at another thread
+count, measures something else, so it is drawn but left out of that line.
 
 Usage: bench-plot.py bench-log.md bench-log.svg
 """
@@ -22,7 +22,8 @@ PAD_L, PAD_R, PAD_T, PAD_B = 34, 10, 46, 22
 
 
 def rows(path):
-    """{pipeline: [(date, head, ref, ratio)]} in log order."""
+    """{pipeline: [(date, head, basis, ratio)]} in log order. The basis is what a ratio is measured against: the
+    reference and the thread count, 1 in the rows from before the log had one."""
     out = {}
     for line in open(path, encoding="utf-8"):
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
@@ -30,7 +31,8 @@ def rows(path):
         if len(cells) < 5 or not cells[0][:4].isdigit() or cells[4] == "n/a":
             continue
         date, name, head, ref, ratio = cells[:5]
-        out.setdefault(name, []).append((date, head, ref, float(ratio)))
+        threads = cells[12] if len(cells) > 12 else "1"
+        out.setdefault(name, []).append((date, head, (ref, threads), float(ratio)))
     return out
 
 
@@ -51,11 +53,11 @@ def panel(name, pts, lo, hi, x0, y0):
     ys = [r for *_, r in pts]
     s = slope(ys[-TREND:])
     trend = "trend needs 3 logs" if s is None else f"trend {s:+.3f}/log"
-    ref = pts[-1][2]
-    since = [(d, r) for d, _, f, r in pts if f == ref]
+    basis = pts[-1][2]
+    since = [(d, r) for d, _, b, r in pts if b == basis]
     a = slope([r for _, r in since])
     overall = (
-        f"vs {ref}: needs 3 logs" if a is None
+        f"vs {basis[0]} at {basis[1]} threads: needs 3 logs" if a is None
         else f"since {since[0][0][5:]}: {a * (len(since) - 1):+.2f} over {len(since)} logs"
     )
     out = [

@@ -48,18 +48,18 @@ pub enum WaitsOn {
 }
 
 /// One retirement: the merged watermark to commit and how many batches it covers.
-pub struct Retired {
-    pub tokens: CommitMap,
-    pub batches: usize,
+pub(crate) struct Retired {
+    pub(crate) tokens: CommitMap,
+    pub(crate) batches: usize,
 }
 
 impl CommitTracker {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Claim the next batch id. Increasing, never dense: `retire`'s prefix rule walks `in_flight` in push order.
-    pub fn next_id(&self) -> BatchId {
+    pub(crate) fn next_id(&self) -> BatchId {
         next_batch_id()
     }
 
@@ -69,7 +69,7 @@ impl CommitTracker {
     ///
     /// `waiting` is every destination reachable from this source: all of them are dispatched, and one with nothing
     /// outstanding completes immediately. Empty, the batch waits on [`WaitsOn::Transform`]. `bytes` is what the batch read.
-    pub fn track(&mut self, id: BatchId, tokens: CommitMap, waiting: HashSet<DestId>, bytes: usize) {
+    pub(crate) fn track(&mut self, id: BatchId, tokens: CommitMap, waiting: HashSet<DestId>, bytes: usize) {
         let mut waiting: HashSet<WaitsOn> = waiting.into_iter().map(WaitsOn::Destination).collect();
         if waiting.is_empty() {
             waiting.insert(WaitsOn::Transform);
@@ -86,7 +86,7 @@ impl CommitTracker {
     /// Give up on delivering a batch through its routes (the unprocessable path): stop waiting on every destination but
     /// `waits_on`, where it was sent instead. Kept rather than removed, so its offsets commit in poll order rather than
     /// riding on whatever comes next. A destination in `waits_on` that has already acknowledged stays done.
-    pub fn abandon(&mut self, id: BatchId, waits_on: &[DestId]) {
+    pub(crate) fn abandon(&mut self, id: BatchId, waits_on: &[DestId]) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == id) {
             f.waiting
                 .retain(|h| matches!(h, WaitsOn::Destination(d) if waits_on.contains(d)));
@@ -94,14 +94,14 @@ impl CommitTracker {
     }
 
     /// `batch` waits on `dest` again, for rows sealed there after the batch was dispatched. Unknown ids are ignored.
-    pub fn owe(&mut self, batch: BatchId, dest: DestId) {
+    pub(crate) fn owe(&mut self, batch: BatchId, dest: DestId) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == batch) {
             f.waiting.insert(WaitsOn::Destination(dest));
         }
     }
 
     /// `by` has finished with `batch`. Unknown ids are ignored.
-    pub fn acknowledge(&mut self, batch: BatchId, by: WaitsOn) {
+    pub(crate) fn acknowledge(&mut self, batch: BatchId, by: WaitsOn) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == batch) {
             f.waiting.remove(&by);
         }
@@ -110,7 +110,7 @@ impl CommitTracker {
     /// The longest run of batches, from the oldest, that every destination has finished with, merged into one
     /// watermark. Committing batch 7 asserts everything before it is done, so a batch that finishes early waits for its
     /// elders.
-    pub fn retire(&mut self) -> Option<Retired> {
+    pub(crate) fn retire(&mut self) -> Option<Retired> {
         let mut tokens = CommitMap::new();
         let mut batches = 0usize;
         while let Some(front) = self.in_flight.front() {
@@ -133,7 +133,7 @@ impl CommitTracker {
     /// The source no longer owns `tp`: no batch polled before now may commit an offset there. Its new owner reads
     /// from the last committed offset, and may already be past these; one of them committed late would move it back.
     /// The batches stay, and commit their other partitions as before.
-    pub fn forget(&mut self, tp: &TopicPartition) {
+    pub(crate) fn forget(&mut self, tp: &TopicPartition) {
         for f in &mut self.in_flight {
             f.tokens.remove(tp);
         }

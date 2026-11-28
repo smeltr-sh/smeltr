@@ -77,15 +77,15 @@ mod week;
 use week::{Week, Weekly};
 
 /// The width above normal is judged at, and the one a source's rate is shown at where no other is called for.
-pub const WINDOW: Duration = Duration::from_secs(30 * 60);
+pub(crate) const WINDOW: Duration = Duration::from_secs(30 * 60);
 
 /// The resolution history is judged at: the finest every tier the history spans can be read at.
 pub(super) const BUCKET: Tier = Tier::FiveMinutes;
 
 /// One width a source is judged at: its window, and how many days of past windows its range is learned from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Width {
-    pub window: Duration,
+struct Width {
+    window: Duration,
     history_days: i64,
 }
 
@@ -101,7 +101,7 @@ impl Width {
 
 /// Narrowest first. The short widths learn from a week, which holds two thousand windows of each. A week holds only
 /// seven days that do not overlap, too few to cut one in two thousand, so the long widths learn from four.
-pub const WIDTHS: [Width; 4] = [
+const WIDTHS: [Width; 4] = [
     Width {
         window: Duration::from_secs(5 * 60),
         history_days: 7,
@@ -129,7 +129,7 @@ const USUAL_MIN_DAYS: usize = 3;
 /// How far back a source's rows must reach, from its first or from a reset, before it is judged at all: a week, so each
 /// weekday is learned once before one can warn. Judged sooner, a new source's first quiet weekend is set against its
 /// weekdays, warns, and so is never learned.
-pub const JUDGED_AFTER_MS: i64 = 7 * DAY_MS;
+const JUDGED_AFTER_MS: i64 = 7 * DAY_MS;
 
 /// How far either side of the same time of day a past window may end and still count as the same time of day.
 const NEIGHBORHOOD: Duration = Duration::from_secs(30 * 60);
@@ -143,7 +143,7 @@ const TAIL: f64 = 0.0005;
 /// one is seen. An editor picks one for a source and one for its senders (`marks::Picked`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Preset {
+pub(crate) enum Preset {
     Fast,
     Sensitive,
     Balanced,
@@ -155,14 +155,14 @@ pub enum Preset {
 /// The preset a source is judged at, and the one its senders are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Presets {
-    pub rows: Preset,
-    pub senders: Preset,
+pub(crate) struct Presets {
+    pub(crate) rows: Preset,
+    pub(crate) senders: Preset,
 }
 
 impl Presets {
     /// The preset a source is judged at, or one of its senders where there is a `sender`.
-    pub fn of(self, sender: Option<&Sender>) -> Preset {
+    pub(crate) fn of(self, sender: Option<&Sender>) -> Preset {
         match sender {
             Some(_) => self.senders,
             None => self.rows,
@@ -230,67 +230,67 @@ const GAP_WATCH_MS: i64 = 28 * DAY_MS;
 
 /// The range: how many rows one source normally reads in one window at this time of day.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Band {
-    pub low: f64,
-    pub high: f64,
+pub(crate) struct Band {
+    pub(crate) low: f64,
+    pub(crate) high: f64,
 }
 
 /// One source's reading at the end of one bucket, or one of its senders'.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading {
-    pub group: String,
-    pub source: String,
+    pub(crate) group: String,
+    pub(crate) source: String,
     /// The sender read, or `None` for the source's rows as a whole.
-    pub sender: Option<Sender>,
-    pub ended_ms: i64,
+    pub(crate) sender: Option<Sender>,
+    pub(crate) ended_ms: i64,
     /// Each width that judges the source now, narrowest first.
-    pub judged: Vec<Judged>,
-    pub outside: Option<Outside>,
+    pub(crate) judged: Vec<Judged>,
+    pub(crate) outside: Option<Outside>,
     /// The gap's reading, where the gap judges the source.
-    pub gap: Option<Gap>,
+    pub(crate) gap: Option<Gap>,
 }
 
 /// The gap's reading: how long the source has gone without a row, against the longest quiet spell it learned.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Gap {
+pub(crate) struct Gap {
     /// Since its last row, or since the last bucket no worker reported it in, or since it was last stopped, whichever
     /// is latest.
-    pub silence_ms: i64,
+    pub(crate) silence_ms: i64,
     /// The longest quiet spell it learned.
-    pub longest_ms: i64,
+    pub(crate) longest_ms: i64,
     /// The longest quiet spell it may make before it is below normal: [`GAP_MARGIN`] times the longest it learned,
     /// lengthened while it has been watched less than a year.
-    pub edge_ms: i64,
+    pub(crate) edge_ms: i64,
 }
 
 impl Gap {
     /// The quiet spell under way is longer than the source may make.
-    pub fn below(&self) -> bool {
+    pub(crate) fn below(&self) -> bool {
         self.silence_ms > self.edge_ms
     }
 }
 
 /// One width's reading: the rows of its window that ended with the reading, and its range.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Judged {
-    pub window: Duration,
-    pub rows: f64,
-    pub band: Band,
+pub(crate) struct Judged {
+    pub(crate) window: Duration,
+    pub(crate) rows: f64,
+    pub(crate) band: Band,
     /// This reading and those before it its [`Preset`] waits for were each below their range.
-    pub below: bool,
+    pub(crate) below: bool,
     /// This reading and those before it its [`Preset`] waits for were each above their range, at [`WINDOW`], the one
     /// width above normal is judged at.
-    pub above: bool,
+    pub(crate) above: bool,
 }
 
 impl Judged {
     /// This reading alone is below its range.
-    pub fn under(&self) -> bool {
+    pub(crate) fn under(&self) -> bool {
         self.rows < self.band.low
     }
 
     /// The rows and range as rows per second.
-    pub fn per_second(&self) -> (f64, Band) {
+    pub(crate) fn per_second(&self) -> (f64, Band) {
         let seconds = self.window.as_secs_f64();
         (
             self.rows / seconds,
@@ -305,7 +305,7 @@ impl Judged {
 /// Why a below-normal warning began, as the warning keeps it (`RegistryStore::keep_reasons`).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
-pub enum Reason {
+pub(crate) enum Reason {
     /// Its rows per second over the width `window_millis` long that warned, against that width's range then.
     #[serde(rename_all = "camelCase")]
     Width {
@@ -321,7 +321,7 @@ pub enum Reason {
 
 /// Which side of its normal a source is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Outside {
+pub(crate) enum Outside {
     Below,
     Above,
 }
@@ -329,7 +329,7 @@ pub enum Outside {
 impl Reading {
     /// The width a reader is shown: the narrowest that reads the source outside its range now, else [`WINDOW`], else
     /// the narrowest that judges it. None while none judges it.
-    pub fn shown(&self) -> Option<&Judged> {
+    pub(crate) fn shown(&self) -> Option<&Judged> {
         let side = |j: &&Judged| match self.outside {
             Some(Outside::Below) => j.under(),
             Some(Outside::Above) => j.above,
@@ -344,7 +344,7 @@ impl Reading {
 
     /// Why it is below normal: the narrowest width that waited out its readings below its range, else the narrowest
     /// below it now, else the gap. None while it is not below, or is held below while nothing judges it.
-    pub fn reason(&self) -> Option<Reason> {
+    pub(crate) fn reason(&self) -> Option<Reason> {
         if self.outside != Some(Outside::Below) {
             return None;
         }
@@ -409,7 +409,7 @@ impl Readings {
     ///
     /// While another caller computes the new answer, this waits for it: a catalog given the last answer would be
     /// newer than the one given the new answer, and would end every issue the new answer had just started.
-    pub fn at(
+    fn at(
         &self,
         store: &RegistryStore,
         now_ms: i64,
@@ -471,7 +471,7 @@ impl Readings {
 
 impl Readings {
     /// What was last learned, if anything was: the senders picked, and each one's normal.
-    pub fn learned(&self) -> Option<Arc<Learned>> {
+    pub(crate) fn learned(&self) -> Option<Arc<Learned>> {
         let held = self.learned.lock();
         held.as_ref().map(|(_, _, learned)| learned.clone())
     }
@@ -483,7 +483,7 @@ fn ended(now_ms: i64, heartbeat_interval: Duration) -> i64 {
 }
 
 /// A count of rows, rounded, with its thousands set apart as a reader writes them.
-pub fn grouped(rows: f64) -> String {
+pub(crate) fn grouped(rows: f64) -> String {
     let digits = (rows.max(0.0).round() as u64).to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, d) in digits.chars().enumerate() {
@@ -577,23 +577,23 @@ type Normals = HashMap<(String, String), Vec<Normal>>;
 /// What every source is judged against as of one hour: its normal at each count width, and its gap; and each
 /// sender watched, with its normal at each width.
 #[derive(Default)]
-pub struct Learned {
+pub(crate) struct Learned {
     widths: Normals,
     gaps: HashMap<SourceKey, GapNormal>,
-    pub pick: Arc<Pick>,
+    pub(crate) pick: Arc<Pick>,
     senders: HashMap<SenderKey, Vec<Normal>>,
 }
 
 impl Learned {
     /// How long `group`'s `source` may go without a row before the gap warns ([`Gap::edge_ms`]), while the gap judges
     /// it.
-    pub fn quiet_limit_ms(&self, group: &str, source: &str) -> Option<i64> {
+    pub(crate) fn quiet_limit_ms(&self, group: &str, source: &str) -> Option<i64> {
         let (_, edge_ms) = self.gaps.get(&(group.to_string(), source.to_string()))?.judged?;
         Some(edge_ms)
     }
 
     /// Each sender watched, by its source.
-    pub fn watched(&self, group: &str, source: &str) -> Vec<SenderKey> {
+    pub(crate) fn watched(&self, group: &str, source: &str) -> Vec<SenderKey> {
         let mut out: Vec<SenderKey> = self
             .senders
             .keys()
@@ -605,7 +605,7 @@ impl Learned {
     }
 
     /// `key`'s range, as rows per second, at each [`BUCKET`] of `rows`, by the narrowest width that judges it there.
-    pub fn expected(&self, key: &SenderKey, rows: impl Iterator<Item = i64>) -> Vec<ExpectedPoint> {
+    pub(crate) fn expected(&self, key: &SenderKey, rows: impl Iterator<Item = i64>) -> Vec<ExpectedPoint> {
         let Some(normals) = self.senders.get(key) else {
             return Vec::new();
         };
@@ -1083,24 +1083,24 @@ const LONGEST_LISTED: usize = 10;
 /// ([`marks::Marks::answers`]), its longest quiet spells, and the preset it is judged at.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Past {
+pub(crate) struct Past {
     /// Its below-normal warnings, newest first: each from when it began, which names it, until it ended, or until now
     /// while it holds.
-    pub warnings: Vec<PastSpan>,
+    pub(crate) warnings: Vec<PastSpan>,
     /// Its longest quiet spells, longest first. None for a sender, which the gap does not judge.
-    pub silences: Vec<PastSpan>,
-    pub preset: Preset,
+    pub(crate) silences: Vec<PastSpan>,
+    pub(crate) preset: Preset,
     /// When its rows will reach back [`JUDGED_AFTER_MS`] from its first or from its history's reset, and so it will be
     /// judged, while that is still to come.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub judged_from_millis: Option<i64>,
+    pub(crate) judged_from_millis: Option<i64>,
     /// When it will have the weeks of rows its weekdays are told apart from ([`Week`]), while that is still to come:
     /// until then every day of its week is judged alike.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub weekdays_from_millis: Option<i64>,
+    pub(crate) weekdays_from_millis: Option<i64>,
     /// How long it may go without a row before it warns, while the gap judges it ([`Learned::quiet_limit_ms`]).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub quiet_limit_millis: Option<i64>,
+    pub(crate) quiet_limit_millis: Option<i64>,
 }
 
 impl Default for Past {
@@ -1121,23 +1121,23 @@ impl Default for Past {
 /// normal.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PastSpan {
-    pub from_millis: i64,
-    pub to_millis: i64,
-    pub learned: bool,
+pub(crate) struct PastSpan {
+    from_millis: i64,
+    to_millis: i64,
+    learned: bool,
     /// It is the warning that holds, and runs until now.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub holds: bool,
+    holds: bool,
     /// Who answered what it was, if anyone did: Normal where it is `learned`, else Outage.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub marked_by: Option<String>,
+    marked_by: Option<String>,
     /// Why it began, where it kept why.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<Reason>,
+    reason: Option<Reason>,
 }
 
 /// `group`'s `source`'s [`Past`], or its `sender`'s, as of `now_ms`.
-pub fn past(
+pub(crate) fn past(
     store: &RegistryStore,
     subject: Subject,
     now_ms: i64,
@@ -1415,29 +1415,29 @@ fn summed(series: impl Iterator<Item = (String, SubjectPoints)>, into: Tier) -> 
 /// A source's rows, or one of its sender's, against its range, as [`chart`] draws them.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Chart {
+pub(crate) struct Chart {
     /// How wide each point is.
-    pub point_millis: i64,
+    point_millis: i64,
     /// Rows per second in each point, by when it began. A point nothing was kept for has none.
-    pub points: Vec<(i64, f64)>,
-    pub expected: Vec<ExpectedPoint>,
+    points: Vec<(i64, f64)>,
+    expected: Vec<ExpectedPoint>,
 }
 
 /// A source, or one of its senders: whose rows, range and warnings the leader reads.
 #[derive(Debug, Clone, Copy)]
-pub struct Subject<'a> {
-    pub group: &'a str,
-    pub source: &'a str,
-    pub sender: Option<&'a Sender>,
+pub(crate) struct Subject<'a> {
+    pub(crate) group: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) sender: Option<&'a Sender>,
 }
 
 impl<'a> Subject<'a> {
-    pub const fn new(group: &'a str, source: &'a str, sender: Option<&'a Sender>) -> Self {
+    pub(crate) const fn new(group: &'a str, source: &'a str, sender: Option<&'a Sender>) -> Self {
         Subject { group, source, sender }
     }
 
     /// `group`'s `source` itself, none of its senders.
-    pub const fn source(group: &'a str, source: &'a str) -> Self {
+    pub(crate) const fn source(group: &'a str, source: &'a str) -> Self {
         Subject::new(group, source, None)
     }
 }
@@ -1450,7 +1450,7 @@ impl<'a> Subject<'a> {
 /// Given the `window_ms` of one of [`WIDTHS`], each point is instead the rate over that width ending where the point
 /// ends, against that width's range, as that width judged it; its points are then no wider than the width. A point
 /// whose width reaches a bucket nothing was kept for in five minutes has none.
-pub fn chart(
+pub(crate) fn chart(
     store: &RegistryStore,
     subject: Subject,
     shown_ms: std::ops::Range<i64>,
@@ -1513,20 +1513,20 @@ pub fn chart(
 /// What one source was expected to read per second from `from_millis` to `to_millis`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExpectedPoint {
-    pub from_millis: i64,
-    pub to_millis: i64,
-    pub low: f64,
-    pub high: f64,
+pub(crate) struct ExpectedPoint {
+    from_millis: i64,
+    to_millis: i64,
+    low: f64,
+    high: f64,
 }
 
 /// The points a chart draws: each `point_ms` wide ([`super::series::chart_point_ms`]), from the point `since_ms` is in
 /// to the point `now_ms` is in.
 #[derive(Debug, Clone, Copy)]
-pub struct Drawn {
-    pub since_ms: i64,
-    pub now_ms: i64,
-    pub point_ms: i64,
+pub(crate) struct Drawn {
+    pub(crate) since_ms: i64,
+    pub(crate) now_ms: i64,
+    pub(crate) point_ms: i64,
 }
 
 /// `subject`'s range, as rows per second, for each point of `drawn`. A point's range is
@@ -1534,7 +1534,7 @@ pub struct Drawn {
 /// it is the source's swings at the point's own width ([`record_swings`]); a sender's rows are kept no finer than five
 /// minutes, so its chart is drawn no finer. A point where that width does not judge it has none. The range reads only
 /// past days, so the point still filling has one too.
-pub fn expected_over(
+pub(crate) fn expected_over(
     store: &RegistryStore,
     subject: Subject,
     drawn: Drawn,
@@ -1605,7 +1605,7 @@ fn expected_at(
 }
 
 /// `group`'s `source`'s rows, or its `sender`'s, in each [`BUCKET`] since `since_ms`; None while it has none.
-pub fn rows_of(
+fn rows_of(
     store: &RegistryStore,
     Subject { group, source, sender }: Subject,
     since_ms: i64,
@@ -1702,7 +1702,7 @@ fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, a
 
 /// The widths a source's swing is kept at: those a chart finer than [`BUCKET`] draws its points at
 /// ([`super::series::chart_point_ms`]).
-pub const SWING_WIDTHS: [Tier; 2] = [Tier::TenSeconds, Tier::OneMinute];
+const SWING_WIDTHS: [Tier; 2] = [Tier::TenSeconds, Tier::OneMinute];
 
 /// How far back from the window's end a swing is still recorded. The ten-second tier holds an hour; this leaves
 /// `maintain` a margin before it rolls the oldest of it up.

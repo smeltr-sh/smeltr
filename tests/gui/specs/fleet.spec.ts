@@ -1004,10 +1004,10 @@ test('a capture whose routes type one field two ways saves it as a variant', asy
   sink,
 }) => {
   const es = await sink();
-  const writing = (id: string, target: string): Pipeline => ({
+  const writing = (id: string, expr: string): Pipeline => ({
     id,
     name: id,
-    steps: [{ type: 'eval', id: 'set', assignments: [{ target, expr: '1' }] }],
+    steps: [{ type: 'eval', id: 'set', assignments: [{ target: 'a', expr }] }],
   });
   const route = (id: string) => ({
     id,
@@ -1018,8 +1018,8 @@ test('a capture whose routes type one field two ways saves it as a variant', asy
   await deploy(api, 'overlapping', ['east'], {
     east: {
       ...metricsTo(es.url),
-      pipelines: [writing('flat', 'a'), writing('nested', 'a.b')],
-      routes: [route('flat'), route('nested')],
+      pipelines: [writing('number', '1'), writing('text', '"x"')],
+      routes: [route('number'), route('text')],
     },
   });
   await fleet.startWorker(leader, api, 'east', 'east-1');
@@ -1059,7 +1059,7 @@ test('a capture whose routes type one field two ways saves it as a variant', asy
   const { sample } = await api.get(
     `/api/areas/east/samples/${encodeURIComponent(saved.id)}?branch=overlap`,
   );
-  // `a.b` makes `a` an object on one route and a number on the other.
+  // One route makes `a` a number, the other a string.
   const a = sample.columns.find((c: { name: string }) => c.name === 'a');
   expect(a?.type).toBe('variant');
 });

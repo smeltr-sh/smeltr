@@ -26,7 +26,7 @@ use crate::plan::config::{CsvConfig, GrokConfig, GrokPatterns, KvConfig, MatchKi
 use crate::plan::tree;
 
 /// The parse functions, each a call `ParseCall::of` reads.
-pub const PARSE_FNS: [&str; 6] = ["json", "kv", "cef", "csv", "grok", "lookup"];
+pub(crate) const PARSE_FNS: [&str; 6] = ["json", "kv", "cef", "csv", "grok", "lookup"];
 
 /// The options each parse function's options literal may name.
 pub const OPTIONS: [(&str, &[&str]); 6] = [
@@ -67,15 +67,15 @@ fn known_options(name: &str) -> &'static [&'static str] {
 
 /// Whether the parse function `name` splits a key at its dots when its call does not say: where dots are the format's
 /// way to nest (kv), or the author writes the key (a grok capture, a CSV column).
-pub fn split_dots_default(name: &str) -> bool {
+pub(crate) fn split_dots_default(name: &str) -> bool {
     matches!(name, "kv" | "grok" | "csv")
 }
 
 /// A call of a parse function.
-pub struct ParseCall<'e> {
-    pub name: &'e str,
+pub(crate) struct ParseCall<'e> {
+    pub(crate) name: &'e str,
     /// The text it parses; a lookup's key.
-    pub input: &'e Expr,
+    pub(crate) input: &'e Expr,
     /// A lookup's table.
     table: Option<&'e Expr>,
     /// What follows the text.
@@ -83,18 +83,18 @@ pub struct ParseCall<'e> {
 }
 
 /// What a `lookup` call reads, and how.
-pub struct LookupArgs {
-    pub table: String,
-    pub match_kind: MatchKind,
-    pub multiplicity: Multiplicity,
-    pub key_column: String,
+pub(crate) struct LookupArgs {
+    pub(crate) table: String,
+    pub(crate) match_kind: MatchKind,
+    pub(crate) multiplicity: Multiplicity,
+    pub(crate) key_column: String,
     /// Each output, its column and its default.
-    pub fields: Vec<(String, String, Option<String>)>,
+    pub(crate) fields: Vec<(String, String, Option<String>)>,
 }
 
 impl<'e> ParseCall<'e> {
     /// `e` as a parse function's call, where it is one.
-    pub fn of(e: &'e Expr) -> Option<ParseCall<'e>> {
+    pub(crate) fn of(e: &'e Expr) -> Option<ParseCall<'e>> {
         let ExprKind::Call { name, args } = &e.kind else {
             return None;
         };
@@ -113,7 +113,7 @@ impl<'e> ParseCall<'e> {
     }
 
     /// A spread of `input`, a variant: its keys on each row are the object it gives.
-    pub fn variant(input: &'e Expr) -> ParseCall<'e> {
+    pub(crate) fn variant(input: &'e Expr) -> ParseCall<'e> {
         ParseCall {
             name: "spread",
             input,
@@ -123,7 +123,7 @@ impl<'e> ParseCall<'e> {
     }
 
     /// The table and the options of a `lookup` call. `Err` says which argument is wrong.
-    pub fn lookup(&self) -> Result<LookupArgs, String> {
+    pub(crate) fn lookup(&self) -> Result<LookupArgs, String> {
         const SHAPE: &str = "`lookup` is called as `lookup(table, key, {match, column, first, all, fields, formats})`";
         let (Some(table), [literal]) = (self.table, self.args) else {
             return Err(SHAPE.to_string());
@@ -198,7 +198,7 @@ impl<'e> ParseCall<'e> {
 
     /// The parser this call runs, and its compiled grok matcher, which may name the bundle's `grok_patterns`. `Err`
     /// says which argument is wrong.
-    pub fn kind(&self, grok_patterns: &GrokPatterns) -> Result<(ParserKind, Option<Arc<Matcher>>), String> {
+    pub(crate) fn kind(&self, grok_patterns: &GrokPatterns) -> Result<(ParserKind, Option<Arc<Matcher>>), String> {
         let name = self.name;
         if name == "spread" {
             return Ok((ParserKind::Variant, None));
@@ -322,7 +322,7 @@ impl<'e> ParseCall<'e> {
 
     /// The `formats` option: each key, under what the call writes, with the format its text is read in. Read after
     /// `kind` or `lookup`, which check the options around it.
-    pub fn formats(&self) -> Result<Vec<(String, String)>, String> {
+    pub(crate) fn formats(&self) -> Result<Vec<(String, String)>, String> {
         const FORMATS: &str = "`formats` maps each `datetime` field to its format, written as a string";
         let literal = match self.name {
             "lookup" | "json" | "kv" | "cef" => self.args.first(),
@@ -350,7 +350,7 @@ impl<'e> ParseCall<'e> {
 
 /// The keys a parse finds, where its configuration fixes them, each with what it holds: a CSV's headers, text; a grok
 /// pattern's captures, what their patterns hold (`Matcher::holds`). `None` where the record names them.
-pub fn matcher_keys(kind: &ParserKind, matcher: &Option<Arc<Matcher>>) -> Option<Vec<(String, Holds)>> {
+pub(crate) fn matcher_keys(kind: &ParserKind, matcher: &Option<Arc<Matcher>>) -> Option<Vec<(String, Holds)>> {
     match kind {
         ParserKind::Csv(c) => Some(
             c.headers

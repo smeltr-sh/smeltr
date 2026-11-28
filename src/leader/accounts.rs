@@ -13,12 +13,12 @@ use super::store::{AccountError, Actor, LocalCredentialRecord, NewLocalUser, Sec
 
 /// The account bootstrap creates and recovery restores. Fixed, so recovery always has a target and never has to be
 /// told which account to reach for.
-pub const BOOTSTRAP_USERNAME: &str = "admin";
+pub(crate) const BOOTSTRAP_USERNAME: &str = "admin";
 
 /// The shortest password accepted. Length is the only composition rule: OWASP's guidance is that a minimum length
 /// with no character-class requirement produces stronger passwords than the reverse, because the rules are what
 /// push people toward `Password1!`.
-pub const MIN_PASSWORD_LEN: usize = 15;
+const MIN_PASSWORD_LEN: usize = 15;
 
 /// The longest, in bytes rather than characters, because the cost being bounded is the hash's input. Long enough
 /// for any passphrase and any password manager's output; refused rather than truncated, so a password is never
@@ -53,10 +53,10 @@ impl std::fmt::Display for PasswordRefused {
 impl std::error::Error for PasswordRefused {}
 
 /// What a stored hash says about the password that just matched it.
-pub struct Verified {
+struct Verified {
     /// The hash was written with weaker parameters than [`hash_password`] uses now. The caller holds the only
     /// plaintext there will be until the next login, so this is the moment to rewrite it.
-    pub needs_rehash: bool,
+    needs_rehash: bool,
 }
 
 fn argon2() -> Argon2<'static> {
@@ -66,7 +66,7 @@ fn argon2() -> Argon2<'static> {
 
 /// Bounds a password before it costs anything to process. Callers check this before taking a hashing permit, so an
 /// oversized body cannot spend one.
-pub fn check_password(password: &str) -> Result<(), PasswordRefused> {
+fn check_password(password: &str) -> Result<(), PasswordRefused> {
     // Characters for the floor, bytes for the ceiling: the first is about how much a person typed, the second
     // about how much work the hash is asked to do.
     if password.chars().count() < MIN_PASSWORD_LEN {
@@ -100,7 +100,7 @@ pub fn hash_password(password: &str) -> Result<String, StoreError> {
 /// which is not the same thing and must not be reported to the caller as a wrong password.
 ///
 /// As expensive as [`hash_password`], and under the same rule about where it may run.
-pub fn verify_password(password: &str, stored: &str) -> Result<Option<Verified>, StoreError> {
+fn verify_password(password: &str, stored: &str) -> Result<Option<Verified>, StoreError> {
     let parsed =
         PasswordHash::new(stored).map_err(|e| StoreError::failed(format!("reading a stored password hash: {e}")))?;
     match argon2().verify_password(password.as_bytes(), &parsed) {

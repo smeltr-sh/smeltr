@@ -13,16 +13,16 @@ use std::sync::Arc;
 use crate::config_file::{Requirement, SchemaDto, SchemaFieldDto};
 use crate::core::column::DataType;
 
-pub mod csv;
-pub mod ecs;
-pub mod json_schema;
+pub(crate) mod csv;
+pub(crate) mod ecs;
+pub(crate) mod json_schema;
 pub mod ocsf;
-pub mod otlp;
-pub mod standard;
+pub(crate) mod otlp;
+pub(crate) mod standard;
 
 /// The type a common name for one means, as a schema spells it: what a database, a spreadsheet or a standard calls a
 /// type, matched without regard to case. Each reader takes what is its own first, then this.
-pub fn named(name: &str) -> Option<&'static str> {
+fn named(name: &str) -> Option<&'static str> {
     Some(match name.trim().to_ascii_lowercase().as_str() {
         "str" | "string" | "text" | "varchar" | "char" | "keyword" => "str",
         "i64" | "int" | "integer" | "long" | "bigint" | "smallint" | "tinyint" | "short" | "byte" | "unsigned_long" => {
@@ -51,9 +51,9 @@ fn example_of(value: Option<&serde_json::Value>) -> String {
 /// One contract, by its id in the bundle.
 #[derive(Debug)]
 pub struct Schema {
-    pub id: String,
-    pub title: String,
-    pub description: String,
+    pub(crate) id: String,
+    pub(crate) title: String,
+    description: String,
     /// In the table's order.
     pub fields: Vec<Field>,
 }
@@ -61,27 +61,27 @@ pub struct Schema {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Field {
     /// Its keys from the record's root, dotted.
-    pub path: String,
+    pub(crate) path: String,
     /// What the field must hold. An object type holds any object: its fields are rows of their own, under its path.
-    pub ty: DataType,
-    pub requirement: Requirement,
-    pub description: String,
+    ty: DataType,
+    requirement: Requirement,
+    description: String,
     /// A value it may hold, as text.
-    pub example: String,
+    example: String,
     /// How it maps in an Elasticsearch index, over the mapping its type has (`io::elastic_mapping`).
-    pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
+    pub(crate) elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Field {
     /// The field's keys from the record's root.
-    pub fn keys(&self) -> Vec<String> {
+    pub(crate) fn keys(&self) -> Vec<String> {
         self.path.split('.').map(str::to_string).collect()
     }
 }
 
 /// The schema `dto` declares. A path listed twice, a type that does not read, and a field under one that holds no
 /// object are refused.
-pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
+pub(crate) fn read(dto: &SchemaDto) -> Result<Schema, String> {
     let mut fields: Vec<Field> = Vec::with_capacity(dto.fields.len());
     // By path, so a schema of thousands of rows reads in one pass rather than a search of every row for each.
     let mut by_path: std::collections::HashMap<&str, usize> =
@@ -137,7 +137,7 @@ pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
 }
 
 /// `schema` as a bundle declares it.
-pub fn to_dto(schema: &Schema) -> SchemaDto {
+pub(crate) fn to_dto(schema: &Schema) -> SchemaDto {
     SchemaDto {
         id: schema.id.clone(),
         title: schema.title.clone(),
@@ -183,10 +183,10 @@ fn holds(wants: &DataType, ty: &DataType) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     /// The field's keys from the record's root.
-    pub keys: Vec<String>,
+    keys: Vec<String>,
     /// The schema's id.
-    pub schema: String,
-    pub misfit: Misfit,
+    schema: String,
+    misfit: Misfit,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -213,7 +213,7 @@ impl Misfit {
 
 impl Finding {
     /// The field's path as the pipeline editor shows it.
-    pub fn path(&self) -> String {
+    fn path(&self) -> String {
         self.keys.join(".")
     }
 }
@@ -221,12 +221,12 @@ impl Finding {
 impl Schema {
     /// The record type of the rows that fit the schema: each field at its path, a field under an array in each of its
     /// elements, and a key only the fields under it name as an object of those.
-    pub fn record_type(&self) -> DataType {
+    pub(crate) fn record_type(&self) -> DataType {
         self.tree().object_type()
     }
 
     /// The schema's fields as a tree, a node per key, in the schema's order.
-    pub(crate) fn tree(&self) -> Node<'_> {
+    fn tree(&self) -> Node<'_> {
         let mut root = Node::default();
         for f in &self.fields {
             root.insert(&f.keys(), f);
@@ -237,9 +237,9 @@ impl Schema {
 
 /// A key of a schema's tree (`Schema::tree`): the field the schema declares there, if any, and the keys under it.
 #[derive(Default)]
-pub(crate) struct Node<'s> {
-    pub field: Option<&'s Field>,
-    pub children: Vec<(String, Node<'s>)>,
+struct Node<'s> {
+    field: Option<&'s Field>,
+    children: Vec<(String, Node<'s>)>,
 }
 
 impl<'s> Node<'s> {
@@ -346,7 +346,7 @@ impl Schema {
     /// the row knows. A field is lacking where the objects it is asked for within are there and do not declare it: a
     /// required one is asked for within the objects the schema names, a recommended one within every object above it.
     /// An open object may carry the key, but the pipeline has not shown that it does.
-    pub fn check(&self, record: &DataType) -> Vec<Finding> {
+    fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
         let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
         let object = DataType::Struct(Vec::new(), true);
@@ -412,7 +412,7 @@ impl Schema {
     }
 
     /// The field at `keys`, a record's keys from its root, where the schema names one.
-    pub fn field(&self, keys: &[String]) -> Option<&Field> {
+    fn field(&self, keys: &[String]) -> Option<&Field> {
         let path = keys.join(".");
         self.fields.iter().find(|f| f.path == path)
     }
@@ -420,7 +420,7 @@ impl Schema {
 
 /// The type every one of `schemas` that names `path` gives it, where they agree and it is one a parse reads text as.
 /// `None` where none names it, or they disagree.
-pub fn read_as(schemas: &[Arc<Schema>], path: &str) -> Option<DataType> {
+pub(crate) fn read_as(schemas: &[Arc<Schema>], path: &str) -> Option<DataType> {
     let mut each = schemas.iter().filter_map(|s| s.fields.iter().find(|f| f.path == path));
     let ty = each.next()?.ty.clone();
     let readable = matches!(
@@ -433,7 +433,7 @@ pub fn read_as(schemas: &[Arc<Schema>], path: &str) -> Option<DataType> {
 /// Where a record breaks the schemas a pipeline produces, all of them at once: a row keeps one of them, so a field
 /// breaks them when every schema that names it says so, a field is missing when every schema requires it, and a
 /// field is recommended when every schema requires or recommends it and some only recommend it.
-pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
+pub(crate) fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
     let each: Vec<Vec<Finding>> = schemas.iter().map(|s| s.check(record)).collect();
     let mut out: Vec<Finding> = Vec::new();
     for (i, findings) in each.iter().enumerate() {
@@ -464,15 +464,15 @@ pub struct Missing {
     /// The field's path, as the pipeline editor shows it.
     pub path: String,
     /// What a pipeline writes to keep it.
-    pub written_as: String,
+    pub(crate) written_as: String,
     /// The schema's title.
-    pub schema: String,
+    pub(crate) schema: String,
     /// Required or recommended.
-    pub requirement: Requirement,
+    pub(crate) requirement: Requirement,
 }
 
 /// Each field `findings` say the record lacks, with what to write it as and the schema asking for it.
-pub fn missing(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Missing> {
+pub(crate) fn missing(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Missing> {
     findings
         .iter()
         .filter_map(|f| {
@@ -495,29 +495,29 @@ pub fn missing(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Missing> {
 
 /// A sentence a check tells a pipeline's author (`told`).
 #[derive(Clone, Debug, PartialEq)]
-pub struct Told {
+pub(crate) struct Told {
     /// The field's keys, for a field whose type misfits.
-    pub keys: Option<Vec<String>>,
-    pub message: String,
+    pub(crate) keys: Option<Vec<String>>,
+    pub(crate) message: String,
     /// Whether it says the rows break a schema. A recommended field they lack does not.
-    pub breaks: bool,
+    pub(crate) breaks: bool,
     /// For a sentence of recommended fields the rows lack, those fields, for a reader that lists them itself.
-    pub recommended: Option<Recommended>,
+    pub(crate) recommended: Option<Recommended>,
 }
 
 /// The fields a schema recommends and the rows lack, which review lists, a long list cut short.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Recommended {
     /// The schema's title.
-    pub schema: String,
+    schema: String,
     /// Each field's path.
-    pub fields: Vec<String>,
+    fields: Vec<String>,
 }
 
 /// What a check's `findings` against `schemas` say to a pipeline's author: a sentence for each field whose type
 /// misfits, with the field's keys, one for each schema's required fields the record lacks, and after them one for
 /// each schema's recommended fields it lacks, which names every one and carries them, for a reader to cut short.
-pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
+pub(crate) fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
     let title = |id: &str| (schemas.iter().find(|s| s.id == id)).map_or(id.to_string(), |s| s.title.clone());
     let mut out = Vec::new();
     let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();

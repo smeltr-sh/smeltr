@@ -5,7 +5,7 @@ pub mod column;
 pub mod ctx;
 pub mod error;
 pub mod id;
-pub mod keys;
+pub(crate) mod keys;
 pub mod tally;
 pub mod time;
 pub mod variant;

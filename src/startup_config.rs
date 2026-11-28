@@ -163,7 +163,7 @@ const DEFAULT_LEADER_LOOKUP_VERSIONS: usize = 5;
 const DEFAULT_LEADER_CA_VALIDITY: &str = "3650d";
 const DEFAULT_WORKER_STATE_DIR: &str = "smeltr-worker-data";
 /// How often a worker beats until its leader's first answer says otherwise, and the leader's when it is not set.
-pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS);
+pub(crate) const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS);
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 1500;
 const DEFAULT_WORKER_EXIT_AFTER_BLOCKED_SECS: u64 = 600;
 const DEFAULT_WORKER_METRICS_ENDPOINT_PORT: NonZeroU16 = NonZeroU16::new(9464).expect("9464 is not zero");
@@ -423,7 +423,7 @@ pub fn names_this_leader(url: &str, port: u16, names: &[String]) -> bool {
 }
 
 /// Whether `host`, without brackets or port, names this machine: `localhost` or a loopback address.
-pub fn is_loopback(host: &str) -> bool {
+pub(crate) fn is_loopback(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
@@ -598,7 +598,7 @@ pub fn worker_metrics_endpoint_user() -> Option<String> {
 }
 
 /// Where [`worker_metrics_endpoint_password`] is read from.
-pub const WORKER_METRICS_ENDPOINT_PASSWORD_ENV: &str = "SMELTR_WORKER_METRICS_ENDPOINT_PASSWORD";
+pub(crate) const WORKER_METRICS_ENDPOINT_PASSWORD_ENV: &str = "SMELTR_WORKER_METRICS_ENDPOINT_PASSWORD";
 
 /// The password of [`worker_metrics_endpoint_user`], as an environment variable holds it, so a secret store can set it.
 pub fn worker_metrics_endpoint_password() -> Option<String> {
@@ -641,18 +641,18 @@ fn size_setting(name: &str, default: usize) -> usize {
 }
 
 /// The ceiling on columnar memory every reader in a worker shares (`worker::process_memory_budget`).
-pub fn memory_budget_bytes() -> usize {
+pub(crate) fn memory_budget_bytes() -> usize {
     size_setting("SMELTR_MEMORY_BUDGET_BYTES", crate::worker::MEMORY_BUDGET_BYTES)
 }
 
 /// Raw bytes a transform thread runs through its pipelines at once (`cpu_cache::slice_bytes`), unless
 /// `SMELTR_SLICE_BYTES` says otherwise.
-pub fn slice_bytes() -> usize {
+pub(crate) fn slice_bytes() -> usize {
     size_setting("SMELTR_SLICE_BYTES", crate::cpu_cache::slice_bytes())
 }
 
 /// The columnar budget, when it is set. A worker sized to its memory then sizes everything else around it.
-pub fn stated_memory_budget_bytes() -> Option<usize> {
+pub(crate) fn stated_memory_budget_bytes() -> Option<usize> {
     env("SMELTR_MEMORY_BUDGET_BYTES").map(|_| memory_budget_bytes())
 }
 
@@ -662,13 +662,13 @@ pub fn worker_memory_bytes() -> Option<usize> {
 }
 
 /// The ceiling on columnar memory every preview in a leader shares (`runtime::preview_memory_budget`).
-pub fn preview_budget_bytes() -> usize {
+pub(crate) fn preview_budget_bytes() -> usize {
     size_setting("SMELTR_PREVIEW_BUDGET_BYTES", crate::runtime::PREVIEW_BUDGET_BYTES)
 }
 
 /// How long one `Code` block may spend inside `while` loops per pipeline run ([`crate::plan::exec::DEFAULT_LOOP_BUDGET`]).
 /// A bare number is milliseconds, as the name says; `2s` or `500ms` name their unit. Anything else refuses to start.
-pub fn loop_budget() -> Duration {
+pub(crate) fn loop_budget() -> Duration {
     const NAME: &str = "SMELTR_LOOP_BUDGET_MS";
     match env(NAME) {
         None => crate::plan::exec::DEFAULT_LOOP_BUDGET,

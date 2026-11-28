@@ -10,7 +10,6 @@
 //! | 400, 413, 422 | split until the row at fault is alone, which is refused |
 //! | anything else | the destination stalls, naming the status |
 
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -20,7 +19,7 @@ use super::http::{
 use super::{IoError, OwnedRecord, Payload};
 use crate::format::bytes_text::BytesForm;
 use crate::plan::topology::{
-    Compression, HeldSecrets, HttpDestinationConfig, LogAnalyticsDestinationConfig, RequestBody,
+    Compression, GzipLevel, HeldSecrets, HttpDestinationConfig, IgzipLevel, LogAnalyticsDestinationConfig, RequestBody,
 };
 
 /// One row as its request carries it.
@@ -36,7 +35,7 @@ pub struct Item {
 pub struct Post {
     /// How rows make a request's body.
     shape: RequestBody,
-    gzip: Option<u8>,
+    gzip: Option<IgzipLevel>,
     /// The URL's trailing slashes, which the transport trims off its base address and this puts back.
     path: String,
     /// Where the next row's part is taken from under [`RequestBody::Single`]. Shared by every clone, though only the
@@ -52,24 +51,21 @@ impl Post {
         Post {
             name: "http",
             shape: config.body,
-            gzip: match config.compression {
-                Compression::Gzip(level) => Some(level),
-                _ => None,
-            },
+            gzip: igzip_level(config.compression),
             path: url[url.trim_end_matches('/').len()..].to_string(),
             next_part: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     /// Names the service `name` in errors and refusals, for a destination of its own built on this one.
-    pub fn named(mut self, name: &'static str) -> Post {
+    fn named(mut self, name: &'static str) -> Post {
         self.name = name;
         self
     }
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &HttpDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -83,7 +79,7 @@ pub fn open(
 }
 
 /// [`open`] for Log Analytics: the same posts, each with an Entra access token.
-pub fn open_log_analytics(
+pub(crate) fn open_log_analytics(
     c: &LogAnalyticsDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -103,7 +99,7 @@ pub fn open_log_analytics(
 /// The destination posting to `config`'s URL: as `name` in what it says of itself and as `subject` in its log lines,
 /// over the transports `make` makes ([`transport`], signed in where the service asks), counting into `metrics` as
 /// destination `id`.
-pub fn destination(
+fn destination(
     config: &HttpDestinationConfig,
     make: impl Fn() -> HttpTransport,
     name: &'static str,
@@ -115,7 +111,7 @@ pub fn destination(
 }
 
 /// The destination speaking `protocol` to `config`'s URL, as [`destination`] makes one.
-pub fn destination_of<P: Protocol>(
+pub(crate) fn destination_of<P: Protocol>(
     protocol: P,
     config: &HttpDestinationConfig,
     make: impl Fn() -> HttpTransport,
@@ -269,22 +265,25 @@ impl Protocol for Post {
     }
 }
 
+/// The gzip level smeltr compresses this destination's bodies at, or `None` when it sends them as they are.
+pub(crate) fn igzip_level(compression: Compression) -> Option<IgzipLevel> {
+    match compression {
+        Compression::Gzip(GzipLevel::Igzip(level)) => Some(level),
+        Compression::None => None,
+        other => unreachable!("this destination's compression is gzip or none, not {other:?}"),
+    }
+}
+
 /// `body` gzipped at level `gzip`, or as it is when `gzip` is `None`.
-pub fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
+pub(crate) fn compressed(body: Vec<u8>, gzip: Option<IgzipLevel>) -> Vec<u8> {
     let Some(level) = gzip else {
         return body;
     };
-    let mut out = flate2::write::GzEncoder::new(
-        Vec::with_capacity(body.len() / 4),
-        flate2::Compression::new(level.into()),
-    );
-    // Writing to a Vec cannot fail.
-    out.write_all(&body).expect("gzip into memory");
-    out.finish().expect("gzip into memory")
+    super::gzip::gzip(&body, level)
 }
 
 /// What `response` says of the `count` items its request carried, as the module's table gives it.
-pub fn answered(response: &Response, count: usize) -> Result<Outcome, IoError> {
+pub(crate) fn answered(response: &Response, count: usize) -> Result<Outcome, IoError> {
     match response.status {
         200..=299 => Ok(Outcome::default()),
         // Every one of these says "not now", and a retry that does not back off would only say it louder.

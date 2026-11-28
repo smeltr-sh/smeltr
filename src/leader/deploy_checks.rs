@@ -30,34 +30,34 @@ pub struct FailingTest {
 
 /// A group whose bundle does not load at the deployed commit, and the load error.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotLoading {
-    pub group: String,
-    pub why: String,
+pub(crate) struct NotLoading {
+    pub(crate) group: String,
+    pub(crate) why: String,
 }
 
 /// What the checks found: groups that do not load at `commit`, what breaks a schema there, and tests that fail at
 /// `tests_at`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Findings {
-    pub commit: String,
-    pub not_loading: Vec<NotLoading>,
+pub(crate) struct Findings {
+    pub(crate) commit: String,
+    pub(crate) not_loading: Vec<NotLoading>,
     /// Each group's schema findings (`LoadedSystem::schema_findings`), with the group.
-    pub schemas: Vec<(String, SchemaFinding)>,
+    pub(crate) schemas: Vec<(String, SchemaFinding)>,
     /// The commit `failing` was found at. Behind `commit` while that commit's tests are still running.
-    pub tests_at: String,
-    pub failing: Vec<FailingTest>,
+    pub(crate) tests_at: String,
+    pub(crate) failing: Vec<FailingTest>,
 }
 
 impl Findings {
     /// Whether `failing` is not yet `commit`'s own answer.
-    pub fn tests_pending(&self) -> bool {
+    pub(crate) fn tests_pending(&self) -> bool {
         self.tests_at != self.commit
     }
 }
 
 /// Runs every test at a commit and answers the ones that fail. The test runner is the binary's, which owns the
 /// preview a test runs.
-pub type TestRunner = Arc<dyn Fn(&Path, &str) -> Vec<FailingTest> + Send + Sync>;
+type TestRunner = Arc<dyn Fn(&Path, &str) -> Vec<FailingTest> + Send + Sync>;
 
 #[derive(Default)]
 struct State {
@@ -87,7 +87,7 @@ impl DeployChecks {
     /// tests; every other answers with what was known before, until that load lands.
     ///
     /// Blocking; the caller is inside `spawn_blocking`.
-    pub fn findings(&self, data_dir: &Path) -> Findings {
+    pub(crate) fn findings(&self, data_dir: &Path) -> Findings {
         let repo = git::repo_path(data_dir);
         if !git::repo_ready(&repo) {
             return Findings::default();

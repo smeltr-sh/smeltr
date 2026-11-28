@@ -113,7 +113,7 @@ impl fmt::Display for Fingerprint {
 }
 
 /// Whether `host`, a name a receiver admits, is a host name, its left-most label `*` where it stands for any one.
-pub fn is_host(host: &str) -> bool {
+pub(crate) fn is_host(host: &str) -> bool {
     let host = host.strip_prefix("*.").unwrap_or(host);
     let label = |l: &str| {
         (1..=63).contains(&l.len())

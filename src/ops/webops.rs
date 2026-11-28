@@ -47,7 +47,7 @@ fn text_map(ctx: &mut Ctx, ins: &[&Column], f: impl Fn(&[u8], &mut Vec<u8>) -> b
 
 /// `urlDecode(text)`: `+` is a space and `%XX` a byte, the bytes read as UTF-8, as a form's fields are encoded. A `%`
 /// that two hex digits do not follow does not read.
-pub fn url_decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn url_decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     text_map(ctx, ins, |text, out| form_decode(text, out).is_some())
 }
 
@@ -104,7 +104,7 @@ fn hex_digit(b: u8) -> Option<u8> {
 /// `htmlStrip(text)`: the text without its markup. A tag goes, a block-level one and `<br>` becoming a line break;
 /// a comment, a `<script>` and a `<style>` go with what they hold; a character reference becomes its character. Text
 /// without both `<` and `>` is returned as it is, as Elastic's `html_strip` does.
-pub fn html_strip(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn html_strip(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     text_map(ctx, ins, |text, out| {
         let text = String::from_utf8_lossy(text);
         if !(text.contains('<') && text.contains('>')) {
@@ -421,7 +421,7 @@ where
 // ---------------------------------------------------------------------------
 
 /// What `parseUrl` returns, named as Elastic's `uri_parts` names them.
-pub const URL_PARTS: &[(&str, Field)] = &[
+pub(crate) const URL_PARTS: &[(&str, Field)] = &[
     ("domain", Field::Leaf(DataType::Str)),
     ("fragment", Field::Leaf(DataType::Str)),
     ("path", Field::Leaf(DataType::Str)),
@@ -437,7 +437,7 @@ pub const URL_PARTS: &[(&str, Field)] = &[
 /// `parseUrl(text)`: a URL's parts, as `uri_parts` reads them. The path, query, fragment and user info are
 /// percent-decoded. A URL that is not valid RFC 3986 is still read, its parts as written, where its scheme is
 /// `http`, `https`, `ftp`, `file` or `jar`; any other does not read.
-pub fn parse_url(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn parse_url(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     object_map(ctx, ins, URL_PARTS, |text| {
         let parts = UrlParts::read(text)?;
         Some(Box::new(move |name| parts.get(name)))
@@ -445,14 +445,14 @@ pub fn parse_url(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 #[derive(Default, Debug, PartialEq)]
-pub(crate) struct UrlParts {
-    pub domain: Option<String>,
-    pub fragment: Option<String>,
-    pub path: Option<String>,
-    pub port: Option<i64>,
-    pub query: Option<String>,
-    pub scheme: Option<String>,
-    pub user_info: Option<String>,
+struct UrlParts {
+    domain: Option<String>,
+    fragment: Option<String>,
+    path: Option<String>,
+    port: Option<i64>,
+    query: Option<String>,
+    scheme: Option<String>,
+    user_info: Option<String>,
 }
 
 impl UrlParts {
@@ -477,14 +477,14 @@ impl UrlParts {
     }
 
     /// What follows the last `.` of the path's last segment, the whole path where it has no `/`.
-    pub(crate) fn extension(&self) -> Option<&str> {
+    fn extension(&self) -> Option<&str> {
         let path = self.path.as_deref()?;
         let last = &path[path.rfind('/').map_or(0, |slash| slash + 1)..];
         last.rfind('.').map(|dot| &last[dot + 1..])
     }
 
     /// The user info's name, and its password where a `:` follows the name.
-    pub(crate) fn credentials(&self) -> Option<(&str, Option<&str>)> {
+    fn credentials(&self) -> Option<(&str, Option<&str>)> {
         let info = self.user_info.as_deref()?;
         Some(match info.split_once(':') {
             Some((name, password)) => (name, Some(password)),
@@ -493,7 +493,7 @@ impl UrlParts {
     }
 
     /// RFC 3986's parts, decoded, as Java's `URI` gives them; failing that, as its `URL` does, as written.
-    pub(crate) fn read(text: &str) -> Option<UrlParts> {
+    fn read(text: &str) -> Option<UrlParts> {
         match Self::split(text, true) {
             Some(parts) => Some(parts),
             None => {
@@ -605,7 +605,7 @@ fn uri_char(c: char) -> bool {
 // ---------------------------------------------------------------------------
 
 /// What `registeredDomain` returns, named as Elastic's `registered_domain` names them.
-pub const DOMAIN_PARTS: &[(&str, Field)] = &[
+pub(crate) const DOMAIN_PARTS: &[(&str, Field)] = &[
     ("domain", Field::Leaf(DataType::Str)),
     ("registered_domain", Field::Leaf(DataType::Str)),
     ("top_level_domain", Field::Leaf(DataType::Str)),
@@ -615,7 +615,7 @@ pub const DOMAIN_PARTS: &[(&str, Field)] = &[
 /// `registeredDomain(host)`: the host, the name registered under its public suffix, that suffix, and what is left.
 /// The suffix is one the ICANN section of the Public Suffix List names; a private section's, such as
 /// `blogspot.com`, is a registered name as Elastic reads it. A host with no known suffix does not read.
-pub fn registered_domain(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn registered_domain(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     object_map(ctx, ins, DOMAIN_PARTS, |text| {
         let parts = DomainParts::read(text)?;
         Some(Box::new(move |name| {
@@ -632,15 +632,15 @@ pub fn registered_domain(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct DomainParts {
-    pub domain: String,
-    pub registered_domain: Option<String>,
-    pub top_level_domain: String,
-    pub subdomain: Option<String>,
+struct DomainParts {
+    domain: String,
+    registered_domain: Option<String>,
+    top_level_domain: String,
+    subdomain: Option<String>,
 }
 
 impl DomainParts {
-    pub(crate) fn read(fqdn: &str) -> Option<DomainParts> {
+    fn read(fqdn: &str) -> Option<DomainParts> {
         let fqdn = fqdn.trim();
         let host = fqdn.to_ascii_lowercase();
         if host.is_empty() || host.starts_with('.') {

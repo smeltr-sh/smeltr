@@ -159,7 +159,7 @@ impl Query {
 
     /// Every column the query names with `:last.`, once each, in the order first named. smeltr remembers these from
     /// the last row sent, as well as the position.
-    pub fn last_columns(&self) -> Vec<&str> {
+    pub(crate) fn last_columns(&self) -> Vec<&str> {
         let mut names: Vec<&str> = Vec::new();
         for (_, name) in &self.references {
             if !names.contains(&name.as_str()) {
@@ -284,7 +284,12 @@ fn settled(dialect: Dialect, first: &str, secs: u32) -> String {
 /// The largest value `column` holds in `query`'s result: where a source that starts now starts. A `:last.<column>`
 /// in the query binds as it would before the first row. With `settle_secs`, only settled rows count, so a late commit
 /// behind the newest row is still read.
-pub fn maximum(query: &Query, column: &str, settle_secs: Option<u32>, fields: &[(String, DataType)]) -> Statement {
+pub(crate) fn maximum(
+    query: &Query,
+    column: &str,
+    settle_secs: Option<u32>,
+    fields: &[(String, DataType)],
+) -> Statement {
     let dialect = query.dialect;
     let mut binds = Binder {
         dialect,

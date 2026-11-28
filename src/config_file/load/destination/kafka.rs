@@ -5,36 +5,36 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KafkaDestinationDto {
-    pub brokers: String,
-    pub default_topic: String,
+    pub(crate) brokers: String,
+    pub(crate) default_topic: String,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    pub(crate) tls: TlsDto,
     #[serde(default, skip_serializing_if = "FormatDto::is_default")]
-    pub format: FormatDto,
+    pub(crate) format: FormatDto,
     /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
+    pub(crate) field: Option<String>,
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-    pub compression: CompressionDto,
+    pub(crate) compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    pub(crate) compression_level: Option<u8>,
     #[serde(default, skip_serializing_if = "AcksDto::is_default")]
-    pub acks: AcksDto,
+    pub(crate) acks: AcksDto,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     /// Unset means the worker sizes it to its memory (`worker::memory::fit`), `BufferBytes::DEFAULT` without a
     /// memory figure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    pub(crate) buffer_bytes: Option<BufferBytes>,
     /// Where `format` is `"avro"`: the registry each route's record is registered with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_registry: Option<SchemaRegistryDto>,
+    pub(crate) schema_registry: Option<SchemaRegistryDto>,
     #[serde(default, flatten, skip_serializing_if = "KafkaPropsDto::is_empty")]
-    pub props: KafkaPropsDto,
+    pub(crate) props: KafkaPropsDto,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    pub(crate) unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for KafkaDestinationDto {
@@ -47,7 +47,13 @@ impl DestinationSpec for KafkaDestinationDto {
         );
         check_stream_avro(self.format, &self.schema_registry, &d.id, errors);
         check_stall_after(self.stall_after_secs, &d.id, errors);
-        check_compression_level(&d.id, self.compression, self.compression_level, true, errors);
+        check_compression_level(
+            &d.id,
+            self.compression,
+            self.compression_level,
+            Compressor::Librdkafka,
+            errors,
+        );
         validate_kafka_props(&self.props, &format!("destination {:?}", d.id), errors);
         check_kafka_tls(&self.tls, &self.props, &format!("destination {:?}", d.id), errors);
         check_kafka_buffer(self.buffer_bytes, &d.id, errors);
@@ -85,7 +91,7 @@ impl DestinationSpec for KafkaDestinationDto {
             brokers: brokers.clone(),
             props: to_kafka_props(props),
             default_topic: default_topic.clone(),
-            compression: compression.to_plan(*compression_level),
+            compression: compression.to_plan(*compression_level, Compressor::Librdkafka),
             acks: acks.to_plan(),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),

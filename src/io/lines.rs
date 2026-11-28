@@ -7,7 +7,7 @@ use parquet::file::metadata::ParquetMetaData;
 
 use super::OwnedRecord;
 use super::files::{FileEncoder, FileFormat, FileRow, Partition};
-use crate::plan::topology::{Compression, Newlines, ObjectFormat};
+use crate::plan::topology::{Compression, GzipLevel, Newlines, ObjectFormat};
 
 /// Rows as lines: NDJSON, a JSON array, one field's text, or bytes as they arrived, compressed as a stream.
 pub struct LineFormat {
@@ -51,7 +51,7 @@ impl FileFormat for LineFormat {
 
 /// A new file of lines, compressed as one stream, opening with `header`. A format that renders its own lines
 /// (`io::csv`) admits them as `FileRow::Line`.
-pub fn encoder(compression: Compression, header: &[u8]) -> Box<dyn FileEncoder> {
+pub(crate) fn encoder(compression: Compression, header: &[u8]) -> Box<dyn FileEncoder> {
     let mut encoder = LineEncoder::open(false, compression);
     encoder.put(header);
     Box::new(encoder)
@@ -156,7 +156,7 @@ impl FileEncoder for LineEncoder {
 /// its output, so draining it between writes leaves the stream whole.
 enum Stream {
     None(Vec<u8>),
-    Gzip(Box<flate2::write::GzEncoder<Vec<u8>>>),
+    Gzip(Box<super::gzip::GzipStream>),
     // Snappy and lz4 are written framed, as their command-line tools read them.
     Snappy(Box<snap::write::FrameEncoder<Vec<u8>>>),
     Lz4(Box<lz4_flex::frame::FrameEncoder<Vec<u8>>>),
@@ -167,10 +167,10 @@ impl Stream {
     fn open(compression: Compression) -> Stream {
         match compression {
             Compression::None => Stream::None(Vec::new()),
-            Compression::Gzip(level) => Stream::Gzip(Box::new(flate2::write::GzEncoder::new(
-                Vec::new(),
-                flate2::Compression::new(level.into()),
-            ))),
+            Compression::Gzip(GzipLevel::Igzip(level)) => Stream::Gzip(Box::new(super::gzip::GzipStream::new(level))),
+            Compression::Gzip(GzipLevel::Zlib(_)) => {
+                unreachable!("a lines file is gzipped by smeltr, at an igzip level")
+            }
             Compression::Snappy => Stream::Snappy(Box::new(snap::write::FrameEncoder::new(Vec::new()))),
             // A fixed block, so its buffers are the size `files::LZ4_BYTES` counts, whatever the first line's length.
             Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::with_frame_info(
@@ -186,7 +186,7 @@ impl Stream {
     fn write(&mut self, bytes: &[u8]) {
         match self {
             Stream::None(out) => out.extend_from_slice(bytes),
-            Stream::Gzip(out) => out.write_all(bytes).expect("writing to memory"),
+            Stream::Gzip(out) => out.write(bytes),
             Stream::Snappy(out) => out.write_all(bytes).expect("writing to memory"),
             Stream::Lz4(out) => out.write_all(bytes).expect("writing to memory"),
             Stream::Zstd(out) => out.write_all(bytes).expect("writing to memory"),
@@ -197,7 +197,7 @@ impl Stream {
     fn pending(&self) -> usize {
         match self {
             Stream::None(out) => out.len(),
-            Stream::Gzip(out) => out.get_ref().len(),
+            Stream::Gzip(out) => out.pending(),
             Stream::Snappy(out) => out.get_ref().len(),
             Stream::Lz4(out) => out.get_ref().len(),
             Stream::Zstd(out) => out.get_ref().len(),
@@ -209,7 +209,7 @@ impl Stream {
     fn take(&mut self) -> Vec<u8> {
         let out = match self {
             Stream::None(out) => out,
-            Stream::Gzip(out) => out.get_mut(),
+            Stream::Gzip(out) => return out.take(),
             Stream::Snappy(out) => {
                 out.flush().expect("writing to memory");
                 out.get_mut()
@@ -230,7 +230,7 @@ impl Stream {
     fn finish(self) -> Vec<u8> {
         match self {
             Stream::None(out) => out,
-            Stream::Gzip(out) => (*out).finish().expect("writing to memory"),
+            Stream::Gzip(out) => (*out).finish(),
             Stream::Snappy(out) => (*out)
                 .into_inner()
                 .map_err(|e| e.to_string())
@@ -242,7 +242,7 @@ impl Stream {
 }
 
 /// `bytes` kept to one line: `\` becomes `\\`, a newline `\n` and a carriage return `\r`.
-pub fn escape_line(bytes: &[u8]) -> Vec<u8> {
+fn escape_line(bytes: &[u8]) -> Vec<u8> {
     let mut line = Vec::with_capacity(bytes.len());
     for &b in bytes {
         match b {
@@ -256,7 +256,7 @@ pub fn escape_line(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// The bytes `escape_line` kept to `line`. A `\` before any other byte stays as it is.
-pub fn unescape_line(line: &[u8]) -> Vec<u8> {
+pub(crate) fn unescape_line(line: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(line.len());
     let mut rest = line.iter();
     while let Some(&b) = rest.next() {
@@ -280,10 +280,11 @@ mod tests {
     use std::io::Read;
 
     use super::*;
+    use crate::plan::topology::IgzipLevel;
 
     const CODECS: [Compression; 5] = [
         Compression::None,
-        Compression::Gzip(6),
+        Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
         Compression::Snappy,
         Compression::Lz4(0),
         Compression::Zstd(3),
@@ -297,8 +298,8 @@ mod tests {
             .map(|i| b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8)
             .collect();
         for codec in [
-            Compression::Gzip(1),
-            Compression::Gzip(9),
+            Compression::Gzip(GzipLevel::Igzip(IgzipLevel::new(0).unwrap())),
+            Compression::Gzip(GzipLevel::Igzip(IgzipLevel::MAX)),
             Compression::Snappy,
             Compression::Lz4(0),
         ] {
@@ -310,8 +311,12 @@ mod tests {
             for _ in 0..1024 {
                 encoder.put(&line);
             }
+            // Gzip's output is taken, so what is left is its state.
+            if let Stream::Gzip(out) = &mut encoder.stream {
+                drop(out.take());
+            }
             let output = match &encoder.stream {
-                Stream::Gzip(out) => out.get_ref().capacity(),
+                Stream::Gzip(_) => 0,
                 Stream::Snappy(out) => out.get_ref().capacity(),
                 Stream::Lz4(out) => out.get_ref().capacity(),
                 Stream::None(_) | Stream::Zstd(_) => unreachable!("not measured"),

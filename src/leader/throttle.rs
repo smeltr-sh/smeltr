@@ -17,14 +17,14 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// The window both buckets count over.
-pub const WINDOW: Duration = Duration::from_secs(60);
+const WINDOW: Duration = Duration::from_secs(60);
 
 /// Attempts per minute against one username. Enough for a person mistyping a password manager's paste; far too
 /// few to work through anything.
-pub const PER_USERNAME: usize = 5;
+const PER_USERNAME: usize = 5;
 
 /// Attempts per minute from one address. Higher, because an office behind one NAT address is several people.
-pub const PER_ADDRESS: usize = 30;
+const PER_ADDRESS: usize = 30;
 
 /// Current-password checks per minute by one already-signed-in account: a password change names the password it
 /// replaces.
@@ -32,11 +32,11 @@ pub const PER_ADDRESS: usize = 30;
 /// Its own bucket rather than the sign-in one, because sharing it would let anyone holding a session spend that
 /// account's sign-in allowance, locking the person out of signing in at all. Still bounded, because a browser
 /// somebody walked away from could otherwise guess the password at the full rate the hash permits.
-pub const PER_PASSWORD_CHECK: usize = 10;
+const PER_PASSWORD_CHECK: usize = 10;
 
 /// Keys either bucket remembers at once. Reached only under attack: it is one entry per distinct username or
 /// address tried inside a minute.
-pub const MAX_KEYS: usize = 4096;
+const MAX_KEYS: usize = 4096;
 
 /// The longest key either bucket stores, in bytes. A login keys on whatever username was sent, valid or not, so
 /// this bounds what an unauthenticated caller can make the table hold.
@@ -55,13 +55,13 @@ fn bounded(key: &str) -> &str {
 }
 
 /// A sliding window per key, bounded in keys and in what each key remembers.
-pub struct Bucket {
+struct Bucket {
     limit: usize,
     attempts: Mutex<HashMap<String, Vec<Instant>>>,
 }
 
 impl Bucket {
-    pub fn new(limit: usize) -> Bucket {
+    fn new(limit: usize) -> Bucket {
         Bucket {
             limit,
             attempts: Mutex::new(HashMap::new()),
@@ -69,7 +69,7 @@ impl Bucket {
     }
 
     /// Whether `key` may try again, counting the attempt either way.
-    pub fn allow(&self, key: &str, now: Instant) -> bool {
+    fn allow(&self, key: &str, now: Instant) -> bool {
         let key = bounded(key);
         let fresh = |t: &Instant| now.duration_since(*t) < WINDOW;
         let mut attempts = self.attempts.lock();
@@ -96,7 +96,7 @@ impl Bucket {
 
     /// How long until `key` may try again. Zero when it may now, which is what a caller reports as a retry
     /// interval rather than as a refusal.
-    pub fn retry_after(&self, key: &str, now: Instant) -> Duration {
+    fn retry_after(&self, key: &str, now: Instant) -> Duration {
         let key = bounded(key);
         let attempts = self.attempts.lock();
         let Some(recent) = attempts.get(key) else {
@@ -123,11 +123,11 @@ impl Bucket {
 
 /// Every bucket password verification is bounded by.
 pub struct LoginThrottle {
-    pub username: Bucket,
-    pub address: Bucket,
+    username: Bucket,
+    address: Bucket,
     /// Keyed by account id: a password change checking the current password, which is verification but not a
     /// sign-in.
-    pub password_check: Bucket,
+    password_check: Bucket,
 }
 
 impl Default for LoginThrottle {

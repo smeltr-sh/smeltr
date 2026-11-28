@@ -23,11 +23,11 @@ use std::time::{Duration, Instant};
 use super::auth;
 
 /// How long a session survives with nothing but automatic traffic on it, until an operator says otherwise.
-pub const DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
+const DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
 
 /// How long a session survives at all, however busy, until an operator says otherwise. Re-authenticating once a
 /// working day is the point.
-pub const DEFAULT_ABSOLUTE: Duration = Duration::from_secs(12 * 60 * 60);
+const DEFAULT_ABSOLUTE: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// The shortest either deadline may be set to.
 ///
@@ -95,8 +95,8 @@ impl Lifetimes {
 
     /// The key each deadline is stored under. Seconds, because a unit in the value would be a second thing to
     /// parse and a second thing to get wrong; the form converts.
-    pub const IDLE_KEY: &'static str = "session.idle_seconds";
-    pub const ABSOLUTE_KEY: &'static str = "session.absolute_seconds";
+    pub(crate) const IDLE_KEY: &'static str = "session.idle_seconds";
+    pub(crate) const ABSOLUTE_KEY: &'static str = "session.absolute_seconds";
 
     /// What the store holds, falling back to the defaults for whatever it does not.
     ///
@@ -140,7 +140,7 @@ impl Lifetimes {
 
 /// The most often an activity report moves the idle deadline. The GUI sends one per interaction; this is what
 /// stops a person holding a key down from spending a request per keystroke.
-pub const ACTIVITY_GRANULARITY: Duration = Duration::from_secs(60);
+const ACTIVITY_GRANULARITY: Duration = Duration::from_secs(60);
 
 // The floor has to stay above the granularity, and the two are declared apart, so the relationship is asserted
 // where changing either one would break it rather than left to be noticed.
@@ -148,10 +148,10 @@ const _: () = assert!(MIN_LIFETIME.as_secs() > ACTIVITY_GRANULARITY.as_secs());
 
 /// Sessions one account may hold at once. A person has a laptop, a phone and a spare tab; the sixth sign-in ends
 /// the oldest, which is theirs to notice rather than an attacker's to exploit.
-pub const MAX_PER_USER: usize = 5;
+const MAX_PER_USER: usize = 5;
 
 /// Sessions the process holds at once, across everyone. A ceiling on what an authenticated flood can allocate.
-pub const MAX_TOTAL: usize = 10_000;
+const MAX_TOTAL: usize = 10_000;
 
 /// What the cookie is worth, resolved. Copied out under the lock so no caller holds it across a store call.
 #[derive(Clone, Debug)]

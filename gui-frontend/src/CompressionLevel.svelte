@@ -5,21 +5,21 @@
 -->
 <script lang="ts">
   import Field from './Field.svelte';
-  import { compressionLevels, type Compression } from './api';
+  import { compressionLevels, type Compression, type Compressor } from './api';
 
   let {
     value,
     codec,
-    kafka = false,
+    by = 'smeltr',
   }: {
     value: { compressionLevel?: number };
     /** The destination's codec; an unset codec is already resolved to the default one. */
     codec: Compression;
-    /** Whether librdkafka compresses for the destination; it caps the levels. */
-    kafka?: boolean;
+    /** Whose code compresses the destination's output, which decides the levels its codec takes. */
+    by?: Compressor;
   } = $props();
 
-  const levels = $derived(compressionLevels(codec, kafka));
+  const levels = $derived(compressionLevels(codec, by));
 </script>
 
 {#if levels}

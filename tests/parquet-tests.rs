@@ -8,6 +8,7 @@ use arrow_array::{Array, RecordBatch, cast::AsArray, types};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use smeltr::io::parquet::{Chunk, Columns, write};
 use smeltr::plan::topology::Compression;
+use smeltr::plan::topology::GzipLevel;
 
 use harness::{code, compile_ok, cut};
 
@@ -118,7 +119,7 @@ fn every_codec_is_readable() {
     let c = chunk("s: str;", &[r#"{"s":"a"}"#; 3]);
     for codec in [
         Compression::None,
-        Compression::Gzip(6),
+        Compression::Gzip(GzipLevel::Zlib(6)),
         Compression::Snappy,
         Compression::Lz4(0),
         Compression::Zstd(3),
