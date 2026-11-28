@@ -288,6 +288,7 @@ pub const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
         "queued.max.messages.kbytes",
         "set from this source's `fetchBytes` field",
     ),
+    ("queued.min.messages", "set from this source's `fetchBytes` field"),
     // The producer holds half of that field, and the egress queue in front of it the other half.
     (
         "queue.buffering.max.kbytes",

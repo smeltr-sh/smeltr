@@ -2628,6 +2628,7 @@ mod tests {
             "partition.assignment.strategy",
             "queue.buffering.max.kbytes",
             "queued.max.messages.kbytes",
+            "queued.min.messages",
             "max.poll.interval.ms",
             "enable.idempotence",
             "statistics.interval.ms",
