@@ -40,8 +40,8 @@ use crate::plan::topology::{HeldSecrets, KafkaSourceConfig, StartPosition};
 
 use super::{
     CLIENT_ID, FETCH_EXPANSION, FETCHED_RECORD_BYTES, LAG_QUERY_TIMEOUT, LAG_SAMPLE_INTERVAL, MAX_POLL_INTERVAL,
-    PLACE_TIMEOUT, STATS_INTERVAL, apply_client_config, fetch_request_bytes, headers_of, named_brokers,
-    queue_payload_bytes, queue_records, topic_pattern,
+    PLACE_TIMEOUT, STATS_INTERVAL, apply_client_config, fetch_request_bytes, headers_of, least_fetch_request_bytes,
+    named_brokers, queue_payload_bytes, queue_records, topic_pattern,
 };
 
 /// How long the client thread waits in one poll: how soon it sees a stop, a subscription to send, or a reader that
@@ -260,7 +260,11 @@ fn instance_id(member: &str, place: usize) -> String {
 /// The configuration every source reading `config` through one client shares: what makes two sources' clients the
 /// same client.
 fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<ClientConfig, IoError> {
-    let request = fetch_request_bytes(config.fetch_bytes, named_brokers(&config.brokers));
+    let request = fetch_request_bytes(
+        config.fetch_bytes,
+        named_brokers(&config.brokers),
+        least_fetch_request_bytes(&config.props),
+    );
     let mut client_config = ClientConfig::new();
     client_config
         .set("bootstrap.servers", &config.brokers)

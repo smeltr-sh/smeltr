@@ -85,7 +85,11 @@ pub(super) fn source_parts<'a>(sources: impl IntoIterator<Item = &'a SourceConfi
             parts.push(Part::source(
                 source,
                 "kafka client",
-                crate::io::kafka::consumer_ceiling(k.fetch_bytes, crate::io::kafka::named_brokers(&k.brokers)),
+                crate::io::kafka::consumer_ceiling(
+                    k.fetch_bytes,
+                    crate::io::kafka::named_brokers(&k.brokers),
+                    crate::io::kafka::least_fetch_request_bytes(&k.props),
+                ),
             ));
         }
     }
@@ -322,7 +326,10 @@ pub(super) fn fit(
     let fixed = fixed
         + clients
             .iter()
-            .map(|k| crate::io::kafka::consumer_floor_bytes(crate::io::kafka::named_brokers(&k.brokers)) as u64)
+            .map(|k| {
+                let least = crate::io::kafka::least_fetch_request_bytes(&k.props);
+                crate::io::kafka::consumer_floor_bytes(crate::io::kafka::named_brokers(&k.brokers), least) as u64
+            })
             .sum::<u64>();
     let left = (memory as u64).saturating_sub(fixed) as usize;
 
@@ -602,7 +609,7 @@ mod tests {
 
     /// What the bundle fixes: the process, the source's client and inbox, and the stated buffer.
     fn fixed() -> usize {
-        2 * BASELINE_BYTES + 64 * MIB + crate::io::kafka::consumer_ceiling(64 * MIB, 1) + 8 * MIB
+        2 * BASELINE_BYTES + 64 * MIB + crate::io::kafka::consumer_ceiling(64 * MIB, 1, 1_000_000) + 8 * MIB
     }
 
     #[test]
@@ -696,7 +703,8 @@ mod tests {
         .expect("the bundle loads")
         .topology;
         let delivered = every(&topology);
-        let left = 1024 * MIB - 2 * BASELINE_BYTES - 4 * MIB - SENDERS - crate::io::kafka::consumer_floor_bytes(2);
+        let left =
+            1024 * MIB - 2 * BASELINE_BYTES - 4 * MIB - SENDERS - crate::io::kafka::consumer_floor_bytes(2, 1_000_000);
         let fitted = fit(&mut topology, &delivered, 0, 1024 * MIB, 8, None);
         let SourceKind::Kafka(k) = &topology.sources[0].kind else {
             panic!("a Kafka source")
