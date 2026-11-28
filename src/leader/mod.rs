@@ -3931,7 +3931,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// `app` answering in zstd or gzip to a client that takes either, zstd where it takes both, and taking a request in
-/// zstd on every route, as a worker sends one. A route's body limit holds the body as inflated, so a small body
+/// zstd, as a worker sends one, or gzip, as the GUI does, on every route. A route's body limit holds the body as inflated, so a small body
 /// cannot become a large one. A zip is already compressed, so it is sent as it is.
 pub fn compressed(app: Router) -> Router {
     use tower_http::compression::{DefaultPredicate, Predicate, predicate::NotForContentType};
