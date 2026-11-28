@@ -64,8 +64,21 @@ impl GzipStream {
     }
 }
 
+std::thread_local! {
+    /// The state [`whole`] compresses with, kept by each thread that compresses: setting one up costs more than
+    /// compressing a small body, and a thread compresses one body at a time.
+    static WHOLE: std::cell::RefCell<Option<Deflater>> = const { std::cell::RefCell::new(None) };
+}
+
 fn whole(data: &[u8], level: u8, wrap: Wrap) -> Vec<u8> {
-    let mut deflater = Deflater::new(level, wrap, Mode::Whole);
+    WHOLE.with_borrow_mut(|kept| {
+        let deflater = kept.get_or_insert_with(|| Deflater::sized(isal::ISAL_DEF_LVL3_DEFAULT));
+        deflater.start(level, wrap, Mode::Whole);
+        compress_whole(deflater, data)
+    })
+}
+
+fn compress_whole(deflater: &mut Deflater, data: &[u8]) -> Vec<u8> {
     // igzip's stateless output is at most the input, plus 5 bytes of stored-block header for each 64 KiB, plus the
     // stream's own header and trailer; 1 in 1024 of the input covers the block headers with room to spare.
     let bound = data.len() + data.len() / 1024 + isal::ISAL_DEF_MAX_HDR_SIZE as usize + 64;
@@ -76,12 +89,15 @@ fn whole(data: &[u8], level: u8, wrap: Wrap) -> Vec<u8> {
     stream.end_of_stream = 1;
     stream.next_out = out.as_mut_ptr();
     stream.avail_out = u32::try_from(bound).expect("a body under 4 GiB");
-    // SAFETY: `stream` was initialized by `isal_deflate_stateless_init`, its level buffer is the size its level asks,
-    // `next_in` reads `avail_in` bytes of `data`, and `next_out` writes at most `avail_out` bytes of `out`'s capacity.
+    // SAFETY: `stream` was initialized by `isal_deflate_stateless_init`, its level buffer is at least the size its
+    // level asks, `next_in` reads `avail_in` bytes of `data`, and `next_out` writes at most `avail_out` bytes of
+    // `out`'s capacity.
     let status = unsafe { isal::isal_deflate_stateless(stream) };
     assert_eq!(status, COMP_OK, "igzip into its bound");
     // SAFETY: igzip wrote the first `bound - avail_out` bytes of `out`'s capacity.
     unsafe { out.set_len(bound - stream.avail_out as usize) };
+    stream.next_in = std::ptr::null_mut();
+    stream.next_out = std::ptr::null_mut();
     // The output is held until it is delivered, retries included, so it keeps only what it holds, not the whole bound.
     out.shrink_to_fit();
     out
@@ -106,52 +122,73 @@ enum Mode {
     Stream,
 }
 
+/// The working memory igzip asks for at `level`.
+fn level_buf_size(level: u8) -> u32 {
+    match level {
+        0 => isal::ISAL_DEF_LVL0_DEFAULT,
+        1 => isal::ISAL_DEF_LVL1_DEFAULT,
+        2 => isal::ISAL_DEF_LVL2_DEFAULT,
+        3 => isal::ISAL_DEF_LVL3_DEFAULT,
+        _ => panic!("a gzip level the loader checked, not {level}"),
+    }
+}
+
 /// igzip's state for one stream, and the working memory its level asks for.
 struct Deflater {
     // Boxed: igzip keeps pointers into the stream's own buffers, and the stream is 80 KiB.
     stream: Box<isal::isal_zstream>,
-    _level_buf: Vec<u8>,
+    level_buf: Vec<u8>,
 }
 
-// SAFETY: the stream's pointers point only into its own box and into `_level_buf`, which move with it, and into the
-// caller's buffers only for the length of one call.
+// SAFETY: the stream's pointers point only into its own box and into `level_buf`'s heap, which move with it, and
+// into the caller's buffers only for the length of one call.
 unsafe impl Send for Deflater {}
 
 impl Deflater {
     fn new(level: u8, wrap: Wrap, mode: Mode) -> Deflater {
-        let buf_size = match level {
-            0 => isal::ISAL_DEF_LVL0_DEFAULT,
-            1 => isal::ISAL_DEF_LVL1_DEFAULT,
-            2 => isal::ISAL_DEF_LVL2_DEFAULT,
-            3 => isal::ISAL_DEF_LVL3_DEFAULT,
-            _ => panic!("a gzip level the loader checked, not {level}"),
-        };
+        let mut deflater = Deflater::sized(level_buf_size(level));
+        deflater.start(level, wrap, mode);
+        deflater
+    }
+
+    /// A deflater whose level buffer is `level_buf_size` bytes, for [`Deflater::start`] to begin a stream with.
+    fn sized(level_buf_size: u32) -> Deflater {
         // SAFETY: an `isal_zstream` is integers, pointers and arrays of them, and all zeroes is a value of each;
-        // the init call below sets the ones igzip reads.
-        let mut stream: Box<isal::isal_zstream> = Box::new(unsafe { std::mem::zeroed() });
+        // `start` sets the ones igzip reads.
+        let stream = unsafe { Box::<isal::isal_zstream>::new_zeroed().assume_init() };
+        Deflater {
+            stream,
+            level_buf: vec![0; level_buf_size as usize],
+        }
+    }
+
+    /// Begins a new stream at `level`. The level buffer must be at least the size `level` asks.
+    fn start(&mut self, level: u8, wrap: Wrap, mode: Mode) {
+        let size = level_buf_size(level);
+        assert!(
+            self.level_buf.len() >= size as usize,
+            "a level buffer for level {level}"
+        );
+        let stream = &mut *self.stream;
         // SAFETY: `stream` is a whole, writable `isal_zstream`.
         unsafe {
             match mode {
-                Mode::Whole => isal::isal_deflate_stateless_init(&mut *stream),
-                Mode::Stream => isal::isal_deflate_init(&mut *stream),
+                Mode::Whole => isal::isal_deflate_stateless_init(stream),
+                Mode::Stream => isal::isal_deflate_init(stream),
             }
         }
-        let mut level_buf = vec![0; buf_size as usize];
         stream.level = level.into();
-        stream.level_buf = if level_buf.is_empty() {
+        stream.level_buf = if size == 0 {
             std::ptr::null_mut()
         } else {
-            level_buf.as_mut_ptr()
+            self.level_buf.as_mut_ptr()
         };
-        stream.level_buf_size = buf_size;
+        // Fits: the buffer was sized from a `u32`, in `sized`.
+        stream.level_buf_size = if size == 0 { 0 } else { self.level_buf.len() as u32 };
         stream.gzip_flag = match wrap {
             Wrap::Gzip => GZIP,
             Wrap::Raw => RAW,
         };
-        Deflater {
-            stream,
-            _level_buf: level_buf,
-        }
     }
 
     /// Compresses `input` onto `out`, and ends the stream when `end`.
@@ -227,6 +264,19 @@ mod tests {
             for level in 0..=3 {
                 assert_eq!(gunzip(&gzip(&data, level)), data, "level {level}");
             }
+        }
+    }
+
+    #[test]
+    fn a_thread_compressing_at_one_level_then_another_starts_each_body_afresh() {
+        let data = lines();
+        for level in [3, 0, 2, 1, 3] {
+            assert_eq!(gunzip(&gzip(&data, level)), data, "level {level}");
+            let mut plain = Vec::new();
+            flate2::read::DeflateDecoder::new(&deflate(&data, level)[..])
+                .read_to_end(&mut plain)
+                .unwrap();
+            assert_eq!(plain, data, "deflate at level {level}");
         }
     }
 
