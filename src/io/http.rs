@@ -162,9 +162,6 @@ pub fn percent_encode(value: &str) -> String {
         .collect()
 }
 
-/// How two items compare in the order a service must receive them. See [`Protocol::order`].
-pub type Order<I> = fn(&I, &I) -> std::cmp::Ordering;
-
 /// What a service's requests and answers look like. `Clone` because every pool sender holds its own.
 pub trait Protocol: Clone + Send + 'static {
     /// What one row becomes, kept until the service confirms it: a retry is rebuilt from the items that failed.
@@ -184,14 +181,6 @@ pub trait Protocol: Clone + Send + 'static {
     /// Which body `item` can share: items of different parts never share a request, though they go to one route.
     fn part(&self, _item: &Self::Item) -> usize {
         0
-    }
-
-    /// The order a batch's items must reach the service in, when it has one. `Some` holds a batch's items until all
-    /// are admitted and sorts each group by it before cutting requests, so no request carries an item that sorts
-    /// before one already sent. A pool sends a batch's requests side by side, so a destination whose protocol has an
-    /// order has none. `None` cuts a request as soon as it fills.
-    fn order(&self) -> Option<Order<Self::Item>> {
-        None
     }
 
     /// The item for `row`, or why the service could never take it.
@@ -329,10 +318,6 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         if senders.is_empty() {
             return self;
         }
-        debug_assert!(
-            self.protocol.order().is_none(),
-            "a pool sends a batch's requests out of order"
-        );
         self.pool = Some(Pool::new(
             senders
                 .into_iter()
@@ -348,30 +333,6 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
             start,
         ));
         self
-    }
-
-    /// Sorts `group` by `order`, then cuts it into requests within `max_request_bytes`: all but the last go to
-    /// `full`, the last stays in `group`.
-    fn cut_ordered(&self, group: &mut Group<P::Item>, order: Order<P::Item>, full: &mut Vec<Group<P::Item>>) {
-        let mut sorted: Vec<(P::Item, usize)> = std::mem::take(&mut group.pending)
-            .into_iter()
-            .zip(std::mem::take(&mut group.sent_index))
-            .collect();
-        sorted.sort_by(|a, b| order(&a.0, &b.0));
-        group.bytes = 0;
-        for (item, index) in sorted {
-            let size = self.sized(group, &item);
-            let size = match self.overflows(group, size) {
-                true => {
-                    full.push(group.cut());
-                    self.protocol.size(&item, None)
-                }
-                false => size,
-            };
-            group.bytes += size;
-            group.pending.push(item);
-            group.sent_index.push(index);
-        }
     }
 
     /// What `item` adds to `group` as its next item.
@@ -432,8 +393,8 @@ enum OnThrottle {
     /// Ends the round with them undelivered, so egress sends them again after the wait the service asked for and the
     /// pacing model hears the throttle within the round trip that drew it, as TCP hears a loss.
     HandBack,
-    /// Waits the throttle out and sends them again within the round: a batch delivered in order cannot have rows go
-    /// back behind those after them.
+    /// Waits the throttle out and sends them again within the round: a destination with no pool sends on egress's own
+    /// thread and the batch completes there, so no batch is in flight to hand them back to.
     WaitOut,
 }
 
@@ -673,7 +634,6 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
     /// to a sender of its own, and the batch completes when the last is answered; without a pool, each is posted here.
     fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut refused = Vec::new();
-        let order = self.protocol.order();
         let mut groups: Vec<Group<P::Item>> = Vec::new();
         let mut full: Vec<Group<P::Item>> = Vec::new();
         // Each route's groups, by part, so neither a batch spanning many routes nor a part per row is searched once
@@ -712,7 +672,7 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
                 }
             };
             let size = self.sized(&groups[at], &item);
-            let size = match order.is_none() && self.overflows(&groups[at], size) {
+            let size = match self.overflows(&groups[at], size) {
                 true => {
                     full.push(groups[at].cut());
                     self.protocol.size(&item, None)
@@ -723,11 +683,6 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
             group.bytes += size;
             group.sent_index.push(i);
             group.pending.push(item);
-        }
-        if let Some(order) = order {
-            for group in &mut groups {
-                self.cut_ordered(group, order, &mut full);
-            }
         }
         full.extend(groups.into_iter().filter(|g| !g.pending.is_empty()));
         // A batch with nothing to send is done: no answer will come for it.

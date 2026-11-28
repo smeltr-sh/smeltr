@@ -152,6 +152,7 @@ fn config(url: &str) -> PrometheusDestinationConfig {
         headers: Vec::new(),
         credentials: Vec::new(),
         tls: None,
+        in_flight: 4,
         max_request_bytes: 1024 * 1024,
         buffer_bytes: 1024 * 1024,
         stall_after: Duration::from_secs(5),
@@ -260,28 +261,6 @@ fn a_store_asking_to_wait_gets_the_request_again() {
         matches!(throttled.value, smeltr::metrics::MetricValue::FloatCounter(s) if s >= 0.6),
         "{throttled:?}"
     );
-}
-
-/// A batch spanning several requests goes oldest first across them, so no request carries a sample older than one
-/// already sent, and a refusal still names its own row.
-#[test]
-fn a_batch_spanning_requests_goes_oldest_first() {
-    let (d, sent) = scripted(&[204, 400, 204]);
-    let mut d = d.with_max_request_bytes(1);
-    let rows = vec![
-        sample("x", "a", 3.0, "2026-10-11T18:00:03.000000Z"),
-        sample("x", "a", 2.0, "2026-10-11T18:00:02.000000Z"),
-        sample("x", "a", 1.0, "2026-10-11T18:00:01.000000Z"),
-    ];
-    let refused = deliver(&mut d, rows).unwrap();
-    let values: Vec<f64> = (sent.lock().iter())
-        .flat_map(|body| decoded(body).timeseries)
-        .flat_map(|series| series.samples)
-        .map(|sample| sample.value)
-        .collect();
-    assert_eq!(values, [1.0, 2.0, 3.0]);
-    assert_eq!(refused.len(), 1);
-    assert_eq!(refused[0].doc, 1);
 }
 
 /// A row that is no sample is refused at the destination, and the rest are sent.
@@ -614,7 +593,7 @@ fn each_family_s_metadata_is_sent_once() {
     assert_eq!(refused[0].doc, 3);
     assert!(refused[0].reason.contains("\"table\""), "{}", refused[0].reason);
     let request = decoded(&sent.lock()[0]);
-    // The metadata row goes first in the batch, so its metadata is the family's.
+    // The metadata row says the family's metadata over the point's description before it.
     assert_eq!(
         request.metadata,
         [
