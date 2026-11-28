@@ -1314,12 +1314,12 @@ impl SqlFieldDto {
         kind.declaring(SqlFieldDto::record(fields)?)
     }
 
-    /// `kind`'s meta, declaring `fields` as its open record (`SourceMeta::declaring_open`): an Avro read's.
+    /// `kind`'s meta, declaring `fields` as its open record (`SourceMeta::decoding_avro`): an Avro read's.
     pub(crate) fn open_meta(
         kind: crate::plan::topology::SourceMeta,
         fields: &[SqlFieldDto],
     ) -> Result<crate::plan::topology::SourceMeta, String> {
-        kind.declaring_open(SqlFieldDto::record(fields)?)
+        kind.decoding_avro(SqlFieldDto::record(fields)?)
     }
 
     fn record(fields: &[SqlFieldDto]) -> Result<Vec<(String, crate::core::column::DataType)>, String> {

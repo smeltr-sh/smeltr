@@ -7,7 +7,7 @@ use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray, 
 use arrow_schema::{DataType as Arrow, Field};
 
 use super::*;
-use crate::io::RecordChunkBuilder;
+use crate::io::{RecordChunk, SourceRecord};
 use crate::plan::topology::{SecretRef, SourceMeta};
 
 /// The integration tests' fake registry.
@@ -31,21 +31,25 @@ fn reader(url: &str, fields: &[(&str, DataType)]) -> (AvroReader, SourceMeta) {
     let config = AvroRead {
         registry: Some(registry(url)),
         meta: meta.clone(),
+        writers: Default::default(),
     };
     (AvroReader::new(&config, None, &HeldSecrets::default()).unwrap(), meta)
 }
 
-/// `payloads` as one poll of a Kafka source.
-fn poll(payloads: &[Vec<u8>]) -> Vec<SourceRecord> {
-    let mut out = RecordChunkBuilder::new();
-    for (i, p) in payloads.iter().enumerate() {
-        out.push_stamped(p, i as i64, 0, Arc::from("t"), None, Some(7));
-    }
-    out.finish()
+/// `payloads` decoded into `meta`'s record with the schemas `reader` asked for, as transform decodes them.
+fn read(reader: &AvroReader, meta: &SourceMeta, payloads: &[Vec<u8>]) -> Read {
+    let mut pool = crate::core::buffer::BufferPool::new();
+    decode(
+        meta.record(),
+        &reader.writers,
+        std::iter::empty(),
+        payloads.iter().map(Vec::as_slice),
+        &mut pool,
+    )
 }
 
 /// `value` written with `schema`, framed as `id`.
-fn written(id: u32, schema: &Schema, value: Avro) -> Vec<u8> {
+fn written(id: SchemaId, schema: &Schema, value: Avro) -> Vec<u8> {
     let bytes = GenericDatumWriter::builder(schema)
         .build()
         .unwrap()
@@ -54,16 +58,28 @@ fn written(id: u32, schema: &Schema, value: Avro) -> Vec<u8> {
     frame(id, &bytes)
 }
 
-fn rows(meta: &SourceMeta, records: &[SourceRecord]) -> Vec<serde_json::Value> {
-    records
-        .iter()
-        .map(|r| serde_json::from_slice(&meta.record_json(r, "")).unwrap())
+/// Each record `read` decoded, as the document a pipeline with no steps writes for it.
+fn rows(meta: &SourceMeta, read: Read) -> Vec<serde_json::Value> {
+    let chunk = Arc::new(RecordChunk::new(read.columns, read.failed));
+    (0..chunk.len() as u32)
+        .map(|row| SourceRecord {
+            chunk: chunk.clone(),
+            row,
+            offset: 0,
+            partition: 0,
+            topic: Arc::from("t"),
+            headers: None,
+        })
+        .map(|r| serde_json::from_slice(&meta.record_json(&r)).unwrap())
         .collect()
 }
 
 #[test]
 fn a_framed_payload_is_its_id_and_its_value() {
-    assert_eq!(unframe(&frame(258, b"abc")), Ok((258, &b"abc"[..])));
+    assert_eq!(
+        unframe(&frame(SchemaId::new(258), b"abc")),
+        Ok((SchemaId::new(258), &b"abc"[..]))
+    );
     assert!(unframe(b"").unwrap_err().contains("empty"));
     assert!(unframe(b"\x01\0\0\0\x01x").unwrap_err().contains("0x01"));
     assert!(unframe(b"\0\0\0").unwrap_err().contains("3 bytes"));
@@ -159,11 +175,8 @@ fn a_payload_reads_into_the_declared_fields_by_name() {
     assert_eq!(reader.unasked(&payload), Some(id));
     reader.ask(id).unwrap();
     assert_eq!(reader.unasked(&payload), None);
-    let read = reader.read(poll(&[payload]));
-    assert_eq!(read[0].chunk.time(0), Some(7), "the source's stamp is kept");
-    assert_eq!(read[0].offset, 0);
     assert_eq!(
-        rows(&meta, &read),
+        rows(&meta, read(&reader, &meta, &[payload])),
         vec![serde_json::json!({
             "id": 5,
             "home": { "city": "Oslo" },
@@ -187,7 +200,7 @@ fn a_payload_that_does_not_read_is_a_row_of_nulls_with_the_reason() {
     let (mut reader, meta) = reader(&url, &[("id", DataType::I64)]);
     reader.ask(id).unwrap();
     reader.ask(not_a_record).unwrap();
-    reader.ask(99).unwrap();
+    reader.ask(SchemaId::new(99)).unwrap();
     let parsed = Schema::parse_str(schema).unwrap();
     let payloads = [
         written(
@@ -196,29 +209,21 @@ fn a_payload_that_does_not_read_is_a_row_of_nulls_with_the_reason() {
             Avro::Record(vec![("id".into(), Avro::String("seven".into()))]),
         ),
         b"{\"id\":1}".to_vec(),
-        frame(99, b"\x02"),
+        frame(SchemaId::new(99), b"\x02"),
         written(not_a_record, &Schema::Long, Avro::Long(1)),
         frame(id, b"\x02a\x00"),
         frame(id, b"\x7f"),
     ];
-    let read = reader.read(poll(&payloads));
-    let chunk = &read[0].chunk;
-    assert_eq!(chunk.unread(0), None);
-    assert_eq!(
-        chunk.failed(),
-        &[(0, 0, "seven".to_string())][..],
-        "not its field's type"
-    );
-    assert!(chunk.unread(1).unwrap().contains("0x7b"));
-    assert!(
-        chunk.unread(2).unwrap().contains("Schema not found"),
-        "{:?}",
-        chunk.unread(2)
-    );
-    assert!(chunk.unread(3).unwrap().contains("no record"));
-    assert!(chunk.unread(4).unwrap().contains("1 bytes after it"));
-    assert!(chunk.unread(5).unwrap().contains("does not read"));
-    assert_eq!(rows(&meta, &read)[1], serde_json::json!({}));
+    let read = read(&reader, &meta, &payloads);
+    let unread = |row: u32| read.unread.iter().find(|(r, _)| *r == row).map(|(_, why)| why.as_str());
+    assert_eq!(unread(0), None);
+    assert_eq!(read.failed, [(0, 0, "seven".to_string())], "not its field's type");
+    assert!(unread(1).unwrap().contains("0x7b"));
+    assert!(unread(2).unwrap().contains("Schema not found"), "{:?}", unread(2));
+    assert!(unread(3).unwrap().contains("no record"));
+    assert!(unread(4).unwrap().contains("1 bytes after it"));
+    assert!(unread(5).unwrap().contains("does not read"));
+    assert_eq!(rows(&meta, read)[1], serde_json::json!({}));
 }
 
 #[test]
@@ -300,9 +305,9 @@ fn a_row_written_reads_back_as_it_was() {
             ("who.name", DataType::Str),
         ],
     );
-    reader.ask(1).unwrap();
+    reader.ask(SchemaId::new(1)).unwrap();
     assert_eq!(
-        rows(&meta, &reader.read(poll(&payloads))),
+        rows(&meta, read(&reader, &meta, &payloads)),
         vec![
             serde_json::json!({ "id": 1, "ok": true, "who": { "name": "ann" } }),
             serde_json::json!({}),
@@ -369,6 +374,7 @@ fn an_open_record_keeps_the_top_level_fields_no_field_claims() {
     let config = AvroRead {
         registry: Some(registry(&url)),
         meta: meta.clone(),
+        writers: Default::default(),
     };
     let mut reader = AvroReader::new(&config, None, &HeldSecrets::default()).unwrap();
     let value = Avro::Record(vec![
@@ -387,7 +393,7 @@ fn an_open_record_keeps_the_top_level_fields_no_field_claims() {
     reader.ask(id).unwrap();
     // `home` is declared, so closed below: its `zip` is no one's. A null field is no field.
     assert_eq!(
-        rows(&meta, &reader.read(poll(&[payload]))),
+        rows(&meta, read(&reader, &meta, &[payload])),
         vec![serde_json::json!({ "id": 1, "home": { "city": "Oslo" }, "extra": "kept" })]
     );
 }
@@ -443,10 +449,10 @@ fn a_declared_object_reads_its_leaves_and_an_open_one_keeps_its_other_keys() {
     ]);
     let payload = written(id, &Schema::parse_str(schema).unwrap(), value);
     reader.ask(id).unwrap();
-    let read = reader.read(poll(&[payload]));
-    assert_eq!(read[0].chunk.failed(), []);
+    let read = read(&reader, &meta, &[payload]);
+    assert_eq!(read.failed, []);
     assert_eq!(
-        rows(&meta, &read),
+        rows(&meta, read),
         vec![serde_json::json!({
             "id": 1,
             "home": { "city": "Oslo", "zip": "0150" },
@@ -562,7 +568,7 @@ fn a_reference_that_references_reads() {
     let payload = frame(id, &bytes);
     reader.ask(id).unwrap();
     assert_eq!(
-        rows(&meta, &reader.read(poll(&[payload]))),
+        rows(&meta, read(&reader, &meta, &[payload])),
         vec![serde_json::json!({ "home": { "city": { "name": "Oslo" } } })]
     );
 }
@@ -644,14 +650,14 @@ fn a_nest_is_followed_down_to_a_depth() {
 }
 
 #[test]
-fn a_read_carries_the_schemas_it_read_with_newest_last() {
+fn a_read_names_the_schema_its_last_payload_that_read_was_read_with() {
     let fake = Fake::default();
     let a = r#"{"type":"record","name":"A","fields":[{"name":"id","type":"long"}]}"#;
     let b = r#"{"type":"record","name":"B","fields":[{"name":"id","type":"long"},{"name":"n","type":"string"}]}"#;
     let ida = fake.hold("a", a, serde_json::json!([]));
     let idb = fake.hold("b", b, serde_json::json!([]));
     let url = fake.serve();
-    let (mut reader, _) = reader(&url, &[("id", DataType::I64)]);
+    let (mut reader, meta) = reader(&url, &[("id", DataType::I64)]);
     reader.ask(ida).unwrap();
     reader.ask(idb).unwrap();
     let (sa, sb) = (Schema::parse_str(a).unwrap(), Schema::parse_str(b).unwrap());
@@ -664,9 +670,21 @@ fn a_read_carries_the_schemas_it_read_with_newest_last() {
             ("n".into(), Avro::String("x".into())),
         ]),
     );
-    let read = reader.read(poll(&[pa.clone(), pb, pa, b"not avro".to_vec()]));
-    let names: Vec<String> = (read[0].chunk.avro_writers().iter())
-        .map(|w| fields_of(w).into_iter().map(|f| f.name).collect::<Vec<_>>().join(","))
-        .collect();
-    assert_eq!(names, ["id,n", "id"], "a row that does not read names no schema");
+    let names = |payloads: &[Vec<u8>]| {
+        let read = read(&reader, &meta, payloads);
+        let mut pool = crate::core::buffer::BufferPool::new();
+        read.columns.into_iter().for_each(|c| c.reclaim(&mut pool));
+        let newest = read.newest.unwrap();
+        fields_of(&newest)
+            .into_iter()
+            .map(|f| f.name)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert_eq!(names(&[pa.clone(), pb.clone()]), "id,n");
+    assert_eq!(
+        names(&[pb, pa, b"not avro".to_vec()]),
+        "id",
+        "a row that does not read names no schema"
+    );
 }

@@ -74,6 +74,7 @@ fn transform_with(
         SourceId::new(0),
         Some("orders".to_string()),
         topology.meta_for(SourceId::new(0)),
+        None,
         Handoff::watched(ready.clone(), 8_000_000),
         vec![DestId::new(0)],
         tx,

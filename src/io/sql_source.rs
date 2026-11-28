@@ -1684,8 +1684,7 @@ mod tests {
             .declaring(s.config.fields.to_vec())
             .unwrap();
         let records = poll(&mut s, 10);
-        let row =
-            |at: usize| -> serde_json::Value { serde_json::from_slice(&meta.record_json(&records[at], "")).unwrap() };
+        let row = |at: usize| -> serde_json::Value { serde_json::from_slice(&meta.record_json(&records[at])).unwrap() };
         assert_eq!(
             row(0),
             serde_json::json!({"id": 1, "owner": {"name": "ann", "age": 4, "home": {"city": "Oslo"}}})

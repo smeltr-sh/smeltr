@@ -344,7 +344,7 @@ fn live_an_avro_object_lands_and_is_read_back() {
     }
     let meta = kind.meta();
     let rows: Vec<serde_json::Value> = (records.iter())
-        .map(|r| serde_json::from_slice(&meta.record_json(r, "")).unwrap())
+        .map(|r| serde_json::from_slice(&meta.record_json(r)).unwrap())
         .collect();
     assert_eq!(
         rows,

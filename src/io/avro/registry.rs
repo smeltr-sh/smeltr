@@ -77,7 +77,7 @@ struct Answered {
 
 #[derive(Deserialize)]
 struct Registered {
-    id: u32,
+    id: super::SchemaId,
 }
 
 pub(crate) struct Registry {
@@ -109,7 +109,7 @@ impl Registry {
     }
 
     /// The schema registered under `id`.
-    pub(crate) fn schema(&self, id: u32) -> Result<Text, Unread> {
+    pub(crate) fn schema(&self, id: super::SchemaId) -> Result<Text, Unread> {
         let what = format!("schema {id}");
         self.text(&what, &format!("{}/schemas/ids/{id}", self.url))
     }
@@ -123,7 +123,7 @@ impl Registry {
 
     /// Registers `schema` under `subject`, or finds it already there, and answers its id. `Refused` is a schema the
     /// subject's compatibility setting or the registry's parser refuses.
-    pub(crate) fn register(&self, subject: &str, schema: &str) -> Result<u32, Unread> {
+    pub(crate) fn register(&self, subject: &str, schema: &str) -> Result<super::SchemaId, Unread> {
         let url = format!("{}/subjects/{}/versions", self.url, percent_encode(subject));
         let body = serde_json::json!({ "schema": schema }).to_string();
         let what = format!("registering a schema under subject {subject:?}");

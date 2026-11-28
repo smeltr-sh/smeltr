@@ -1570,7 +1570,7 @@ remote_write:
         loop {
             let batch = source.poll_batch(10_000, 1 << 26, Duration::from_millis(200)).unwrap();
             for record in &batch {
-                let row = meta.record_object(record, "");
+                let row = meta.record_object(record);
                 well_formed(&row).map_err(|why| format!("{what}: {why}: {row:?}"))?;
                 up |= row.get("name").is_some_and(|n| n == "up") && row.get("value").is_some_and(|v| v == 1.0);
                 native |= row.get("type").is_some_and(|t| t == "exponentialHistogram");

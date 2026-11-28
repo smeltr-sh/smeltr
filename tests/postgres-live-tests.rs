@@ -172,7 +172,7 @@ fn objects(fields: &[(&str, DataType)], records: &[SourceRecord]) -> Vec<RecordO
     let meta = SourceMeta::NONE
         .declaring(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect())
         .expect("a record");
-    records.iter().map(|r| meta.record_object(r, "")).collect()
+    records.iter().map(|r| meta.record_object(r)).collect()
 }
 
 fn ids(objects: &[RecordObject]) -> Vec<i64> {
@@ -781,7 +781,7 @@ fn a_postgres_source_from_a_bundle_reads_its_record_and_resumes() {
     let meta = kind.meta();
     let mut first = open();
     let got = read(&mut first);
-    let rows: Vec<RecordObject> = got.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<RecordObject> = got.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows.iter().map(|o| o["who"].clone()).collect::<Vec<_>>(), ["ana", "li"]);
     assert_eq!(&*got[0].topic, format!("{host}:{port}/{DATABASE}"), "__source.database");
 
@@ -802,7 +802,7 @@ fn a_postgres_source_from_a_bundle_reads_its_record_and_resumes() {
     let mut second = open();
     second.resume(progress).expect("resumed");
     let got = read(&mut second);
-    let rows: Vec<RecordObject> = got.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<RecordObject> = got.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(
         rows.iter().map(|o| o["who"].clone()).collect::<Vec<_>>(),
         ["mo"],

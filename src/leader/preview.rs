@@ -875,7 +875,7 @@ pub fn run_preview(
         let text: Vec<std::borrow::Cow<'_, str>> =
             texts.iter().map(|t| std::borrow::Cow::Borrowed(t.as_str())).collect();
         // Each record's `__source` fields are its own columns, so no source names the batch.
-        meta.ingest(&mut batch, &sourced, &text, None, |_| true, &mut pool);
+        meta.ingest(&mut batch, &sourced, &text, None, None, &mut pool);
 
         let mut ctx = Ctx::at(&mut pool, &mut errors, at).tallying(&mut tally);
         let rows = run_to_json_marked(

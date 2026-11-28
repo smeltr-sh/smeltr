@@ -427,12 +427,11 @@ pub struct RecordChunk {
     filed: Option<Arc<hec::Filed>>,
     /// Each row's time as its source stamped it, in microseconds since the epoch, where its source stamps one.
     time: Option<Vec<Option<i64>>>,
-    /// Each row whose payload did not read at all, and why, by row ascending. Its every field is null.
-    unread: Vec<(u32, String)>,
-    /// The Avro writers' schemas its rows were read with, newest last, where its source reads Avro.
-    avro_writers: Vec<Arc<avro::Parsed>>,
     /// What each row's values hold, counted once when the chunk is made: every limit asks it of each record.
     sizes: Vec<u32>,
+    /// The writer's schema each row's value is framed with, where the chunk carries its own: an Avro container file's,
+    /// which no registry holds. It lives as long as a batch holds a row of the chunk.
+    avro: Option<(avro::SchemaId, Arc<avro::Parsed>)>,
 }
 
 impl RecordChunk {
@@ -455,42 +454,19 @@ impl RecordChunk {
             home: None,
             filed: None,
             time: None,
-            unread: Vec::new(),
-            avro_writers: Vec::new(),
+            avro: None,
         }
     }
 
-    /// This chunk, each row stamped by its source at `time`, as `RecordChunkBuilder::push_stamped` takes it.
-    fn stamped(mut self, time: Vec<Option<i64>>) -> RecordChunk {
-        assert_eq!(time.len(), self.len(), "a time per row");
-        if time.iter().any(Option::is_some) {
-            self.time = Some(time);
-        }
+    /// This chunk, each row's value framed with `id`, the id of `schema`.
+    pub(crate) fn written_with(mut self, id: avro::SchemaId, schema: Arc<avro::Parsed>) -> RecordChunk {
+        self.avro = Some((id, schema));
         self
     }
 
-    /// This chunk, each of `unread`'s rows one whose payload did not read, and why.
-    pub(crate) fn with_unread(mut self, mut unread: Vec<(u32, String)>) -> RecordChunk {
-        unread.sort_by_key(|(row, _)| *row);
-        self.unread = unread;
-        self
-    }
-
-    /// Why row `row`'s payload did not read, if it did not.
-    pub fn unread(&self, row: u32) -> Option<&str> {
-        let at = self.unread.binary_search_by_key(&row, |(r, _)| *r).ok()?;
-        Some(&self.unread[at].1)
-    }
-
-    /// This chunk, its rows read with `writers`, newest last.
-    pub(crate) fn read_with(mut self, writers: Vec<Arc<avro::Parsed>>) -> RecordChunk {
-        self.avro_writers = writers;
-        self
-    }
-
-    /// The Avro writers' schemas this chunk's rows were read with, newest last.
-    pub(crate) fn avro_writers(&self) -> &[Arc<avro::Parsed>] {
-        &self.avro_writers
+    /// The writer's schema this chunk carries for its rows, and the id they are framed with.
+    pub(crate) fn avro_schema(&self) -> Option<&(avro::SchemaId, Arc<avro::Parsed>)> {
+        self.avro.as_ref()
     }
 
     /// This chunk, its every record filed under `filed`.
@@ -556,11 +532,8 @@ impl RecordChunk {
             .collect();
         let mut chunk = RecordChunk::new(columns, failed);
         chunk.filed = self.filed.clone();
-        chunk.avro_writers = self.avro_writers.clone();
+        chunk.avro = self.avro.clone();
         chunk.time = (self.time.as_ref()).map(|time| rows.iter().map(|&row| time[row as usize]).collect());
-        chunk.unread = (rows.iter().enumerate())
-            .filter_map(|(to, &row)| Some((to as u32, self.unread(row)?.to_string())))
-            .collect();
         chunk
     }
 

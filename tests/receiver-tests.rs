@@ -710,7 +710,7 @@ fn an_otlp_export_is_answered_once_its_log_records_are_committed() {
 
     let records = poll_until(&mut source, 2);
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
-    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["body"], "paid");
     assert_eq!(rows[0]["severityNumber"], 9);
     assert_eq!(rows[0]["severityText"], "INFO");
@@ -731,7 +731,7 @@ fn an_otlp_export_is_answered_once_its_log_records_are_committed() {
     let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         (
-            back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
+            back.iter().map(|r| meta.record_object(r)).collect::<Vec<_>>(),
             meta.objects(&back, Some("otlp"))
         ),
         (rows, objects),
@@ -795,7 +795,7 @@ fn an_otlp_protobuf_export_is_read_as_its_log_records() {
 
     let records = poll_until(&mut source, 1);
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
-    let record = meta.record_object(&records[0], "");
+    let record = meta.record_object(&records[0]);
     assert_eq!(record["body"], "slow");
     assert_eq!(record["severityText"], "WARN");
     assert!(
@@ -987,7 +987,7 @@ fn a_grpc_export_is_answered_once_its_log_records_are_committed() {
 
     let records = poll_until(&mut source, 1);
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
-    let record = meta.record_object(&records[0], "");
+    let record = meta.record_object(&records[0]);
     assert_eq!(record["body"], "slow");
     assert_eq!(record["severityText"], "WARN");
     std::thread::sleep(ANSWERED);
@@ -1074,7 +1074,7 @@ fn otlp_receivers_of_each_signal_share_a_port() {
         "spanId":"eee19b7ec3c1b174","name":"checkout","kind":2,"startTimeUnixNano":"1700000000000000000"}]}]}]}"#;
     let sent = std::thread::spawn(move || post("/v1/traces", span));
     let records = poll_until(&mut traces, 1);
-    let span = smeltr::plan::topology::SourceMeta::OTLP_TRACES.record_object(&records[0], "");
+    let span = smeltr::plan::topology::SourceMeta::OTLP_TRACES.record_object(&records[0]);
     assert_eq!(
         (span["name"].as_str(), span["kind"].as_i64()),
         (Some("checkout"), Some(2))
@@ -1191,7 +1191,7 @@ service:
         .unwrap_or_else(|late| panic!("{late}"));
         assert_eq!(records.len(), 1, "over {wire}");
         assert_eq!(
-            meta.record_object(&records[0], "")["body"],
+            meta.record_object(&records[0])["body"],
             "paid over the collector",
             "over {wire}"
         );
@@ -1265,7 +1265,7 @@ fn an_opentelemetry_sdk_exports_every_signal_over_grpc_and_http() {
             );
             assert!(records.len() >= 3, "{what}: {} records", records.len());
             let meta = smeltr::plan::topology::SourceMeta::otlp(signal);
-            let first = meta.record_object(&records[0], "");
+            let first = meta.record_object(&records[0]);
             let named = match signal {
                 Signal::Logs => first["body"] == "the message",
                 Signal::Metrics => first["name"] == "gen" && first["type"] == "gauge",
@@ -1489,7 +1489,7 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
 
     let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["name"], "up");
     assert_eq!(rows[0]["value"], 1.0);
     assert_eq!(
@@ -1512,7 +1512,7 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
     let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
-        back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
+        back.iter().map(|r| meta.record_object(r)).collect::<Vec<_>>(),
         rows,
         "a stored sample reads back as it was received"
     );
@@ -1691,7 +1691,7 @@ fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_with_what_it_wrote() 
 
     let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(
         serde_json::Value::Object(rows[0].clone()),
         serde_json::json!({
@@ -1720,7 +1720,7 @@ fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_with_what_it_wrote() 
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
     let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
-        back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
+        back.iter().map(|r| meta.record_object(r)).collect::<Vec<_>>(),
         rows,
         "a stored start time reads back as it was received"
     );
@@ -1837,7 +1837,7 @@ fn a_remote_write_histogram_is_a_record_typed_as_an_otlp_histogram_point() {
 
     let records = poll_until(&mut source, 5);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["value"], 0.5);
     assert!(rows[0].get("type").is_none(), "a float sample has no type");
     let (exponential, float, custom, unhinted) = (&rows[1], &rows[2], &rows[3], &rows[4]);
@@ -1887,7 +1887,7 @@ fn a_remote_write_histogram_is_a_record_typed_as_an_otlp_histogram_point() {
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
     let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
-        back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
+        back.iter().map(|r| meta.record_object(r)).collect::<Vec<_>>(),
         rows,
         "a stored histogram reads back as it was received"
     );
@@ -1931,7 +1931,7 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
 
     let records = poll_until(&mut source, 6);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     let with: Vec<_> = rows.iter().map(|r| r.get("exemplars").is_some()).collect();
     assert_eq!(with, [false, true, false, false, true, true]);
     assert_eq!(
@@ -1962,7 +1962,7 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
     let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
-        back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
+        back.iter().map(|r| meta.record_object(r)).collect::<Vec<_>>(),
         rows,
         "a stored exemplar reads back as it was received"
     );
@@ -1978,7 +1978,7 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
     let body = remote_write::body(vec![s]);
     let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
     let records = poll_until(&mut source, 1);
-    assert!(meta.record_object(&records[0], "").get("exemplars").is_none());
+    assert!(meta.record_object(&records[0]).get("exemplars").is_none());
     commit(&mut source, &records);
     assert_eq!(sent.join().unwrap().0, 204);
     assert!(
@@ -2010,7 +2010,7 @@ fn remote_write_metadata_is_a_record_of_each_metric_family() {
 
     let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["value"], 3.0);
     assert!(rows[0].get("isMonotonic").is_none(), "a sample has no metadata");
     assert_eq!(
@@ -2032,7 +2032,7 @@ fn remote_write_metadata_is_a_record_of_each_metric_family() {
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
     let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
-        back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
+        back.iter().map(|r| meta.record_object(r)).collect::<Vec<_>>(),
         rows,
         "stored metadata reads back as it was received"
     );
@@ -2220,7 +2220,7 @@ fn a_histogram_counts_what_its_buckets_hold() {
 
     let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
-    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+    let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["count"], 3.0);
     assert_eq!(rows[1]["count"], 0.0);
     assert_eq!(rows[2]["count"], 0.3);
@@ -2271,7 +2271,7 @@ remote_write:
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
     let up = wait_for("an `up` sample", Duration::from_secs(60), || {
         let records = source.poll_batch(1000, 16 << 20, Duration::from_millis(200)).unwrap();
-        let rows: Vec<_> = records.iter().map(|r| meta.record_object(r, "")).collect();
+        let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
         commit(&mut source, &records);
         rows.into_iter().find(|r| r["name"] == "up")
     })

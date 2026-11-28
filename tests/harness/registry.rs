@@ -69,10 +69,10 @@ impl Registry {
 
     /// Registers `text` under `subject`, referencing `references` (a JSON array of Confluent's references), and
     /// answers its id.
-    pub fn hold(&self, subject: &str, text: &str, references: Value) -> u32 {
+    pub fn hold(&self, subject: &str, text: &str, references: Value) -> smeltr::io::avro::SchemaId {
         let mut state = self.state.lock();
         state.schemas.push((subject.into(), text.into(), references));
-        state.schemas.len() as u32
+        smeltr::io::avro::SchemaId::new(state.schemas.len() as u32)
     }
 
     /// Every request line so far, and the `Authorization` it carried.

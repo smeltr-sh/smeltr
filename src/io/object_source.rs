@@ -23,8 +23,7 @@ use futures_util::StreamExt;
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange, ObjectStore};
 
-use crate::io::avro::AvroReader;
-use crate::io::avro::Parsed;
+use crate::io::avro::SchemaId;
 use crate::io::avro::container::Container;
 use crate::io::framing::{Framer, Messages};
 use crate::io::{
@@ -276,7 +275,7 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
         MAX_RECORD_BYTES,
     )?;
     Ok(Box::new(match &config.avro {
-        Some(avro) => source.reading_avro(crate::io::avro::AvroReader::new(avro, config.tls.as_ref(), secrets)?),
+        Some(_) => source.reading_avro(),
         None => source,
     }))
 }
@@ -313,17 +312,11 @@ struct Current {
 }
 
 impl Current {
-    /// Whether a row is ready in `rows`, waiting on the fetch for one; `false` at the end of the object. A schema the
-    /// fetch sends is told to `avro`.
-    fn ready(&mut self, avro: &mut Option<AvroReader>) -> Result<bool, String> {
+    /// Whether a row is ready in `rows`, waiting on the fetch for one; `false` at the end of the object.
+    fn ready(&mut self) -> Result<bool, String> {
         while self.rows.as_ref().is_none_or(ChunkRows::is_done) {
             match self.fetched.recv()? {
                 Fetch::Rows(chunk, _) => self.rows = Some(ChunkRows::new(chunk)),
-                Fetch::Schema(schema) => {
-                    if let Some(avro) = avro {
-                        avro.tell(self.partition as u32, schema);
-                    }
-                }
                 Fetch::End => return Ok(false),
             }
         }
@@ -344,11 +337,9 @@ pub struct ObjectSource {
     built: HashMap<String, Arc<dyn ObjectStore>>,
     runtime: Arc<tokio::runtime::Runtime>,
     framing: Framing,
-    /// How each object reads where it is an Avro container file, in place of `framing`: by the schema in its header,
-    /// told as the object's partition (`AvroReader::tell`).
-    avro: Option<AvroReader>,
-    /// The partitions of objects ended since the last poll, whose schemas go once that poll's values are read.
-    ended: Vec<i32>,
+    /// Where each object is an Avro container file, read in place of `framing`: the id the next one's schema is framed
+    /// with. Each object's chunks carry its schema, so the id need only tell apart the objects of one batch.
+    avro: Option<u32>,
     visibility: Duration,
     max_record: u64,
     held: HeldMap,
@@ -417,7 +408,6 @@ impl ObjectSource {
             runtime,
             framing,
             avro: None,
-            ended: Vec::new(),
             visibility,
             max_record,
             held,
@@ -442,9 +432,9 @@ impl ObjectSource {
         })
     }
 
-    /// This source reading each object as an Avro container file with `reader`.
-    pub fn reading_avro(mut self, reader: AvroReader) -> ObjectSource {
-        self.avro = Some(reader);
+    /// This source reading each object as an Avro container file.
+    pub fn reading_avro(mut self) -> ObjectSource {
+        self.avro = Some(0);
         self
     }
 
@@ -623,8 +613,12 @@ impl ObjectSource {
         let path = Path::parse(&object.key).map_err(|e| format!("the key is no path the store can read: {e}"))?;
         let partition = self.next_partition;
         self.next_partition = self.next_partition.wrapping_add(1);
-        let cutting = match self.avro {
-            Some(_) => Cutting::Avro(partition as u32, self.max_record),
+        let cutting = match &mut self.avro {
+            Some(next) => {
+                let id = SchemaId::new(*next);
+                *next = next.wrapping_add(1);
+                Cutting::Avro(id, self.max_record)
+            }
             None => Cutting::Frames(Framer::refusing(self.framing.clone(), self.max_record as usize)),
         };
         let (tx, blocks) = std::sync::mpsc::channel();
@@ -658,7 +652,6 @@ impl ObjectSource {
     /// Ends `current`: read to the end, so done once committed up to its last record.
     fn end_current(&mut self) {
         let partition = self.current.take().expect("a current object").partition;
-        self.ended.push(partition);
         if let Some(read) = self.reads.get_mut(&partition) {
             read.ended = true;
         }
@@ -814,7 +807,7 @@ impl Source for ObjectSource {
                 continue;
             }
             let current = self.current.as_mut().expect("current");
-            match current.ready(&mut self.avro) {
+            match current.ready() {
                 Ok(true) => {
                     let rows = current.rows.as_mut().expect("a row ready");
                     let size = rows.next_size();
@@ -840,23 +833,12 @@ impl Source for ObjectSource {
                 Ok(false) => self.end_current(),
                 Err(why) => {
                     let partition = self.current.take().expect("current").partition;
-                    self.ended.push(partition);
                     let read = self.reads.remove(&partition).expect("a read per current object");
                     let (bucket, key) = read.topic.split_once('/').unwrap_or((&read.topic, ""));
                     let (bucket, key) = (bucket.to_string(), key.to_string());
                     self.give_up(read.message, &bucket, &key, &why);
                 }
             }
-        }
-        let Some(avro) = &mut self.avro else {
-            return Ok(records);
-        };
-        let records = match records.is_empty() {
-            true => records,
-            false => avro.read(records),
-        };
-        for partition in self.ended.drain(..) {
-            avro.forget(partition as u32);
         }
         Ok(records)
     }
@@ -929,16 +911,14 @@ impl Source for ObjectSource {
 enum Fetch {
     /// Its next records, and what they hold.
     Rows(RecordChunk, usize),
-    /// Its schema, before its first value, where it is an Avro container file.
-    Schema(Arc<Parsed>),
     End,
 }
 
 /// How a fetch cuts an object into records.
 enum Cutting {
     Frames(Framer),
-    /// As an Avro container file: each value framed with this schema id, none longer than this many bytes.
-    Avro(u32, u64),
+    /// As an Avro container file: each value framed with this id for its schema, none longer than this many bytes.
+    Avro(SchemaId, u64),
 }
 
 /// Why a fetch stops early: its reader is gone.
@@ -1014,11 +994,11 @@ fn frames(
     }
 }
 
-/// Reads `lines` as an Avro container file, sending its schema and then each block's values framed with `id`. An
-/// empty object has none.
+/// Reads `lines` as an Avro container file, each block's values framed with `id` in a chunk that carries the file's
+/// schema. An empty object has none.
 fn values(
     lines: &mut dyn BufRead,
-    id: u32,
+    id: SchemaId,
     max_record: u64,
     send: &impl Fn(Fetch) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -1026,14 +1006,19 @@ fn values(
         return Ok(());
     }
     let container = Container::open(lines)?;
-    send(Fetch::Schema(container.schema.clone()))?;
     let nowhere: Arc<str> = Arc::from("");
     while let Some(values) = container.block(lines, max_record)? {
         let mut out = RecordChunkBuilder::new();
         for value in values {
             out.push(&crate::io::avro::frame(id, &value), 0, 0, nowhere.clone(), None);
         }
-        send_rows(out, send)?;
+        if !out.is_empty() {
+            let size = out.size();
+            send(Fetch::Rows(
+                out.into_chunk().written_with(id, container.schema.clone()),
+                size,
+            ))?;
+        }
     }
     Ok(())
 }

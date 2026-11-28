@@ -472,7 +472,7 @@ mod tests {
         let meta = crate::plan::topology::SourceMeta::of_columns(&table.columns).unwrap();
         let read = meta.read_table(&table).unwrap();
         assert_eq!(
-            meta.record_object(&read[0], ""),
+            meta.record_object(&read[0]),
             *serde_json::json!({"id": 1, "user": {"name": "ann"}, "labels": {"env": "prod"}, "__source": {"offset": 7}})
                 .as_object()
                 .unwrap()

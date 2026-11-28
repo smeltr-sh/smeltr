@@ -703,6 +703,7 @@ fn to_avro_read(kind: &SourceKindDto) -> Option<crate::plan::topology::AvroRead>
     Some(crate::plan::topology::AvroRead {
         registry: kind.schema_registry().map(to_registry),
         meta: kind.meta(),
+        writers: Default::default(),
     })
 }
 
