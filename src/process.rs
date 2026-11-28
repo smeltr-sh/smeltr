@@ -368,14 +368,14 @@ mod windows {
 
     /// A job object holding one process tree. Dropping it kills what it holds, which is what contains a runtime
     /// child when its supervisor dies.
-    pub(crate) struct Job(HANDLE);
+    struct Job(HANDLE);
 
     // SAFETY: a job handle is not thread-affine, and `Drop` closes it exactly once.
     unsafe impl Send for Job {}
     unsafe impl Sync for Job {}
 
     impl Job {
-        pub(crate) fn create() -> io::Result<Job> {
+        fn create() -> io::Result<Job> {
             // SAFETY: an unnamed job with default security, which is what both null arguments ask for.
             let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if handle.is_null() {
@@ -399,7 +399,7 @@ mod windows {
             Ok(job)
         }
 
-        pub(crate) fn adopt(&self, child: &Child) -> io::Result<()> {
+        fn adopt(&self, child: &Child) -> io::Result<()> {
             // SAFETY: a live job handle and a live process handle the `Child` still owns.
             if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) } == 0 {
                 return Err(io::Error::last_os_error());
@@ -407,7 +407,7 @@ mod windows {
             Ok(())
         }
 
-        pub(crate) fn terminate(&self) -> io::Result<()> {
+        fn terminate(&self) -> io::Result<()> {
             // SAFETY: a live job handle. Terminating an empty job succeeds.
             if unsafe { TerminateJobObject(self.0, 1) } == 0 {
                 return Err(io::Error::last_os_error());

@@ -213,7 +213,7 @@ fn key_from(material: &str, path: &Path) -> Result<EncryptionKey, KeyError> {
 /// Enough of the digest to tell two keys apart in a row and a log line.
 const KEY_ID_LEN: usize = 16;
 
-pub(crate) fn hex_decode(s: &str) -> Option<Vec<u8>> {
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
     if !s.is_ascii() || !s.len().is_multiple_of(2) {
         return None;
     }

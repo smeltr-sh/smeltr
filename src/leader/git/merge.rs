@@ -39,9 +39,9 @@ pub struct Conflict {
     pub(crate) path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) id: Option<String>,
-    pub(crate) base: Option<String>,
-    pub(crate) main: Option<String>,
-    pub(crate) work: Option<String>,
+    base: Option<String>,
+    main: Option<String>,
+    work: Option<String>,
 }
 
 /// The author's answer to `Conflicts`: the two tips they were shown, and a side for every conflict.

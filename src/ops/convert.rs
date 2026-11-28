@@ -17,7 +17,7 @@ use crate::ops::OpKernel;
 
 /// Whether `col` is already the text a `Str` blend wants. An unbound column counts: it has no values to render, and
 /// nothing reads one.
-pub(crate) fn is_text(col: &Column) -> bool {
+fn is_text(col: &Column) -> bool {
     col.is_unbound() || col.data_type() == DataType::Str
 }
 
@@ -25,7 +25,7 @@ pub(crate) fn is_text(col: &Column) -> bool {
 ///
 /// A scalar renders as `toString` does; a container renders as its JSON, as `tag::json_text` gives it on the same
 /// table. A caller holding text keeps its own column ([`is_text`]).
-pub(crate) fn stringify(ctx: &mut Ctx, col: &Column) -> Column {
+fn stringify(ctx: &mut Ctx, col: &Column) -> Column {
     let ty = col.data_type();
     debug_assert!(!is_text(col), "text is already text; the caller keeps its column");
     match ty {
@@ -315,7 +315,7 @@ pub(crate) fn coerce(ctx: &mut Ctx, col: &Column, to: &DataType) -> Column {
 
 /// `coerce`, with the refused rows as a bitmap for the caller to raise: an array's element refusals are its
 /// rows', not the child's, and a parser owes its own field exception rather than a coercion's.
-pub(crate) fn coerce_with_refusals(ctx: &mut Ctx, col: &Column, to: &DataType) -> (Column, Option<Vec<u64>>) {
+fn coerce_with_refusals(ctx: &mut Ctx, col: &Column, to: &DataType) -> (Column, Option<Vec<u64>>) {
     let len = col.len();
     let from = col.data_type();
     if col.is_unbound() {

@@ -238,9 +238,9 @@ fn close(r: &mut Reader, next: &Next) -> Result<(), Malformed> {
 /// The Bulk API's request and answer. `default_index` takes a row with no `__destination.index`.
 #[derive(Clone, Debug)]
 pub struct Elastic {
-    pub(crate) default_index: String,
+    default_index: String,
     /// `Create` by default.
-    pub(crate) action: BulkAction,
+    action: BulkAction,
     /// Counts the documents a failure store took, where the destination reports on itself.
     unwritten: Option<Unwritten>,
 }
@@ -344,7 +344,7 @@ impl Protocol for Elastic {
 /// The `Authorization` header value the destination's credential stands for: the credential as it is when it names
 /// its scheme (`ApiKey <base64>`, `Basic <base64>`), and `ApiKey <credential>` when it is the bare key Elasticsearch
 /// hands out.
-pub(crate) fn authorization(credential: String) -> String {
+fn authorization(credential: String) -> String {
     if credential.contains(' ') {
         credential
     } else {

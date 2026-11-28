@@ -48,7 +48,7 @@ pub(crate) use tracing::Level;
 
 /// One event as a test reads it: its level, its class and type, and its fields with the sentence under `message`.
 #[cfg(test)]
-pub(crate) type Said = (Level, String, String, Vec<(String, String)>);
+type Said = (Level, String, String, Vec<(String, String)>);
 
 /// Every event raised on this thread while `f` runs.
 #[cfg(test)]
@@ -99,7 +99,7 @@ pub(crate) const LOGS_CAPACITY: usize = 1024;
 /// store. A worker that cannot reach one keeps the oldest and
 /// refuses the rest, the same way the buffer in front of it refuses rather than evicts: the start of an outage is
 /// what explains it, and the symptoms after are the part that repeats.
-pub(crate) const PENDING_CAPACITY: usize = 4096;
+const PENDING_CAPACITY: usize = 4096;
 
 /// How long [`stop`] waits for the drain thread to finish what it holds. Long enough for a full buffer to reach a
 /// slow pipe, and short enough that a ctrl-c still feels immediate.
@@ -307,7 +307,7 @@ static BOOT_ID: LazyLock<u64> = LazyLock::new(|| {
     now ^ (Box::into_raw(Box::new(0u8)) as u64).rotate_left(32)
 });
 
-pub(crate) fn next_seq() -> u64 {
+fn next_seq() -> u64 {
     NEXT_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -630,7 +630,7 @@ pub fn while_delivering<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Whether this thread is delivering logs. Unwinding through [`while_delivering`] still clears it.
-pub(crate) fn delivering() -> bool {
+fn delivering() -> bool {
     DELIVERING.with(std::cell::Cell::get)
 }
 

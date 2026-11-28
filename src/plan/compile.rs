@@ -94,7 +94,7 @@ pub struct Instr {
 impl Instr {
     /// Every slot this instruction reads from the batch it runs on, its guard included, a slot possibly more than
     /// once. A loop's body runs on the loop's wave, so what it reads counts here, less the slots the loop fills itself.
-    pub(crate) fn reads(&self, f: &mut impl FnMut(SlotId)) {
+    fn reads(&self, f: &mut impl FnMut(SlotId)) {
         self.guard.iter().chain(&self.live).copied().for_each(&mut *f);
         match &self.op {
             Op::Eval { ir } => walk_slots(ir, f),
@@ -247,7 +247,7 @@ pub enum Op {
 /// Each `(read_slot, write_slot)` is one accumulator: a name the body binds outside the loop variable. `read_slot` is
 /// its slot before the loop (`None` if never bound); `write_slot` is where the body's last assignment lands, fed back as
 /// the next trip's `read_slot` and holding the row's final value.
-pub(crate) type Accumulator = (Option<SlotId>, SlotId);
+type Accumulator = (Option<SlotId>, SlotId);
 
 #[derive(Clone, Debug)]
 pub struct Loop {
@@ -371,7 +371,7 @@ pub struct Plan {
     pub(crate) reads_meta: Vec<bool>,
     /// How many slots the runtime fills before the first instruction (`ingest_fields`): the prefix, the record and
     /// the `__source` fields.
-    pub(crate) ingest_slots: usize,
+    ingest_slots: usize,
     /// `patterns`, compiled. Indices line up with `patterns`.
     pub(crate) compiled_patterns: ById<PatternId, crate::core::ctx::CompiledPattern>,
 }

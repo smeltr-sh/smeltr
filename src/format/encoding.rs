@@ -15,7 +15,7 @@ pub(crate) type Charset = &'static encoding_rs::Encoding;
 
 /// What `auto` falls back to when the bytes are neither UTF-8 nor UTF-16. Every byte maps to a character, so the
 /// fallback never fails — it can only be wrong, which is why it is marked.
-pub(crate) const FALLBACK: Charset = encoding_rs::WINDOWS_1252;
+const FALLBACK: Charset = encoding_rs::WINDOWS_1252;
 
 /// A source's declared encoding.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]

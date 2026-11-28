@@ -300,16 +300,16 @@ impl From<&config_file::ValidationError> for Refusal {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiError {
-    pub(crate) pipeline: Option<String>,
-    pub(crate) function: Option<crate::core::id::FunctionId>,
+    pipeline: Option<String>,
+    function: Option<crate::core::id::FunctionId>,
     pub step: Option<String>,
-    pub(crate) assignment_index: Option<u32>,
+    assignment_index: Option<u32>,
     /// The source, destination or identity this is about. Boxed, as an error rides in a `Result` on every read.
-    pub(crate) item: Option<Box<config_file::ItemRef>>,
+    item: Option<Box<config_file::ItemRef>>,
     /// The setting this is about, by its name in the file. See `config_file::ValidationError::field`.
-    pub(crate) field: Option<&'static str>,
+    field: Option<&'static str>,
     /// The route's delivery rule, by its position, when `field` is one of its settings. See `CompileError::rule`.
-    pub(crate) rule: Option<u32>,
+    rule: Option<u32>,
     pub message: String,
 }
 
@@ -387,7 +387,7 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    pub(crate) fn status(self) -> StatusCode {
+    fn status(self) -> StatusCode {
         match self {
             ErrorKind::Failed => StatusCode::INTERNAL_SERVER_ERROR,
             ErrorKind::Conflict => StatusCode::CONFLICT,

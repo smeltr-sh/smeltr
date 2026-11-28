@@ -14,7 +14,7 @@ const KEY: &str = "log_levels";
 
 /// What is stored, or nothing when nothing is: every line then at each process's startup level. A stored value this
 /// build cannot read is nothing too.
-pub(crate) fn stored(store: &Store) -> Result<LogLevels, StoreError> {
+fn stored(store: &Store) -> Result<LogLevels, StoreError> {
     Ok(store
         .setting(KEY)?
         .and_then(|text| serde_json::from_str(&text).ok())

@@ -7,39 +7,39 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "camelCase")]
 pub struct HttpApiSourceDto {
     /// The whole address asked, with any fixed query parameters.
-    pub(crate) url: String,
+    url: String,
     /// `"GET"` (default) or `"POST"`.
     #[serde(default, skip_serializing_if = "ApiMethodDto::is_default")]
     pub(crate) method: ApiMethodDto,
     /// The JSON every POST carries. Absent is a POST of nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) body: Option<serde_json::Value>,
+    body: Option<serde_json::Value>,
     /// Header name -> its value, committed to the config repository.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) headers: BTreeMap<String, String>,
+    headers: BTreeMap<String, String>,
     /// Header name -> the credential holding its value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) credentials: BTreeMap<String, SecretRefDto>,
+    credentials: BTreeMap<String, SecretRefDto>,
     #[serde(flatten)]
-    pub(crate) tls: TlsDto,
+    tls: TlsDto,
     /// `"body"` (default), `"lines"` or `"array"`.
     #[serde(default, skip_serializing_if = "ApiRecordsDto::is_default")]
     pub(crate) records: ApiRecordsDto,
     /// The JSON pointer to the array `"array"` reads, such as `/data`. Absent is an answer that is the array.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) records_at: Option<String>,
+    records_at: Option<String>,
     /// Whether a poll follows each answer's `Link: rel="next"` to the next page.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) follow_links: bool,
+    follow_links: bool,
     /// The query parameter that asks for what happened since a time, sent the start of the last poll whose
     /// records every destination took. Absent reads everything every poll.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) since_param: Option<String>,
+    since_param: Option<String>,
     /// How many seconds before the last poll's start `sinceParam` asks from, for an API that records late.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub(crate) since_overlap_secs: u64,
+    since_overlap_secs: u64,
     #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-    pub(crate) poll_interval_secs: PollIntervalSecs,
+    poll_interval_secs: PollIntervalSecs,
     /// What the first poll asks for, with `sinceParam`.
     #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
     pub(crate) start: ListStartDto,
@@ -47,7 +47,7 @@ pub struct HttpApiSourceDto {
     #[serde(flatten)]
     pub(crate) sign_in: AppSignInDto,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl SourceSpec for HttpApiSourceDto {

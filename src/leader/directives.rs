@@ -17,7 +17,7 @@ pub struct Directives(Mutex<HashMap<String, Held>>);
 
 /// How long a request waits for a beat to take it: a minute, and never less than the window a worker counts as
 /// heartbeating, so only a worker that has gone misses it.
-pub(crate) fn untaken_for() -> Duration {
+fn untaken_for() -> Duration {
     Duration::from_secs(60).max(super::heartbeat_window())
 }
 

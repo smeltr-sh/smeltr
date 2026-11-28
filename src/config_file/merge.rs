@@ -28,9 +28,9 @@ pub(crate) struct ObjectConflict {
     pub(crate) work: Option<String>,
     /// The bundle-relative file `main`'s version names: a lookup table's content. The chosen side's file comes with
     /// it, so a table never points at the other side's content.
-    pub(crate) main_names: Option<String>,
+    main_names: Option<String>,
     /// The same for the branch's version.
-    pub(crate) work_names: Option<String>,
+    work_names: Option<String>,
 }
 
 impl ObjectConflict {

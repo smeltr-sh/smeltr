@@ -27,11 +27,11 @@ use super::pkt_line::{Packet, line as pkt_line};
 use super::store::{Actor, SecretSave, Store, StoreError};
 use super::{AppState, git, run_store, tree};
 
-pub(crate) const URL_KEY: &str = "git.remote.url";
-pub(crate) const USER_KEY: &str = "git.remote.user";
+const URL_KEY: &str = "git.remote.url";
+const USER_KEY: &str = "git.remote.user";
 pub(crate) const TOKEN_KEY: &str = "git.remote.token";
-pub(crate) const POLL_KEY: &str = "git.remote.poll_seconds";
-pub(crate) const APPROVE_KEY: &str = "git.remote.approve_pushes";
+const POLL_KEY: &str = "git.remote.poll_seconds";
+const APPROVE_KEY: &str = "git.remote.approve_pushes";
 
 /// Where the leader keeps the roots its fetch from the remote trusts, as a PEM file: gix's curl takes them only by
 /// path. Written at every start (`io::trust::write_pem_file`), from the public roots, as the LFS client trusts.
@@ -40,12 +40,12 @@ pub fn roots_path(data_dir: &Path) -> std::path::PathBuf {
 }
 
 /// How often the remote is fetched where nobody has said.
-pub(crate) const DEFAULT_POLL: Duration = Duration::from_secs(60);
+const DEFAULT_POLL: Duration = Duration::from_secs(60);
 
 /// Its bounds, off aside. Faster than every ten seconds is load on the host for a deploy nobody is waiting on that
 /// closely; slower than a day is a timer nobody would notice running.
-pub(crate) const MIN_POLL: Duration = Duration::from_secs(10);
-pub(crate) const MAX_POLL: Duration = Duration::from_secs(24 * 60 * 60);
+const MIN_POLL: Duration = Duration::from_secs(10);
+const MAX_POLL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The remote this leader follows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,7 +94,7 @@ pub fn configured(store: &Store) -> Result<Option<Remote>, StoreError> {
 /// plain text.
 ///
 /// A backslash is refused, since parsers disagree about whether it ends the host, and so about which host a URL names.
-pub(crate) fn check_url(url: &str, plain: bool) -> Result<(), String> {
+fn check_url(url: &str, plain: bool) -> Result<(), String> {
     if url.contains('\\') {
         return Err(format!("{url:?} holds a backslash; give the URL without one"));
     }
@@ -135,9 +135,9 @@ pub(crate) struct Failure {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncState {
     /// When the remote last answered, unix millis.
-    pub(crate) synced_at: Option<i64>,
+    synced_at: Option<i64>,
     /// The remote's `main` then. `None` with `synced_at` set is a remote with no `main` yet.
-    pub(crate) remote_head: Option<String>,
+    remote_head: Option<String>,
     pub(crate) failure: Option<Failure>,
 }
 
@@ -646,7 +646,7 @@ struct Advertised {
 }
 
 /// Where `branch` is on the host, or `None` when the host has no such branch.
-pub(crate) fn host_branch(remote: &Remote, branch: &str) -> Result<Option<String>, String> {
+fn host_branch(remote: &Remote, branch: &str) -> Result<Option<String>, String> {
     git::check_branch_name(branch).map_err(|e| e.message)?;
     let host = advertised(remote, "git-upload-pack")?;
     Ok(host.refs.get(&format!("refs/heads/{branch}")).cloned())
@@ -655,7 +655,7 @@ pub(crate) fn host_branch(remote: &Remote, branch: &str) -> Result<Option<String
 /// Push `new` to `branch` on the host, or delete it there for `None`, but only while the host's branch is at `lease`
 /// -- `None` for "only while it does not exist". The lease is what keeps a push from overwriting work someone else
 /// pushed to the same branch.
-pub(crate) fn push(
+fn push(
     repo: &Path,
     remote: &Remote,
     branch: &str,
@@ -880,10 +880,10 @@ pub struct Syncing {
     pub turn: tokio::sync::Mutex<()>,
     state: crate::sync::Mutex<SyncState>,
     /// Wakes the timer when the settings change, so a new interval applies at once.
-    pub(crate) settings_changed: tokio::sync::Notify,
+    settings_changed: tokio::sync::Notify,
     /// Held by whatever pushes a branch, and by whatever changes the remote, so no push lands on a remote it was not
     /// meant for.
-    pub(crate) pushing: tokio::sync::Mutex<()>,
+    pushing: tokio::sync::Mutex<()>,
     /// Why each branch's latest save is not on the host, by branch.
     pushes: crate::sync::Mutex<std::collections::HashMap<String, PushFailure>>,
 }
@@ -908,7 +908,7 @@ impl Syncing {
 }
 
 /// Sync now, after any sync already running. Answers what it found; with no remote set, nothing is done.
-pub(crate) async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
+async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
     let _turn = state.remote.turn.lock().await;
     let Some(remote) = run_store(state.store.clone(), configured).await? else {
         return Err(Refusal::conflict("no remote is set"));
@@ -1003,7 +1003,7 @@ pub struct PushFailure {
     /// Where the host's branch is, when the push was refused.
     pub host_tip: Option<String>,
     /// When the push failed, unix millis.
-    pub(crate) at: i64,
+    at: i64,
 }
 
 /// How often the leader looks for a save to push. Looking reads the leader's own refs, so it costs the host nothing.
@@ -1290,7 +1290,7 @@ pub fn approve_at(
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RemoteSettingsDto {
+struct RemoteSettingsDto {
     url: String,
     user: String,
     /// Whether a token is stored. The token itself is never sent back.
@@ -1406,7 +1406,7 @@ pub(crate) async fn put_settings(
 /// Forget what was found about the remote that was set -- its sync state, its push failures and its branches --
 /// once it is replaced or gone. What was found about one remote says nothing about another. The caller holds the
 /// remote's turn and its pushing lock.
-pub(crate) async fn forget(state: &AppState) {
+async fn forget(state: &AppState) {
     *state.remote.state.lock() = SyncState::default();
     state.remote.pushes.lock().clear();
     let repo = git::repo_path(&state.data_dir);

@@ -17,7 +17,7 @@ pub(crate) fn create_dir(path: &Path) -> std::io::Result<()> {
 
 /// Inherits the parent's ACL, which is the whole of its protection on Windows. See [`check`].
 #[cfg(not(unix))]
-pub(crate) fn create_dir(path: &Path) -> std::io::Result<()> {
+fn create_dir(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path)
 }
 
@@ -35,7 +35,7 @@ pub(crate) fn create(path: &Path) -> std::io::Result<fs::File> {
 
 /// `create_new` still holds the race; the mode does not exist to set. See [`check`].
 #[cfg(not(unix))]
-pub(crate) fn create(path: &Path) -> std::io::Result<fs::File> {
+fn create(path: &Path) -> std::io::Result<fs::File> {
     fs::OpenOptions::new().write(true).create_new(true).open(path)
 }
 
@@ -78,7 +78,7 @@ pub(crate) fn sync_parent(path: &Path) -> std::io::Result<()> {
 /// A directory cannot be opened as a file, so `std::fs` offers no handle to sync one through. Durability of a name
 /// there is whatever the filesystem gives without asking.
 #[cfg(not(unix))]
-pub(crate) fn sync_parent(_path: &Path) -> std::io::Result<()> {
+fn sync_parent(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -109,7 +109,7 @@ pub(crate) fn check(path: &Path, what: &str) -> Result<(), String> {
 /// still refused: that is not an ACL question, and a caller reading `Ok` from a key it cannot open is a bug no
 /// platform should have.
 #[cfg(not(unix))]
-pub(crate) fn check(path: &Path, _what: &str) -> Result<(), String> {
+fn check(path: &Path, _what: &str) -> Result<(), String> {
     fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(())
 }

@@ -164,7 +164,7 @@ fn days_of(value: &Literal) -> Option<i64> {
 }
 
 /// MurmurHash3, x86 32-bit, seed 0: the hash the spec buckets by.
-pub(crate) fn murmur3_x86_32(data: &[u8]) -> i32 {
+fn murmur3_x86_32(data: &[u8]) -> i32 {
     const C1: u32 = 0xcc9e_2d51;
     const C2: u32 = 0x1b87_3593;
     let mix = |k: u32| k.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
@@ -191,7 +191,7 @@ pub(crate) fn murmur3_x86_32(data: &[u8]) -> i32 {
 /// URLEncoder escapes it, as Iceberg's own writer does: `2026-10-10` for a day, `2026-10-10-13` for an hour, `null`
 /// for null. A string or a binary's Base64 that reads `null` escapes its first letter, so that `literal_of` can tell
 /// it from null.
-pub(crate) fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transform) -> String {
+fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transform) -> String {
     let Some(value) = value else {
         return NULL.to_string();
     };

@@ -22,7 +22,7 @@ pub(crate) mod standard;
 
 /// The type a common name for one means, as a schema spells it: what a database, a spreadsheet or a standard calls a
 /// type, matched without regard to case. Each reader takes what is its own first, then this.
-pub(crate) fn named(name: &str) -> Option<&'static str> {
+fn named(name: &str) -> Option<&'static str> {
     Some(match name.trim().to_ascii_lowercase().as_str() {
         "str" | "string" | "text" | "varchar" | "char" | "keyword" => "str",
         "i64" | "int" | "integer" | "long" | "bigint" | "smallint" | "tinyint" | "short" | "byte" | "unsigned_long" => {
@@ -53,7 +53,7 @@ fn example_of(value: Option<&serde_json::Value>) -> String {
 pub struct Schema {
     pub(crate) id: String,
     pub(crate) title: String,
-    pub(crate) description: String,
+    description: String,
     /// In the table's order.
     pub fields: Vec<Field>,
 }
@@ -63,11 +63,11 @@ pub struct Field {
     /// Its keys from the record's root, dotted.
     pub(crate) path: String,
     /// What the field must hold. An object type holds any object: its fields are rows of their own, under its path.
-    pub(crate) ty: DataType,
-    pub(crate) requirement: Requirement,
-    pub(crate) description: String,
+    ty: DataType,
+    requirement: Requirement,
+    description: String,
     /// A value it may hold, as text.
-    pub(crate) example: String,
+    example: String,
     /// How it maps in an Elasticsearch index, over the mapping its type has (`io::elastic_mapping`).
     pub(crate) elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -183,10 +183,10 @@ fn holds(wants: &DataType, ty: &DataType) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     /// The field's keys from the record's root.
-    pub(crate) keys: Vec<String>,
+    keys: Vec<String>,
     /// The schema's id.
-    pub(crate) schema: String,
-    pub(crate) misfit: Misfit,
+    schema: String,
+    misfit: Misfit,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -213,7 +213,7 @@ impl Misfit {
 
 impl Finding {
     /// The field's path as the pipeline editor shows it.
-    pub(crate) fn path(&self) -> String {
+    fn path(&self) -> String {
         self.keys.join(".")
     }
 }
@@ -226,7 +226,7 @@ impl Schema {
     }
 
     /// The schema's fields as a tree, a node per key, in the schema's order.
-    pub(crate) fn tree(&self) -> Node<'_> {
+    fn tree(&self) -> Node<'_> {
         let mut root = Node::default();
         for f in &self.fields {
             root.insert(&f.keys(), f);
@@ -237,9 +237,9 @@ impl Schema {
 
 /// A key of a schema's tree (`Schema::tree`): the field the schema declares there, if any, and the keys under it.
 #[derive(Default)]
-pub(crate) struct Node<'s> {
-    pub(crate) field: Option<&'s Field>,
-    pub(crate) children: Vec<(String, Node<'s>)>,
+struct Node<'s> {
+    field: Option<&'s Field>,
+    children: Vec<(String, Node<'s>)>,
 }
 
 impl<'s> Node<'s> {
@@ -346,7 +346,7 @@ impl Schema {
     /// the row knows. A field is lacking where the objects it is asked for within are there and do not declare it: a
     /// required one is asked for within the objects the schema names, a recommended one within every object above it.
     /// An open object may carry the key, but the pipeline has not shown that it does.
-    pub(crate) fn check(&self, record: &DataType) -> Vec<Finding> {
+    fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
         let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
         let object = DataType::Struct(Vec::new(), true);
@@ -412,7 +412,7 @@ impl Schema {
     }
 
     /// The field at `keys`, a record's keys from its root, where the schema names one.
-    pub(crate) fn field(&self, keys: &[String]) -> Option<&Field> {
+    fn field(&self, keys: &[String]) -> Option<&Field> {
         let path = keys.join(".");
         self.fields.iter().find(|f| f.path == path)
     }
@@ -509,9 +509,9 @@ pub(crate) struct Told {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Recommended {
     /// The schema's title.
-    pub(crate) schema: String,
+    schema: String,
     /// Each field's path.
-    pub(crate) fields: Vec<String>,
+    fields: Vec<String>,
 }
 
 /// What a check's `findings` against `schemas` say to a pipeline's author: a sentence for each field whose type

@@ -150,12 +150,12 @@ pub struct DestinationTarget {
 /// The `reason` label on `smeltr_rows_dropped_total`: no route matched the row, or no condition of its route took it,
 /// and `Unmatched` is answered with drop (design doc, Exception taxonomy). A source loses rows three ways and only this
 /// label tells them apart.
-pub(crate) const DROPPED_UNMATCHED: &str = "unmatched";
+const DROPPED_UNMATCHED: &str = "unmatched";
 /// A destination refused the row for good, and its answer to `Refused` is drop. One a refused row was delivered to
 /// counts here too, and the row it drops is counted lost as well.
 pub const DROPPED_REJECTED: &str = "rejected";
 /// The pipeline marked the row, and its route answered with drop.
-pub(crate) const DROPPED_EXCEPTION: &str = "exception";
+const DROPPED_EXCEPTION: &str = "exception";
 /// No pipeline could process the row -- a pipeline panicked on its batch, or the memory budget will not fit it
 /// alone -- and `Unprocessable` is answered with drop.
 pub const DROPPED_UNPROCESSABLE: &str = "unprocessable";
@@ -164,7 +164,7 @@ pub const DROPPED_UNPROCESSABLE: &str = "unprocessable";
 /// Runtime stages: a reader keeps whatever membership the source's protocol requires). Short spells of backpressure are
 /// ordinary, and pausing throws away what the client has prefetched; ten seconds is well inside Kafka's poll interval,
 /// and a group's rebalance takes seconds anyway.
-pub(crate) const MEMBERSHIP_AFTER: Duration = Duration::from_secs(10);
+const MEMBERSHIP_AFTER: Duration = Duration::from_secs(10);
 
 /// Ingest and commit: polls the source, tracks each batch at poll time, hands it to transform, and commits what comes
 /// back acknowledged. One per source, and the only thing that touches it -- a Kafka consumer refuses a commit from
@@ -174,19 +174,19 @@ pub struct Reader {
     /// Batches this reader may have outstanding before it stops polling, unless [`Reader::with_byte_budget`] lets it
     /// read on: every transform thread that could be working on this lane has one, and [`MAX_IN_FLIGHT`] more for the
     /// acknowledgment round trip.
-    pub(crate) max_in_flight: usize,
+    max_in_flight: usize,
     /// Bytes past which a reader at `max_in_flight` stops polling: its destinations' largest queue, so every queue
     /// binds first however small its batches are. 0 is none: the batch count alone binds.
     pub byte_budget: usize,
     /// Every destination reachable from this source: what a batch waits on from the moment it is polled. Kept in step
     /// with `Transform::destinations` by [`Worker::add_destination`].
-    pub(crate) destinations: Vec<DestId>,
-    pub(crate) metrics: MetricsHandle,
+    destinations: Vec<DestId>,
+    metrics: MetricsHandle,
     pub source: Box<dyn Source>,
     /// At-least-once bookkeeping. Carries offsets, never rows: egress keeps whatever may have to be re-sent.
     pub commits: CommitTracker,
     /// Whether the source is blocked. The transition is what gets logged.
-    pub(crate) blocked: bool,
+    blocked: bool,
     /// The last outstanding count written to `smeltr_source_in_flight`. Written on change only, so an idle reader
     /// writes nothing and the series is absent until the reader first has a batch out.
     reported_in_flight: usize,
@@ -197,12 +197,12 @@ pub struct Reader {
     /// `block_reason` is.
     pub block_cause: Option<BlockCause>,
     /// Whether the last offset commit was refused, so the log fires on the transition rather than every turn.
-    pub(crate) commit_failing: bool,
+    commit_failing: bool,
     /// When the failing source was last logged, while its polls fail. `None` once a poll succeeds.
     poll_failing: Option<std::time::Instant>,
     /// A tracked batch the handoff would not take. Offered again before the next poll: it is already the oldest thing
     /// the watermark waits on, so dropping it would block every commit behind it.
-    pub(crate) pending: Option<Handed>,
+    pending: Option<Handed>,
     /// How long the reader goes without taking work before it keeps its source's membership: [`MEMBERSHIP_AFTER`].
     pub membership_after: Duration,
     /// Since when the reader has been unable to take work. `None` while it is taking it.
@@ -345,12 +345,12 @@ pub(crate) fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta)
 /// be re-run. Shared, so more than one transform thread can serve the same source; the exclusive half -- the egress
 /// handles a batch's rows are handed to -- stays on [`Transform`].
 pub struct Lane {
-    pub(crate) source_id: SourceId,
+    source_id: SourceId,
     /// The id the author gave this source, which is what a capture names. `None` on the single-source tick driver:
     /// that is not a deployment, and a capture only ever reaches one.
-    pub(crate) source_name: Option<String>,
+    source_name: Option<String>,
     /// What this source's records carry, and how their bytes become `_raw`'s text; the ingest batch is built from it.
-    pub(crate) meta: SourceMeta,
+    meta: SourceMeta,
     /// Batches this source's reader has polled and no transform thread has taken.
     pub batches: Handoff,
     /// Every destination reachable from this source: what its batches are dispatched to, and what its reader waits on.
@@ -358,7 +358,7 @@ pub struct Lane {
     /// deployment runs.
     destinations: Mutex<Vec<DestId>>,
     /// Where a batch's outcome goes: this source's reader, and no other.
-    pub(crate) reports: Reports,
+    reports: Reports,
     parked: Mutex<Parked>,
 }
 
@@ -537,10 +537,10 @@ pub struct Transform {
     pub topology: Arc<CompiledTopology>,
     /// `topology`'s records as Parquet columns.
     columnar: Columnar,
-    pub(crate) destinations: Vec<DestinationTarget>,
+    destinations: Vec<DestinationTarget>,
     /// The process-wide ceiling on columnar memory. A refusal splits the range that asked for too much -- see
     /// `process_batch`.
-    pub(crate) memory: MemoryBudget,
+    memory: MemoryBudget,
     /// Kept across attempts, so a batch reuses the buffers the last one gave back.
     pool: BufferPool,
     /// Capture sessions this worker is running, if any. `None` outside a deployment.
@@ -838,7 +838,7 @@ impl Reader {
 
     /// Whether the outstanding batches stop the reader: past `max_in_flight` of them, and past the byte budget in what
     /// they read or in what tracking them costs ([`TRACKED_BYTES`]).
-    pub(crate) fn over_depth(&self) -> bool {
+    fn over_depth(&self) -> bool {
         let depth = self.commits.depth();
         let budget = self.byte_budget;
         depth > self.max_in_flight && (self.commits.bytes() >= budget || depth * TRACKED_BYTES >= budget)
@@ -2412,10 +2412,10 @@ fn now_millis() -> i64 {
 
 /// One destination's refusal, kept as it worded it -- an operator's diagnosis, not smeltr's paraphrase.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Refusal {
+struct Refusal {
     /// Milliseconds since the epoch, matching every other timestamp this process reports.
-    pub(crate) at_millis: i64,
-    pub(crate) message: String,
+    at_millis: i64,
+    message: String,
 }
 
 /// The most recent refusals every destination gave, across every reader and transform thread that met one.
@@ -2438,7 +2438,7 @@ pub(crate) struct RefusalRing {
 impl RefusalRing {
     /// Record one refusal event for `dest`, worded as `exemplar` -- the one row a caller with many to choose from
     /// picked to stand for the call. Oldest dropped past [`REFUSAL_RING_CAP`].
-    pub(crate) fn record(&self, dest: DestId, exemplar: &str) {
+    fn record(&self, dest: DestId, exemplar: &str) {
         let entry = Refusal {
             at_millis: now_millis(),
             message: truncate(exemplar, MAX_TEXT_LEN),
@@ -2458,7 +2458,7 @@ impl RefusalRing {
     }
 
     /// `dest`'s refusals, oldest first. Empty for a destination that has refused nothing.
-    pub(crate) fn snapshot(&self, dest: DestId) -> Vec<Refusal> {
+    fn snapshot(&self, dest: DestId) -> Vec<Refusal> {
         self.by_dest
             .lock()
             .get(&dest)
@@ -3088,7 +3088,7 @@ struct RouteTap {
 /// What each destination writes of a row, and, for those that write Parquet, each route's record as their columns
 /// (`CompiledTopology::records`).
 #[derive(Default)]
-pub(crate) struct Columnar {
+struct Columnar {
     dests: HashSet<DestId>,
     /// By route, `None` for the rows no pipeline ran on.
     schemas: HashMap<Option<u32>, parquet::Schema>,
@@ -3107,7 +3107,7 @@ struct RouteColumns<'a> {
 }
 
 impl Columnar {
-    pub(crate) fn of(topology: &CompiledTopology) -> Columnar {
+    fn of(topology: &CompiledTopology) -> Columnar {
         let mut schemas = HashMap::new();
         let mut records = HashMap::new();
         for (&route, record) in topology.records.values().flatten() {

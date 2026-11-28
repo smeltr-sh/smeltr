@@ -11,19 +11,19 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ObjectDestinationDto<Store, Access, Encryption> {
     #[serde(flatten)]
-    pub(crate) store: Store,
+    store: Store,
     #[serde(flatten)]
-    pub(crate) encryption: Encryption,
+    encryption: Encryption,
     #[serde(flatten)]
-    pub(crate) access: Access,
+    access: Access,
     #[serde(flatten)]
     pub(crate) objects: ObjectSettingsDto,
     #[serde(flatten)]
     pub(crate) cloud: CloudSettingsDto,
     #[serde(flatten)]
-    pub(crate) tls: TlsDto,
+    tls: TlsDto,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 pub type S3DestinationDto = ObjectDestinationDto<BucketDto, S3AccessDto, KmsKeyDto>;

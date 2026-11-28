@@ -130,9 +130,9 @@ pub struct LoadedSystem {
     /// can be reported the way the file that declared it names it.
     pub(crate) pipeline_ids: Vec<String>,
     /// The schemas each pipeline produces, by `PipelineConfig::id`.
-    pub(crate) produces: Vec<Vec<Arc<crate::schema::Schema>>>,
+    produces: Vec<Vec<Arc<crate::schema::Schema>>>,
     /// The schemas each destination accepts, for the destinations that name any.
-    pub(crate) accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
+    accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
     /// What `validate` compiled; `None` for a system loaded without validating it.
     pub compiled: Option<CompiledTopology>,
 }
@@ -522,7 +522,7 @@ impl LoadedSystem {
 /// runs from that source to that pipeline too, `n` counting those routes in the order they run. `ends` holds each
 /// route's source and pipeline, in that order. A route's id is minted, so it is never the name. The GUI names routes
 /// the same way (`routeName` in `routeFlow.ts`).
-pub(crate) fn route_name<E: PartialEq>(ends: &[E], at: usize, source: &str, pipeline: &str) -> String {
+fn route_name<E: PartialEq>(ends: &[E], at: usize, source: &str, pipeline: &str) -> String {
     let twin = |o: &&E| **o == ends[at];
     match ends.iter().filter(twin).count() {
         1 => format!("{source} \u{2192} {pipeline}"),

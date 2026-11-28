@@ -84,7 +84,7 @@ pub(crate) struct Completion {
 
 /// The pacing model for one destination.
 #[derive(Debug)]
-pub(crate) struct Pacing {
+struct Pacing {
     /// One batch: the target is counted in these.
     batch: usize,
     /// The most the target may be right now: the destination's fair share of the pool, or a stated buffer.
@@ -133,7 +133,7 @@ pub(crate) struct Pacing {
 impl Pacing {
     /// A model whose target is counted in batches of `batch` bytes, starts at two of them, and never passes
     /// `ceiling`.
-    pub(crate) fn new(batch: usize, ceiling: usize) -> Pacing {
+    fn new(batch: usize, ceiling: usize) -> Pacing {
         let batch = batch.max(1);
         let ceiling = ceiling.max(batch);
         Pacing {
@@ -160,31 +160,31 @@ impl Pacing {
     }
 
     /// The bytes the destination may hold now: queued and in flight together.
-    pub(crate) fn target(&self) -> usize {
+    fn target(&self) -> usize {
         self.target
     }
 
     /// What the egress queue may hold: the target, and one batch ready behind it, so the next is made while the
     /// last is on the wire. Never past the ceiling.
-    pub(crate) fn queue_bytes(&self) -> usize {
+    fn queue_bytes(&self) -> usize {
         (self.target + self.batch).min(self.ceiling).max(self.target)
     }
 
     /// The most the target may be. Moves as the pool's share does; the target follows at the next completion.
-    pub(crate) fn set_ceiling(&mut self, ceiling: usize) {
+    fn set_ceiling(&mut self, ceiling: usize) {
         self.ceiling = ceiling.max(self.batch);
         self.target = self.target.clamp(self.batch, self.ceiling);
     }
 
     /// The least round trip seen lately, once there is one.
-    pub(crate) fn round_trip(&self) -> Option<Duration> {
+    fn round_trip(&self) -> Option<Duration> {
         self.least_rtt.map(|(rtt, _)| rtt)
     }
 
     /// How far a probe above the link's measured capacity would stand below the ceiling, in bytes: 0 once the link
     /// carries at least the ceiling over the probe's gain. A model held at its ceiling measures no more than the
     /// ceiling lets through, so this is as near as it can come to saying the ceiling, not the link, is the bound.
-    pub(crate) fn headroom(&self) -> usize {
+    fn headroom(&self) -> usize {
         let wanted = self
             .round_trip()
             .map_or(0.0, |rtt| PROBE_CYCLE[0] * self.rate() * rtt.as_secs_f64());
@@ -196,12 +196,12 @@ impl Pacing {
     }
 
     /// The greatest delivery rate seen lately, in bytes a second.
-    pub(crate) fn rate(&self) -> f64 {
+    fn rate(&self) -> f64 {
         self.rates.iter().map(|(_, r)| *r).fold(0.0, f64::max)
     }
 
     /// A batch of `bytes` was handed to the destination at `now`. The answer goes back with its [`Completion`].
-    pub(crate) fn dispatched(&mut self, bytes: usize, now: Instant) -> Sent {
+    fn dispatched(&mut self, bytes: usize, now: Instant) -> Sent {
         let sent = Sent {
             at: now,
             dispatched: self.dispatched,
@@ -215,14 +215,14 @@ impl Pacing {
     /// A batch handed over failed but for `delivered` of its bytes, and what failed goes back to be sent again: none of
     /// it is in flight any more, and what was delivered counts. No sample: its round trip is the failure's, not
     /// the link's.
-    pub(crate) fn abandoned(&mut self, c: Completion, delivered: usize) {
+    fn abandoned(&mut self, c: Completion, delivered: usize) {
         let delivered = delivered.min(c.bytes);
         self.delivered += delivered as u64;
         self.abandoned += (c.bytes - delivered) as u64;
     }
 
     /// A batch came back acknowledged. Updates the estimates and the target.
-    pub(crate) fn completed(&mut self, c: Completion, now: Instant) {
+    fn completed(&mut self, c: Completion, now: Instant) {
         if c.throttled && !self.round_throttled {
             let held = self.dispatched.saturating_sub(self.delivered + self.abandoned) as f64;
             let batches = (THROTTLE_CUT * held / self.batch as f64).floor().max(1.0);

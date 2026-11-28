@@ -13,13 +13,13 @@ pub struct SocketReceiverDto {
     /// token, so this is what admits a sender, unless the receiver names authorities a sender's certificate must
     /// chain to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) allow_from: Vec<String>,
+    allow_from: Vec<String>,
     /// How a record's bytes become text. See [`EncodingLabel`].
     #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-    pub(crate) encoding: EncodingLabel,
+    encoding: EncodingLabel,
     /// What senders send over. Absent is TCP. Over UDP each datagram is a record, served without TLS.
     #[serde(default, skip_serializing_if = "Transport::is_tcp")]
-    pub(crate) transport: Transport,
+    transport: Transport,
 }
 
 impl ReceiverKindDto for SocketReceiverDto {

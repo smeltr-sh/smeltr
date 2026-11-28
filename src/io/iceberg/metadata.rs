@@ -20,7 +20,7 @@ pub(crate) const ROW_LINEAGE_VERSION: u8 = 3;
 pub(crate) const VARIANT_VERSION: u8 = 3;
 
 /// `current-snapshot-id` of a table with no snapshot, in tables written before the key became optional.
-pub(crate) const NO_SNAPSHOT: i64 = -1;
+const NO_SNAPSHOT: i64 = -1;
 
 /// The first partition field id; ids below it are columns.
 pub(crate) const FIRST_PARTITION_ID: i32 = 1000;

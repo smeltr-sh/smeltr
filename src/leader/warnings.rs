@@ -188,7 +188,7 @@ const AUTHORITY_LAST_PART: f64 = 0.1;
 
 /// How long before a certificate good from `not_before_millis` to `not_after_millis` runs out it is said to be
 /// running out: the last part of its life. The GUI marks one by the same rule (`time.ts`).
-pub(crate) fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
+fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
     ((not_after_millis - not_before_millis) as f64 * AUTHORITY_LAST_PART) as i64
 }
 
@@ -239,13 +239,13 @@ pub struct Warning {
 
 impl Warning {
     /// This, with [`Warning::said_normal`] as `said`.
-    pub(crate) fn said_normal(mut self, said: bool) -> Self {
+    fn said_normal(mut self, said: bool) -> Self {
         self.said_normal = said;
         self
     }
 
     /// A warning with no `area`, `class` or `type`. A condition that has them sets them on what this returns.
-    pub(crate) fn new(
+    fn new(
         condition: Condition,
         subject_kind: SubjectKind,
         subject_id: String,
@@ -2252,7 +2252,7 @@ fn off_by(judged: &throughput::Judged, side: throughput::Outside) -> String {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WarningSpan {
     pub(crate) condition: Condition,
-    pub(crate) severity: Severity,
+    severity: Severity,
     pub(crate) started_millis: i64,
     /// `None` while it still holds.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2747,7 +2747,7 @@ match (failure, running) {
 }
 
 /// The catalog entry name [`worker_not_deploying_its_target`] keeps its start time under.
-pub(crate) const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
+const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
 
 /// How long a worker may be behind the commit it found before that is a warning. Longer than the startup budget a
 /// worker gives a runtime, so a deployment that is merely slow is never reported as one that failed.

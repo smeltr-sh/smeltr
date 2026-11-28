@@ -138,7 +138,7 @@ enum Cut {
 
 impl Records {
     /// The bytes of the answer it cuts from.
-    pub(crate) fn held(&self) -> usize {
+    fn held(&self) -> usize {
         match &self.cut {
             Cut::Array(text) => text.len(),
             _ => self.body.len(),
@@ -298,7 +298,7 @@ impl Records {
 }
 
 /// Sends one request: a GET of an address, or a POST of the source's body to it.
-pub(crate) trait Fetch: Send {
+trait Fetch: Send {
     fn ask(&mut self, url: &str) -> Result<Answer, IoError>;
 }
 
@@ -322,7 +322,7 @@ pub(crate) trait Authorize: Send {
 
 /// The real fetch: blocking requests over one agent, with the source's headers on every request, and a token when
 /// the source signs in as an app.
-pub(crate) struct UreqFetch {
+struct UreqFetch {
     agent: ureq::Agent,
     headers: Vec<(String, String)>,
     /// Whether each request is a POST rather than a GET.
@@ -333,7 +333,7 @@ pub(crate) struct UreqFetch {
 }
 
 impl UreqFetch {
-    pub(crate) fn new(config: &ureq::config::Config, headers: Vec<(String, String)>) -> Self {
+    fn new(config: &ureq::config::Config, headers: Vec<(String, String)>) -> Self {
         UreqFetch {
             agent: crate::io::http::agent(config.clone()),
             headers,
@@ -344,14 +344,14 @@ impl UreqFetch {
     }
 
     /// Sends every request as a POST of `body`, JSON, instead of a GET.
-    pub(crate) fn posting(mut self, body: Option<String>) -> Self {
+    fn posting(mut self, body: Option<String>) -> Self {
         self.post = true;
         self.body = body;
         self
     }
 
     /// Signs every request in with `sign_in`'s token.
-    pub(crate) fn signed_in(mut self, sign_in: impl Authorize + 'static) -> Self {
+    fn signed_in(mut self, sign_in: impl Authorize + 'static) -> Self {
         self.sign_in = Some(Box::new(sign_in));
         self
     }
@@ -523,7 +523,7 @@ struct Current {
 }
 
 /// An [`Api`] as a [`Source`].
-pub(crate) struct Poller<A, F> {
+struct Poller<A, F> {
     api: A,
     fetch: F,
     interval: Duration,
@@ -548,7 +548,7 @@ pub(crate) struct Poller<A, F> {
 }
 
 impl<A: Api, F: Fetch> Poller<A, F> {
-    pub(crate) fn new(api: A, fetch: F, interval: Duration) -> Self {
+    fn new(api: A, fetch: F, interval: Duration) -> Self {
         Poller {
             api,
             fetch,

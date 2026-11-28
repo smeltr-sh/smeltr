@@ -850,7 +850,7 @@ fn delete_ref(repo: &gix::Repository, reference: &str, at: Option<gix::ObjectId>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeEntry {
     /// Git's own mode: `100644` a file, `040000` a directory, `120000` a symlink.
-    pub(crate) mode: String,
+    mode: String,
     pub name: String,
 }
 
@@ -1318,7 +1318,7 @@ pub struct Change {
 }
 
 /// What a change without a reason is closed with: git has no empty commit message, and the absence is worth saying.
-pub(crate) const NO_REASON: &str = "Closed without a reason";
+const NO_REASON: &str = "Closed without a reason";
 
 /// Names the deployer on a deploy commit, since git's own two slots are spoken for: the author wrote the content
 /// and the committer is the leader that wrote the object.
@@ -1982,7 +1982,7 @@ fn saves(repo_path: &Path, branch: &str) -> Result<Vec<TimelineEvent>, GitError>
 }
 
 /// Forget a change entirely, which is what deleting its branch means.
-pub(crate) fn delete_change(repo_path: &Path, branch: &str) -> Result<(), GitError> {
+fn delete_change(repo_path: &Path, branch: &str) -> Result<(), GitError> {
     check_branch_name(branch)?;
     delete_ref(&open(repo_path)?, &change_ref(branch), None)
 }
@@ -1998,7 +1998,7 @@ pub use merge::{BringCurrent, BroughtCurrent, Choices, Conflict, Conflicts, Pick
 /// bundle that will not load is one no worker in that group can run. A caller that refuses names the first and says
 /// what did not happen as a result, because that differs -- a merge leaves the branch alone, a deploy leaves `main`
 /// alone.
-pub(crate) fn groups_that_do_not_load(repo_path: &Path, tree: &str) -> Result<Vec<(String, String)>, GitError> {
+fn groups_that_do_not_load(repo_path: &Path, tree: &str) -> Result<Vec<(String, String)>, GitError> {
     Ok(super::tree::groups_at(repo_path, tree)?
         .into_iter()
         .filter_map(|group| {
@@ -2051,8 +2051,8 @@ fn deploy_change_from(data_dir: &Path, branch: &str, tip: Option<&str>, author: 
 /// A change squashed onto `main`'s head, every check of an approval passed, and nothing moved yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Squash {
-    pub(crate) branch: String,
-    pub(crate) title: String,
+    branch: String,
+    title: String,
     /// The squash commit, whose one parent is `head`.
     pub(crate) commit: String,
     /// `main`'s head it was squashed onto.
@@ -2271,7 +2271,7 @@ pub(crate) fn worse_than_running(repo_path: &Path, commit: &str) -> Result<Optio
 
 /// What the leader knows of each branch on the remote it follows, under this prefix: `main` as last fetched, and every
 /// other branch as last pushed (`leader::remote`). Hidden from workers.
-pub(crate) const HOST_REFS: &str = "refs/remotes/origin/";
+const HOST_REFS: &str = "refs/remotes/origin/";
 
 /// Where the `main` of the remote this leader follows lands when fetched (`leader::remote`).
 pub(crate) const FETCHED_MAIN_REF: &str = "refs/remotes/origin/main";
@@ -2642,9 +2642,9 @@ pub struct FileChange {
     pub path: String,
     /// `A`, `M` or `D`. Rename detection is off, so a move is an add and a delete -- which is what a bundle's
     /// one-file-per-pipeline layout means anyway.
-    pub(crate) status: String,
-    pub(crate) added: u32,
-    pub(crate) removed: u32,
+    status: String,
+    added: u32,
+    removed: u32,
 }
 
 /// What two revisions differ in: each file, and the hunks of all of them or of one.
@@ -2952,7 +2952,7 @@ fn patch(
 
 /// What one file's change between `before` and `after` adds and removes, as a branch's file list shows it. `status`
 /// is `A`, `M` or `D`.
-pub(crate) fn file_change(path: String, status: &str, before: &[u8], after: &[u8]) -> FileChange {
+fn file_change(path: String, status: &str, before: &[u8], after: &[u8]) -> FileChange {
     // A binary file has no lines to count, which is the `-` git writes for both.
     let (added, removed) = if is_binary(before) || is_binary(after) {
         (0, 0)
@@ -2973,7 +2973,7 @@ pub(crate) fn file_change(path: String, status: &str, before: &[u8], after: &[u8
 /// What the file's presence, mode and blob ids did is not repeated here: the response carries a `files` list beside
 /// this text, and the path, the status and the counts are already on it. The naming line stays, because it is what
 /// separates one file's hunks from the next's.
-pub(crate) fn file_patch(at: &str, before: &[u8], after: &[u8]) -> Result<String, GitError> {
+fn file_patch(at: &str, before: &[u8], after: &[u8]) -> Result<String, GitError> {
     let mut out = format!("diff --git a/{at} b/{at}\n");
     if is_binary(before) || is_binary(after) {
         out.push_str(&format!("Binary files a/{at} and b/{at} differ\n"));
@@ -3285,7 +3285,7 @@ pub(crate) fn pack_of(
 }
 
 /// The loose objects past which a repository is packed: git's own `gc.auto` default.
-pub(crate) const LOOSE_LIMIT: usize = 6700;
+const LOOSE_LIMIT: usize = 6700;
 
 /// The packs past which a repository's packs are merged: git's own `gc.autoPackLimit` default. A fetch adds one.
 pub(crate) const PACK_LIMIT: usize = 50;

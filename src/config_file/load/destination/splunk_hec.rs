@@ -7,22 +7,22 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "camelCase")]
 pub struct SplunkHecDestinationDto {
     /// The collector's base address; the destination adds the endpoint paths itself.
-    pub(crate) url: String,
+    url: String,
     /// Zone -> the address a worker in that zone sends to instead of `url`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) zone_urls: BTreeMap<String, String>,
+    zone_urls: BTreeMap<String, String>,
     /// The credential holding the HEC token, never the token itself.
-    pub(crate) token: SecretRefDto,
+    token: SecretRefDto,
     /// Where a row with no `__destination.index` goes. Absent leaves the token's own default index. The raw
     /// endpoint files every row here, so it refuses a row whose `__destination.index` names another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) index: Option<String>,
+    index: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) sourcetype: Option<String>,
+    sourcetype: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) source: Option<String>,
+    source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) host: Option<String>,
+    host: Option<String>,
     /// `"event"` (default) or `"raw"`; see `plan::topology::Endpoint`.
     #[serde(default, skip_serializing_if = "EndpointDto::is_default")]
     pub(crate) endpoint: EndpointDto,
@@ -31,24 +31,24 @@ pub struct SplunkHecDestinationDto {
     pub(crate) format: FormatDto,
     /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) field: Option<String>,
+    field: Option<String>,
     /// `"indexer"` (default) or `"receipt"`; see `plan::topology::Acknowledgement`.
     #[serde(default, skip_serializing_if = "AcknowledgementDto::is_default")]
     pub(crate) acknowledgement: AcknowledgementDto,
     #[serde(flatten)]
-    pub(crate) tls: TlsDto,
+    tls: TlsDto,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
     pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
     pub(crate) max_request_bytes: RequestBytes,
     /// Unset means the default, or one whole request if that is larger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) buffer_bytes: Option<BufferBytes>,
+    buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver, its acknowledgement included, before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
     pub(crate) stall_after_secs: StallAfter,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for SplunkHecDestinationDto {

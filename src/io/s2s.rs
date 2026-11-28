@@ -106,11 +106,11 @@ pub struct Event {
 /// Where an event's bytes sit in the source the forwarder reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stream {
-    pub(crate) id: u64,
+    id: u64,
     /// Where in the source the event's bytes start.
-    pub(crate) offset: u64,
+    offset: u64,
     /// The event's place among those broken from one chunk.
-    pub(crate) index: u64,
+    index: u64,
 }
 
 /// An indexed field: from inputs.conf `_meta`, from INDEXED_EXTRACTIONS, or the forwarder's own.
@@ -580,7 +580,7 @@ pub(crate) struct Signature {
     /// The forwarder's server name, its hostname by default.
     pub(crate) server: String,
     /// Its management port, as the text it sent.
-    pub(crate) port: String,
+    port: String,
 }
 
 /// The signature a connection opens with, once [`SIGNATURE_LEN`] bytes are held, and `None` before. A first field
@@ -612,7 +612,7 @@ pub(crate) fn signature(bytes: &[u8]) -> Result<Option<Signature>, Malformed> {
 /// bytes because `_raw` is a chunk of a file cut wherever the forwarder cut it, inside a character too.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Message {
-    pub(crate) pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    pairs: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Message {
@@ -795,7 +795,7 @@ pub(crate) struct Capabilities {
     /// It holds what it sent until the receiver acks it (`useACK`).
     pub(crate) ack: bool,
     /// It sends compressed: v4 after [`COMPRESSED`], and over TCP v3 in [`read_compressed`] frames.
-    pub(crate) compression: bool,
+    compression: bool,
 }
 
 /// Reads a message's `__s2s_capabilities`: `key=value` pairs separated by `;`. `ack` and `compression` are 0 or 1,

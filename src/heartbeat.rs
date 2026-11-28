@@ -32,11 +32,11 @@ pub const REQUEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(3
 /// of raw records, which is three orders of magnitude past a heartbeat; on a link where that takes longer than
 /// [`REQUEST_BUDGET`], every retry would restart it and the records would expire undelivered. It is the same five
 /// minutes a capture itself may run for.
-pub(crate) const CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
+const CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// How long one lookup file may take to arrive. A file is up to 2 GB, so this is what that size needs at a little over
 /// a megabyte a second; a deploy that needs a file waits on it, and one that does not fetches nothing.
-pub(crate) const LOOKUP_FILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const LOOKUP_FILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// What one string may contribute to a heartbeat: a log's message and fields, a destination's refusal, a source's
 /// block reason. The console keeps the whole of a message; the wire does not, because what a destination or a TLS
@@ -47,7 +47,7 @@ pub(crate) const LOOKUP_FILE_BUDGET: std::time::Duration = std::time::Duration::
 pub(crate) const MAX_TEXT_LEN: usize = 1000;
 
 /// Fields one log carries onward. A call site with more than this to say has stopped describing an event.
-pub(crate) const MAX_LOG_FIELDS: usize = 16;
+const MAX_LOG_FIELDS: usize = 16;
 
 /// What the leader will read from one heartbeat. Stated rather than inherited from the web framework, because
 /// the bounds above are chosen against it: a full batch of the worst event there can be measures 9.1 MB, and
@@ -805,7 +805,7 @@ impl StreamReport {
 impl SenderCounts {
     /// Fold `later`'s counts into this field's; see [`StreamReport::absorb`]. A field that reached too many values is
     /// counted no more.
-    pub(crate) fn absorb(&mut self, later: SenderCounts) {
+    fn absorb(&mut self, later: SenderCounts) {
         self.too_many |= later.too_many;
         let mut at: std::collections::HashMap<String, usize> = self
             .values
@@ -831,7 +831,7 @@ impl SenderCounts {
 
 impl ParserShape {
     /// Fold `later`'s counts into this shape; see [`StreamReport::absorb`].
-    pub(crate) fn absorb(&mut self, later: ParserShape) {
+    fn absorb(&mut self, later: ParserShape) {
         self.rows += later.rows;
         self.fields_dropped += later.fields_dropped;
         for field in later.fields {
@@ -846,7 +846,7 @@ impl ParserShape {
 
 impl FieldShape {
     /// Fold `later`'s counts into this field; see [`StreamReport::absorb`].
-    pub(crate) fn absorb(&mut self, later: FieldShape) {
+    fn absorb(&mut self, later: FieldShape) {
         self.declared = later.declared;
         self.suggested = later.suggested;
         self.present += later.present;
@@ -863,7 +863,7 @@ impl FieldShape {
 
 impl UnmatchedStreams {
     /// Fold `later`'s counts into this source's; see [`StreamReport::absorb`].
-    pub(crate) fn absorb(&mut self, later: UnmatchedStreams) {
+    fn absorb(&mut self, later: UnmatchedStreams) {
         self.rows += later.rows;
         self.keys_dropped += later.keys_dropped;
         for key in later.keys {

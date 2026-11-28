@@ -207,7 +207,7 @@ pub(crate) struct Lost {
 impl<'d> Spread<'d> {
     /// `objects` take the keys `fields` does not name; each one's `under` is read from `batch`. Where `ctx` tallies
     /// fields, for a preview, it also keeps what each unclaimed key held.
-    pub(crate) fn new(
+    fn new(
         rows: usize,
         fields: &[Output],
         objects: &[ParseObject],
@@ -673,7 +673,7 @@ impl<'d> Spread<'d> {
     /// `UnparsableField` on that row, and each row whose keys contradict as a `KeyContradiction`. Each object's
     /// unclaimed fields are last: one object per row of the keys laid there, null where a row has none.
     /// Each exception names what it read under `input`.
-    pub(crate) fn collapse(mut self, ctx: &mut Ctx, input: SlotId) -> Vec<(SlotId, Column)> {
+    fn collapse(mut self, ctx: &mut Ctx, input: SlotId) -> Vec<(SlotId, Column)> {
         while self.row < self.rows {
             self.flush(ctx.pool);
             self.row += 1;

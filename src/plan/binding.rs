@@ -37,7 +37,7 @@ pub(crate) struct Draft<'e> {
     pub(crate) fields: BTreeMap<String, Part<'e>>,
     pub(crate) unclaimed: Vec<Source<'e>>,
     /// Whether a literal builds it: bound, it is open, its unclaimed fields holding no key where nothing lays any.
-    pub(crate) built: bool,
+    built: bool,
 }
 
 #[derive(Debug)]

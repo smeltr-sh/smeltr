@@ -85,11 +85,11 @@ pub fn client(issuer: &str) -> Result<reqwest::Client, String> {
 /// What discovery found out about a provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provider {
-    pub(crate) issuer: String,
-    pub(crate) authorization_endpoint: String,
-    pub(crate) token_endpoint: String,
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
     pub jwks_uri: String,
-    pub(crate) token_auth: TokenAuth,
+    token_auth: TokenAuth,
 }
 
 /// Reads `issuer`'s discovery document. Refused unless it names the same issuer exactly, every endpoint passes the
@@ -168,7 +168,7 @@ pub async fn fetch_jwks(client: &reqwest::Client, uri: &str) -> Result<Jwks, Str
 impl Jwks {
     /// A key set as JSON. RSA and EC P-256 and P-384 keys meant for signatures are kept; any other key is skipped, so
     /// a set that also holds encryption keys still works. A set with no key kept is refused.
-    pub(crate) fn parse(json: &[u8]) -> Result<Jwks, String> {
+    fn parse(json: &[u8]) -> Result<Jwks, String> {
         let set: serde_json::Value =
             serde_json::from_slice(json).map_err(|e| format!("the key set is not JSON: {e}"))?;
         let listed = set

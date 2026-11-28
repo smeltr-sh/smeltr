@@ -6,28 +6,28 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElasticsearchDestinationDto {
-    pub(crate) url: String,
+    url: String,
     /// Zone -> the address a worker in that zone sends to instead of `url`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) zone_urls: BTreeMap<String, String>,
-    pub(crate) default_index: String,
+    zone_urls: BTreeMap<String, String>,
+    default_index: String,
     #[serde(flatten)]
-    pub(crate) tls: TlsDto,
+    tls: TlsDto,
     /// The credential holding the API key or a whole `Authorization` header value, never the value itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auth: Option<SecretRefDto>,
     /// Basic auth, in place of `auth`: `username` and `password` together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) username: Option<String>,
+    username: Option<String>,
     /// The credential holding `username`'s password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) password: Option<SecretRefDto>,
+    password: Option<SecretRefDto>,
     /// `"create"` (default) or `"index"`; see `plan::topology::BulkAction`.
     #[serde(default, alias = "docId", skip_serializing_if = "BulkActionDto::is_default")]
     pub(crate) action: BulkActionDto,
     /// The row field holding the document's `_id`. Omitted, it is `__destination.id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) id_field: Option<String>,
+    id_field: Option<String>,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
     pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "BulkBytes::is_default")]
@@ -35,18 +35,18 @@ pub struct ElasticsearchDestinationDto {
     /// Unset means the default, or one whole bulk request if that is larger: raising `max_bulk_bytes` alone must
     /// never leave a destination unable to hand a request over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) buffer_bytes: Option<BufferBytes>,
+    buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
     pub(crate) stall_after_secs: StallAfter,
     /// Whether a worker learns the cluster's nodes from `url` and spreads its requests across them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) sniff: bool,
+    sniff: bool,
     /// The node attribute naming a node's zone, which sniffing prefers the worker's own of. Absent is `zone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) zone_attribute: Option<String>,
+    zone_attribute: Option<String>,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for ElasticsearchDestinationDto {

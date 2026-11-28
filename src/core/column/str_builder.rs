@@ -145,7 +145,7 @@ impl StrBuilder {
     }
 
     /// `push_grow` of `parts` written one after another as one row, so a caller joins them without a copy of its own.
-    pub(crate) fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
+    fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
         self.unchecked = true;
         self.put_parts_grow(pool, parts);
     }

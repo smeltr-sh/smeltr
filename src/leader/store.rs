@@ -556,7 +556,7 @@ impl StoreError {
         StoreError::of(ErrorKind::Invalid, message)
     }
 
-    pub(crate) fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
+    fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
         StoreError {
             kind,
             message: message.into(),

@@ -14,12 +14,12 @@ pub mod logic;
 pub mod netops;
 pub mod objectops;
 pub(crate) mod pieces;
-pub(crate) mod rebuildops;
+mod rebuildops;
 pub mod stdfuncs;
 pub mod strops;
 pub mod table;
 pub mod timeparse;
-pub(crate) mod useragent;
+mod useragent;
 pub(crate) mod webops;
 
 use crate::core::column::Column;

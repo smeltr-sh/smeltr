@@ -38,7 +38,7 @@ pub enum Tag<'d> {
 }
 
 /// An object's keys and values, in the order the record had them.
-pub(crate) type Fields<'d> = Vec<(Cow<'d, str>, Tag<'d>)>;
+type Fields<'d> = Vec<(Cow<'d, str>, Tag<'d>)>;
 
 /// A value written piece by piece as a walk reads it: into its encoding (`Bytes`), or into a declared column
 /// (`typed::Slot`). A container's members arrive between its begin and its end, each through the

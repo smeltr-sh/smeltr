@@ -23,13 +23,13 @@ pub struct RecordView<'a> {
 /// One object of the tree: its fields, and where its unclaimed fields come from.
 pub(crate) struct Object<'a> {
     pub(crate) fields: Vec<(Key, Field<'a>)>,
-    pub(crate) unclaimed: Unclaimed<'a>,
+    unclaimed: Unclaimed<'a>,
     /// Keys of the unclaimed fields that are gone, though their column still holds them (`plan::tree::Object::removed`).
     pub(crate) removed: Vec<String>,
     /// Whether this is the record's own object, whose `__` keys are the engine's and never written.
-    pub(crate) hide_internal: bool,
+    hide_internal: bool,
     /// The fields' keys, made at the first `claims`.
-    pub(crate) keys: std::cell::OnceCell<Keys<String, ()>>,
+    keys: std::cell::OnceCell<Keys<String, ()>>,
 }
 
 pub(crate) enum Field<'a> {
@@ -40,7 +40,7 @@ pub(crate) enum Field<'a> {
 }
 
 /// Where an object's unclaimed fields come from on a row.
-pub(crate) enum Unclaimed<'a> {
+enum Unclaimed<'a> {
     None,
     /// A slot's column: a variant object per row.
     Slot(VariantRows<'a>),

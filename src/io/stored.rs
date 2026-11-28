@@ -46,7 +46,7 @@ fn unclaimed(held: &RecordObject, at: &[String], fields: &[(Entry, DataType)]) -
 }
 
 /// Where a table's rows hold one entry of a record: found once for the table, then read from each row.
-pub(crate) struct Place<'f> {
+struct Place<'f> {
     entry: &'f Entry,
     fields: &'f [(Entry, DataType)],
     keys: Vec<String>,
@@ -60,7 +60,7 @@ pub(crate) struct Place<'f> {
 impl<'f> Place<'f> {
     /// The place of `entry` of `fields` under `columns`. Its own column is nearest. After it come the columns above it,
     /// each an object's own column or the column of its unclaimed fields, the deepest object first and the root's last.
-    pub(crate) fn of(columns: &[CaptureColumn], entry: &'f Entry, fields: &'f [(Entry, DataType)]) -> Place<'f> {
+    fn of(columns: &[CaptureColumn], entry: &'f Entry, fields: &'f [(Entry, DataType)]) -> Place<'f> {
         let keys = entry.keys();
         let (mut held, mut below) = (Vec::new(), Vec::new());
         for (c, column) in columns.iter().enumerate() {
@@ -119,10 +119,7 @@ impl<'f> Place<'f> {
     /// entry's place inside the next. A field's object also takes what the row holds in each column below the field. A
     /// row holds nothing in a column its batch did not have (`config_file::sample_table`). `None` where the row holds
     /// nothing in any. `Err` is the text of a cell that failed its type, or of a value on the way that holds no field.
-    pub(crate) fn read<'a>(
-        &self,
-        row: &'a CapturedRow,
-    ) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
+    fn read<'a>(&self, row: &'a CapturedRow) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
         use serde_json::Value;
         'column: for (nearest, &(depth, c)) in self.held.iter().enumerate() {
             let mut value = row.values.get(c).unwrap_or(&Value::Null);
@@ -348,7 +345,7 @@ fn receiver_filed(fields: &SourceFields) -> Option<Vec<(String, Vec<u8>)>> {
 }
 
 /// `v` in `core::variant`'s encoding.
-pub(crate) fn put_variant(out: &mut Vec<u8>, v: &serde_json::Value) {
+fn put_variant(out: &mut Vec<u8>, v: &serde_json::Value) {
     use crate::core::variant;
     use serde_json::Value;
     match v {

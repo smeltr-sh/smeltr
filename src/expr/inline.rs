@@ -74,7 +74,7 @@ pub(crate) const RESERVED_PREFIXES: [&str; 2] = ["__inl", LOCAL_PREFIX];
 
 /// The prefix of a user's local that a function can name, renamed so no call site captures it (`lexical`). It carries
 /// the user's name, and every message gives that name.
-pub(crate) const LOCAL_PREFIX: &str = "__loc";
+const LOCAL_PREFIX: &str = "__loc";
 
 /// `text` with every local `lexical` renamed under the name the user wrote.
 pub(crate) fn user_names(text: &str) -> std::borrow::Cow<'_, str> {

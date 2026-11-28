@@ -241,7 +241,7 @@ fn is_library(target: &str) -> bool {
 /// `level` as a line from `target` is kept: a library's info is debug here and its debug is trace, since what a
 /// library says at those levels Smeltr says better itself. Its warn and error are what they say. A library's
 /// target is a module path; `tracing-log` relays the `log` facade from a callsite whose target is `log`.
-pub(crate) fn as_said_here(target: &str, level: Level) -> Level {
+fn as_said_here(target: &str, level: Level) -> Level {
     if !is_library(target) {
         return level;
     }

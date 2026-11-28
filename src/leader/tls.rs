@@ -994,7 +994,7 @@ pub struct Rotation {
     pub incoming: String,
     /// The root still being served, so a caller can say which of the two in the bundle is which without matching
     /// keys to certificates itself.
-    pub(crate) outgoing: String,
+    outgoing: String,
     pub started_millis: i64,
     /// When this leader signs under the incoming root whatever the fleet has reported. An operator rotating the
     /// leader's own authority sets it, because only they know how long their workers take to come round, and
@@ -1309,7 +1309,7 @@ fn self_signed_authority(pem: &[u8]) -> Result<bool, String> {
 }
 
 /// The root `chain` is signed under, as the one PEM block of `ca` that holds it.
-pub(crate) fn signing_root_pem(ca: &[u8], chain: &[u8]) -> Result<(Described, String), String> {
+fn signing_root_pem(ca: &[u8], chain: &[u8]) -> Result<(Described, String), String> {
     let root = signing_root(ca, chain)?;
     let mut only = Vec::new();
     for block in blocks(ca)? {
@@ -2216,7 +2216,7 @@ pub(crate) mod tests {
 
     /// `chain` and `key` as the newest version of the entry `supplied` in `dir`'s list, served with the root in `ca`
     /// that signs it, as the upload form chooses it.
-    pub(crate) fn listed(dir: &Path, chain: &[u8], key: &[u8], ca: &[u8]) -> Entry {
+    fn listed(dir: &Path, chain: &[u8], key: &[u8], ca: &[u8]) -> Entry {
         let list = list_of(dir).expect("a list");
         let (chain, key) = (std::str::from_utf8(chain).unwrap(), std::str::from_utf8(key).unwrap());
         let version = match list.add_certificate_version("supplied", chain, key, None) {
@@ -2276,17 +2276,17 @@ pub(crate) mod tests {
     }
 
     /// The certificate the socket in `dir` presents, without its root.
-    pub(crate) fn served_cert(dir: &Path) -> Result<Vec<u8>, String> {
+    fn served_cert(dir: &Path) -> Result<Vec<u8>, String> {
         Ok(to_serve(dir)?.1)
     }
 
     /// The private key of [`served_cert`].
-    pub(crate) fn served_key(dir: &Path) -> Result<Vec<u8>, String> {
+    fn served_key(dir: &Path) -> Result<Vec<u8>, String> {
         Ok(to_serve(dir)?.2)
     }
 
     /// A new version of the leader's own entry, served, as the renewal pass issues one.
-    pub(crate) fn renew(dir: &Path) -> Result<(), String> {
+    fn renew(dir: &Path) -> Result<(), String> {
         issue_own(
             dir,
             &Issued {

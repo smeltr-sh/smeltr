@@ -119,7 +119,7 @@ impl Filter {
 }
 
 /// One capture in progress on this worker: what it keeps, what it has kept, and what stops it.
-pub(crate) struct Session {
+struct Session {
     invitation: CaptureInvitation,
     /// Which admission of its id this is. See [`Admitted`].
     admission: u64,
@@ -654,7 +654,7 @@ impl Captures {
     }
 
     /// Whether a deployment is reading `source` right now.
-    pub(crate) fn is_deployed(&self, source: &str) -> bool {
+    fn is_deployed(&self, source: &str) -> bool {
         self.deployed.lock().sources.iter().any(|s| s == source)
     }
 
@@ -725,7 +725,7 @@ impl Captures {
     }
 
     /// Offer records to one admission of a session, for the cold path, which polls a source of its own.
-    pub(crate) fn offer(&self, admitted: &Admitted, records: &[SourceRecord], text: &[&str]) {
+    fn offer(&self, admitted: &Admitted, records: &[SourceRecord], text: &[&str]) {
         self.fill(&admitted.invitation.session, admitted.admission, records, text, None);
     }
 
@@ -812,7 +812,7 @@ impl Captures {
 
     /// Keep what Run found out about `admitted`'s query. `meta`, where given, is the record the worker declared from
     /// the query's columns for a source that declared none, and the session's filter is compiled against it.
-    pub(crate) fn describe(&self, admitted: &Admitted, run: crate::heartbeat::SqlRun, meta: Option<SourceMeta>) {
+    fn describe(&self, admitted: &Admitted, run: crate::heartbeat::SqlRun, meta: Option<SourceMeta>) {
         let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission) else {
             return;
@@ -838,7 +838,7 @@ impl Captures {
 
     /// End `admitted` with what it has, for a capture that has read all its source gives it. It ends as at its match
     /// count, the bound a leader already knows: the sample is as large as it will get.
-    pub(crate) fn end(&self, admitted: &Admitted) {
+    fn end(&self, admitted: &Admitted) {
         let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission)
             && s.open()
@@ -1121,7 +1121,7 @@ pub use crate::plan::tree::UNCLAIMED;
 /// The fields a pipeline writes (`plan::dictionary::record_type`), as a source's record declares its own: each leaf,
 /// and each open object's unclaimed fields. None for a record that is not a struct: its rows are shown by their own
 /// keys.
-pub(crate) fn written_fields(record: &DataType) -> Vec<(Entry, DataType)> {
+fn written_fields(record: &DataType) -> Vec<(Entry, DataType)> {
     // An object a pipeline wrote with nothing in it declares no field: here it is an object that holds whatever
     // keys it has.
     fn holding(ty: &DataType) -> DataType {
@@ -1299,7 +1299,7 @@ fn held_row(record: &crate::io::OwnedRecord, why: &str) -> (Vec<CaptureColumn>, 
 /// source nothing is running -- which is exactly when a deployment is most likely to start underneath it. Several
 /// workers capturing the same session share this id and so split the partitions rather than each reading all of
 /// them.
-pub(crate) fn capture_group_id(session: &str) -> String {
+fn capture_group_id(session: &str) -> String {
     format!("smeltr-capture-{session}")
 }
 
@@ -1313,7 +1313,7 @@ pub(crate) const CAPTURE_LABEL: &str = "capture";
 ///
 /// Nothing on this path commits -- there is no `CommitTracker` on it at all -- so the group id never accumulates an
 /// offset and the source is left exactly as it was found.
-pub(crate) fn cold_source_config(
+fn cold_source_config(
     source: &crate::config_file::SourceDto,
     session: &str,
     from: Option<crate::config_file::StartPositionDto>,

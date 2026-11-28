@@ -27,7 +27,7 @@ use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
 /// Where the marks are kept, as JSON.
-pub(crate) const MARKS_KEY: &str = "warnings.source_rows_marks";
+const MARKS_KEY: &str = "warnings.source_rows_marks";
 
 /// Every mark that still says something.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -410,8 +410,8 @@ pub(crate) async fn reset_history(
 /// The preset to pick for a source, for its senders, or for both.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Picking {
-    pub(crate) rows: Option<Preset>,
-    pub(crate) senders: Option<Preset>,
+    rows: Option<Preset>,
+    senders: Option<Preset>,
 }
 
 /// `PUT /api/areas/:area/sources/:id/preset`: picks the preset the source is judged at, the one its senders are, or
@@ -440,8 +440,8 @@ pub(crate) async fn put_preset(
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Marked {
-    pub(crate) since_millis: i64,
-    pub(crate) was: Was,
+    since_millis: i64,
+    was: Was,
 }
 
 /// A below-normal warning of one sender of a source, and what an editor answered it was.
@@ -449,9 +449,9 @@ pub(crate) struct Marked {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SenderMarked {
     #[serde(flatten)]
-    pub(crate) sender: Sender,
+    sender: Sender,
     #[serde(flatten)]
-    pub(crate) marked: Marked,
+    marked: Marked,
 }
 
 /// `POST /api/areas/:area/sources/:id/mark`: answers what one of the source's below-normal warnings of the past year
@@ -555,10 +555,10 @@ pub(crate) async fn past_sender(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ChartQuery {
-    pub(crate) from_millis: i64,
-    pub(crate) to_millis: i64,
+    from_millis: i64,
+    to_millis: i64,
     /// The width to draw the rate and its range at, as a warning that width began names it.
-    pub(crate) window_millis: Option<i64>,
+    window_millis: Option<i64>,
 }
 
 /// `GET /api/areas/:area/sources/:id/chart?fromMillis=&toMillis=&windowMillis=`: the source's rows against its range

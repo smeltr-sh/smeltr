@@ -48,7 +48,7 @@ macro_rules! binops {
         }
 
         #[cfg(test)]
-        pub(crate) fn all_rows() -> Vec<(BinOp, DataType, DataType, DataType)> {
+        fn all_rows() -> Vec<(BinOp, DataType, DataType, DataType)> {
             vec![
                 $((BinOp::$op, DataType::$lhs, DataType::$rhs, DataType::$res),)*
             ]

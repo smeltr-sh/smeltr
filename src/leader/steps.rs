@@ -133,7 +133,7 @@ pub(crate) fn upgrade_sqlite(conn: &mut Connection, store: &str, steps: &[&str])
 }
 
 /// Whether a build that knows `known` steps may use a store whose `min_reader` is as given.
-pub(crate) fn check(store: &str, min_reader: usize, known: usize) -> Result<(), String> {
+fn check(store: &str, min_reader: usize, known: usize) -> Result<(), String> {
     if min_reader > known {
         return Err(format!(
             "{store} needs a smeltr that knows {min_reader} of its steps, and this one knows {known}. A newer build \
@@ -201,7 +201,7 @@ pub struct RepoStep {
     pub source: &'static str,
     /// Safe to run twice: a step and the version that records it cannot be written together, so a leader stopped
     /// between them runs the step again.
-    pub(crate) run: fn(&Path) -> Result<(), String>,
+    run: fn(&Path) -> Result<(), String>,
     pub(crate) additive: bool,
 }
 

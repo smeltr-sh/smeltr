@@ -1,10 +1,10 @@
-pub(crate) mod binding;
+mod binding;
 pub mod compile;
 pub mod config;
 pub mod dictionary;
 pub(crate) mod dot;
 pub mod exec;
-pub(crate) mod lower;
+mod lower;
 pub mod output;
 pub mod parse_call;
 pub mod resolve;

@@ -10,7 +10,7 @@ use crate::plan::tree;
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct ParseError {
     /// Covers the token at fault, so an editor can underline it.
-    pub(crate) span: Span,
+    span: Span,
     pub(crate) message: String,
 }
 
@@ -186,7 +186,7 @@ fn ends_the_row(body: &[Stmt]) -> bool {
     }
 }
 
-pub(crate) struct Parser<'s> {
+struct Parser<'s> {
     /// The text the tokens came from, so an error can quote what it refuses.
     src: &'s str,
     tokens: Vec<Spanned>,

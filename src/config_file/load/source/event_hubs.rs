@@ -13,7 +13,7 @@ pub struct EventHubsSourceDto {
     /// The namespace's or an event hub's connection string. At most one of it, `clientSecret` and
     /// `managedIdentityClientId`; none signs in as the host's managed identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) connection_string: Option<SecretRefDto>,
+    connection_string: Option<SecretRefDto>,
     #[serde(flatten)]
     pub(crate) sign_in: EntraSignInDto,
     #[serde(default, skip_serializing_if = "StartPositionDto::is_default")]
@@ -27,14 +27,14 @@ pub struct EventHubsSourceDto {
     pub(crate) fetch_bytes: Option<FetchBytes>,
     /// How this source's record bytes become text. See [`EncodingLabel`].
     #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-    pub(crate) encoding: EncodingLabel,
+    encoding: EncodingLabel,
     /// Where its payloads are Avro: the registry holding each writer's schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) schema_registry: Option<SchemaRegistryDto>,
+    schema_registry: Option<SchemaRegistryDto>,
     #[serde(default, flatten)]
-    pub(crate) read: ReadFormatDto,
+    read: ReadFormatDto,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl SourceSpec for EventHubsSourceDto {

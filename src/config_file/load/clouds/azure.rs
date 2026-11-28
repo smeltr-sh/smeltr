@@ -87,11 +87,11 @@ impl AccessDto for AzureAccessDto {
 #[serde(rename_all = "camelCase")]
 pub struct StorageQueueDto {
     /// The queue's own URL.
-    pub(crate) queue_url: String,
+    queue_url: String,
     #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
-    pub(crate) visibility_secs: VisibilitySecs,
+    visibility_secs: VisibilitySecs,
     #[serde(default, skip_serializing_if = "MaxDeliveries::is_default")]
-    pub(crate) max_deliveries: MaxDeliveries,
+    max_deliveries: MaxDeliveries,
 }
 
 impl QueueDto<AnnouncedDto, AzureAccessDto> for StorageQueueDto {

@@ -12,7 +12,7 @@ pub struct HecReceiverDto {
     /// Whether a request is answered only once every destination has its records, rather than as soon as it is
     /// received.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) answer_after_delivery: bool,
+    answer_after_delivery: bool,
     /// Token name -> a token a sender may present as `Authorization: Splunk`, and whether its senders use
     /// indexer acknowledgement.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

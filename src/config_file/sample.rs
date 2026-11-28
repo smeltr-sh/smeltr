@@ -79,9 +79,9 @@ pub struct SampleDto {
 #[serde(rename_all = "camelCase")]
 pub struct SampleSummary {
     pub id: String,
-    pub(crate) name: String,
+    name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) source: Option<String>,
+    source: Option<String>,
     pub records: usize,
     /// When the leader last wrote the sample, in unix seconds: the newest commit that touched its file. The listing
     /// fills it from `config.git`'s history; a sample is not stored with it.
@@ -89,14 +89,14 @@ pub struct SampleSummary {
     pub written: Option<i64>,
     /// When its records were taken: the first row's `__capture.timestamp`, which a paste is stamped with when it is saved.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) captured: Option<String>,
+    captured: Option<String>,
     /// The file it was read from, within its bundle.
     #[serde(skip)]
     pub path: String,
 }
 
 impl SampleDto {
-    pub(crate) fn summary(&self) -> SampleSummary {
+    fn summary(&self) -> SampleSummary {
         SampleSummary {
             id: self.id.clone(),
             name: self.name.clone(),

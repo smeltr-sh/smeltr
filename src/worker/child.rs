@@ -124,7 +124,7 @@ const REPORT_INTERVAL: Duration = Duration::from_millis(500);
 /// What the supervisor says to a runtime.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ToRuntime {
+enum ToRuntime {
     /// Run this commit. Sent once, immediately after the child starts.
     Start(Box<StartSpec>),
     /// Serve this capture, either by tapping a source already being read or by opening one of its own.
@@ -195,7 +195,7 @@ pub(crate) struct StartSpec {
 /// What a runtime says about itself.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum FromRuntime {
+enum FromRuntime {
     /// Loaded, compiled, connectors open, threads running. Not a heartbeat: it is said once, and says the startup
     /// steps completed rather than that the process is alive.
     Ready { incarnation: u64 },
@@ -282,7 +282,7 @@ impl RuntimeReport {
 
 impl Gathered {
     /// Two windows the leader has not seen, as one.
-    pub(crate) fn followed_by(self, next: Gathered) -> Gathered {
+    fn followed_by(self, next: Gathered) -> Gathered {
         // Two windows of streams are one: the counts sum (`StreamReport::absorb`).
         let streams = match (self.streams, next.streams) {
             (Some(mut earlier), Some(later)) => {

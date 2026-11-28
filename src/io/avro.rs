@@ -49,7 +49,7 @@ const MAGIC: u8 = 0;
 const HEADER: usize = 5;
 
 /// `payload`'s schema id and its value's bytes. Err says why it is not Confluent-framed Avro.
-pub(crate) fn unframe(payload: &[u8]) -> Result<(u32, &[u8]), String> {
+fn unframe(payload: &[u8]) -> Result<(u32, &[u8]), String> {
     match payload {
         [MAGIC, a, b, c, d, value @ ..] => Ok((u32::from_be_bytes([*a, *b, *c, *d]), value)),
         [] => Err("an empty payload, which holds no Avro".to_string()),
@@ -98,7 +98,7 @@ impl Parsed {
 }
 
 /// The schema `id` names, with every schema it references, asked of `registry`.
-pub(crate) fn fetch(registry: &Registry, id: u32) -> Result<Parsed, Unread> {
+fn fetch(registry: &Registry, id: u32) -> Result<Parsed, Unread> {
     let text = registry.schema(id)?;
     let mut seen: Vec<(String, i64)> = Vec::new();
     let mut referenced: Vec<String> = Vec::new();
@@ -678,7 +678,7 @@ fn is_null(value: &Avro) -> bool {
 }
 
 /// A decimal's text, exact: `unscaled`, its two's complement digits big-endian, over ten to the `scale`.
-pub(crate) fn decimal(unscaled: &[u8], scale: usize) -> String {
+fn decimal(unscaled: &[u8], scale: usize) -> String {
     let negative = unscaled.first().is_some_and(|b| b & 0x80 != 0);
     // The magnitude, base 256, most significant first.
     let mut magnitude: Vec<u8> = if negative {
@@ -722,7 +722,7 @@ pub(crate) fn decimal(unscaled: &[u8], scale: usize) -> String {
 }
 
 /// Why `name` cannot name an Avro field, if it cannot: Avro's names are a letter or `_`, then letters, digits and `_`.
-pub(crate) fn refuse_name(name: &str) -> Option<String> {
+fn refuse_name(name: &str) -> Option<String> {
     let mut chars = name.chars();
     let starts = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
     (!starts || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| {
@@ -731,7 +731,7 @@ pub(crate) fn refuse_name(name: &str) -> Option<String> {
 }
 
 /// `schema_of`'s text, and that text parsed.
-pub(crate) fn parsed_schema_of(arrow: &ArrowSchema) -> Result<(String, Schema), String> {
+fn parsed_schema_of(arrow: &ArrowSchema) -> Result<(String, Schema), String> {
     let text = schema_of(arrow)?;
     let parsed = Schema::parse_str(&text).map_err(|e| e.to_string())?;
     Ok((text, parsed))
@@ -789,7 +789,7 @@ fn type_of(arrow: &Arrow, name: &str, taken: &mut Vec<String>) -> Result<serde_j
 }
 
 /// Row `row` of `batch`, as a value of the record schema `schema_of` made of its schema.
-pub(crate) fn row_of(batch: &RecordBatch, row: usize) -> Avro {
+fn row_of(batch: &RecordBatch, row: usize) -> Avro {
     Avro::Record(
         (batch.schema().fields().iter().zip(batch.columns()))
             .map(|(f, column)| (f.name().clone(), field_value(column.as_ref(), row)))
@@ -938,7 +938,7 @@ impl Encoder<'_> {
 }
 
 /// The subject a topic's values are registered under: Confluent's topic name strategy.
-pub(crate) fn subject(topic: &str) -> String {
+fn subject(topic: &str) -> String {
     format!("{topic}-value")
 }
 

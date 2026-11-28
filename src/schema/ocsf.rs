@@ -51,7 +51,7 @@ pub(crate) const DEEPEST: usize = 8;
 
 /// The most fields a cut may make. OCSF's objects hold each other, so a deep cut that takes optional attributes makes
 /// tens of thousands, more than a schema anyone reads.
-pub(crate) const MOST: usize = 10_000;
+const MOST: usize = 10_000;
 
 /// The fields of the class `class` in `doc`, cut as `cut` says.
 pub(crate) fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, String> {

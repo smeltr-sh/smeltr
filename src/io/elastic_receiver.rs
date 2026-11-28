@@ -29,7 +29,7 @@ const INDEX: &str = super::hec::NAMED[3];
 
 /// What answering one action holds at most, besides the body it was read from: its item, kept until the request is
 /// answered, and the item's JSON once it is.
-pub(crate) const ANSWER_BYTES: usize = 256;
+const ANSWER_BYTES: usize = 256;
 
 /// What reading `body` and answering its actions holds at most: the body, and an answer for each line, as each line
 /// may be an action. Known before `body` is read, so a request too large to answer is refused before it is.
@@ -39,7 +39,7 @@ pub(crate) fn holds(body: &[u8]) -> usize {
 }
 
 /// The Elasticsearch version a receiver names itself as, which a client checks before it sends.
-pub(crate) const VERSION: &str = "8.17.0";
+const VERSION: &str = "8.17.0";
 
 /// What a request's path and query name for each action that names none itself.
 #[derive(Default)]

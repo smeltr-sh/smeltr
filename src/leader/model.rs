@@ -50,7 +50,7 @@ pub const KEEP_DAYS_KEY: &str = "agents.keep_days";
 pub const CONTEXT_KEY: &str = "agents.context_tokens";
 
 /// How many days a conversation nobody adds to is kept, unless an administrator sets otherwise.
-pub(crate) const DEFAULT_KEEP_DAYS: u32 = 90;
+const DEFAULT_KEEP_DAYS: u32 = 90;
 
 /// How long one answer may take. A model writing a long answer whole, not streamed, takes minutes.
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -69,7 +69,7 @@ const ANTHROPIC_COMPACTION: &str = "compact-2026-01-12";
 
 /// The tokens a model's context holds, unless an administrator sets otherwise or Anthropic says: what every
 /// current model holds at least.
-pub(crate) const DEFAULT_CONTEXT: u64 = 200_000;
+const DEFAULT_CONTEXT: u64 = 200_000;
 
 /// The fewest and most tokens a context may be set to.
 pub const CONTEXT_RANGE: std::ops::RangeInclusive<u64> = 4_096..=10_000_000;
@@ -108,7 +108,7 @@ impl Provider {
         }
     }
 
-    pub(crate) fn parse(text: &str) -> Option<Provider> {
+    fn parse(text: &str) -> Option<Provider> {
         [Provider::Anthropic, Provider::OpenAi, Provider::OpenAiCompatible]
             .into_iter()
             .find(|p| p.as_str() == text)
@@ -322,9 +322,9 @@ pub enum Effort {
 }
 
 impl Effort {
-    pub(crate) const ALL: [Effort; 5] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
+    const ALL: [Effort; 5] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
 
-    pub(crate) fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Effort::Low => "low",
             Effort::Medium => "medium",
@@ -900,9 +900,9 @@ pub struct Listed {
     pub id: String,
     pub(crate) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) context_tokens: Option<u64>,
+    context_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) efforts: Option<Vec<Effort>>,
+    efforts: Option<Vec<Effort>>,
 }
 
 /// The most pages of Anthropic's model list read: far more models than it has.

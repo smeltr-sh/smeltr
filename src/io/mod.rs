@@ -15,12 +15,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub mod api;
-pub(crate) mod app_sign_in;
+mod app_sign_in;
 pub mod avro;
 mod batch_wait;
 pub(crate) mod client_credentials;
 pub mod connections;
-pub(crate) mod csv;
+mod csv;
 pub mod delta;
 pub(crate) mod discovery;
 pub mod elastic;
@@ -32,7 +32,7 @@ pub mod files;
 pub mod framing;
 pub(crate) mod hec;
 pub mod http;
-pub(crate) mod http_api;
+mod http_api;
 pub mod http_post;
 pub mod iceberg;
 pub mod kafka;
@@ -41,20 +41,20 @@ pub mod lines;
 pub mod listing;
 pub mod logs;
 pub mod mysql;
-pub(crate) mod oauth;
+mod oauth;
 pub mod object_source;
 pub mod objects;
-pub(crate) mod okta;
+mod okta;
 pub mod otlp;
-pub(crate) mod pacer;
+mod pacer;
 pub mod parquet;
-pub(crate) mod parquet_variant;
+mod parquet_variant;
 pub mod pipelined;
 pub mod postgres;
 pub mod prometheus;
 pub mod pubsub;
 pub mod raw;
-pub(crate) mod reads;
+mod reads;
 pub mod receiver;
 pub mod remote_write;
 pub mod s2s;
@@ -68,10 +68,10 @@ pub mod sql_source;
 pub mod sqs;
 pub mod storage_queue;
 mod stored;
-pub(crate) mod table;
+mod table;
 pub mod trust;
 pub mod values;
-pub(crate) mod vended;
+mod vended;
 
 pub use stored::{Cells, RecordObject, SourceFields, raw_object, unclaimed_of, value_at};
 
@@ -109,7 +109,7 @@ pub fn build_source(
 }
 
 /// Leave to spawn one more sender: see [`Destination::lend_senders`].
-pub(crate) type Lend = Box<dyn FnMut() -> bool + Send>;
+type Lend = Box<dyn FnMut() -> bool + Send>;
 
 /// Opens `kind` as a live destination. `records` is what it writes, route by route, which only a Parquet destination
 /// needs (`CompiledTopology::records`). Every kind is compiled into every build, so any binary can run any bundle.
@@ -208,7 +208,7 @@ pub(crate) fn own_rows(records: &mut [SourceRecord]) {
 }
 
 /// The bytes `headers` hold, as `SourceRecord::size` counts them.
-pub(crate) fn headers_size(headers: &Option<Vec<(String, Vec<u8>)>>) -> usize {
+fn headers_size(headers: &Option<Vec<(String, Vec<u8>)>>) -> usize {
     headers.iter().flatten().map(|(k, v)| k.len() + v.len()).sum()
 }
 
@@ -314,7 +314,7 @@ impl RecordChunkBuilder {
     }
 
     /// The bytes of the records pushed, as `SourceRecord::size` counts each.
-    pub(crate) fn size(&self) -> usize {
+    fn size(&self) -> usize {
         self.size
     }
 
@@ -346,7 +346,7 @@ impl RecordChunkBuilder {
     }
 
     /// The records pushed, in order, as one chunk, without where each was read.
-    pub(crate) fn into_chunk(self) -> RecordChunk {
+    fn into_chunk(self) -> RecordChunk {
         self.split().0
     }
 
@@ -371,13 +371,13 @@ impl RecordChunkBuilder {
 }
 
 /// The rows of a chunk cut where its records arrived, which its source's reader hands out in order.
-pub(crate) struct ChunkRows {
+struct ChunkRows {
     chunk: Arc<RecordChunk>,
     at: usize,
 }
 
 impl ChunkRows {
-    pub(crate) fn new(chunk: RecordChunk) -> ChunkRows {
+    fn new(chunk: RecordChunk) -> ChunkRows {
         ChunkRows {
             chunk: Arc::new(chunk),
             at: 0,
@@ -385,26 +385,26 @@ impl ChunkRows {
     }
 
     /// The row taken next.
-    pub(crate) fn at(&self) -> usize {
+    fn at(&self) -> usize {
         self.at
     }
 
-    pub(crate) fn is_done(&self) -> bool {
+    fn is_done(&self) -> bool {
         self.at == self.chunk.len()
     }
 
     /// What the next row holds.
-    pub(crate) fn next_size(&self) -> usize {
+    fn next_size(&self) -> usize {
         self.chunk.row_size(self.at)
     }
 
     /// What the rows not yet taken hold.
-    pub(crate) fn untaken(&self) -> usize {
+    fn untaken(&self) -> usize {
         (self.at..self.chunk.len()).map(|row| self.chunk.row_size(row)).sum()
     }
 
     /// Takes the next row.
-    pub(crate) fn take(&mut self) -> (Arc<RecordChunk>, u32) {
+    fn take(&mut self) -> (Arc<RecordChunk>, u32) {
         let row = self.at as u32;
         self.at += 1;
         (self.chunk.clone(), row)
@@ -460,7 +460,7 @@ impl RecordChunk {
     }
 
     /// This chunk, each row stamped by its source at `time`, as `RecordChunkBuilder::push_stamped` takes it.
-    pub(crate) fn stamped(mut self, time: Vec<Option<i64>>) -> RecordChunk {
+    fn stamped(mut self, time: Vec<Option<i64>>) -> RecordChunk {
         assert_eq!(time.len(), self.len(), "a time per row");
         if time.iter().any(Option::is_some) {
             self.time = Some(time);
@@ -509,7 +509,7 @@ impl RecordChunk {
     }
 
     /// The rows the chunk holds.
-    pub(crate) fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.columns.first().map_or(0, crate::core::column::Column::len)
     }
 
@@ -526,7 +526,7 @@ impl RecordChunk {
     }
 
     /// Row `row`'s bytes, where this is a byte source's chunk: one column, of the bytes each record read.
-    pub(crate) fn bytes(&self, row: usize) -> Option<&[u8]> {
+    fn bytes(&self, row: usize) -> Option<&[u8]> {
         self.read().map(|v| v.get(row))
     }
 
@@ -539,7 +539,7 @@ impl RecordChunk {
     }
 
     /// A chunk of only `rows` of this one, in that order, each failed value moved with its row.
-    pub(crate) fn take_rows(&self, rows: &[u32]) -> RecordChunk {
+    fn take_rows(&self, rows: &[u32]) -> RecordChunk {
         let mut pool = crate::core::buffer::BufferPool::new();
         let columns = self.columns.iter().map(|c| c.gather(&mut pool, rows)).collect();
         let failed = rows
@@ -573,7 +573,7 @@ impl RecordChunk {
     }
 
     /// What one row's values hold, as `Column::add_row_sizes` counts them. A chunk of no columns holds nothing.
-    pub(crate) fn row_size(&self, row: usize) -> usize {
+    fn row_size(&self, row: usize) -> usize {
         self.sizes.get(row).map_or(0, |&size| size as usize)
     }
 }
@@ -678,14 +678,14 @@ pub struct PartitionLag {
 #[derive(Debug)]
 pub struct IoError {
     pub message: String,
-    pub(crate) kind: IoErrorKind,
+    kind: IoErrorKind,
 }
 
 /// Whether retrying the same data could ever succeed. A destination that cannot be reached is waited for: at-least-once
 /// forbids committing past unacked data. One that has looked at a record and refused it will refuse it identically
 /// forever, and retrying that wedges the partition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum IoErrorKind {
+enum IoErrorKind {
     /// Unreachable, timed out, busy, queue full. Retried indefinitely, and reported through
     /// `smeltr_destination_healthy`.
     #[default]
@@ -707,7 +707,7 @@ impl IoError {
     }
 
     /// The destination refused this record and always will.
-    pub(crate) fn rejected(message: impl Into<String>) -> IoError {
+    fn rejected(message: impl Into<String>) -> IoError {
         IoError {
             message: message.into(),
             kind: IoErrorKind::Rejected,
@@ -726,7 +726,7 @@ impl IoError {
         }
     }
 
-    pub(crate) fn is_oversized(&self) -> bool {
+    fn is_oversized(&self) -> bool {
         self.kind == IoErrorKind::Oversized
     }
 }
@@ -758,7 +758,7 @@ pub(crate) fn entra_authority(address: &str) -> &'static str {
 
 /// The value of the credential `what` takes its `name` from. One this worker cannot obtain is an error, in the one
 /// sentence every connector gives for it, never a connection that silently goes without.
-pub(crate) fn held(
+fn held(
     secrets: &crate::plan::topology::HeldSecrets,
     reference: &crate::plan::topology::SecretRef,
     what: &str,
@@ -969,23 +969,23 @@ pub struct OutgoingRecord<'a> {
     /// destination on its configured one.
     pub placement: Option<&'a str>,
     /// `__destination.id`, for a destination that can key a document on one.
-    pub(crate) doc_id: Option<&'a str>,
+    doc_id: Option<&'a str>,
     /// The partition key. Nothing in the pipeline sets it yet.
     pub key: Option<&'a [u8]>,
     /// A record another destination refused, on its way to a DLQ. The DLQ's own answer to `Refused` answers if it
     /// refuses it too; dropped there, it is counted lost.
-    pub(crate) salvaged: bool,
+    salvaged: bool,
     /// Every DLQ down its destination's chain, and how a refusal of this record reaches each. `None` sends it to
     /// every DLQ its destination names, keyed as here.
-    pub(crate) salvage_to: Option<&'a [SalvageTarget]>,
+    salvage_to: Option<&'a [SalvageTarget]>,
     /// The row in the forms the DLQs down its destination's chain write, but its own.
-    pub(crate) kept: &'a [(Payload, Arc<[u8]>)],
+    kept: &'a [(Payload, Arc<[u8]>)],
     /// The route whose pipeline made this record, by its index in `CompiledTopology::routes`. `None` for a record no
     /// pipeline ran on. A destination that writes a schema writes each route's records under that route's record.
-    pub(crate) route: Option<u32>,
+    route: Option<u32>,
     /// The record as Parquet columns, for a destination that writes them (`io::parquet`). Cut at egress for a row
     /// whose destinations, or the DLQs down their chains, write columns.
-    pub(crate) columns: Option<&'a Columns>,
+    columns: Option<&'a Columns>,
 }
 
 /// One DLQ a refused record may be sent to, as worked out while the row's fields were still at hand.
@@ -1044,7 +1044,7 @@ impl<'a> OutgoingRecord<'a> {
     /// and the source forms it kept -- which [`held_bytes`] counts: an identity, a placement or a salvage plan is
     /// held as long as the record is. A plan names every DLQ down the chain, so a long chain can outweigh a small
     /// record.
-    pub(crate) fn bytes(&self) -> usize {
+    fn bytes(&self) -> usize {
         self.value.len()
             + self.key.map_or(0, <[u8]>::len)
             + self.placement.map_or(0, str::len)
@@ -1102,7 +1102,7 @@ impl OwnedRecord {
         }
     }
 
-    pub(crate) fn as_outgoing(&self) -> OutgoingRecord<'_> {
+    fn as_outgoing(&self) -> OutgoingRecord<'_> {
         OutgoingRecord {
             value: &self.value,
             payload: &self.payload,
@@ -1149,7 +1149,7 @@ impl OwnedRecord {
     }
 
     /// Everything the record owns, as [`OutgoingRecord::bytes`] counts it.
-    pub(crate) fn bytes(&self) -> usize {
+    fn bytes(&self) -> usize {
         self.as_outgoing().bytes()
     }
 
@@ -1324,7 +1324,7 @@ impl Rejection {
         self.record.as_ref().map_or(1, OwnedRecord::rows)
     }
 
-    pub(crate) fn of(rows: &[OwnedRecord], doc: usize, reason: impl Into<String>) -> Rejection {
+    fn of(rows: &[OwnedRecord], doc: usize, reason: impl Into<String>) -> Rejection {
         Rejection {
             doc,
             reason: reason.into(),
@@ -1490,7 +1490,7 @@ pub mod fake {
     pub struct AsyncDestination(Arc<Mutex<AsyncState>>);
 
     #[derive(Default)]
-    pub(crate) struct AsyncState {
+    struct AsyncState {
         dispatched: Vec<BatchId>,
         ready: Vec<BatchCompletion>,
         sent: usize,

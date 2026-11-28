@@ -148,7 +148,7 @@ impl Iterator for Events<'_> {
 pub(crate) struct Searched(usize);
 
 /// What part of the held bytes must be new before they are searched again.
-pub(crate) const SEARCH_GROWTH: usize = 16;
+const SEARCH_GROWTH: usize = 16;
 
 impl Searched {
     /// Whether `held` bytes, of which the first were searched in vain before, are worth searching again.

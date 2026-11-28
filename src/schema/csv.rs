@@ -43,11 +43,11 @@ impl Columns {
 /// each value of the type column.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 pub(crate) struct Preview {
-    pub(crate) header: Vec<String>,
+    header: Vec<String>,
     /// The first rows, and after them the first row of each type value they do not hold, so every value shows in one.
     pub rows: Vec<Vec<String>>,
     /// How many of `rows` are the file's first; those after are added for their type values.
-    pub(crate) first: usize,
+    first: usize,
     pub(crate) columns: Columns,
     /// In the order the file first holds them.
     pub(crate) types: Vec<TypeValue>,

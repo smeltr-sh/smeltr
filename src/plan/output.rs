@@ -45,7 +45,7 @@ pub struct PreviewRow {
 }
 
 /// One exception on a preview's row: the answer its kind takes, its message, and the step that raised it.
-pub(crate) type RaisedOn = (&'static str, String, Option<String>);
+type RaisedOn = (&'static str, String, Option<String>);
 
 /// `run_to_json` for every row, with exceptions and the tag `on_exception` names: the GUI's preview. A row is shown as
 /// its answer leaves it: tagged, as it is, or absent under `Drop` and `Deliver`; under `Block` it is shown tagged,

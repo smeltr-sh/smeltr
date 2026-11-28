@@ -50,7 +50,7 @@ impl Holding {
 /// Whether one source is held now, shared between the frame thread that hears it and the reader thread that acts
 /// on it. Each grant and each revoke is a new generation, so a reader that missed both still sees the change.
 #[derive(Default)]
-pub(crate) struct Slot {
+struct Slot {
     grant: Mutex<Grant>,
     changed: Condvar,
 }
@@ -408,7 +408,7 @@ fn admitted(key: &SourceKey, mut progress: Progress) -> Progress {
 }
 
 /// Builds the source a hold reads, each time it is granted.
-pub(crate) type Opener = Box<dyn FnMut() -> Result<Box<dyn Source>, IoError> + Send>;
+type Opener = Box<dyn FnMut() -> Result<Box<dyn Source>, IoError> + Send>;
 
 /// A single-worker source, read only while its [`Slot`] says it is held. Unheld, a poll waits out its timeout and
 /// returns nothing, and a commit is ignored.

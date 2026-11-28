@@ -8,24 +8,24 @@ use serde::{Deserialize, Serialize};
 pub struct DeltaDestinationDto {
     /// The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) location: Option<String>,
+    location: Option<String>,
     /// A Unity Catalog external table, whose root and storage credentials the catalog gives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) unity_catalog: Option<UnityCatalogDto>,
     /// The columns a created table is partitioned by, each a top-level column of the record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) partition_by: Vec<String>,
+    partition_by: Vec<String>,
     /// How the bucket is reached and signed for. None of its fields set takes the host's.
     #[serde(flatten)]
-    pub(crate) access: S3AccessDto,
+    access: S3AccessDto,
     #[serde(flatten)]
-    pub(crate) tls: TlsDto,
+    tls: TlsDto,
     /// Absent is zstd.
     #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
     pub(crate) compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) compression_level: Option<u8>,
+    compression_level: Option<u8>,
     /// Parts of one file uploading at once.
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
     pub(crate) in_flight: InFlight,
@@ -33,7 +33,7 @@ pub struct DeltaDestinationDto {
     pub(crate) max_object_bytes: ObjectBytes,
     /// Memory for records not yet committed. Unset is `BufferBytes::OBJECT_DEFAULT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) buffer_bytes: Option<BufferBytes>,
+    buffer_bytes: Option<BufferBytes>,
     /// Seconds one store call, or one commit, may take before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
     pub(crate) stall_after_secs: StallAfter,
@@ -41,7 +41,7 @@ pub struct DeltaDestinationDto {
     #[serde(default, skip_serializing_if = "FileInterval::is_default")]
     pub(crate) file_interval_secs: FileInterval,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for DeltaDestinationDto {

@@ -15,11 +15,11 @@ use bytemuck::{AnyBitPattern, NoUninit};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverBudget {
     /// Bytes the refused allocation asked for, after rounding up to the bucket size that would have been allocated.
-    pub(crate) requested: usize,
+    requested: usize,
     /// Bytes already charged when the request arrived.
-    pub(crate) used: usize,
+    used: usize,
     /// The ceiling.
-    pub(crate) limit: usize,
+    limit: usize,
 }
 
 impl std::fmt::Display for OverBudget {
@@ -317,13 +317,13 @@ pub(crate) fn purge_freed() -> bool {
 /// `_RJEM_MALLOC_CONF`, overrides them.
 #[cfg(unix)]
 #[unsafe(export_name = "_rjem_malloc_conf")]
-pub(crate) static MALLOC_CONF: Conf =
+static MALLOC_CONF: Conf =
     Conf(c"background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:0,thp:always,metadata_thp:always".as_ptr());
 
 /// A C string jemalloc reads at its start.
 #[cfg(unix)]
 #[repr(transparent)]
-pub(crate) struct Conf(*const std::ffi::c_char);
+struct Conf(*const std::ffi::c_char);
 
 // SAFETY: it points at a static string nothing writes.
 #[cfg(unix)]

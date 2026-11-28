@@ -25,7 +25,7 @@ use crate::plan::topology::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Part {
     /// What the warning calls it, naming its owner.
-    pub(crate) name: String,
+    name: String,
     /// What it is, the same for every owner: the `part` label of `smeltr_memory_part_bytes`.
     pub(crate) part: &'static str,
     pub(crate) owner: Owner,

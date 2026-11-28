@@ -76,17 +76,17 @@ pub(crate) struct Beat<'a> {
 }
 
 /// How long a leader is up before it forgets progress: longer than any worker's heartbeat interval.
-pub(crate) const FORGET_AFTER_UP: Duration = Duration::from_secs(3600);
+const FORGET_AFTER_UP: Duration = Duration::from_secs(3600);
 
 /// The times one beat is judged by.
 #[derive(Clone, Copy, Debug)]
 pub struct Clock {
-    pub(crate) now: Instant,
+    now: Instant,
     /// How long this leader has been up. A holder it has not heard from yet counts as live until the hold time has
     /// passed since it started, so a restart never gives a source to a second worker while its holder still reads.
-    pub(crate) up_for: Duration,
+    up_for: Duration,
     /// How long a holder may go unheard, or not list a source, before the source is free.
-    pub(crate) hold_time: Duration,
+    hold_time: Duration,
 }
 
 impl Clock {

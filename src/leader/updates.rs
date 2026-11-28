@@ -33,7 +33,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LIST: usize = 8 * 1024 * 1024;
 
 /// Whether the leader checks; absent is on.
-pub(crate) const CHECK_KEY: &str = "updates.check";
+const CHECK_KEY: &str = "updates.check";
 
 /// A published release newer than this leader's.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -51,7 +51,7 @@ pub(crate) struct Newer {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Checked {
     /// Unix millis.
-    pub(crate) checked_at: i64,
+    checked_at: i64,
     /// Why the list was not read, logged when it was recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) failure: Option<crate::logs::Noted>,
@@ -62,7 +62,7 @@ pub(crate) struct Checked {
 pub struct Updates {
     state: crate::sync::Mutex<(Option<Newer>, Option<Checked>)>,
     /// Wakes the timer to check at once: the setting turned on, or an administrator asked.
-    pub(crate) wake: tokio::sync::Notify,
+    wake: tokio::sync::Notify,
     /// Told each time a check is recorded.
     checked: tokio::sync::Notify,
 }

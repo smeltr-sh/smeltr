@@ -60,7 +60,7 @@ impl Post {
     }
 
     /// Names the service `name` in errors and refusals, for a destination of its own built on this one.
-    pub(crate) fn named(mut self, name: &'static str) -> Post {
+    fn named(mut self, name: &'static str) -> Post {
         self.name = name;
         self
     }
@@ -101,7 +101,7 @@ pub(crate) fn open_log_analytics(
 /// The destination posting to `config`'s URL: as `name` in what it says of itself and as `subject` in its log lines,
 /// over the transports `make` makes ([`transport`], signed in where the service asks), counting into `metrics` as
 /// destination `id`.
-pub(crate) fn destination(
+fn destination(
     config: &HttpDestinationConfig,
     make: impl Fn() -> HttpTransport,
     name: &'static str,

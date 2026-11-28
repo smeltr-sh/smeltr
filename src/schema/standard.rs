@@ -86,19 +86,19 @@ pub(crate) fn ocsf_releases() -> &'static [OcsfRelease] {
 pub(crate) struct OcsfClass {
     /// What a schema is read from by.
     pub(crate) name: String,
-    pub(crate) caption: String,
+    caption: String,
     /// OCSF's category, such as "Identity & Access Management"; empty for a class in none.
-    pub(crate) category: String,
+    category: String,
     /// The profiles the class takes, any of which a schema may be read with.
-    pub(crate) profiles: Vec<OcsfProfile>,
+    profiles: Vec<OcsfProfile>,
 }
 
 /// One OCSF profile a class takes.
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub(crate) struct OcsfProfile {
+struct OcsfProfile {
     /// What `ocsf::Cut::profiles` names it by.
-    pub(crate) name: String,
-    pub(crate) caption: String,
+    name: String,
+    caption: String,
 }
 
 #[cfg(test)]

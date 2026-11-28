@@ -22,7 +22,7 @@ use crate::io::IoError;
 use crate::io::http::percent_encode;
 
 /// How long before it expires a token is replaced, so one never expires on the way.
-pub(crate) const RENEW_BEFORE: Duration = Duration::from_secs(60);
+const RENEW_BEFORE: Duration = Duration::from_secs(60);
 
 /// The most a token endpoint's answer may hold.
 const MAX_TOKEN_ANSWER: u64 = 64 * 1024;
@@ -307,8 +307,8 @@ pub(crate) mod tests {
         /// The request line's target, such as `/token?a=b`.
         pub(crate) target: String,
         /// Each header, its name lowercased.
-        pub(crate) headers: Vec<(String, String)>,
-        pub(crate) body: String,
+        headers: Vec<(String, String)>,
+        body: String,
     }
 
     impl Asked {

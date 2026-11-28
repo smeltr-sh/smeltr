@@ -211,10 +211,10 @@ pub(crate) fn raw_filed(query: &HashMap<String, String>) -> Filed {
 
 /// The most channels a receiver keeps `ackId`s for. A request on a new channel past it first forgets the channels idle
 /// past [`CHANNEL_IDLE`], and is answered busy if that leaves no room.
-pub(crate) const MAX_CHANNELS: usize = 10_000;
+const MAX_CHANNELS: usize = 10_000;
 
 /// How long a channel nobody sends on or asks after is kept.
-pub(crate) const CHANNEL_IDLE: Duration = Duration::from_secs(10 * 60);
+const CHANNEL_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// How often a receiver with no room for a new channel looks for idle ones to forget. Looking reads every channel,
 /// under the lock the reader takes too.
@@ -223,7 +223,7 @@ const SWEEP_EVERY: Duration = Duration::from_secs(1);
 /// The most delivered `ackId`s a receiver keeps, across its channels, for senders to ask after. Past it the channel
 /// holding the most forgets its oldest, so a sender that never asks costs only itself, and a sender asking after one
 /// forgotten hears `false` and sends its request again: a duplicate, never a loss.
-pub(crate) const MAX_DELIVERED: usize = 1_000_000;
+const MAX_DELIVERED: usize = 1_000_000;
 
 /// The `ackId`s a receiver has given, by channel. Each is pending until its request is delivered, then delivered until
 /// its sender asks after it. One no channel here knows is never delivered: it was given by another worker, or by this

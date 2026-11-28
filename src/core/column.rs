@@ -96,7 +96,7 @@ pub enum Scalar {
 }
 
 impl Scalar {
-    pub(crate) fn data_type(&self) -> DataType {
+    fn data_type(&self) -> DataType {
         match self {
             Scalar::Bool(_) => DataType::Bool,
             Scalar::I64(_) => DataType::I64,

@@ -44,7 +44,7 @@ impl Levels {
     }
 
     /// The most any line is kept at.
-    pub(crate) fn most(&self) -> Level {
+    fn most(&self) -> Level {
         self.types
             .values()
             .flat_map(BTreeMap::values)

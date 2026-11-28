@@ -1341,7 +1341,7 @@ impl Upload {
     }
 
     /// Bytes written and not yet in the store.
-    pub(crate) fn pending(&self) -> usize {
+    fn pending(&self) -> usize {
         self.pending.load(Ordering::Relaxed)
     }
 

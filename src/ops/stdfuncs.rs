@@ -163,7 +163,7 @@ pub(crate) enum Field {
 }
 
 impl Field {
-    pub(crate) fn data_type(&self) -> DataType {
+    fn data_type(&self) -> DataType {
         match self {
             Field::Leaf(t) => t.clone(),
             Field::Object(fields) => object_type(fields),
@@ -255,7 +255,7 @@ fn type_name(t: &DataType) -> String {
 
 impl Ret {
     /// How the result type reads in the reference, for a row taking `params`.
-    pub(crate) fn describe(&self, params: &[Param]) -> String {
+    fn describe(&self, params: &[Param]) -> String {
         match self {
             Ret::Fixed(t) | Ret::ForElement(t) => type_name(t),
             Ret::ArrayOf(t) => format!("array({})", type_name(t)),
@@ -288,7 +288,7 @@ impl Row {
     }
 
     /// The same, for a function whose last parameter repeats: `(Array of scalars, element, ...)`.
-    pub(crate) fn describe_variadic(&self) -> String {
+    fn describe_variadic(&self) -> String {
         let params: Vec<&str> = self.params.iter().map(|p| p.describe()).collect();
         format!("({}, ...)", params.join(", "))
     }
@@ -373,7 +373,7 @@ macro_rules! stdfuncs {
             }
 
             /// Whether a call whose arguments are all null is itself null.
-            pub(crate) fn propagates_null(self) -> bool {
+            fn propagates_null(self) -> bool {
                 !matches!(self, $(StdFunc::$nfunc)|*)
             }
 
@@ -631,7 +631,7 @@ pub fn length_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// else to `$text`.
 macro_rules! text_or_array {
     ($name:ident, $text:path, $array:path $(, bytes: $bytes:path)?) => {
-        pub(crate) fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+        fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             match ins[0].data_type() {
                 DataType::Array(_) => $array(ctx, ins),
                 $(DataType::Bytes => $bytes(ctx, ins),)?
@@ -642,7 +642,7 @@ macro_rules! text_or_array {
 }
 
 /// `concat` on arrays, or on bytes.
-pub(crate) fn concat_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+fn concat_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     match ins[0].data_type() {
         DataType::Bytes => byteops::concat(ctx, ins),
         _ => arrayops::array_concat(ctx, ins),

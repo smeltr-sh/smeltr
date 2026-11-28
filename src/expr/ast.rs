@@ -3,7 +3,7 @@
 
 use crate::core::column::DataType;
 
-pub(crate) use crate::ops::{BinOp, UnOp};
+use crate::ops::{BinOp, UnOp};
 
 /// Byte offsets into the source text.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -81,7 +81,7 @@ impl Expr {
 
     /// The expressions directly inside this one, in source order: the order a rewrite hoists their statements in. An
     /// arrow's body is statements of its own, so it has none.
-    pub(crate) fn children(&self) -> Vec<&Expr> {
+    fn children(&self) -> Vec<&Expr> {
         match &self.kind {
             ExprKind::Literal(_) | ExprKind::Field(_) | ExprKind::Regex(_) | ExprKind::Arrow(_) => Vec::new(),
             ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
@@ -376,7 +376,7 @@ impl Stmt {
 
     /// The blocks nested in this statement: an `if`'s two branches, a loop's body and a `while`'s `next`, a
     /// function's body.
-    pub(crate) fn blocks(&self) -> Vec<&[Stmt]> {
+    fn blocks(&self) -> Vec<&[Stmt]> {
         match self {
             Stmt::If { then, else_, .. } => vec![then, else_],
             Stmt::Try { body, catches, finally } => (std::iter::once(body).chain(catches.iter().map(|c| &c.2)))

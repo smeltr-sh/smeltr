@@ -60,7 +60,7 @@ pub(crate) fn check_url(url: &str, query_allowed: bool) -> Result<&'static str, 
 /// [`Document::endpoint`].
 #[derive(serde::Deserialize)]
 pub(crate) struct Discovery {
-    pub(crate) issuer: Option<String>,
+    issuer: Option<String>,
     pub(crate) authorization_endpoint: Option<String>,
     pub(crate) token_endpoint: Option<String>,
     pub(crate) jwks_uri: Option<String>,

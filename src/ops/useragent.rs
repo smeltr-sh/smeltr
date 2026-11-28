@@ -34,17 +34,17 @@ const DEVICE: &[(&str, Field)] = &[("name", Field::Leaf(DataType::Str))];
 
 /// One header, read.
 #[derive(Clone, Debug, PartialEq, Default)]
-pub(crate) struct UserAgent {
-    pub(crate) name: String,
-    pub(crate) version: Option<String>,
-    pub(crate) os_name: Option<String>,
-    pub(crate) os_version: Option<String>,
-    pub(crate) device_name: String,
+struct UserAgent {
+    name: String,
+    version: Option<String>,
+    os_name: Option<String>,
+    os_version: Option<String>,
+    device_name: String,
 }
 
 impl UserAgent {
     /// `os.full`: the name, then the version where there is one.
-    pub(crate) fn os_full(&self) -> Option<String> {
+    fn os_full(&self) -> Option<String> {
         let name = self.os_name.as_ref()?;
         Some(match &self.os_version {
             Some(version) => format!("{name} {version}"),
@@ -116,19 +116,19 @@ pub(crate) fn parse_user_agent(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// The three lists of rules, compiled once per process, the first time a row needs them: about a second in a release
 /// build.
-pub(crate) fn rules() -> &'static Rules {
+fn rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| Rules::parse(REGEXES))
 }
 
-pub(crate) struct Rules {
+struct Rules {
     agents: RuleList,
     systems: RuleList,
     devices: RuleList,
 }
 
 impl Rules {
-    pub(crate) fn read(&self, text: &str) -> UserAgent {
+    fn read(&self, text: &str) -> UserAgent {
         let agent = self.agents.first(text);
         let system = self.systems.first(text);
         let device = self.devices.first(text);

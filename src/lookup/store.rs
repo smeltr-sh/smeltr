@@ -28,7 +28,7 @@ pub struct Pointer {
 
 impl Pointer {
     /// The pointer `text` is, or `None` when it is not one.
-    pub(crate) fn parse(text: &[u8]) -> Option<Pointer> {
+    fn parse(text: &[u8]) -> Option<Pointer> {
         let text = std::str::from_utf8(text).ok()?;
         let mut lines = text.lines();
         lines.next()?.strip_prefix("version https://git-lfs.github.com/spec/")?;
@@ -184,7 +184,7 @@ impl Incoming {
 impl Incoming {
     /// Name the file `name`, for a file derived from a stored one whose name says what from, and map it. A file of
     /// that name is replaced: it is being written again because it did not read back.
-    pub(crate) fn finish_as(mut self, name: &str) -> std::io::Result<memmap2::Mmap> {
+    fn finish_as(mut self, name: &str) -> std::io::Result<memmap2::Mmap> {
         drop(self.file.take());
         let at = self.dir.join(name);
         std::fs::rename(&self.temp, &at)?;

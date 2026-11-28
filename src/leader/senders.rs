@@ -404,11 +404,11 @@ pub(super) fn each_held(day_ms: i64, kept: &[u8]) -> impl Iterator<Item = (i64, 
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceSenders {
     /// Those with a sender below normal first, then by what the pick read of each.
-    pub(crate) fields: Vec<FieldNow>,
+    fields: Vec<FieldNow>,
     /// A field that comes later is watched, until an editor says not (`marks::SourceFields::locked`).
-    pub(crate) watches_new: bool,
+    watches_new: bool,
     /// The preset its senders are judged at (`marks::Picked`).
-    pub(crate) preset: Preset,
+    preset: Preset,
 }
 
 impl Default for SourceSenders {
@@ -426,48 +426,48 @@ impl Default for SourceSenders {
 /// One field of a source, and its senders.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FieldNow {
-    pub(crate) field: String,
+struct FieldNow {
+    field: String,
     /// It is watched (`marks::SourceFields::watches`).
-    pub(crate) checked: bool,
+    checked: bool,
     /// An editor added it.
-    pub(crate) added: bool,
+    added: bool,
     /// It came after an editor stopped watching new fields, and is not watched until one checks it.
-    pub(crate) new: bool,
+    new: bool,
     /// What the pick read of it today, or `None` before it has read any of it.
-    pub(crate) pick: Option<FieldPick>,
+    pick: Option<FieldPick>,
     /// Its senders watched, those below normal first.
-    pub(crate) senders: Vec<SenderNow>,
+    senders: Vec<SenderNow>,
 }
 
 /// One sender, and what it reads.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SenderNow {
-    pub(crate) value: String,
+struct SenderNow {
+    value: String,
     /// Rows per second in each bucket of the last day, by when it began. A bucket its field was not counted in has
     /// none.
-    pub(crate) points: Vec<(i64, f64)>,
-    pub(crate) expected: Vec<ExpectedPoint>,
+    points: Vec<(i64, f64)>,
+    expected: Vec<ExpectedPoint>,
     /// Rows per second now, and its range, at the width it is shown at (`throughput::Reading::shown`). `None` while
     /// no width judges it.
-    pub(crate) now: Option<f64>,
-    pub(crate) low: Option<f64>,
-    pub(crate) high: Option<f64>,
-    pub(crate) below: bool,
+    now: Option<f64>,
+    low: Option<f64>,
+    high: Option<f64>,
+    below: bool,
     /// When its warning that holds began, which names it to a mark (`marks::Mark`).
-    pub(crate) since_millis: Option<i64>,
+    since_millis: Option<i64>,
     /// Who answered what its warning that holds was, if anyone did.
-    pub(crate) marked_by: Option<String>,
+    marked_by: Option<String>,
     /// An editor answered its warning that holds was normal ([`warnings::Warning::said_normal`]); answered and not
     /// this, it was an outage.
-    pub(crate) said_normal: bool,
+    said_normal: bool,
     /// How many below-normal warnings about it held in the last [`RECENT_DAYS`] days.
-    pub(crate) warned: usize,
+    warned: usize,
 }
 
 /// How many days back [`SenderNow::warned`] counts.
-pub(crate) const RECENT_DAYS: i64 = 30;
+const RECENT_DAYS: i64 = 30;
 
 /// `GET /api/areas/:area/sources/:id/senders`: the source's sender fields and their senders.
 pub(crate) async fn get(

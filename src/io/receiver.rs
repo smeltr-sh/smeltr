@@ -599,7 +599,7 @@ where
 
 /// The runtime every receiver of this process serves on, sized by cores, so a worker's receiver threads stay the same
 /// however many receivers it runs. The worker's metrics endpoint serves on it too.
-pub(crate) fn receiver_runtime() -> Result<&'static tokio::runtime::Runtime, IoError> {
+fn receiver_runtime() -> Result<&'static tokio::runtime::Runtime, IoError> {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     if let Some(runtime) = RUNTIME.get() {
         return Ok(runtime);
@@ -768,7 +768,7 @@ impl Drop for Joined {
 }
 
 /// A receiver's half on the reader's thread: the inbox it drains, and the answers its commits release.
-pub(crate) struct ReceiverSource {
+struct ReceiverSource {
     shared: Arc<Shared>,
     /// Dropped with the source, which ends the server and every connection it holds.
     serving: Option<Serving>,
@@ -1553,7 +1553,7 @@ impl Default for Holdings {
 impl Holdings {
     /// Holdings with `reserve` bytes for its turn and shared bytes from `pool`, as far as the pool lends. Without a
     /// pool, `INBOX_BYTES` shared.
-    pub(crate) fn reserving(reserve: usize, pool: Option<Arc<QueuePool>>) -> Holdings {
+    fn reserving(reserve: usize, pool: Option<Arc<QueuePool>>) -> Holdings {
         Holdings {
             account: Mutex::new(Account::default()),
             reserve,

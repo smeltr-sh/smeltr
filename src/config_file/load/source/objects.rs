@@ -12,22 +12,22 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ObjectSourceDto<Store, Access, Queue> {
     #[serde(flatten)]
-    pub(crate) store: Store,
+    store: Store,
     #[serde(flatten)]
-    pub(crate) access: Access,
+    access: Access,
     #[serde(flatten)]
-    pub(crate) tls: TlsDto,
+    tls: TlsDto,
     #[serde(flatten)]
-    pub(crate) framing: FramingSettingsDto,
+    framing: FramingSettingsDto,
     #[serde(default, flatten)]
-    pub(crate) read: ReadFormatDto,
+    read: ReadFormatDto,
     /// How this source's record bytes become text. See [`EncodingLabel`].
     #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
-    pub(crate) encoding: EncodingLabel,
+    encoding: EncodingLabel,
     #[serde(flatten)]
-    pub(crate) queue: Queue,
+    queue: Queue,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 pub type S3ListSourceDto = ObjectSourceDto<BucketDto, S3AccessDto, ListingDto>;

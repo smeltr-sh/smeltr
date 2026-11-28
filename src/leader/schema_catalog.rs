@@ -14,7 +14,7 @@ use crate::schema::{json_schema, standard};
 /// What a schema is read from: a file in a format a standard publishes.
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum ReadFormat {
+enum ReadFormat {
     /// A JSON Schema document (`schema::json_schema`).
     JsonSchema,
     /// ECS's `fields.csv` or `ecs_flat.yml` (`schema::ecs`).
@@ -32,44 +32,44 @@ pub(crate) enum ReadFormat {
 #[serde(rename_all = "camelCase")]
 pub struct ReadRequest {
     #[serde(default)]
-    pub(crate) id: String,
-    pub(crate) format: ReadFormat,
+    id: String,
+    format: ReadFormat,
     /// The file, as text.
     #[serde(default)]
-    pub(crate) text: String,
+    text: String,
     /// Read a release of ECS or OCSF smeltr carries (`schema::standard`) rather than `text`.
     #[serde(default)]
-    pub(crate) built_in: bool,
+    built_in: bool,
     /// The release `built_in` reads, by its version; the newest where empty.
     #[serde(default)]
-    pub(crate) release: String,
+    release: String,
     /// Whose requirements an ECS schema's fields take.
     #[serde(default)]
     pub(crate) requirements: crate::schema::ecs::Requirements,
     /// The OCSF class to read.
     #[serde(default)]
-    pub(crate) class: String,
+    class: String,
     /// How much of an OCSF class to read.
     #[serde(default)]
     pub(crate) cut: crate::schema::ocsf::Cut,
     /// The OpenTelemetry signal whose records an `otlp` schema holds.
     #[serde(default)]
-    pub(crate) signal: crate::plan::topology::Signal,
+    signal: crate::plan::topology::Signal,
     /// Which column of a CSV holds what; unsaid, its header says.
     #[serde(default)]
     pub(crate) columns: Option<crate::schema::csv::Columns>,
     /// The type of each value of a CSV's type column the reader does not know of itself.
     #[serde(default)]
-    pub(crate) types: std::collections::BTreeMap<String, String>,
+    types: std::collections::BTreeMap<String, String>,
     /// Answer what a CSV holds, for its columns and types to be chosen, rather than read it.
     #[serde(default)]
-    pub(crate) preview: bool,
+    preview: bool,
 }
 
 /// A schema read from a file, as a bundle declares one, or, asked for, what a CSV holds before it is read.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct ReadSchema {
-    pub(crate) schema: SchemaDto,
+    schema: SchemaDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) preview: Option<crate::schema::csv::Preview>,
 }
@@ -140,15 +140,15 @@ fn carried<'a>(
 /// `ReadRequest::built_in` and `ReadRequest::release`.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Standards {
-    pub(crate) ecs: Vec<Release>,
-    pub(crate) ocsf: Vec<Release>,
+    ecs: Vec<Release>,
+    ocsf: Vec<Release>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
-pub(crate) struct Release {
-    pub(crate) version: String,
+struct Release {
+    version: String,
     /// Where the release is published.
-    pub(crate) source: String,
+    source: String,
     /// OCSF's classes, one of which a schema is read from.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) classes: Vec<standard::OcsfClass>,
@@ -189,7 +189,7 @@ fn declared(id: &str, title: &str, fields: Vec<crate::config_file::SchemaFieldDt
 /// What a schema is exported as.
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum ExportFormat {
+enum ExportFormat {
     /// A JSON Schema document.
     JsonSchema,
     /// The body of `PUT /<index>` for an index whose documents fit it (`io::elastic_mapping`).
@@ -198,14 +198,14 @@ pub(crate) enum ExportFormat {
 
 #[derive(serde::Deserialize)]
 pub struct ExportRequest {
-    pub(crate) schema: SchemaDto,
-    pub(crate) format: ExportFormat,
+    schema: SchemaDto,
+    format: ExportFormat,
 }
 
 /// A schema written in an export format.
 #[derive(Default, serde::Serialize)]
 pub struct ExportedSchema {
-    pub(crate) document: Value,
+    document: Value,
 }
 
 /// `req`'s schema, written as its format has it.

@@ -140,7 +140,7 @@ pub struct SourceMeta {
 
 /// The entries of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
 /// `const`; a source whose record is configured declares it when it is built.
-pub(crate) type RecordFields = std::borrow::Cow<'static, [(Entry, DataType)]>;
+type RecordFields = std::borrow::Cow<'static, [(Entry, DataType)]>;
 
 /// One entry of a record: a field, by its name, or the unclaimed fields of an open object, by the object's name. The
 /// root's name is `""`.
@@ -887,7 +887,7 @@ impl SourceMeta {
 
     /// Whether this source hands over each record's payload as it read it, as `__source.bytes`. Its chunk is then
     /// one `bytes` column, the payloads, and its record is `_raw`, each payload decoded with the source's encoding.
-    pub(crate) fn reads_bytes(&self) -> bool {
+    fn reads_bytes(&self) -> bool {
         self.source.iter().any(|(name, _)| *name == SOURCE_BYTES)
     }
 
@@ -910,7 +910,7 @@ impl SourceMeta {
     }
 
     /// The `__source` field at `slot`, if one is there.
-    pub(crate) fn source_field_at(&self, slot: crate::core::id::SlotId) -> Option<usize> {
+    fn source_field_at(&self, slot: crate::core::id::SlotId) -> Option<usize> {
         slot.index()
             .checked_sub(self.source_slot(0).index())
             .filter(|i| *i < self.source.len())
@@ -923,7 +923,7 @@ impl SourceMeta {
     /// extractor staying behind at the old index.
     ///
     /// Each row whose value had bytes that did not decode, replaced with U+FFFD, is pushed to `repaired`.
-    pub(crate) fn column(
+    fn column(
         &self,
         field: usize,
         records: &[crate::io::SourceRecord],
@@ -2982,7 +2982,7 @@ pub struct KafkaDestinationConfig {
 
 impl KafkaDestinationConfig {
     /// The egress queue's share of `buffer_bytes`.
-    pub(crate) fn queue_bytes(&self) -> usize {
+    fn queue_bytes(&self) -> usize {
         self.buffer_bytes / 2
     }
 
@@ -3266,7 +3266,7 @@ pub(crate) fn certificate_error(tls: &Tls, held: &HeldSecrets) -> Option<String>
 
 impl TopologyConfig {
     /// The TLS every connector of this bundle speaks, where it speaks any of its own.
-    pub(crate) fn tls(&self) -> impl Iterator<Item = &Tls> {
+    fn tls(&self) -> impl Iterator<Item = &Tls> {
         let sources = self.sources.iter().filter_map(|s| s.kind.tls());
         let destinations = self.destinations.iter().filter_map(|d| d.kind.tls());
         sources.chain(destinations)
@@ -3402,10 +3402,7 @@ impl CompiledTopology {
     }
 }
 
-pub(crate) fn compile_routes(
-    routes: &[RouteConfig],
-    metas: &SourceMetas,
-) -> Result<Vec<CompiledRoute>, Vec<CompileError>> {
+fn compile_routes(routes: &[RouteConfig], metas: &SourceMetas) -> Result<Vec<CompiledRoute>, Vec<CompileError>> {
     let mut out = Vec::with_capacity(routes.len());
     let mut errors = Vec::new();
     for (i, r) in routes.iter().enumerate() {
@@ -3790,7 +3787,7 @@ pub(crate) fn output_symbols(plan: &Plan, tag_field: &str, meta: &SourceMeta) ->
 }
 
 /// A condition over a finished batch, and the patterns `Ctx::patterns` is pointed at to evaluate it.
-pub(crate) type OutputCondition = (
+type OutputCondition = (
     Ir,
     crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
 );

@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 /// The area every group draws on.
-pub(crate) const SHARED: &str = "shared";
+const SHARED: &str = "shared";
 
 /// What a person may do in one area. Ordered: each level includes every level before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]

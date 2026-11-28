@@ -3,10 +3,10 @@
 #[cfg(test)]
 extern crate self as smeltr;
 
-pub(crate) mod commit;
+mod commit;
 pub mod config_file;
 pub mod core;
-pub(crate) mod cpu_cache;
+mod cpu_cache;
 pub mod crypto;
 pub mod egress;
 pub mod embedded;
@@ -14,7 +14,7 @@ pub mod enrollment_code;
 pub mod expr;
 pub mod format;
 #[cfg(test)]
-pub(crate) mod fuzz;
+mod fuzz;
 pub mod handoff;
 pub mod heartbeat;
 pub mod io;
@@ -28,7 +28,7 @@ pub mod plan;
 pub mod process;
 #[cfg(test)]
 mod releases;
-pub(crate) mod resources;
+mod resources;
 pub mod runtime;
 pub mod schema;
 pub mod startup_config;

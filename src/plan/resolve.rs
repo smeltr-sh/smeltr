@@ -55,7 +55,7 @@ impl ResourceBuilder {
     ///
     /// The grammar guarantees every regex is a compile-time constant, which is what makes this possible — a pattern
     /// built from a runtime value could not be compiled once and shared across every batch.
-    pub(crate) fn intern(&mut self, p: &PatternSrc) -> PatternId {
+    fn intern(&mut self, p: &PatternSrc) -> PatternId {
         let held = self.patterns.entries().find(|(_, q)| *q == p).map(|(id, _)| id);
         held.unwrap_or_else(|| self.patterns.push(p.clone()))
     }
@@ -395,7 +395,7 @@ impl SymbolTable {
     }
 
     /// Put `node` at `name`, in place of whatever was there.
-    pub(crate) fn put(&mut self, name: &str, node: Node) {
+    fn put(&mut self, name: &str, node: Node) {
         self.root.put(name, node);
     }
 
@@ -572,7 +572,7 @@ impl SymbolTable {
 
     /// A read of `name`, which nothing bound: a compile error, wherever it appears. A record key a step reads is a
     /// field its parser declares.
-    pub(crate) fn unresolved(&self, name: &str) -> CompileError {
+    fn unresolved(&self, name: &str) -> CompileError {
         CompileError::new(None, format!("`{name}` is not a field"))
     }
 
@@ -1109,7 +1109,7 @@ pub(crate) fn refuse_variant(ir: &Ir, e: &Expr, syms: &SymbolTable) -> Result<()
 
 /// The conversion that gives `name`, a variant, a type: `name: type = name;`, or, for a key under a variant, the
 /// variant's conversion to an open object holding it. Where nothing may be bound, `name as type`.
-pub(crate) fn conversion_hint(name: &str, syms: &SymbolTable) -> String {
+fn conversion_hint(name: &str, syms: &SymbolTable) -> String {
     if syms.reads_only {
         return format!("`{name} as type`");
     }
@@ -2100,7 +2100,7 @@ fn operand_types(a: &DataType, b: &DataType) -> (DataType, DataType) {
 }
 
 /// Whether `from` holds an `i64` where `to` holds an `f64`, at any depth: a value that widens to meet it.
-pub(crate) fn widens(from: &DataType, to: &DataType) -> bool {
+fn widens(from: &DataType, to: &DataType) -> bool {
     use DataType::*;
     match (from, to) {
         (I64, F64) => true,
@@ -2114,7 +2114,7 @@ pub(crate) fn widens(from: &DataType, to: &DataType) -> bool {
 
 /// `ir` widened where it holds an `i64` that `to` holds as an `f64`; otherwise `ir`. A run-time kernel never meets an
 /// `i64` beside an `f64`.
-pub(crate) fn widen_number(ir: Ir, to: &DataType, span: Span) -> Result<Ir, CompileError> {
+fn widen_number(ir: Ir, to: &DataType, span: Span) -> Result<Ir, CompileError> {
     if !widens(&ir.ty, to) {
         return Ok(ir);
     }
@@ -2199,7 +2199,7 @@ pub(crate) fn blend(cond: Option<Ir>, then: Ir, else_: Ir) -> Result<Ir, Compile
 
 /// `cond ? a : b`. The condition must be `Bool` (no truthiness). The branches meet as `DataType::unify` says; a pair
 /// that does not meet, or a variant branch, makes the whole a variant: the blend moves both values and reads neither.
-pub(crate) fn ternary_result(cond: &DataType, then: &DataType, else_: &DataType) -> Result<DataType, String> {
+fn ternary_result(cond: &DataType, then: &DataType, else_: &DataType) -> Result<DataType, String> {
     if !is_condition(cond) {
         return Err(format!(
             "ternary condition must be bool, found {} (no truthiness coercion)",

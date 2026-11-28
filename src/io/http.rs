@@ -130,7 +130,7 @@ impl Response {
     }
 
     /// How long the answer's `Retry-After` asks to wait, a date measured from the answer's own `Date`.
-    pub(crate) fn asked_wait(&self) -> Option<Duration> {
+    fn asked_wait(&self) -> Option<Duration> {
         let now = (self.header("date"))
             .and_then(super::api::http_date)
             .unwrap_or_else(std::time::SystemTime::now);
@@ -1026,7 +1026,7 @@ impl ureq::unversioned::resolver::Resolver for Naming {
 }
 
 /// `agent_config`'s TLS alone, for a caller that sets the rest of the agent itself.
-pub(crate) fn tls_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
+fn tls_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
     let config = ureq::tls::TlsConfig::builder().root_certs(super::trust::ureq_roots(tls)?);
     let Some(presented) = tls.map(|t| super::trust::presented(t, secrets)).transpose()?.flatten() else {
         return Ok(config.build());

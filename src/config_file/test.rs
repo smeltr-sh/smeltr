@@ -78,12 +78,12 @@ pub struct Shown {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Outcome {
-    pub(crate) row: usize,
+    row: usize,
     /// Each of the test's fields the document holds, by name. `None` is a row that made no document.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) values: Option<Map<String, Value>>,
+    values: Option<Map<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sent: Option<Sent>,
+    sent: Option<Sent>,
 }
 
 /// Where a document went: the pipeline that made it, the route that carried it and the destinations it reached, by
@@ -115,7 +115,7 @@ pub struct Run {
 
 impl Made {
     /// What `fields` checks of it. A field the document lacks, or holds null, is absent.
-    pub(crate) fn cut(&self, fields: &[String]) -> Outcome {
+    fn cut(&self, fields: &[String]) -> Outcome {
         let values = self.document.as_ref().map(|document| {
             let mut leaves = Map::new();
             leaves_of(document, &mut String::new(), &mut leaves);
@@ -205,9 +205,9 @@ pub struct Lock {
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Locked {
-    pub(crate) rows_in: usize,
-    pub(crate) table: CaptureBatch,
-    pub(crate) shown: Vec<Shown>,
+    rows_in: usize,
+    table: CaptureBatch,
+    shown: Vec<Shown>,
 }
 
 impl Lock {
@@ -310,12 +310,12 @@ pub struct TestSummary {
 
 impl TestDto {
     /// The fields it checks, in the table's order.
-    pub(crate) fn fields(&self) -> Vec<String> {
+    fn fields(&self) -> Vec<String> {
         self.table.columns.iter().map(|c| c.name.clone()).collect()
     }
 
     /// Each row it checks, as a run's [`Made::cut`] holds it: the fields its row holds, a null being one it lacks.
-    pub(crate) fn outcomes(&self) -> Vec<Outcome> {
+    fn outcomes(&self) -> Vec<Outcome> {
         (self.table.rows.iter().zip(&self.shown))
             .map(|(row, shown)| Outcome {
                 row: shown.row,
@@ -331,12 +331,12 @@ impl TestDto {
     }
 
     /// The rows it checks, each once, in order.
-    pub(crate) fn rows_checked(&self) -> Vec<usize> {
+    fn rows_checked(&self) -> Vec<usize> {
         first_seen(self.shown.iter().map(|s| s.row))
     }
 
     /// Every pipeline this test exercises, in the order first seen.
-    pub(crate) fn pipelines_covered(&self) -> Vec<String> {
+    fn pipelines_covered(&self) -> Vec<String> {
         match &self.pipeline {
             Some(name) => vec![name.clone()],
             None => self.sent_names(|s| &s.pipeline),
@@ -345,7 +345,7 @@ impl TestDto {
 
     /// Every route this test's outcomes carry a document through, in the order first seen. Empty for a pipeline
     /// test.
-    pub(crate) fn routes_covered(&self) -> Vec<String> {
+    fn routes_covered(&self) -> Vec<String> {
         self.sent_names(|s| &s.route)
     }
 
@@ -377,27 +377,27 @@ impl TestDto {
 pub struct Difference {
     pub row: usize,
     /// Which of the row's documents, counted from 0 in the order they were made, or locked where the run made fewer.
-    pub(crate) document: usize,
+    document: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) expected: Option<Outcome>,
+    expected: Option<Outcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) actual: Option<Outcome>,
+    actual: Option<Outcome>,
     /// The values that differ, where both sides made a document.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) fields: Vec<FieldDifference>,
+    fields: Vec<FieldDifference>,
 }
 
 /// A value that differs from what a test locked, by its path in the document. An array is followed into its elements,
 /// and an element's own members, so a long array names only the elements that differ.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FieldDifference {
-    pub(crate) path: String,
+struct FieldDifference {
+    path: String,
     /// What the test locked there; absent where it locked no value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) locked: Option<Value>,
+    locked: Option<Value>,
     /// Whether the run made a value there.
-    pub(crate) made: bool,
+    made: bool,
 }
 
 /// A field the run types otherwise than the test locked it.

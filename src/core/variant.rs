@@ -34,12 +34,12 @@ pub(crate) const FALSE: u8 = 1;
 pub(crate) const TRUE: u8 = 2;
 pub(crate) const I64: u8 = 3;
 pub(crate) const F64: u8 = 4;
-pub(crate) const STR: u8 = 5;
+const STR: u8 = 5;
 pub(crate) const ARRAY: u8 = 6;
 pub(crate) const OBJECT: u8 = 7;
-pub(crate) const DATETIME: u8 = 8;
+const DATETIME: u8 = 8;
 pub(crate) const DURATION: u8 = 9;
-pub(crate) const BYTES: u8 = 10;
+const BYTES: u8 = 10;
 
 /// One encoded value whose strings and keys are UTF-8, so reading one needs no check of its own. A sealed variant
 /// column's rows are these (`Column::variant`); `Encoded::check` makes one of bytes from anywhere else.
@@ -191,7 +191,7 @@ pub fn read(v: Encoded<'_>) -> Value<'_> {
 
 /// How many bytes the value `b` starts with takes.
 #[inline]
-pub(crate) fn len_of(b: &[u8]) -> usize {
+fn len_of(b: &[u8]) -> usize {
     debug_assert!(b[0] <= BYTES, "not a variant tag: {}", b[0]);
     match b[0] {
         NULL | FALSE | TRUE => 1,
@@ -222,7 +222,7 @@ pub(crate) enum Key<'k> {
 /// The value at `key` inside `v`. `None` where:
 /// - `v` holds no value at `key`, or null there;
 /// - `key` is a member and `v` is no object, or `key` is an element and `v` is no array.
-pub(crate) fn at<'a>(v: Encoded<'a>, key: Key) -> Option<Encoded<'a>> {
+fn at<'a>(v: Encoded<'a>, key: Key) -> Option<Encoded<'a>> {
     match (read(v), key) {
         (Value::Object(entries), Key::Member(key)) => {
             entries.into_iter().find(|(k, _)| k.as_bytes() == key).map(|(_, v)| v)

@@ -6,30 +6,30 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct OktaLogsSourceDto {
     /// The org's address, as `https://acme.okta.com`.
-    pub(crate) org: String,
+    org: String,
     /// The credential holding an API token with read access to the System Log. A source names a token or a
     /// service app, never both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) token: Option<SecretRefDto>,
+    token: Option<SecretRefDto>,
     /// The service app's client id, when the source signs in as a service app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) client_id: Option<String>,
+    client_id: Option<String>,
     /// The credential holding the service app's private key, a PEM RSA key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) private_key: Option<SecretRefDto>,
+    private_key: Option<SecretRefDto>,
     /// Which of the service app's keys `privateKey` is, for an app with several.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) key_id: Option<String>,
+    key_id: Option<String>,
     #[serde(flatten)]
-    pub(crate) tls: TlsDto,
+    tls: TlsDto,
     #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-    pub(crate) poll_interval_secs: PollIntervalSecs,
+    poll_interval_secs: PollIntervalSecs,
     /// `"everything"` (default) reads what Okta lists with no start, its last seven days; `"new"` reads what
     /// happens from the first poll on.
     #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
     pub(crate) start: ListStartDto,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl SourceSpec for OktaLogsSourceDto {

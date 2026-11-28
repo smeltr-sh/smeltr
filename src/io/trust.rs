@@ -93,7 +93,7 @@ pub(crate) fn pem(tls: Option<&Tls>) -> Result<String, IoError> {
 }
 
 /// `roots` as PEM, one block each, in order.
-pub(crate) fn pem_of(roots: &[CertificateDer<'static>]) -> String {
+fn pem_of(roots: &[CertificateDer<'static>]) -> String {
     use base64::Engine as _;
     let mut out = String::new();
     for root in roots {

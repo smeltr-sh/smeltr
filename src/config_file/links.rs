@@ -59,8 +59,8 @@ impl Connections {
 /// One route's path: what it reads, what it runs, and every destination it writes to.
 #[derive(Clone, Debug)]
 pub(crate) struct RouteLinks {
-    pub(crate) id: String,
-    pub(crate) source: String,
+    id: String,
+    source: String,
     pub(crate) pipeline: String,
     /// Delivered to by a rule, by the route's or the group's exception answers, and down each chain of refusals:
     /// a destination's refusals go where its own answer says.
@@ -72,7 +72,7 @@ pub(crate) struct RouteLinks {
 pub struct Links {
     pub(crate) routes: Vec<RouteLinks>,
     /// Pipeline id -> the pipelines it calls, directly.
-    pub(crate) calls: BTreeMap<String, BTreeSet<String>>,
+    calls: BTreeMap<String, BTreeSet<String>>,
     /// Pipeline id -> the pipelines that call it, directly.
     pub callers: BTreeMap<String, BTreeSet<String>>,
     /// Pipeline id -> the lookup tables its steps read, however deep.
@@ -83,9 +83,9 @@ pub struct Links {
     /// Shared grok pattern id -> every `%{NAME}` its own pattern holds.
     pub(crate) pattern_names: BTreeMap<String, BTreeSet<String>>,
     /// Destination id -> where its refusals go, directly.
-    pub(crate) refusals: BTreeMap<String, BTreeSet<String>>,
+    refusals: BTreeMap<String, BTreeSet<String>>,
     /// Where the group's own exception answers deliver: a row any source reads can end there.
-    pub(crate) group_deliveries: BTreeSet<String>,
+    group_deliveries: BTreeSet<String>,
 }
 
 impl Links {

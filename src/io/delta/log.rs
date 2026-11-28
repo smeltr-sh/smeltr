@@ -316,7 +316,7 @@ impl Name {
         }
     }
 
-    pub(crate) fn version(&self) -> Option<i64> {
+    fn version(&self) -> Option<i64> {
         match self {
             Name::Commit(v) | Name::Checkpoint(v) | Name::Part(v) => Some(*v),
             Name::Other => None,
@@ -400,16 +400,16 @@ pub struct DomainMetadata {
 pub struct Sidecar {
     pub(crate) path: String,
     pub(crate) size_in_bytes: i64,
-    pub(crate) modification_time: i64,
+    modification_time: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) tags: Option<BTreeMap<String, String>>,
+    tags: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointMetadata {
     pub(crate) version: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) tags: Option<BTreeMap<String, String>>,
+    tags: Option<BTreeMap<String, String>>,
 }
 
 /// An `add` or a `remove`, as the log has it.
@@ -484,7 +484,7 @@ pub enum Action {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitInfo {
-    pub(crate) in_commit_timestamp: Option<i64>,
+    in_commit_timestamp: Option<i64>,
 }
 
 impl Action {
@@ -806,7 +806,7 @@ impl Snapshot {
 }
 
 /// The log's checkpoints after version `after`, through the first after `through`, in version order.
-pub(crate) fn checkpoints(log: &Log, after: Option<i64>, through: i64) -> Result<Vec<(Name, Entry)>, String> {
+fn checkpoints(log: &Log, after: Option<i64>, through: i64) -> Result<Vec<(Name, Entry)>, String> {
     let mut found = Vec::new();
     // The offset is exclusive, and `n` sorts before every name of version n.
     let offset = after.map(|v| format!("{v:020}"));

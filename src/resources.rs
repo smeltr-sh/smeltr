@@ -1460,7 +1460,7 @@ mod platform {
     /// Job-object CPU and memory limits -- what a Windows container's own limits are -- are not
     /// read yet. This measures this process's tree against the whole host, the same as any
     /// unlimited machine.
-    pub(crate) fn sample(carried: &mut Carried) -> (CpuReading, MemoryReading) {
+    fn sample(carried: &mut Carried) -> (CpuReading, MemoryReading) {
         let tree = own_process_tree();
         let cpu = CpuReading {
             time: tree_cpu_time(&tree, carried),
@@ -1569,7 +1569,7 @@ mod platform {
             .collect()
     }
 
-    pub(crate) use super::Carried;
+    use super::Carried;
 
     /// Every process in `tree`'s CPU time, and what `carried` holds of those that have left it.
     /// `None` when any process could not be read, which leaves `carried` as it was.
@@ -1606,7 +1606,7 @@ mod platform {
 /// another's leaving. Only the leaver's time since the last sample is lost.
 #[cfg(any(windows, test))]
 #[derive(Default)]
-pub(crate) struct Carried {
+struct Carried {
     /// Each process's CPU time at the last sample, by pid and creation time, since a pid is reused.
     last: std::collections::HashMap<(u32, u64), u64>,
     departed: u64,

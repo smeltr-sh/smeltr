@@ -30,7 +30,7 @@ use crate::leader::store::{Actor, Store, WorkerCredentialRecord, WorkerKind};
 use crate::leader::{AppState, run_store};
 
 /// Where the setting is kept. Seconds, as the session deadlines are.
-pub(crate) const FORGET_AFTER_KEY: &str = "workers.ephemeral_forget_after_seconds";
+const FORGET_AFTER_KEY: &str = "workers.ephemeral_forget_after_seconds";
 
 /// How long an ephemeral worker may be silent before it is forgotten, where nobody has said. Past a container
 /// restarting in the same pod, so a crash is not a new worker; short enough that a lost node's workers are gone
@@ -39,8 +39,8 @@ pub(crate) const DEFAULT_FORGET_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// Its bounds. Silence shorter than a minute is a few missed heartbeats, not a worker gone. Longer than a month, and
 /// an autoscaled fleet carries a month of pods it will never see again.
-pub(crate) const MIN_FORGET_AFTER: Duration = Duration::from_secs(60);
-pub(crate) const MAX_FORGET_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const MIN_FORGET_AFTER: Duration = Duration::from_secs(60);
+const MAX_FORGET_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// How often the fleet is looked at for gone workers, however many heartbeats and page reads ask.
 const LOOK_EVERY: Duration = Duration::from_secs(10);
@@ -49,7 +49,7 @@ const LOOK_EVERY: Duration = Duration::from_secs(10);
 ///
 /// A stored value that is no longer allowed -- written by hand, or by an older build with other bounds -- is
 /// reported rather than replaced.
-pub(crate) fn forget_after(store: &Store) -> Result<Duration, String> {
+fn forget_after(store: &Store) -> Result<Duration, String> {
     match store.setting(FORGET_AFTER_KEY).map_err(|e| e.to_string())? {
         None => Ok(DEFAULT_FORGET_AFTER),
         Some(text) => {
@@ -229,7 +229,7 @@ fn gone(
 /// bounds the form may offer, and the default it marks a change from. Seconds on the wire.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkerSettingsDto {
+struct WorkerSettingsDto {
     ephemeral_forget_after_seconds: u64,
     default_seconds: u64,
     min_seconds: u64,

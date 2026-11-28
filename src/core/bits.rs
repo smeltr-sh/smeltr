@@ -74,7 +74,7 @@ pub(crate) fn and_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
+fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = a[i] | b[i];
@@ -84,7 +84,7 @@ pub(crate) fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
+fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = a[i] ^ b[i];
@@ -95,7 +95,7 @@ pub(crate) fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 /// `dst = a & !b`.
 #[cfg(test)]
 #[inline]
-pub(crate) fn and_not_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
+fn and_not_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = a[i] & !b[i];
@@ -117,7 +117,7 @@ pub(crate) fn not_into(dst: &mut [u64], a: &[u64], len: usize) {
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn and_assign(dst: &mut [u64], src: &[u64], len: usize) {
+fn and_assign(dst: &mut [u64], src: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] &= src[i];
@@ -176,7 +176,7 @@ pub(crate) fn index_of_set(masks: &[&[u64]], len: usize) -> Vec<Option<u32>> {
 
 /// Collect set-bit indices into a gather list: how a selection becomes the `indices` argument to `Batch::gather`.
 #[cfg(test)]
-pub(crate) fn to_indices(bits: &[u64], len: usize, out: &mut Vec<u32>) {
+fn to_indices(bits: &[u64], len: usize, out: &mut Vec<u32>) {
     out.clear();
     out.reserve(popcount(&bits[..words_for(len)]));
     for_each_set(bits, len, |i| out.push(i as u32));

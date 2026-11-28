@@ -84,8 +84,8 @@ pub(super) const BUCKET: Tier = Tier::FiveMinutes;
 
 /// One width a source is judged at: its window, and how many days of past windows its range is learned from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Width {
-    pub(crate) window: Duration,
+struct Width {
+    window: Duration,
     history_days: i64,
 }
 
@@ -101,7 +101,7 @@ impl Width {
 
 /// Narrowest first. The short widths learn from a week, which holds two thousand windows of each. A week holds only
 /// seven days that do not overlap, too few to cut one in two thousand, so the long widths learn from four.
-pub(crate) const WIDTHS: [Width; 4] = [
+const WIDTHS: [Width; 4] = [
     Width {
         window: Duration::from_secs(5 * 60),
         history_days: 7,
@@ -129,7 +129,7 @@ const USUAL_MIN_DAYS: usize = 3;
 /// How far back a source's rows must reach, from its first or from a reset, before it is judged at all: a week, so each
 /// weekday is learned once before one can warn. Judged sooner, a new source's first quiet weekend is set against its
 /// weekdays, warns, and so is never learned.
-pub(crate) const JUDGED_AFTER_MS: i64 = 7 * DAY_MS;
+const JUDGED_AFTER_MS: i64 = 7 * DAY_MS;
 
 /// How far either side of the same time of day a past window may end and still count as the same time of day.
 const NEIGHBORHOOD: Duration = Duration::from_secs(30 * 60);
@@ -409,7 +409,7 @@ impl Readings {
     ///
     /// While another caller computes the new answer, this waits for it: a catalog given the last answer would be
     /// newer than the one given the new answer, and would end every issue the new answer had just started.
-    pub(crate) fn at(
+    fn at(
         &self,
         store: &RegistryStore,
         now_ms: i64,
@@ -1122,18 +1122,18 @@ impl Default for Past {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PastSpan {
-    pub(crate) from_millis: i64,
-    pub(crate) to_millis: i64,
-    pub(crate) learned: bool,
+    from_millis: i64,
+    to_millis: i64,
+    learned: bool,
     /// It is the warning that holds, and runs until now.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) holds: bool,
+    holds: bool,
     /// Who answered what it was, if anyone did: Normal where it is `learned`, else Outage.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) marked_by: Option<String>,
+    marked_by: Option<String>,
     /// Why it began, where it kept why.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) reason: Option<Reason>,
+    reason: Option<Reason>,
 }
 
 /// `group`'s `source`'s [`Past`], or its `sender`'s, as of `now_ms`.
@@ -1417,10 +1417,10 @@ fn summed(series: impl Iterator<Item = (String, SubjectPoints)>, into: Tier) -> 
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Chart {
     /// How wide each point is.
-    pub(crate) point_millis: i64,
+    point_millis: i64,
     /// Rows per second in each point, by when it began. A point nothing was kept for has none.
-    pub(crate) points: Vec<(i64, f64)>,
-    pub(crate) expected: Vec<ExpectedPoint>,
+    points: Vec<(i64, f64)>,
+    expected: Vec<ExpectedPoint>,
 }
 
 /// A source, or one of its senders: whose rows, range and warnings the leader reads.
@@ -1514,10 +1514,10 @@ pub(crate) fn chart(
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExpectedPoint {
-    pub(crate) from_millis: i64,
-    pub(crate) to_millis: i64,
-    pub(crate) low: f64,
-    pub(crate) high: f64,
+    from_millis: i64,
+    to_millis: i64,
+    low: f64,
+    high: f64,
 }
 
 /// The points a chart draws: each `point_ms` wide ([`super::series::chart_point_ms`]), from the point `since_ms` is in
@@ -1605,7 +1605,7 @@ fn expected_at(
 }
 
 /// `group`'s `source`'s rows, or its `sender`'s, in each [`BUCKET`] since `since_ms`; None while it has none.
-pub(crate) fn rows_of(
+fn rows_of(
     store: &RegistryStore,
     Subject { group, source, sender }: Subject,
     since_ms: i64,
@@ -1702,7 +1702,7 @@ fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, a
 
 /// The widths a source's swing is kept at: those a chart finer than [`BUCKET`] draws its points at
 /// ([`super::series::chart_point_ms`]).
-pub(crate) const SWING_WIDTHS: [Tier; 2] = [Tier::TenSeconds, Tier::OneMinute];
+const SWING_WIDTHS: [Tier; 2] = [Tier::TenSeconds, Tier::OneMinute];
 
 /// How far back from the window's end a swing is still recorded. The ten-second tier holds an hour; this leaves
 /// `maintain` a margin before it rolls the oldest of it up.

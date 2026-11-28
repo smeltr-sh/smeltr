@@ -275,7 +275,7 @@ pub(crate) fn idiv_num(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 /// `idiv(a, b)`, where `i64::MIN / -1`, the one quotient outside `i64`, fails its row.
-pub(crate) fn idiv_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+fn idiv_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let mut out = idiv_wrapping(ctx, ins);
     let len = out.len();
     if let (Some(a), Some(b)) = (side::i64(ins[0]), side::i64(ins[1])) {

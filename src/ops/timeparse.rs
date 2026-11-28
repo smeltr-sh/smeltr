@@ -483,7 +483,7 @@ const CANDIDATE_FORMATS: &[&str] = &[
 
 /// Auto-detect, trying `CANDIDATE_FORMATS[hint]` before the ordered scan. Returns the value and the index of the
 /// candidate that matched; an out-of-range hint means no hint.
-pub(crate) fn parse_auto_hinted(text: &str, hint: usize) -> Option<(i64, usize)> {
+fn parse_auto_hinted(text: &str, hint: usize) -> Option<(i64, usize)> {
     parse_auto_hinted_at(text, hint, None)
 }
 

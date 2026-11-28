@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct KmsKeyDto {
     /// Absent leaves the bucket's default encryption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) kms_key_id: Option<String>,
+    kms_key_id: Option<String>,
 }
 
 impl EncryptionDto for KmsKeyDto {
@@ -108,9 +108,9 @@ impl AccessDto for S3AccessDto {
 #[serde(rename_all = "camelCase")]
 pub struct SqsDto {
     /// The queue's own URL, which names its region and account.
-    pub(crate) queue_url: String,
+    queue_url: String,
     #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
-    pub(crate) visibility_secs: VisibilitySecs,
+    visibility_secs: VisibilitySecs,
 }
 
 impl QueueDto<AnnouncedDto, S3AccessDto> for SqsDto {

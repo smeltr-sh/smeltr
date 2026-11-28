@@ -445,14 +445,14 @@ pub(crate) fn parse_url(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 #[derive(Default, Debug, PartialEq)]
-pub(crate) struct UrlParts {
-    pub(crate) domain: Option<String>,
-    pub(crate) fragment: Option<String>,
-    pub(crate) path: Option<String>,
-    pub(crate) port: Option<i64>,
-    pub(crate) query: Option<String>,
-    pub(crate) scheme: Option<String>,
-    pub(crate) user_info: Option<String>,
+struct UrlParts {
+    domain: Option<String>,
+    fragment: Option<String>,
+    path: Option<String>,
+    port: Option<i64>,
+    query: Option<String>,
+    scheme: Option<String>,
+    user_info: Option<String>,
 }
 
 impl UrlParts {
@@ -477,14 +477,14 @@ impl UrlParts {
     }
 
     /// What follows the last `.` of the path's last segment, the whole path where it has no `/`.
-    pub(crate) fn extension(&self) -> Option<&str> {
+    fn extension(&self) -> Option<&str> {
         let path = self.path.as_deref()?;
         let last = &path[path.rfind('/').map_or(0, |slash| slash + 1)..];
         last.rfind('.').map(|dot| &last[dot + 1..])
     }
 
     /// The user info's name, and its password where a `:` follows the name.
-    pub(crate) fn credentials(&self) -> Option<(&str, Option<&str>)> {
+    fn credentials(&self) -> Option<(&str, Option<&str>)> {
         let info = self.user_info.as_deref()?;
         Some(match info.split_once(':') {
             Some((name, password)) => (name, Some(password)),
@@ -493,7 +493,7 @@ impl UrlParts {
     }
 
     /// RFC 3986's parts, decoded, as Java's `URI` gives them; failing that, as its `URL` does, as written.
-    pub(crate) fn read(text: &str) -> Option<UrlParts> {
+    fn read(text: &str) -> Option<UrlParts> {
         match Self::split(text, true) {
             Some(parts) => Some(parts),
             None => {
@@ -632,15 +632,15 @@ pub(crate) fn registered_domain(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct DomainParts {
-    pub(crate) domain: String,
-    pub(crate) registered_domain: Option<String>,
-    pub(crate) top_level_domain: String,
-    pub(crate) subdomain: Option<String>,
+struct DomainParts {
+    domain: String,
+    registered_domain: Option<String>,
+    top_level_domain: String,
+    subdomain: Option<String>,
 }
 
 impl DomainParts {
-    pub(crate) fn read(fqdn: &str) -> Option<DomainParts> {
+    fn read(fqdn: &str) -> Option<DomainParts> {
         let fqdn = fqdn.trim();
         let host = fqdn.to_ascii_lowercase();
         if host.is_empty() || host.starts_with('.') {

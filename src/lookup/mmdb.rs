@@ -20,7 +20,7 @@ use serde::de::{Deserialize, DeserializeSeed, Deserializer, IgnoredAny, MapAcces
 use super::LookupError;
 
 /// The record an address fell in.
-pub(crate) type Record<'a> = LookupResult<'a, memmap2::Mmap>;
+type Record<'a> = LookupResult<'a, memmap2::Mmap>;
 
 #[derive(Debug)]
 pub struct MmdbTable {
@@ -277,7 +277,7 @@ impl<'de, 'a> Visitor<'de> for KeySeed<'a> {
 /// value: the oracle `Paths::read` is checked against, not a path the pipeline takes. Missing at any segment, or a
 /// non-scalar leaf (a path that only reaches partway into a nested object/array), is `None`.
 #[cfg(test)]
-pub(crate) fn path_value(record: &serde_json::Value, path: &str) -> Option<String> {
+fn path_value(record: &serde_json::Value, path: &str) -> Option<String> {
     let mut v = record;
     for segment in path.split('.') {
         v = v.get(segment)?;

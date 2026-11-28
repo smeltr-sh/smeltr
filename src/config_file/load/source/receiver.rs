@@ -19,7 +19,7 @@ pub struct ReceiverSourceDto<Kind, Framing> {
     #[serde(flatten)]
     pub(crate) framing: Framing,
     #[serde(flatten, default)]
-    pub(crate) unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 /// The framing of a receiver whose protocol marks where a record ends.

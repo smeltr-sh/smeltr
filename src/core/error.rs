@@ -82,7 +82,7 @@ pub enum ExceptionKind {
 }
 
 impl ExceptionKind {
-    pub(crate) fn category(&self) -> Category {
+    fn category(&self) -> Category {
         Self::KINDS[self.index()].1
     }
 
@@ -158,9 +158,9 @@ pub struct Exception {
 pub(crate) struct Read {
     /// The slot read and the key path under its record, empty for the slot itself. `None` for a literal or computed
     /// value, which a message names by its value alone.
-    pub(crate) source: Option<(SlotId, String)>,
+    source: Option<(SlotId, String)>,
     /// The value as the pipeline language spells it, cut at 64 bytes with `…`.
-    pub(crate) value: Option<String>,
+    value: Option<String>,
 }
 
 impl Read {

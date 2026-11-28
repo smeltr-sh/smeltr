@@ -59,7 +59,7 @@ pub(crate) struct Text {
 /// A schema another references, by the subject and version it is registered under.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub(crate) struct Reference {
-    pub(crate) name: String,
+    name: String,
     pub(crate) subject: String,
     pub(crate) version: i64,
 }

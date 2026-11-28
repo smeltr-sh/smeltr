@@ -56,7 +56,7 @@ pub(super) trait StoreNameDto {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BucketDto {
-    pub(crate) bucket: String,
+    bucket: String,
 }
 
 impl StoreNameDto for BucketDto {
@@ -67,7 +67,7 @@ impl StoreNameDto for BucketDto {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ContainerDto {
-    pub(crate) container: String,
+    container: String,
 }
 
 impl StoreNameDto for ContainerDto {

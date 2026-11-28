@@ -102,7 +102,7 @@ pub enum Layer {
 }
 
 impl Layer {
-    pub(crate) fn value(&self) -> &Ir {
+    fn value(&self) -> &Ir {
         match self {
             Layer::Spread(v) | Layer::Key(_, v) => v,
         }
@@ -140,7 +140,7 @@ impl Layer {
 }
 
 /// `kind` with `f` applied to each direct child.
-pub(crate) fn map_children(kind: IrKind, f: &mut impl FnMut(Ir) -> Ir) -> IrKind {
+fn map_children(kind: IrKind, f: &mut impl FnMut(Ir) -> Ir) -> IrKind {
     let mut b = |x: Box<Ir>| Box::new(f(*x));
     match kind {
         IrKind::Literal(_) | IrKind::Field(_) | IrKind::Regex(_) => kind,

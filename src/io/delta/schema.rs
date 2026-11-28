@@ -362,7 +362,7 @@ pub(crate) struct Defaulted {
     pub(crate) name: String,
     /// The column as the files carry it.
     pub(crate) field: Field,
-    pub(crate) kind: Kind,
+    kind: Kind,
     /// One row of `field`'s type.
     pub(crate) value: ArrayRef,
 }

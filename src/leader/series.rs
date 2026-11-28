@@ -651,7 +651,7 @@ fn series_since_on(
 /// Logs the leader keeps for the fleet. A row cap rather than an age: a quiet fleet should still have its
 /// last words, and a loud one must not grow the store without bound. `id` rises with arrival, so the newest rows
 /// are the ones past the cap from the other end.
-pub(crate) const LOGS_KEPT: i64 = 100_000;
+const LOGS_KEPT: i64 = 100_000;
 
 /// `%` and `_` are wildcards to `LIKE`, so a search for them must say so. Paired with `ESCAPE '\\'` at every
 /// call, and `\\` itself is escaped first or it would escape the escape.
@@ -1889,36 +1889,36 @@ impl RegistryStore {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StoredParserShape {
     pub(crate) group_id: String,
-    pub(crate) source: String,
-    pub(crate) route: String,
-    pub(crate) pipeline: String,
-    pub(crate) step: String,
-    pub(crate) rows: i64,
-    pub(crate) fields_dropped: i64,
-    pub(crate) first_seen_ms: i64,
-    pub(crate) last_seen_ms: i64,
-    pub(crate) fields: Vec<StoredFieldShape>,
+    source: String,
+    route: String,
+    pipeline: String,
+    step: String,
+    rows: i64,
+    fields_dropped: i64,
+    first_seen_ms: i64,
+    last_seen_ms: i64,
+    fields: Vec<StoredFieldShape>,
 }
 
 /// One field of a [`StoredParserShape`] (`heartbeat::FieldShape`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct StoredFieldShape {
-    pub(crate) name: String,
-    pub(crate) declared: bool,
-    pub(crate) suggested: String,
-    pub(crate) present: i64,
-    pub(crate) bools: i64,
-    pub(crate) ints: i64,
-    pub(crate) floats: i64,
-    pub(crate) strings: i64,
-    pub(crate) arrays: i64,
-    pub(crate) objects: i64,
-    pub(crate) failed: i64,
+struct StoredFieldShape {
+    name: String,
+    declared: bool,
+    suggested: String,
+    present: i64,
+    bools: i64,
+    ints: i64,
+    floats: i64,
+    strings: i64,
+    arrays: i64,
+    objects: i64,
+    failed: i64,
     /// Values that read as a time (`heartbeat::FieldShape::times`).
-    pub(crate) times: i64,
-    pub(crate) first_seen_ms: i64,
-    pub(crate) last_seen_ms: i64,
+    times: i64,
+    first_seen_ms: i64,
+    last_seen_ms: i64,
 }
 
 /// The rows of one source no route took, by stream, as the leader has accumulated them
@@ -2869,7 +2869,7 @@ pub(crate) struct DeclaredField {
     pub(crate) step: String,
     pub(crate) field: String,
     /// Its declared type.
-    pub(crate) declared: String,
+    declared: String,
     /// When its step last read a row on this shape.
     pub(crate) read_last_ms: Option<i64>,
     pub(crate) present_last_ms: Option<i64>,

@@ -524,7 +524,7 @@ fn check_for(conn: &Connection) -> Check {
 }
 
 /// Where each start keeps the copy of a sound `leader.db`, for a later start that finds it damaged.
-pub(crate) fn previous_path(path: &Path) -> PathBuf {
+fn previous_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(".previous");
     PathBuf::from(name)

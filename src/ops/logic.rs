@@ -157,7 +157,7 @@ pub(crate) fn rows_with_a_value(c: &Column, len: usize, out: &mut [u64]) {
 /// field any source has; a field a source lacks is null on the rows that source wins. Each field meets at the type its
 /// columns hold (`meet`), so a field held as text beside one held as a variant is taken as a variant, each value as
 /// it is.
-pub(crate) fn take(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, len: usize) -> Column {
+fn take(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, len: usize) -> Column {
     match ty {
         // A `null` type holds no value: its column is `Empty`, as `build`'s is.
         DataType::Null => Column::empty(DataType::Null, len),

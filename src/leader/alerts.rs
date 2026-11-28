@@ -26,7 +26,7 @@ const EVERY: Duration = Duration::from_secs(60);
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The setting the channels are kept in, as JSON.
-pub(crate) const CHANNELS_KEY: &str = "alerts.channels";
+const CHANNELS_KEY: &str = "alerts.channels";
 
 /// The setting a webhook's secret header value is sealed under.
 pub(crate) fn secret_key(channel: &str) -> String {
@@ -34,7 +34,7 @@ pub(crate) fn secret_key(channel: &str) -> String {
 }
 
 /// What a webhook's sealed secret is called on the page: PagerDuty's is its routing key.
-pub(crate) fn secret_name(format: Format) -> &'static str {
+fn secret_name(format: Format) -> &'static str {
     match format {
         Format::PagerDuty => "routing key",
         _ => "secret header value",
@@ -50,7 +50,7 @@ pub(crate) fn secret_label(channel: &Channel) -> Option<String> {
 }
 
 /// The setting the mail server is kept in, as JSON.
-pub(crate) const MAIL_KEY: &str = "alerts.mail";
+const MAIL_KEY: &str = "alerts.mail";
 
 /// The setting the mail server's password is sealed under.
 pub(crate) const MAIL_PASSWORD_KEY: &str = "alerts.mail.password";
@@ -58,22 +58,22 @@ pub(crate) const MAIL_PASSWORD_KEY: &str = "alerts.mail.password";
 /// The one mail server every email channel sends through.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Mail {
+struct Mail {
     /// Off, no email is sent, and what email channels would be told waits until it is on.
-    pub(crate) enabled: bool,
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) encryption: Encryption,
-    pub(crate) from: String,
+    enabled: bool,
+    host: String,
+    port: u16,
+    encryption: Encryption,
+    from: String,
     /// Who to sign in as. `None` sends without signing in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) username: Option<String>,
+    username: Option<String>,
 }
 
 /// How the connection to the mail server is encrypted. Always encrypted: the password and what is sent cross it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum Encryption {
+enum Encryption {
     /// Plain at first, then upgraded; refused if the server cannot upgrade. Usually port 587.
     StartTls,
     /// TLS from the first byte. Usually port 465.
@@ -81,7 +81,7 @@ pub(crate) enum Encryption {
 }
 
 /// The mail server as stored, when one is and it is on.
-pub(crate) fn mail(store: &Store) -> Result<Option<Mail>, StoreError> {
+fn mail(store: &Store) -> Result<Option<Mail>, StoreError> {
     let Some(text) = store.setting(MAIL_KEY)? else {
         return Ok(None);
     };
@@ -154,7 +154,7 @@ pub(crate) struct Failing {
     /// When the first send in this run of failures failed.
     pub(crate) since: i64,
     /// When the last one did.
-    pub(crate) last: i64,
+    last: i64,
     pub(crate) message: crate::logs::Noted,
 }
 
@@ -163,7 +163,7 @@ pub(crate) struct Failing {
 pub struct Alerts {
     failing: Mutex<HashMap<String, Failing>>,
     /// Wakes the timer when the channels change, so a new channel is told at once.
-    pub(crate) settings_changed: tokio::sync::Notify,
+    settings_changed: tokio::sync::Notify,
 }
 
 impl Alerts {
@@ -223,7 +223,7 @@ pub(crate) fn channels(store: &Store) -> Result<Vec<Channel>, StoreError> {
 /// warning whose message changes is the same warning. Two parts are added only where they apply: the log line the
 /// warning is about, and, for a warning one subject can raise more than once at a time (senders crossing at different
 /// readings), when it crossed. A key made before those parts existed is therefore unchanged.
-pub(crate) fn key(w: &Warning) -> String {
+fn key(w: &Warning) -> String {
     let line = w.r#type.as_ref().map(|kind| (&w.class, kind));
     let mut key = serde_json::json!([w.condition, w.subject_kind, w.group, w.subject_id, line]);
     if let (Some(crossed), Some(parts)) = (w.crossed_millis, key.as_array_mut()) {
@@ -255,18 +255,18 @@ fn body(channel: &Channel, w: &Warning) -> serde_json::Value {
 
 /// What one look must tell one channel.
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct Changes {
+struct Changes {
     /// Warnings it takes and has not been told of, as rows to write once it takes them.
-    pub(crate) raised: Vec<AlertTold>,
+    raised: Vec<AlertTold>,
     /// Warnings it was told of that no longer hold.
-    pub(crate) cleared: Vec<AlertTold>,
+    cleared: Vec<AlertTold>,
     /// Warnings it was told of that cleared while it is muted: forgotten without telling it.
-    pub(crate) dropped: Vec<AlertTold>,
+    dropped: Vec<AlertTold>,
 }
 
 /// What `channel` must be told at `now`, given the warnings that hold and what every channel was told. A muted
 /// channel is told nothing: what clears meanwhile is forgotten, and once the mute ends, what then holds is told.
-pub(crate) fn changes(channel: &Channel, now: i64, warnings: &[Warning], told: &[AlertTold]) -> Changes {
+fn changes(channel: &Channel, now: i64, warnings: &[Warning], told: &[AlertTold]) -> Changes {
     let muted = channel.muted_until.is_some_and(|until| until > now);
     let told: HashMap<&str, &AlertTold> = told
         .iter()
@@ -315,7 +315,7 @@ pub(crate) fn changes(channel: &Channel, now: i64, warnings: &[Warning], told: &
 /// Whether a send says a warning was raised or has cleared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum Status {
+enum Status {
     Raised,
     Cleared,
     /// Sent from the page to check a channel. About no warning.
@@ -324,7 +324,7 @@ pub(crate) enum Status {
 
 /// One line that says what changed, for a reader rather than a program: the issue as the Issues page names it, its
 /// subject and group, and the message where the channel takes it.
-pub(crate) fn summary(status: Status, body: &serde_json::Value) -> String {
+fn summary(status: Status, body: &serde_json::Value) -> String {
     let label = serde_json::from_value::<Condition>(body["condition"].clone()).map_or("Issue", Condition::label);
     let mut line = match status {
         Status::Raised => format!("{label}: {}", body["subjectId"].as_str().unwrap_or_default()),
@@ -341,12 +341,7 @@ pub(crate) fn summary(status: Status, body: &serde_json::Value) -> String {
 }
 
 /// A webhook's body for one change, in `format`. `routing_key` is a PagerDuty channel's secret.
-pub(crate) fn webhook_body(
-    format: Format,
-    status: Status,
-    told: &AlertTold,
-    routing_key: Option<&str>,
-) -> serde_json::Value {
+fn webhook_body(format: Format, status: Status, told: &AlertTold, routing_key: Option<&str>) -> serde_json::Value {
     let mut value: serde_json::Value = serde_json::from_str(&told.body).unwrap_or_default();
     match format {
         Format::GenericJson => {
@@ -505,7 +500,7 @@ async fn mail_password(state: &AppState, mail: &Mail) -> Result<Option<String>, 
 }
 
 /// One email that tells of every change in `changes`: its subject and its body.
-pub(crate) fn email(changes: &Changes) -> (String, String) {
+fn email(changes: &Changes) -> (String, String) {
     let lines: Vec<String> = changes
         .raised
         .iter()
@@ -626,7 +621,7 @@ async fn record(state: &AppState, told: Vec<AlertTold>, cleared: Vec<(String, St
 }
 
 /// One look: tell every channel what has changed since it was last told.
-pub(crate) async fn look(state: &AppState) -> Result<(), StoreError> {
+async fn look(state: &AppState) -> Result<(), StoreError> {
     let _pass = tracing::trace_span!(target: "alerts", "a background pass", task = "check alerts");
     let now = super::warnings::now_millis();
     let (channels, mail, told) =
@@ -729,7 +724,7 @@ pub async fn run(state: AppState) {
 /// The mail server as the page reads it. The password itself is never sent back.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MailDto {
+struct MailDto {
     #[serde(flatten)]
     mail: Mail,
     password_set: bool,
@@ -738,7 +733,7 @@ pub(crate) struct MailDto {
 /// A channel as the page reads it: its secret only as whether one is stored, and its last failure while it fails.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ChannelDto {
+struct ChannelDto {
     #[serde(flatten)]
     channel: Channel,
     secret_set: bool,
@@ -753,7 +748,7 @@ pub(crate) struct AlertSettings {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AlertSettingsDto {
+struct AlertSettingsDto {
     /// `None` until a mail server is saved.
     mail: Option<MailDto>,
     channels: Vec<ChannelDto>,
@@ -763,7 +758,7 @@ pub(crate) struct AlertSettingsDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SectionDto {
+struct SectionDto {
     section: Section,
     conditions: Vec<Condition>,
 }

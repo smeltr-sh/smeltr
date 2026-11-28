@@ -231,7 +231,7 @@ impl Stream {
 }
 
 /// `bytes` kept to one line: `\` becomes `\\`, a newline `\n` and a carriage return `\r`.
-pub(crate) fn escape_line(bytes: &[u8]) -> Vec<u8> {
+fn escape_line(bytes: &[u8]) -> Vec<u8> {
     let mut line = Vec::with_capacity(bytes.len());
     for &b in bytes {
         match b {

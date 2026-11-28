@@ -70,7 +70,7 @@ pub(crate) trait Signer: Send + Sync {
 pub(crate) struct Loaded {
     /// Where the metadata is written; `None` for a table staged and not yet committed.
     #[serde(default)]
-    pub(crate) metadata_location: Option<String>,
+    metadata_location: Option<String>,
     pub(crate) metadata: TableMetadata,
     /// The table's settings for a client: a server that vends credentials without `storage-credentials` puts them
     /// here (`s3.access-key-id`, ...).
@@ -113,7 +113,7 @@ impl std::fmt::Debug for StorageCredential {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Committed {
-    pub(crate) metadata_location: String,
+    metadata_location: String,
     pub(crate) metadata: TableMetadata,
 }
 
@@ -298,7 +298,7 @@ impl Catalog {
 
     /// Asks the catalog for its settings, once: the prefix of every path after, and the base they are asked under when
     /// the catalog overrides it. Every other call opens first.
-    pub(crate) fn open(&mut self) -> Result<(), IoError> {
+    fn open(&mut self) -> Result<(), IoError> {
         if self.config.is_some() {
             return Ok(());
         }

@@ -413,7 +413,7 @@ pub fn load_bundle_dir(root: &Path) -> Result<LoadedSystem, BundleError> {
 /// Read and validate one bundle out of `files`. A relative lookup path in it resolves against `at`, which is where
 /// `files` reads from -- a directory, or a commit.
 #[tracing::instrument(level = "trace", target = "deploy", name = "a bundle load", skip_all, fields(at = %at))]
-pub(crate) fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
+fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
     let mut parts = read_parts(files, "")?;
     let Some(manifest) = parts.manifest.take() else {
         return Err(io_err("system.json", std::io::ErrorKind::NotFound.into()));
@@ -458,7 +458,7 @@ pub fn is_safe_group_id(group_id: &str) -> bool {
 }
 
 /// The message an unsafe id is refused with, written once so every caller says the same thing.
-pub(crate) fn unsafe_group_id(group_id: &str) -> String {
+fn unsafe_group_id(group_id: &str) -> String {
     format!(
         "unsafe worker group id {group_id:?}: only letters, digits, '-', '_' and '.' are allowed, \
          it may not start with '.', and it must be 1-100 characters"

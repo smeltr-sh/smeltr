@@ -57,7 +57,7 @@ impl Findings {
 
 /// Runs every test at a commit and answers the ones that fail. The test runner is the binary's, which owns the
 /// preview a test runs.
-pub(crate) type TestRunner = Arc<dyn Fn(&Path, &str) -> Vec<FailingTest> + Send + Sync>;
+type TestRunner = Arc<dyn Fn(&Path, &str) -> Vec<FailingTest> + Send + Sync>;
 
 #[derive(Default)]
 struct State {

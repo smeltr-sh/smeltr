@@ -67,11 +67,11 @@ impl Status {
 /// Column statistics, each keyed by field id. Bounds are single-value serialized (the spec's appendix D).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Stats {
-    pub(crate) column_sizes: BTreeMap<i32, i64>,
-    pub(crate) value_counts: BTreeMap<i32, i64>,
-    pub(crate) null_value_counts: BTreeMap<i32, i64>,
-    pub(crate) lower_bounds: BTreeMap<i32, Vec<u8>>,
-    pub(crate) upper_bounds: BTreeMap<i32, Vec<u8>>,
+    column_sizes: BTreeMap<i32, i64>,
+    value_counts: BTreeMap<i32, i64>,
+    null_value_counts: BTreeMap<i32, i64>,
+    lower_bounds: BTreeMap<i32, Vec<u8>>,
+    upper_bounds: BTreeMap<i32, Vec<u8>>,
 }
 
 /// One data file in a manifest. A `None` sequence number or snapshot id is one inherited from the manifest's entry
@@ -80,21 +80,21 @@ pub(crate) struct Stats {
 pub struct DataFileEntry {
     pub status: Status,
     pub snapshot_id: Option<i64>,
-    pub(crate) sequence_number: Option<i64>,
-    pub(crate) file_sequence_number: Option<i64>,
+    sequence_number: Option<i64>,
+    file_sequence_number: Option<i64>,
     pub file_path: String,
-    pub(crate) file_format: String,
+    file_format: String,
     /// One value per partition field, in the spec's order.
     pub partition: Vec<Option<Literal>>,
     pub record_count: i64,
     pub(crate) file_size_in_bytes: i64,
-    pub(crate) stats: Stats,
+    stats: Stats,
     /// The row id of the file's first row; `None` for a file this snapshot adds, which inherits it from its
     /// manifest's. A file read from a manifest has it made explicit.
     pub(crate) first_row_id: Option<i64>,
     /// The data file's fields this writer does not make and another writer set, by name, their union's branch taken:
     /// a merge writes them back unchanged. Each is one of [`CARRIED`].
-    pub(crate) carried: Vec<(String, Value)>,
+    carried: Vec<(String, Value)>,
 }
 
 /// The data file's optional fields this writer never fills, which a merge carries from the manifest it read.
@@ -135,7 +135,7 @@ impl DataFileEntry {
 
 /// What a manifest holds: data files, or delete files, which this writer never writes but keeps in a list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Content {
+enum Content {
     Data,
     Deletes,
 }
@@ -146,14 +146,14 @@ pub(crate) enum Content {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ManifestFile {
     pub manifest_path: String,
-    pub(crate) manifest_length: i64,
+    manifest_length: i64,
     pub(crate) partition_spec_id: i32,
-    pub(crate) content: Content,
+    content: Content,
     /// `None` for a manifest this snapshot adds: the snapshot's sequence number, assigned at commit.
-    pub(crate) sequence_number: Option<i64>,
+    sequence_number: Option<i64>,
     /// The least data sequence number of the manifest's live files; `None` when that is the snapshot's own.
-    pub(crate) min_sequence_number: Option<i64>,
-    pub(crate) added_snapshot_id: i64,
+    min_sequence_number: Option<i64>,
+    added_snapshot_id: i64,
     pub(crate) added_files_count: Option<i32>,
     pub(crate) existing_files_count: Option<i32>,
     pub(crate) deleted_files_count: Option<i32>,
@@ -161,20 +161,20 @@ pub struct ManifestFile {
     pub(crate) existing_rows_count: Option<i64>,
     pub(crate) deleted_rows_count: Option<i64>,
     /// One per partition field, in the spec's order.
-    pub(crate) partitions: Vec<FieldSummary>,
+    partitions: Vec<FieldSummary>,
     /// The row id of the first row of the manifest's first file without one of its own; `None` until a snapshot of a
     /// table that tracks row lineage assigns it (`assign_row_ids`).
-    pub(crate) first_row_id: Option<i64>,
+    first_row_id: Option<i64>,
 }
 
 /// The values one partition field takes across a manifest's entries. Bounds are single-value serialized.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FieldSummary {
-    pub(crate) contains_null: bool,
+struct FieldSummary {
+    contains_null: bool,
     /// Known only for a floating-point field.
-    pub(crate) contains_nan: Option<bool>,
-    pub(crate) lower_bound: Option<Vec<u8>>,
-    pub(crate) upper_bound: Option<Vec<u8>>,
+    contains_nan: Option<bool>,
+    lower_bound: Option<Vec<u8>>,
+    upper_bound: Option<Vec<u8>>,
 }
 
 /// Column statistics from a Parquet footer. A leaf without an Iceberg field id is skipped; a leaf inside a list or a

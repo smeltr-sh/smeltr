@@ -38,7 +38,7 @@ pub(crate) fn random_value(rng: &mut Rng, pieces: &[&str]) -> Value {
 }
 
 /// A number at or past the edges of every bound: a count, a port, a byte count, a negative, or a size in words.
-pub(crate) fn random_number(rng: &mut Rng, pieces: &[&str]) -> Value {
+fn random_number(rng: &mut Rng, pieces: &[&str]) -> Value {
     match rng.below(8) {
         0 => Value::from(0),
         1 => Value::from(u64::MAX),
@@ -95,7 +95,7 @@ pub(crate) enum Verdict {
 }
 
 /// What the loader made of one bundle, or why it is wrong.
-pub(crate) fn check<C: Fuzzed>(case: &C, json: &str) -> Result<Verdict, String> {
+fn check<C: Fuzzed>(case: &C, json: &str) -> Result<Verdict, String> {
     let file: FileConfig = match serde_json::from_str(json) {
         Ok(file) => file,
         // A value of the wrong type is refused by its shape. A known case has none.

@@ -21,7 +21,7 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
 /// The protocol a validator asks for, and nothing else offers.
-pub(crate) const ACME_TLS: &[u8] = b"acme-tls/1";
+const ACME_TLS: &[u8] = b"acme-tls/1";
 
 pub struct Resolver {
     served: RwLock<Arc<CertifiedKey>>,

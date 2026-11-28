@@ -70,9 +70,9 @@ pub struct Listed {
     pub(crate) name: Option<String>,
     pub standing: Standing,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) imported: Option<String>,
+    imported: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) here: Option<String>,
+    here: Option<String>,
     /// The one here is in `shared/`, and the import is into a group: it can be kept or renamed beside, not replaced.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub in_shared: bool,
@@ -97,7 +97,7 @@ pub struct Credential {
     pub name: String,
     pub certificate: bool,
     /// Each source or destination that names it, as "Source fw" or "Destination out".
-    pub(crate) named_by: Vec<String>,
+    named_by: Vec<String>,
 }
 
 impl Objects {
@@ -273,7 +273,7 @@ impl Objects {
     }
 
     /// Gives the `part` with id `from` the id `to`, and rewrites every reference to it in this import.
-    pub(crate) fn rename(&mut self, part: Part, from: &str, to: &str) {
+    fn rename(&mut self, part: Part, from: &str, to: &str) {
         let swap = |s: &mut String| {
             if s == from {
                 *s = to.to_string();

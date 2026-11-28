@@ -350,7 +350,7 @@ impl Presenting {
     /// Whether this leader may withdraw an enrollment code on its own account. Only where the root it measures against
     /// is one it presents itself: between certificates, or holding an operator's, it may be mid-migration, and a
     /// withdrawal is not something an operator can undo.
-    pub(crate) fn may_withdraw(&self) -> bool {
+    fn may_withdraw(&self) -> bool {
         matches!(self, Presenting::Own { .. })
     }
 
@@ -398,7 +398,7 @@ fn authority_of(state: &AppState) -> Result<(Authority, Option<i64>), String> {
 /// window to spend.
 #[derive(Debug, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum NamesAuthority {
+enum NamesAuthority {
     /// The one this leader serves under, and will still serve under when any open rotation finishes.
     Served,
     /// The one it is rotating away from. This enrollment code brings a worker in until the cutover, which withdraws it.
@@ -409,7 +409,7 @@ pub(crate) enum NamesAuthority {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct EnrollmentCodeDto {
+struct EnrollmentCodeDto {
     id: String,
     group_id: String,
     /// Who minted it, by the name they sign in with. An account id names nobody to the person reading the page.

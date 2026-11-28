@@ -106,7 +106,7 @@ mod platform {
     };
 
     /// The least L2 any hardware thread has to itself: each L2's size over the threads its mask names.
-    pub(crate) fn l2_per_thread() -> Option<usize> {
+    fn l2_per_thread() -> Option<usize> {
         let mut len = 0u32;
         // Asked once with no buffer for the length it needs.
         // SAFETY: a null buffer with a length of zero is how the call is asked for the length, and it writes only `len`.

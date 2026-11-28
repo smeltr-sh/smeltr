@@ -315,7 +315,7 @@ impl Authorize for SignIn {
 }
 
 /// Headers to send, by name.
-pub(crate) type Headers = Vec<(String, String)>;
+type Headers = Vec<(String, String)>;
 
 /// A JWS's header and claims, encoded and joined: what its signature signs.
 fn signing_input(header: &serde_json::Value, claims: &serde_json::Value) -> String {
@@ -346,7 +346,7 @@ mod tests {
     use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
 
     /// A new app key, as PEM, and its public key.
-    pub(crate) fn app_key() -> (String, Vec<u8>) {
+    fn app_key() -> (String, Vec<u8>) {
         let key = RsaKeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
         let der = AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&key).unwrap();
         let body = BytesForm::Base64.text(der.as_ref());

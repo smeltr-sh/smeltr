@@ -12,7 +12,7 @@ use crate::ops::civil::civil_from_days;
 ///
 /// The JSON form is what a machine reads; this is deliberately not that. Time, level, class, type and service
 /// first because that is what an eye scans for, then the sentence, then what varied.
-pub(crate) fn line(event: &Event) -> String {
+fn line(event: &Event) -> String {
     let mut out = format!("{} {:<5}", stamp(event.timestamp), event.level.as_str());
     for part in [
         event.class.as_deref(),

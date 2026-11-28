@@ -14,7 +14,7 @@ use crate::io::{CommitMap, IoError, Source, SourceRecord};
 use crate::logs::{Event, Tap, Value};
 
 /// The `__source.topic` every logs record carries, so a route can select them like any other source's.
-pub(crate) const LOGS_TOPIC: &str = "__smeltr_logs";
+const LOGS_TOPIC: &str = "__smeltr_logs";
 
 /// How this source is configured. Nothing to reach and nothing to authenticate: what it reads is already here.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,7 +25,7 @@ pub struct LogsSourceConfig {
 }
 
 /// The finest level any logs source carries. Below it is trace, which describes the pipelines themselves.
-pub(crate) const CARRIED_AT_MOST: tracing::Level = tracing::Level::DEBUG;
+const CARRIED_AT_MOST: tracing::Level = tracing::Level::DEBUG;
 
 /// An ordinary `Source` whose "waiting for data" is the buffer filling.
 pub struct LogsSource {

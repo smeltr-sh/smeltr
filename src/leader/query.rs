@@ -22,7 +22,7 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 /// How a counter's points are drawn: as a rate, or as what each bar added up to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum Draw {
+enum Draw {
     #[default]
     PerSecond,
     Totals,
@@ -32,23 +32,23 @@ pub(crate) enum Draw {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SeriesQuery {
-    pub(crate) metric: String,
+    metric: String,
     /// `label:value` pairs, comma-separated; a series must match every one.
     #[serde(default)]
-    pub(crate) filter: String,
+    filter: String,
     /// The labels, comma-separated, whose values become the answer's series; if empty, every subject is added into one series.
     #[serde(default)]
-    pub(crate) by: String,
+    by: String,
     #[serde(default = "default_window_minutes")]
-    pub(crate) window_minutes: i64,
+    window_minutes: i64,
     #[serde(default)]
-    pub(crate) draw: Draw,
+    draw: Draw,
     /// The reader's offset from UTC, east positive: where its hours and days begin.
     #[serde(default)]
-    pub(crate) utc_offset_minutes: i64,
+    utc_offset_minutes: i64,
     /// How long before now the window ends: a week, for the line a chart compares itself with.
     #[serde(default)]
-    pub(crate) ago_minutes: i64,
+    ago_minutes: i64,
 }
 
 fn default_window_minutes() -> i64 {
@@ -59,26 +59,26 @@ fn default_window_minutes() -> i64 {
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SeriesAnswer {
-    pub(crate) metric: String,
-    pub(crate) counter: bool,
-    pub(crate) draw: Draw,
+    metric: String,
+    counter: bool,
+    draw: Draw,
     /// How wide each point is, and where the first one starts.
-    pub(crate) point_millis: i64,
-    pub(crate) from_millis: i64,
-    pub(crate) series: Vec<Split>,
+    point_millis: i64,
+    from_millis: i64,
+    series: Vec<Split>,
 }
 
 /// One series of the answer: the subjects whose split labels hold `values`, added together.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Split {
+struct Split {
     /// The split labels' values, joined by ", "; empty when nothing splits the answer.
-    pub(crate) name: String,
+    name: String,
     /// Each split label's value, in the order `by` names them.
-    pub(crate) values: Vec<String>,
+    values: Vec<String>,
     /// `[start, value]`, oldest first. A point nothing landed in is absent rather than zero: an outage is not a quiet
     /// spell.
-    pub(crate) points: Vec<(i64, f64)>,
+    points: Vec<(i64, f64)>,
 }
 
 /// One label of a subject key, or its group.
@@ -127,7 +127,7 @@ fn grid(draw: Draw, window_minutes: i64, offset_ms: i64, end_ms: i64, now_ms: i6
 }
 
 /// The answer to `query` at `now_ms`, from `store`, over the groups `sees` lets in.
-pub(crate) fn answer(
+fn answer(
     store: &RegistryStore,
     query: &SeriesQuery,
     sees: impl Fn(&str) -> bool,
@@ -213,14 +213,14 @@ fn add(into: &mut BTreeMap<i64, f64>, points: &SubjectPoints) {
 /// One metric that can be asked of: whether it counts, and each label with the values its series hold.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct StoredMetric {
-    pub(crate) name: String,
-    pub(crate) counter: bool,
-    pub(crate) labels: BTreeMap<String, BTreeSet<String>>,
+struct StoredMetric {
+    name: String,
+    counter: bool,
+    labels: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Every metric the store holds a series of in the groups `sees` lets in.
-pub(crate) fn metrics(store: &RegistryStore, sees: impl Fn(&str) -> bool) -> Result<Vec<StoredMetric>, StoreError> {
+fn metrics(store: &RegistryStore, sees: impl Fn(&str) -> bool) -> Result<Vec<StoredMetric>, StoreError> {
     let mut out: BTreeMap<String, StoredMetric> = BTreeMap::new();
     for (name, subject_key, counter) in store.metric_subjects()? {
         let Some(labels) = labels_of(&subject_key) else {
@@ -244,7 +244,7 @@ pub(crate) fn metrics(store: &RegistryStore, sees: impl Fn(&str) -> bool) -> Res
 /// What `GET /api/series/metrics` answers.
 #[derive(serde::Serialize)]
 pub(crate) struct MetricList {
-    pub(crate) metrics: Vec<StoredMetric>,
+    metrics: Vec<StoredMetric>,
 }
 
 /// `GET /api/series`. The gate lets in anyone viewing somewhere; the answer holds only the caller's groups.

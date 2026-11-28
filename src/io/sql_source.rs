@@ -33,7 +33,7 @@ use crate::core::variant;
 use crate::heartbeat::{LedgerEntry, MAX_CURSOR, MAX_LEDGER_ENTRY, MAX_LEDGER_ITEM};
 
 /// The most rows comparing values reads in one poll. Each is a ledger entry the leader keeps.
-pub(crate) const MAX_COMPARED_ROWS: u32 = 1_000_000;
+const MAX_COMPARED_ROWS: u32 = 1_000_000;
 
 /// The most a poll's result may hold, by [`held`]. The whole result is held while it is handed out, so this is what a
 /// source holds beyond its lane.
@@ -91,7 +91,7 @@ pub struct Described {
 /// A read of a whole table estimated past this many rows is a full scan Run reports. Below it, reading the whole table
 /// each poll costs about what an index lookup would; above it, every poll re-reads a table that grows, a load on a
 /// database smeltr does not own.
-pub(crate) const FULL_SCAN_ROWS: u64 = 100_000;
+const FULL_SCAN_ROWS: u64 = 100_000;
 
 /// What the database plans for a poll's statement.
 #[derive(Clone, Debug, PartialEq)]
@@ -159,7 +159,7 @@ pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 pub(crate) const STATEMENT_MARGIN: Duration = Duration::from_secs(10);
 
 /// One call's work on a driver's connection.
-pub(crate) type Work<'c, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + 'c>>;
+type Work<'c, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + 'c>>;
 
 /// Why a call's work failed, and whether the connection went with it.
 pub(crate) struct Failure {
@@ -454,7 +454,7 @@ impl<D: Driver + 'static> SqlSource<D> {
     }
 
     /// The statement this source's next poll runs, and the values it binds. Run shows exactly this.
-    pub(crate) fn next_statement(&self) -> (Statement, Vec<Value>) {
+    fn next_statement(&self) -> (Statement, Vec<Value>) {
         let from = match (&self.cursor, &self.from) {
             (Some(_), _) => ReadFrom::LastRow,
             (None, Some(_)) => ReadFrom::Start,

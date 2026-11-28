@@ -7,9 +7,9 @@ use crate::logs::Relog;
 
 /// The wait after the first failure, and the least any asked-for wait is honoured at, so a service that asks for no
 /// wait is not asked again in a tight loop.
-pub(crate) const FIRST_BACKOFF: Duration = Duration::from_secs(1);
+const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 /// The most a backoff grows to.
-pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(300);
+const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
 /// The pace of a source that reads on its own clock. A failure sets when it may ask again; a read that lands puts
 /// it back to the first backoff.
@@ -82,12 +82,12 @@ impl Pacer {
     }
 
     #[cfg(test)]
-    pub(crate) fn retry_at(&self) -> Option<Instant> {
+    fn retry_at(&self) -> Option<Instant> {
         self.retry_at
     }
 
     #[cfg(test)]
-    pub(crate) fn backoff(&self) -> Duration {
+    fn backoff(&self) -> Duration {
         self.backoff
     }
 

@@ -447,7 +447,7 @@ impl MaxRequestBytes {
     /// What one request may hold of a receiver's inbox (`io::receiver::INBOX_BYTES`).
     pub(crate) const MAX: u64 = 64 * 1024 * 1024;
 
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -848,7 +848,7 @@ pub(crate) struct SftpAccessDto {
 }
 
 impl SftpAccessDto {
-    pub(crate) const DEFAULT_PORT: u32 = 22;
+    const DEFAULT_PORT: u32 = 22;
 
     fn default_port() -> u32 {
         Self::DEFAULT_PORT
@@ -940,7 +940,7 @@ pub(crate) enum ByteOrderDto {
 }
 
 impl ByteOrderDto {
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == ByteOrderDto::Big
     }
 }
@@ -957,14 +957,14 @@ pub(crate) enum CountsDto {
 }
 
 impl CountsDto {
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == CountsDto::Rest
     }
 }
 
 impl FramingSettingsDto {
     /// Whether it says anything but the default, a line per record.
-    pub(crate) fn is_set(&self) -> bool {
+    fn is_set(&self) -> bool {
         !self.framing.is_default()
             || self.line_breaker.is_some()
             || self.length_prefix.is_some()
@@ -1147,7 +1147,7 @@ impl SqlKind {
     }
 
     /// The port it connects to when it names none: its server's own.
-    pub(crate) fn port(self) -> u16 {
+    fn port(self) -> u16 {
         match self {
             SqlKind::Postgres => 5432,
             SqlKind::MySql => 3306,
@@ -1173,7 +1173,7 @@ pub(crate) enum SqlTlsDto {
 }
 
 impl SqlTlsDto {
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == SqlTlsDto::Require
     }
 }
@@ -1231,7 +1231,7 @@ pub(crate) enum SqlStartDto {
 }
 
 impl SqlStartDto {
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == SqlStartDto::Now
     }
 }
@@ -1345,10 +1345,10 @@ impl SqlFieldDto {
 pub struct SqlBatch(pub u32);
 
 impl SqlBatch {
-    pub(crate) const DEFAULT: u32 = 5_000;
+    const DEFAULT: u32 = 5_000;
     pub(crate) const MAX: u32 = 100_000;
 
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1391,7 +1391,7 @@ pub(crate) enum AfterCommitDto {
 }
 
 impl AfterCommitDto {
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == AfterCommitDto::Keep
     }
 }
@@ -1513,9 +1513,9 @@ pub(crate) const AZURE_ENDPOINT: &str = "https://blob.core.windows.net";
 pub(crate) struct ObjectPrefix(pub(crate) String);
 
 impl ObjectPrefix {
-    pub(crate) const DEFAULT: &str = "%Y/%m/%d/%H/";
+    const DEFAULT: &str = "%Y/%m/%d/%H/";
 
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1596,7 +1596,7 @@ pub(crate) enum ObjectFormatDto {
 }
 
 impl ObjectFormatDto {
-    pub(crate) fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == ObjectFormatDto::Ndjson
     }
 }
@@ -1752,11 +1752,11 @@ impl CompressionDto {
     }
 
     /// An object destination's default.
-    pub(crate) fn gzip() -> Self {
+    fn gzip() -> Self {
         CompressionDto::Gzip
     }
 
-    pub(crate) fn is_gzip(&self) -> bool {
+    fn is_gzip(&self) -> bool {
         *self == CompressionDto::Gzip
     }
 
@@ -1914,7 +1914,7 @@ pub(crate) struct LevelLabel(pub(crate) String);
 impl LevelLabel {
     /// The startup level unless one is set, so a source that names nothing carries what a process keeps until an
     /// operator sets levels.
-    pub(crate) const DEFAULT: &str = "info";
+    const DEFAULT: &str = "info";
 
     pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
@@ -2297,7 +2297,7 @@ pub(crate) enum Requirement {
 }
 
 impl Requirement {
-    pub(crate) fn is_optional(&self) -> bool {
+    fn is_optional(&self) -> bool {
         *self == Requirement::Optional
     }
 

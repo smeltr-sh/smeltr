@@ -58,7 +58,7 @@ pub const EAB_KEY_ID_KEY: &str = "acme.eab_key_id";
 pub const EAB_HMAC_KEY: &str = "acme.eab_hmac";
 
 /// Under `tls/`.
-pub(crate) const DIR: &str = "acme";
+const DIR: &str = "acme";
 /// The certificate list entry each order is a version of.
 pub const ENTRY: &str = "acme";
 const ACCOUNT: &str = "account.json";
@@ -103,7 +103,7 @@ impl Challenge {
         }
     }
 
-    pub(crate) fn parse(text: &str) -> Option<Challenge> {
+    fn parse(text: &str) -> Option<Challenge> {
         match text {
             "tls-alpn-01" => Some(Challenge::TlsAlpn01),
             "http-01" => Some(Challenge::Http01),
@@ -160,7 +160,7 @@ pub fn orderable(directory: &str, names: &[String]) -> Result<(), String> {
 }
 
 /// `names` as [`NAMES_KEY`] holds them: trimmed, empties dropped.
-pub(crate) fn split_names(value: &str) -> Vec<String> {
+fn split_names(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(|s| s.trim().to_string())
@@ -187,7 +187,7 @@ pub struct State {
     pub last_error: Option<crate::logs::Noted>,
 }
 
-pub(crate) fn dir_of(tls_dir: &Path) -> PathBuf {
+fn dir_of(tls_dir: &Path) -> PathBuf {
     tls_dir.join(DIR)
 }
 
@@ -201,7 +201,7 @@ pub fn state(tls_dir: &Path) -> Result<State, String> {
     }
 }
 
-pub(crate) fn write_state(tls_dir: &Path, state: &State) -> Result<(), String> {
+fn write_state(tls_dir: &Path, state: &State) -> Result<(), String> {
     let dir = dir_of(tls_dir);
     private_file::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(STATE);
@@ -270,9 +270,9 @@ pub trait Issuer: Send + Sync {
 #[derive(Clone)]
 pub struct Issued {
     pub chain: Vec<u8>,
-    pub(crate) key: Vec<u8>,
+    key: Vec<u8>,
     /// The one root that signed `chain`, PEM: what a worker is given.
-    pub(crate) ca: Vec<u8>,
+    ca: Vec<u8>,
     pub certificate: Described,
     /// Whether serving it changes the root workers verify by, which is what decides between serving it at once
     /// and rotating to it.

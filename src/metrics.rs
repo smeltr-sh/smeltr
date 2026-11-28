@@ -39,12 +39,12 @@ pub enum MetricValue {
 }
 
 impl MetricValue {
-    pub(crate) fn is_counter(&self) -> bool {
+    fn is_counter(&self) -> bool {
         matches!(self, MetricValue::Counter(_) | MetricValue::FloatCounter(_))
     }
 
     /// A counter's increase of nothing, which a reader may drop before one that moved.
-    pub(crate) fn is_idle(&self) -> bool {
+    fn is_idle(&self) -> bool {
         matches!(self, MetricValue::Counter(0)) || matches!(self, MetricValue::FloatCounter(v) if *v == 0.0)
     }
 }
@@ -137,7 +137,7 @@ impl Metrics {
 
     /// Add `seconds` to `name{labels}`, as [`Metrics::incr`] adds a whole number. A no-op on a name already used as
     /// another kind.
-    pub(crate) fn incr_seconds(&self, name: &'static str, labels: &[(&'static str, &str)], seconds: f64) {
+    fn incr_seconds(&self, name: &'static str, labels: &[(&'static str, &str)], seconds: f64) {
         if seconds == 0.0 {
             return;
         }
@@ -151,7 +151,7 @@ impl Metrics {
 
     /// Start counter `name{labels}` at 0 if nothing has written it, so it reports 0 rather than nothing until it first
     /// moves. Once, where the series is known to exist: a thread's start, not its hot path.
-    pub(crate) fn start(&self, name: &'static str, labels: &[(&'static str, &str)]) {
+    fn start(&self, name: &'static str, labels: &[(&'static str, &str)]) {
         let key = MetricKey::new(name, labels);
         self.values.lock().entry(key).or_insert(MetricValue::Counter(0));
     }
@@ -354,7 +354,7 @@ impl MetricsHandle {
 pub(crate) const THREAD_LABEL: &str = "thread";
 
 /// The label that names a route beside its `route` label, its id (`Subjects::resolve`).
-pub(crate) const ROUTE_NAME_LABEL: &str = "route_name";
+const ROUTE_NAME_LABEL: &str = "route_name";
 
 /// Config for the smeltr metrics source (`plan::topology::SourceKind::Metrics`).
 #[derive(Clone, Copy, Debug)]
@@ -454,7 +454,7 @@ fn resolve_subject(names: &[String], value: &str) -> String {
 }
 
 /// The `__source.topic` value every `MetricsSource` record carries.
-pub(crate) const METRICS_TOPIC: &str = "__smeltr_metrics";
+const METRICS_TOPIC: &str = "__smeltr_metrics";
 
 impl MetricsSource {
     pub fn new(metrics: std::sync::Arc<Metrics>, config: MetricsSourceConfig) -> MetricsSource {

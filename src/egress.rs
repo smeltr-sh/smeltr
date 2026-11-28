@@ -16,7 +16,7 @@
 //! refusal is usually on the destination's side, which tells nobody when it is done. Each refusal goes back with its
 //! record, so a reader whose destination sends refusals to a DLQ has what to send.
 
-pub(crate) mod pacing;
+mod pacing;
 
 use crate::sync::{Condvar, Mutex};
 use std::borrow::Cow;
@@ -200,7 +200,7 @@ impl QueuePool {
     }
 
     /// The pool bytes `who` may hold right now: the whole pool while nobody else wants room, its share otherwise.
-    pub(crate) fn share(&self, who: u64) -> usize {
+    fn share(&self, who: u64) -> usize {
         let mut f = self.fair.lock();
         f.prune(Instant::now());
         if f.others_wanting(who) {
