@@ -68,9 +68,13 @@ build() {
     (cd "$wt" && rm -rf tests/panos tests/reference)
     (cd "$root" && cp -r $workload "$wt/tests/")
     cp "$work/driver.rs" "$wt/tests/reference/driver.rs"
+    # Built as an example: cargo builds every binary of the package for an integration test, and linking `smeltr`
+    # and `smeltr-demo` took longer than the workload itself.
+    (cd "$wt" && mkdir -p examples && cp -r tests/panos tests/reference examples/ &&
+        cp tests/reference-pipelines.rs examples/bench_pipelines.rs)
     (cd "$wt" && SMELTR_ALLOW_STALE_FRONTENDS=1 SMELTR_ALLOW_STALE_GUI=1 CARGO_TARGET_DIR=$root/target/bench-$side CARGO_PROFILE_RELEASE_LTO=thin \
-        cargo test --release --test reference-pipelines --no-run --message-format=json) |
-        jq -r 'select(.executable != null and .target.name == "reference-pipelines") | .executable' |
+        cargo test --release --example bench_pipelines --no-run --message-format=json) |
+        jq -r 'select(.executable != null and .target.name == "bench_pipelines") | .executable' |
         tail -1 | xargs -I{} cp {} "$bin"
     mkdir -p "$root/target/bench-bins" && cp "$bin" "$kept"
 }
