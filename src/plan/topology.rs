@@ -1048,6 +1048,9 @@ pub struct DecodedBatch {
     pub writers: Option<std::sync::Arc<crate::io::avro::Writers>>,
     /// Of them, the one its last payload that read was read with.
     pub writer: Option<std::sync::Arc<crate::io::avro::Parsed>>,
+    /// Each record's payload, as its place in the records decoded, ascending. One payload may decode into several
+    /// records; most decode into one.
+    pub payload: Vec<u32>,
 }
 
 impl SourceMeta {
@@ -1087,11 +1090,25 @@ impl SourceMeta {
             repairs,
             writers,
             writer,
+            payload: (0..rows as u32).collect(),
         }
     }
 }
 
 impl DecodedBatch {
+    /// How many records decoding made.
+    pub fn rows(&self) -> usize {
+        self.payload.len()
+    }
+
+    /// The payloads of `records`, ascending, each once.
+    pub fn payloads_of(&self, records: impl Iterator<Item = usize>) -> impl Iterator<Item = usize> {
+        let mut last = None;
+        records
+            .map(|record| self.payload[record] as usize)
+            .filter(move |&payload| last.replace(payload) != Some(payload))
+    }
+
     /// Puts the record's fields and each `__source` field `wanted` names into `batch`, a route's. They are copied, or
     /// moved when `last` says nothing reads them here again, but for each record field `kept` names: a destination
     /// reads its bytes here. Returns what was noted against the slots it put.
@@ -4260,6 +4277,18 @@ mod tests {
             )]))
             .unwrap_err();
         assert!(err.contains("`__source.bytes`"), "{err}");
+    }
+
+    #[test]
+    fn the_payloads_of_records_are_each_named_once() {
+        let mut pool = BufferPool::new();
+        let mut decoded = SourceMeta::KAFKA.decode(&[], None::<&[&str]>, None, None, &mut pool);
+        decoded.payload = vec![0, 0, 1, 2, 2, 2];
+        assert_eq!(
+            decoded.payloads_of([0, 1, 3, 4].into_iter()).collect::<Vec<_>>(),
+            [0, 2]
+        );
+        decoded.batch.reclaim(&mut pool);
     }
 
     /// An Avro source's stored record is read as the fields it was shown with: the writer's schema its payload names
