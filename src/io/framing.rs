@@ -280,7 +280,20 @@ impl Framer {
             self.held.drain(..self.cut);
             self.cut = 0;
         }
+        let grows = self.growth(bytes.len());
+        self.held.reserve_exact(self.held.capacity() + grows - self.held.len());
         self.held.extend_from_slice(bytes);
+    }
+
+    /// How many bytes its buffer grows by when `bytes` more are pushed: to twice what it was, or to what it must hold.
+    pub(super) fn growth(&self, bytes: usize) -> usize {
+        let needed = self.held.len() - self.cut + bytes;
+        let capacity = self.held.capacity();
+        if needed <= capacity {
+            0
+        } else {
+            needed.max(2 * capacity) - capacity
+        }
     }
 
     /// How many bytes its buffer holds room for, which a reader charges against what it may hold.

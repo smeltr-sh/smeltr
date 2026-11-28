@@ -15,7 +15,7 @@ use crate::sync::{Condvar, Mutex, MutexGuard};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -61,6 +61,31 @@ const LAG_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long one receive waits for a message to arrive. SQS's own limit: it answers as soon as one does.
 const RECEIVE_WAIT: Duration = Duration::from_secs(20);
+
+/// What the objects fetched ahead of the one being read may hold together: their chunks, decoders, framers and queued
+/// records. A fetch ahead waits for room; the object being read takes what it needs.
+const ROOM: u64 = AHEAD as u64 * (CHUNK + QUEUED);
+
+/// What gzip's decoder holds, with the buffer it is read through, measured in this build.
+const GZIP_DECODER: u64 = 64 * 1024;
+
+/// What snappy's frame decoder holds, with the buffer it is read through, measured in this build.
+const SNAPPY_DECODER: u64 = 160 * 1024;
+
+/// What zstd's decoder holds beyond its window, measured in this build.
+const ZSTD_DECODER: u64 = 512 * 1024;
+
+/// The largest window zstd decodes by default.
+const ZSTD_WINDOW: u64 = 1 << 27;
+
+/// What a decoder holds at most: zstd's at its largest window.
+const LARGEST_DECODER: u64 = ZSTD_WINDOW + ZSTD_DECODER;
+
+/// The most an object source holds beyond its lane. The objects fetched ahead hold their room, and cutting what their
+/// framers hold copies it once more before it is queued. The object being read holds its chunk, its queue, its decoder
+/// at its largest, and a record as long as the longest three times over: in its framer, cut, and in the chunk it is
+/// sent in.
+pub(crate) const HELD_BYTES: u64 = 2 * ROOM + CHUNK + QUEUED + LARGEST_DECODER + 3 * MAX_RECORD_BYTES;
 
 /// The longest record read: one record must fit in memory. A longer one, such as a decompression bomb's, makes its
 /// object unreadable, which leaves its message to the queue's redrive policy.
@@ -366,6 +391,8 @@ pub struct ObjectSource {
     waiting: VecDeque<(u64, ObjectRef)>,
     /// Objects being fetched, in the order they are read, with the message that named each.
     ahead: VecDeque<(u64, ObjectRef, Fetched)>,
+    /// What the objects fetched ahead hold together, shared with their fetches.
+    room: Arc<Room>,
     /// How many objects to fetch ahead, from 1 to [`AHEAD`]. When an object is opened it doubles if that object had
     /// nothing ready for the reader, and falls by one if its fetch had to wait for the reader.
     ahead_target: usize,
@@ -428,6 +455,7 @@ impl ObjectSource {
             next_message: 0,
             waiting: VecDeque::new(),
             ahead: VecDeque::new(),
+            room: Arc::default(),
             ahead_target: 1,
             current: None,
             reads: HashMap::new(),
@@ -589,6 +617,7 @@ impl ObjectSource {
             if !self.held.lock().contains_key(&message) {
                 continue;
             }
+            self.room.make_current(&fetched.shared);
             let partition = fetched.partition;
             self.reads.insert(
                 partition,
@@ -628,7 +657,10 @@ impl ObjectSource {
             None => Cutting::Frames(Framer::refusing(self.framing.clone(), self.max_record as usize)),
         };
         let (tx, blocks) = std::sync::mpsc::channel();
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            room: self.room.clone(),
+            ..Shared::default()
+        });
         let (runtime, version, counted) = (self.runtime.clone(), object.version.clone(), shared.clone());
         std::thread::Builder::new()
             .name("object-source-fetch".to_string())
@@ -893,14 +925,25 @@ impl Source for ObjectSource {
         self.receive_error.clone()
     }
 
-    /// What the objects hold outside their readers: for the one being read, the rows its reader has not yet handed out
-    /// and what its fetch has queued; for each fetched ahead, what its fetch has queued.
+    /// What the objects hold outside their readers: for the one being read, the rows its reader has not yet handed out;
+    /// for it and each fetched ahead, what its fetch has queued and holds besides.
     fn held_bytes(&self) -> Option<u64> {
-        let held = self.current.as_ref().map_or(0, |c| {
-            c.rows.as_ref().map_or(0, ChunkRows::untaken) as u64 + c.fetched.shared.queued()
-        });
-        let ahead: u64 = self.ahead.iter().map(|(_, _, f)| f.shared.queued()).sum();
-        Some(held + ahead)
+        let untaken = self
+            .current
+            .as_ref()
+            .and_then(|c| c.rows.as_ref())
+            .map_or(0, ChunkRows::untaken) as u64;
+        let fetches = self
+            .current
+            .iter()
+            .map(|c| &c.fetched)
+            .chain(self.ahead.iter().map(|(_, _, f)| f));
+        Some(
+            untaken
+                + fetches
+                    .map(|f| f.shared.queued() + f.shared.holds.load(Ordering::Relaxed))
+                    .sum::<u64>(),
+        )
     }
 
     /// The queue's depth, as its sampler last measured it. Never a call to the queue on this thread.
@@ -945,8 +988,8 @@ enum Cutting {
 const READER_GONE: &str = "its reader is gone";
 
 /// Reads the object at `path` to its end, decompressed, cuts it as `cutting` says and sends it into `tx`, counting in
-/// `shared` the bytes sent and not yet taken and whether it waited for the reader. An error, after the records before
-/// it, says why it is unreadable. Ends early once the receiver of `tx` is dropped.
+/// `shared` the bytes sent and not yet taken, whether it waited for the reader and what it holds besides. An error,
+/// after the records before it, says why it is unreadable. Ends early once the receiver of `tx` is dropped.
 fn fetch(
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -965,14 +1008,19 @@ fn fetch(
             while waiting.bytes >= QUEUED && !waiting.gone {
                 waiting = shared.taken.wait(waiting);
             }
-            waiting.bytes += *size as u64;
+            drop(waiting);
+            shared.room.queue(shared, *size as u64)?;
         }
         tx.send(Ok(fetch)).map_err(|_| READER_GONE.to_string())
     };
-    let cut = open_object(store, runtime, path, version).and_then(|mut lines| match cutting {
-        Cutting::Frames(framer) => frames(&mut *lines, framer, &send),
-        Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send),
-    });
+    let hold = |bytes: u64| shared.room.hold(shared, bytes);
+    let cut = hold(CHUNK)
+        .and_then(|()| open_object(store, runtime, path, version, &hold))
+        .and_then(|mut lines| match cutting {
+            Cutting::Frames(framer) => frames(&mut *lines, framer, &send, &hold),
+            Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send),
+        });
+    shared.room.release(shared);
     match cut {
         Ok(()) => drop(send(Fetch::End)),
         Err(why) if why == READER_GONE => {}
@@ -986,6 +1034,7 @@ fn frames(
     lines: &mut dyn BufRead,
     mut framer: Framer,
     send: &impl Fn(Fetch) -> Result<(), String>,
+    hold: &impl Fn(u64) -> Result<(), String>,
 ) -> Result<(), String> {
     let nowhere: Arc<str> = Arc::from("");
     loop {
@@ -995,6 +1044,7 @@ fn frames(
         let cut = match n {
             0 => framer.finish(&mut frames),
             n => {
+                hold(framer.growth(n) as u64)?;
                 framer.push(&ready[..n]);
                 lines.consume(n);
                 framer.cut(&mut frames).map(|()| 0)
@@ -1048,12 +1098,13 @@ fn send_rows(out: RecordChunkBuilder, send: &impl Fn(Fetch) -> Result<(), String
 }
 
 /// The object at `path`, read at the version named and the ETag its head returned, decompressed as its first bytes
-/// say.
+/// say, once `hold` has room for its decoder.
 fn open_object(
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
     path: Path,
     version: Option<String>,
+    hold: &impl Fn(u64) -> Result<(), String>,
 ) -> Result<Box<dyn BufRead + Send>, String> {
     // One GET reads the first chunk, and the whole of an object no larger, with the size and version the ranges after
     // it need. Unranged, since a range of an empty object is refused, and some stores answer a range with all of it.
@@ -1063,13 +1114,15 @@ fn open_object(
     };
     let first = async {
         let got = store.get_opts(&path, get).await?;
-        let (meta, mut body, mut chunk) = (got.meta.clone(), got.into_stream(), Vec::new());
-        while (chunk.len() as u64) < CHUNK
+        let first = got.meta.size.min(CHUNK) as usize;
+        let (meta, mut body, mut chunk) = (got.meta.clone(), got.into_stream(), Vec::with_capacity(first));
+        // Only the first chunk is kept, so the buffer never grows past what the fetch holds room for.
+        while chunk.len() < first
             && let Some(bytes) = body.next().await
         {
-            chunk.extend_from_slice(&bytes?);
+            let bytes = bytes?;
+            chunk.extend_from_slice(&bytes[..bytes.len().min(first - chunk.len())]);
         }
-        chunk.truncate(CHUNK as usize);
         Ok::<_, object_store::Error>((meta, chunk))
     };
     let (meta, chunk) = within(&runtime, GET_TIMEOUT, first)?.map_err(|e| e.to_string())?;
@@ -1081,10 +1134,11 @@ fn open_object(
         version,
         at: chunk.len() as u64,
         size: meta.size,
-        chunk,
+        chunk: chunk.into(),
         taken: 0,
     };
     let magic = raw.fill_buf().map_err(|e| e.to_string())?;
+    hold(decoder_bytes(magic))?;
     Ok(if magic.starts_with(&[0x1f, 0x8b]) {
         Box::new(BufReader::new(flate2::bufread::MultiGzDecoder::new(raw)))
     } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
@@ -1108,6 +1162,13 @@ struct Shared {
     taken: Condvar,
     /// The fetch found [`QUEUED`] bytes waiting and waited for the reader to take some.
     stalled: AtomicBool,
+    /// What the fetch holds besides the records it queued: its chunk, its decoder and its framer. Changed under its
+    /// room's lock.
+    holds: AtomicU64,
+    /// Its object is the one being read: it takes what it needs, outside its room. Changed under its room's lock.
+    current: AtomicBool,
+    /// What the objects its source fetches ahead hold together.
+    room: Arc<Room>,
 }
 
 #[derive(Default)]
@@ -1156,8 +1217,127 @@ impl Fetched {
 impl Drop for Fetched {
     /// Lets a fetch waiting for room end.
     fn drop(&mut self) {
-        self.shared.waiting().gone = true;
+        self.shared.room.forget(&self.shared);
         self.shared.taken.notify_one();
+    }
+}
+
+/// What the objects a source fetches ahead hold together, which each fetch adds to before it allocates or queues.
+#[derive(Default)]
+struct Room {
+    held: Mutex<u64>,
+    /// Told when what is held falls, or a fetch's object becomes the one read, or its reader is gone.
+    freed: Condvar,
+}
+
+impl Room {
+    /// Adds `bytes` to what `fetch` holds, first waiting, while its object is fetched ahead, until they fit. Err once
+    /// its reader is gone.
+    fn hold(&self, fetch: &Shared, bytes: u64) -> Result<(), String> {
+        let _held = self.admit(fetch, bytes)?;
+        fetch.holds.fetch_add(bytes, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Queues `bytes` of records for `fetch`'s reader, first waiting, while its object is fetched ahead, until they
+    /// fit. Err once its reader is gone.
+    fn queue(&self, fetch: &Shared, bytes: u64) -> Result<(), String> {
+        let _held = self.admit(fetch, bytes)?;
+        fetch.waiting().bytes += bytes;
+        Ok(())
+    }
+
+    /// The room with `bytes` more of `fetch`'s in it, once they fit or its object is the one read. The lock is held
+    /// until the caller has counted them.
+    fn admit(&self, fetch: &Shared, bytes: u64) -> Result<MutexGuard<'_, u64>, String> {
+        let mut held = self.held.lock();
+        loop {
+            if fetch.waiting().gone {
+                return Err(READER_GONE.to_string());
+            }
+            if fetch.current.load(Ordering::Relaxed) {
+                return Ok(held);
+            }
+            if *held + bytes <= ROOM {
+                *held += bytes;
+                return Ok(held);
+            }
+            held = self.freed.wait(held);
+        }
+    }
+
+    /// `fetch`'s object is the one being read now: what it holds and has queued leaves the room.
+    fn make_current(&self, fetch: &Shared) {
+        let mut held = self.held.lock();
+        if !fetch.current.swap(true, Ordering::Relaxed) {
+            *held -= fetch.holds.load(Ordering::Relaxed) + fetch.queued();
+        }
+        self.freed.notify_all();
+    }
+
+    /// `fetch`'s reader is gone: what it queued is dropped, and every fetch waiting for room looks again.
+    fn forget(&self, fetch: &Shared) {
+        let mut held = self.held.lock();
+        let mut waiting = fetch.waiting();
+        waiting.gone = true;
+        if !fetch.current.load(Ordering::Relaxed) {
+            *held -= waiting.bytes;
+        }
+        waiting.bytes = 0;
+        drop(waiting);
+        self.freed.notify_all();
+    }
+
+    /// `fetch` has ended, and what it held besides its queued records is freed.
+    fn release(&self, fetch: &Shared) {
+        let mut held = self.held.lock();
+        let bytes = fetch.holds.swap(0, Ordering::Relaxed);
+        if !fetch.current.load(Ordering::Relaxed) {
+            *held -= bytes;
+        }
+        self.freed.notify_all();
+    }
+}
+
+/// What the decoder for an object whose first bytes are `magic` holds. A frame whose header is cut short is taken at
+/// its largest.
+fn decoder_bytes(magic: &[u8]) -> u64 {
+    if magic.starts_with(&[0x1f, 0x8b]) {
+        GZIP_DECODER
+    } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        zstd_window(&magic[4..]).unwrap_or(ZSTD_WINDOW) + ZSTD_DECODER
+    } else if magic.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
+        // A frame's blocks are its largest size at most, and the decoder keeps two of them, the last linked to.
+        let largest = magic.get(5).map_or(7, |bd| (bd >> 4) & 7).max(4);
+        2 * (1 << (2 * u32::from(largest) + 8)) + 16 * 1024
+    } else if magic.starts_with(b"\xff\x06\x00\x00sNaPpY") {
+        SNAPPY_DECODER
+    } else {
+        0
+    }
+}
+
+/// The window a zstd frame states in `header`, its bytes after the magic number (RFC 8878, 3.1.1.1). A frame in one
+/// segment needs a window as large as its content.
+fn zstd_window(header: &[u8]) -> Option<u64> {
+    let descriptor = *header.first()?;
+    if descriptor & 0x20 == 0 {
+        let window = *header.get(1)?;
+        let base = 1u64 << (10 + (window >> 3));
+        return Some(base + base / 8 * u64::from(window & 7));
+    }
+    let dictionary = [0, 1, 2, 4][usize::from(descriptor & 3)];
+    let at = 1 + dictionary;
+    let size = |n: usize| {
+        header
+            .get(at..at + n)
+            .map(|b| b.iter().rev().fold(0u64, |v, &b| v << 8 | u64::from(b)))
+    };
+    match descriptor >> 6 {
+        0 => size(1),
+        1 => size(2).map(|v| v + 256),
+        2 => size(4),
+        _ => size(8),
     }
 }
 
@@ -1192,7 +1372,7 @@ struct Ranges {
     /// Where the next GET starts.
     at: u64,
     size: u64,
-    chunk: Vec<u8>,
+    chunk: bytes::Bytes,
     taken: usize,
 }
 
@@ -1211,6 +1391,8 @@ impl BufRead for Ranges {
                 range: Some(GetRange::Bounded(self.at..(self.at + CHUNK).min(self.size))),
                 ..GetOptions::default()
             };
+            // The chunk read is let go first, so only one is held at a time.
+            self.chunk = bytes::Bytes::new();
             let get = async { self.store.get_opts(&self.path, options).await?.bytes().await };
             let chunk = within(&self.runtime, GET_TIMEOUT, get)
                 .map_err(std::io::Error::other)?
@@ -1219,7 +1401,7 @@ impl BufRead for Ranges {
                 return Err(std::io::Error::other("the object ended before its size"));
             }
             self.at += chunk.len() as u64;
-            self.chunk = chunk.to_vec();
+            self.chunk = chunk;
             self.taken = 0;
         }
         Ok(&self.chunk[self.taken..])
@@ -1227,5 +1409,137 @@ impl BufRead for Ranges {
 
     fn consume(&mut self, amount: usize) {
         self.taken += amount;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn fetch_in(room: &Arc<Room>) -> Arc<Shared> {
+        Arc::new(Shared {
+            room: room.clone(),
+            ..Shared::default()
+        })
+    }
+
+    /// How long a fetch is given to show it does not wait, or that it does.
+    const SETTLE: Duration = Duration::from_millis(200);
+
+    #[test]
+    fn a_fetch_ahead_waits_for_room_until_its_object_is_read() {
+        let room = Arc::new(Room::default());
+        let (first, second) = (fetch_in(&room), fetch_in(&room));
+        first.room.hold(&first, ROOM - CHUNK).unwrap();
+        let waiter = {
+            let second = second.clone();
+            std::thread::spawn(move || second.room.hold(&second, 2 * CHUNK))
+        };
+        std::thread::sleep(SETTLE);
+        assert!(!waiter.is_finished(), "a fetch ahead took more than the room");
+        room.make_current(&second);
+        waiter.join().unwrap().unwrap();
+        assert_eq!(
+            *room.held.lock(),
+            ROOM - CHUNK,
+            "the object read holds outside the room"
+        );
+        room.release(&first);
+        assert_eq!(*room.held.lock(), 0);
+    }
+
+    #[test]
+    fn a_fetch_ahead_waiting_for_room_ends_once_its_reader_is_gone() {
+        let room = Arc::new(Room::default());
+        let (first, second) = (fetch_in(&room), fetch_in(&room));
+        first.room.queue(&first, ROOM).unwrap();
+        let waiter = {
+            let second = second.clone();
+            std::thread::spawn(move || second.room.queue(&second, 1))
+        };
+        std::thread::sleep(SETTLE);
+        room.forget(&second);
+        assert_eq!(waiter.join().unwrap(), Err(READER_GONE.to_string()));
+        room.forget(&first);
+        assert_eq!(*room.held.lock(), 0, "what a reader never took leaves the room with it");
+    }
+
+    #[test]
+    fn a_zstd_frame_states_its_window() {
+        let data = vec![7u8; 1 << 16];
+        let mut stream = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+        stream.window_log(20).unwrap();
+        stream.write_all(&data).unwrap();
+        let streamed = stream.finish().unwrap();
+        assert_eq!(zstd_window(&streamed[4..]), Some(1 << 20));
+        // As `objects_too_large_to_decode_ahead_are_read_in_turn` writes its objects: a window larger than the room.
+        let mut stream = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
+        stream.window_log(27).unwrap();
+        stream.write_all(b"0.zst\n").unwrap();
+        let tiny = stream.finish().unwrap();
+        assert!(decoder_bytes(&tiny) > ROOM);
+        // One segment, its size known before: the window is the content.
+        let whole = zstd::bulk::compress(&data, 3).unwrap();
+        assert_eq!(zstd_window(&whole[4..]), Some(1 << 16));
+        assert_eq!(
+            decoder_bytes(&whole[..4]),
+            ZSTD_WINDOW + ZSTD_DECODER,
+            "a header cut short"
+        );
+    }
+
+    #[test]
+    fn each_decoder_holds_no_more_than_said() {
+        let data: Vec<u8> = (0..8u32 << 20).map(|i| (i % 251) as u8 ^ (i >> 13) as u8).collect();
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+        gzip.write_all(&data).unwrap();
+        let gzip = gzip.finish().unwrap();
+        let mut snappy = snap::write::FrameEncoder::new(Vec::new());
+        snappy.write_all(&data).unwrap();
+        let snappy = snappy.into_inner().unwrap();
+        let lz4 = |block| {
+            let info = lz4_flex::frame::FrameInfo::new().block_size(block);
+            let mut lz4 = lz4_flex::frame::FrameEncoder::with_frame_info(info, Vec::new());
+            lz4.write_all(&data).unwrap();
+            lz4.finish().unwrap()
+        };
+        let (small, large) = (
+            lz4(lz4_flex::frame::BlockSize::Max64KB),
+            lz4(lz4_flex::frame::BlockSize::Max4MB),
+        );
+        /// Opens a decoder over an object.
+        type Open = fn(&'static [u8]) -> Box<dyn BufRead>;
+        let decoders: [(&[u8], Open); 4] = [
+            (&gzip, |o| {
+                Box::new(BufReader::new(flate2::bufread::MultiGzDecoder::new(o)))
+            }),
+            (&snappy, |o| Box::new(BufReader::new(snap::read::FrameDecoder::new(o)))),
+            (&small, |o| {
+                Box::new(BufReader::new(lz4_flex::frame::FrameDecoder::new(o)))
+            }),
+            (&large, |o| {
+                Box::new(BufReader::new(lz4_flex::frame::FrameDecoder::new(o)))
+            }),
+        ];
+        for (object, open) in decoders {
+            let said = decoder_bytes(object) as usize;
+            let object: &'static [u8] = Box::leak(object.to_vec().into_boxed_slice());
+            let before = crate::core::buffer::allocated_bytes();
+            let mut decoder = open(object);
+            let mut most = 0;
+            loop {
+                let n = decoder.fill_buf().unwrap().len();
+                if n == 0 {
+                    break;
+                }
+                decoder.consume(n);
+                most = most.max(crate::core::buffer::allocated_bytes().saturating_sub(before));
+            }
+            assert!(
+                (said / 2..=said).contains(&most),
+                "a decoder held {most} bytes, said {said}"
+            );
+        }
     }
 }
