@@ -19,6 +19,9 @@
 
 use super::line_breaker::{BREAK_SLACK, LineBreaker, Searched};
 use super::lines::unescape_line;
+use std::sync::Arc;
+
+use super::RecordChunkBuilder;
 use super::receiver::INBOX_BYTES;
 
 /// Where one frame of a stream ends and the next starts.
@@ -95,61 +98,45 @@ impl LengthPrefix {
     }
 }
 
-/// Frames cut from a stream, each a record. Held in one buffer, each frame its bytes and where it ends, so many short
-/// frames cost about what was sent.
-#[derive(Default)]
-pub(super) struct Messages {
-    bytes: Vec<u8>,
-    /// Where each frame ends in `bytes`. What one push completes is at most what the framer held, a frame short of the
-    /// largest and a push, so an offset fits.
-    ends: Vec<u32>,
-    taken: usize,
+/// The frames cut from a stream, each a record, framed straight into the chunk the reader takes them in.
+pub(super) struct Framed {
+    records: RecordChunkBuilder,
+    /// The topic each record is read from: none.
+    nowhere: Arc<str>,
 }
 
-/// Where a framer puts each frame it finds, in order.
-pub(super) trait Frames {
-    fn push(&mut self, frame: &[u8]);
-}
-
-impl Frames for Messages {
-    fn push(&mut self, message: &[u8]) {
-        self.bytes.extend_from_slice(message);
-        self.ends.push(self.bytes.len() as u32);
-    }
-}
-
-impl Messages {
-    pub(super) fn is_empty(&self) -> bool {
-        self.taken == self.ends.len()
-    }
-
-    /// What its frames hold once taken, as the inbox counts a record, and what holding them costs until then.
-    pub(super) fn size(&self) -> usize {
-        self.bytes.len() + self.ends.len() * size_of::<u32>()
-    }
-}
-
-impl Messages {
-    /// Each frame not yet taken, handed to `each` in order.
-    pub(super) fn each(self, mut each: impl FnMut(&[u8])) {
-        for i in self.taken..self.ends.len() {
-            let start = i.checked_sub(1).map_or(0, |before| self.ends[before] as usize);
-            each(&self.bytes[start..self.ends[i] as usize]);
+impl Default for Framed {
+    fn default() -> Self {
+        Framed {
+            records: RecordChunkBuilder::new(),
+            nowhere: Arc::from(""),
         }
     }
 }
 
-impl Iterator for Messages {
-    type Item = Vec<u8>;
+impl Framed {
+    /// The records `push` frames.
+    pub(super) fn of(push: impl FnOnce(&mut Framed)) -> Framed {
+        let mut framed = Framed::default();
+        push(&mut framed);
+        framed
+    }
 
-    fn next(&mut self) -> Option<Vec<u8>> {
-        let end = *self.ends.get(self.taken)? as usize;
-        let start = match self.taken {
-            0 => 0,
-            i => self.ends[i - 1] as usize,
-        };
-        self.taken += 1;
-        Some(self.bytes[start..end].to_vec())
+    pub(super) fn push(&mut self, frame: &[u8]) {
+        self.records.push(frame, 0, 0, self.nowhere.clone(), None);
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// What its records hold, as the inbox counts them.
+    pub(super) fn size(&self) -> usize {
+        self.records.size()
+    }
+
+    pub(super) fn into_records(self) -> RecordChunkBuilder {
+        self.records
     }
 }
 
@@ -304,31 +291,31 @@ impl Framer {
 
     /// Like `cut`, but the line breaker searches everything held, however little arrived since it last searched,
     /// because nothing more is coming.
-    pub(super) fn cut_whole(&mut self, messages: &mut impl Frames) -> Result<(), Malformed> {
+    pub(super) fn cut_whole(&mut self, framed: &mut Framed) -> Result<(), Malformed> {
         self.searched.found();
-        self.cut(messages)
+        self.cut(framed)
     }
 
-    /// Adds every frame held whole to `messages`, in order. What follows the last stays held for the next push. A
-    /// refused frame leaves the frames before it in `messages`.
-    pub(super) fn cut(&mut self, messages: &mut impl Frames) -> Result<(), Malformed> {
+    /// Adds every frame held whole to `framed`, in order. What follows the last stays held for the next push. A
+    /// refused frame leaves the frames before it in `framed`.
+    pub(super) fn cut(&mut self, framed: &mut Framed) -> Result<(), Malformed> {
         loop {
             if !self.discard() {
                 return Ok(());
             }
             let frame = self.frame()?;
-            if !self.take(frame, messages)? {
+            if !self.take(frame, framed)? {
                 return Ok(());
             }
         }
     }
 
-    /// Adds a whole frame to `messages` and moves past it. `false` for a partial frame, which stays held. A frame over
+    /// Adds a whole frame to `framed` and moves past it. `false` for a partial frame, which stays held. A frame over
     /// the largest is refused where the framer does not truncate.
-    fn take(&mut self, frame: Frame, messages: &mut impl Frames) -> Result<bool, Malformed> {
+    fn take(&mut self, frame: Frame, framed: &mut Framed) -> Result<bool, Malformed> {
         let next = match frame {
             Frame::Message(start, end, next) => {
-                self.put(start, end, messages);
+                self.put(start, end, framed);
                 next
             }
             Frame::Truncated(start, end, rest) => {
@@ -338,7 +325,7 @@ impl Framer {
                     if !self.truncates {
                         return Err(self.malformed(start, format!("a record is longer than {} bytes", self.max)));
                     }
-                    self.put(start, end, messages);
+                    self.put(start, end, framed);
                     self.truncations.count += 1;
                 }
                 self.discarding = rest;
@@ -352,10 +339,10 @@ impl Framer {
         Ok(true)
     }
 
-    fn put(&self, start: usize, end: usize, messages: &mut impl Frames) {
+    fn put(&self, start: usize, end: usize, framed: &mut Framed) {
         match self.cuts {
-            Cuts::Lines { escaped: true } => messages.push(&unescape_line(&self.held[start..end])),
-            _ => messages.push(&self.held[start..end]),
+            Cuts::Lines { escaped: true } => framed.push(&unescape_line(&self.held[start..end])),
+            _ => framed.push(&self.held[start..end]),
         }
     }
 
@@ -402,9 +389,9 @@ impl Framer {
     }
 
     /// The stream's end: adds a last frame that needs no end of its own, a line, an event or an object, to
-    /// `messages`. A frame whose length says more was to come is dropped, and `Ok` says how many bytes of it there
+    /// `framed`. A frame whose length says more was to come is dropped, and `Ok` says how many bytes of it there
     /// were.
-    pub(super) fn finish(&mut self, messages: &mut impl Frames) -> Result<usize, Malformed> {
+    pub(super) fn finish(&mut self, framed: &mut Framed) -> Result<usize, Malformed> {
         self.end_discarding();
         if !self.discard() {
             return Ok(0);
@@ -412,14 +399,14 @@ impl Framer {
         match self.cuts {
             Cuts::Syslog | Cuts::Breaks if self.line_breaker.is_some() => {
                 let line_breaker = self.line_breaker.take().expect("a line breaker");
-                self.end_broken(&line_breaker, messages)
+                self.end_broken(&line_breaker, framed)
             }
             Cuts::Syslog if matches!(self.held.get(self.cut), Some(b'1'..=b'9')) => Ok(self.held.len() - self.cut),
             Cuts::Syslog | Cuts::Lines { .. } | Cuts::Breaks => {
                 if self.cut < self.held.len() {
                     self.held.push(b'\n');
                     let frame = self.line(self.cut);
-                    self.take(frame, messages)?;
+                    self.take(frame, framed)?;
                 }
                 Ok(0)
             }
@@ -427,7 +414,7 @@ impl Framer {
                 let (start, end) = (self.cut, self.held.len());
                 if start < end {
                     let frame = self.message(start, end, end);
-                    self.take(frame, messages)?;
+                    self.take(frame, framed)?;
                 }
                 Ok(0)
             }
@@ -455,14 +442,14 @@ impl Framer {
         }
     }
 
-    /// Adds what a line breaker holds to `messages` as though the stream had ended, its sender having gone quiet, and
+    /// Adds what a line breaker holds to `framed` as though the stream had ended, its sender having gone quiet, and
     /// reads on. A counted frame not yet whole stays held.
-    pub(super) fn flush(&mut self, messages: &mut impl Frames) -> Result<(), Malformed> {
+    pub(super) fn flush(&mut self, framed: &mut Framed) -> Result<(), Malformed> {
         if self.discarding == Discarding::Break {
             self.end_discarding();
         }
         if let Some(line_breaker) = self.line_breaker.take() {
-            let flushed = self.end_broken(&line_breaker, messages);
+            let flushed = self.end_broken(&line_breaker, framed);
             self.line_breaker = Some(line_breaker);
             self.searched.found();
             flushed?;
@@ -472,7 +459,7 @@ impl Framer {
 
     /// Cuts every frame held, nothing more to come, up to an octet-counted frame not yet whole, whose length held it
     /// returns.
-    fn end_broken(&mut self, line_breaker: &LineBreaker, messages: &mut impl Frames) -> Result<usize, Malformed> {
+    fn end_broken(&mut self, line_breaker: &LineBreaker, framed: &mut Framed) -> Result<usize, Malformed> {
         loop {
             if !self.discard() {
                 return Ok(0);
@@ -493,7 +480,7 @@ impl Framer {
                     }
                 },
             };
-            assert!(self.take(frame, messages)?, "an ended stream's frame is whole");
+            assert!(self.take(frame, framed)?, "an ended stream's frame is whole");
         }
     }
 
@@ -678,15 +665,29 @@ mod tests {
         let mut cuts = Vec::new();
         for push in pushes {
             framer.push(push);
-            let mut messages = Messages::default();
-            framer.cut(&mut messages)?;
-            cuts.push(strings(messages));
+            let mut framed = Framed::default();
+            framer.cut(&mut framed)?;
+            cuts.push(strings(framed));
         }
         Ok(cuts)
     }
 
-    fn strings(messages: Messages) -> Vec<String> {
-        messages.map(|m| String::from_utf8(m).unwrap()).collect()
+    /// The frames `framed` holds, in order.
+    fn taken(framed: Framed) -> Vec<Vec<u8>> {
+        let mut records = framed.into_records();
+        let mut frames = Vec::new();
+        while let Some((raw, _)) = records.pop() {
+            frames.push(raw);
+        }
+        frames.reverse();
+        frames
+    }
+
+    fn strings(framed: Framed) -> Vec<String> {
+        taken(framed)
+            .into_iter()
+            .map(|m| String::from_utf8(m).unwrap())
+            .collect()
     }
 
     #[test]
@@ -795,11 +796,11 @@ mod tests {
         let mut cuts = Vec::new();
         for push in pushes {
             framer.push(push);
-            let mut messages = Messages::default();
-            framer.cut(&mut messages)?;
-            cuts.push(strings(messages));
+            let mut framed = Framed::default();
+            framer.cut(&mut framed)?;
+            cuts.push(strings(framed));
         }
-        let mut last = Messages::default();
+        let mut last = Framed::default();
         framer.finish(&mut last)?;
         Ok((cuts, strings(last)))
     }
@@ -915,7 +916,7 @@ mod tests {
     fn cut_and_finish(sent: &[u8]) -> (Vec<String>, Vec<String>, usize) {
         let mut framer = Framer::new(Framing::Syslog(None), MAX);
         framer.push(sent);
-        let (mut cut, mut finished) = (Messages::default(), Messages::default());
+        let (mut cut, mut finished) = (Framed::default(), Framed::default());
         framer.cut(&mut cut).unwrap();
         let partial = framer.finish(&mut finished).unwrap();
         (strings(cut), strings(finished), partial)
@@ -946,13 +947,13 @@ mod tests {
         let mut cut = Vec::new();
         for w in bounds.windows(2) {
             framer.push(&sent[w[0]..w[1]]);
-            let mut messages = Messages::default();
-            framer.cut(&mut messages)?;
-            cut.extend(messages);
+            let mut framed = Framed::default();
+            framer.cut(&mut framed)?;
+            cut.extend(taken(framed));
         }
-        let mut last = Messages::default();
+        let mut last = Framed::default();
         let partial = framer.finish(&mut last)?;
-        cut.extend(last);
+        cut.extend(taken(last));
         Ok((cut, partial))
     }
 
@@ -1058,9 +1059,9 @@ mod tests {
         assert_eq!(frames(&Framing::Object, b"", &[]).unwrap(), (vec![], 0));
         let mut framer = Framer::new(Framing::Object, MAX);
         framer.push(&[b'x'; MAX + 1]);
-        let mut messages = Messages::default();
-        framer.cut(&mut messages).unwrap();
-        assert_eq!(messages.collect::<Vec<_>>(), [vec![b'x'; MAX]]);
+        let mut framed = Framed::default();
+        framer.cut(&mut framed).unwrap();
+        assert_eq!(taken(framed), [vec![b'x'; MAX]]);
         assert_eq!(framer.truncations.count, 1);
     }
 

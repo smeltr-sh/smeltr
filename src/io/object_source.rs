@@ -26,7 +26,7 @@ use object_store::{GetOptions, GetRange, ObjectStore};
 use crate::io::avro::AvroReader;
 use crate::io::avro::Parsed;
 use crate::io::avro::container::Container;
-use crate::io::framing::{Framer, Frames};
+use crate::io::framing::{Framed, Framer};
 use crate::io::{
     ChunkRows, CommitMap, IoError, PartitionLag, Progress, RecordChunk, RecordChunkBuilder, Source, SourceRecord,
     TopicPartition,
@@ -987,14 +987,10 @@ fn frames(
     mut framer: Framer,
     send: &impl Fn(Fetch) -> Result<(), String>,
 ) -> Result<(), String> {
-    let nowhere: Arc<str> = Arc::from("");
     loop {
         let ready = lines.fill_buf().map_err(|e| e.to_string())?;
         let n = ready.len().min(READ_AHEAD);
-        let mut records = Records {
-            out: RecordChunkBuilder::new(),
-            nowhere: nowhere.clone(),
-        };
+        let mut records = Framed::default();
         let cut = match n {
             0 => framer.finish(&mut records),
             n => {
@@ -1003,7 +999,7 @@ fn frames(
                 framer.cut(&mut records).map(|()| 0)
             }
         };
-        send_rows(records.out, send)?;
+        send_rows(records.into_records(), send)?;
         match cut {
             Err(malformed) => return Err(format!("{}, at byte {}", malformed.what, malformed.at)),
             Ok(partial) if partial > 0 => {
@@ -1012,18 +1008,6 @@ fn frames(
             Ok(_) if n == 0 => return Ok(()),
             Ok(_) => {}
         }
-    }
-}
-
-/// The records one push completes, framed straight into the chunk they are sent in.
-struct Records {
-    out: RecordChunkBuilder,
-    nowhere: Arc<str>,
-}
-
-impl Frames for Records {
-    fn push(&mut self, record: &[u8]) {
-        self.out.push(record, 0, 0, self.nowhere.clone(), None);
     }
 }
 

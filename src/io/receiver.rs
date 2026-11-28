@@ -46,6 +46,7 @@ use super::api::Records;
 use super::batch_wait::BatchWait;
 use super::connections::{self, Connections, Marked};
 use super::elastic_receiver;
+use super::framing::Framed;
 use super::hec;
 use super::line_breaker::LineBreaker;
 use super::otlp;
@@ -53,7 +54,7 @@ use super::prometheus;
 use super::raw::{RawRead, RawTap, Tapped, Tapping, offer_closed};
 use super::s2s_receiver;
 use super::socket_receiver;
-use super::{ChunkRows, CommitMap, IoError, RecordChunk, RecordChunkBuilder, Source, SourceRecord};
+use super::{ChunkRows, CommitMap, IoError, RecordChunk, Source, SourceRecord};
 use crate::egress::QueuePool;
 use crate::format::json::write_json_string;
 use crate::format::json_scan::{Next, Reader};
@@ -1083,8 +1084,8 @@ pub(super) enum Cutter {
     Events(hec::Events),
     /// Records cut already, each filed under its own.
     Each(s2s_receiver::Cuts),
-    /// Records cut already, filed under nothing.
-    Messages(super::framing::Messages),
+    /// Records framed already, filed under nothing.
+    Framed(Framed),
     Otlp(otlp::Export),
     Samples(prometheus::Samples),
     Documents(elastic_receiver::Documents),
@@ -1129,38 +1130,37 @@ impl Rest {
     /// The request as the reader takes it, with its size, which for byte records is what they hold once cut. `None`
     /// when it holds no record.
     fn of(records: Cutter) -> Option<(Rest, usize)> {
-        let mut out = RecordChunkBuilder::new();
         let mut filed = Vec::new();
-        let none: Arc<str> = Arc::from("");
-        let mut push = |record: &[u8]| out.push(record, 0, 0, none.clone(), None);
-        match records {
-            Cutter::Records(records) => records.each(push),
-            Cutter::Filed(records, under) => records.each(|record| {
-                push(record);
-                filed.push(under.clone());
+        let out = match records {
+            Cutter::Framed(framed) => framed,
+            Cutter::Records(records) => Framed::of(|out| records.each(|record| out.push(record))),
+            Cutter::Filed(records, under) => Framed::of(|out| {
+                records.each(|record| {
+                    out.push(record);
+                    filed.push(under.clone());
+                })
             }),
-            Cutter::Events(mut events) => {
+            Cutter::Events(mut events) => Framed::of(|out| {
                 while let Some((record, under)) = events.next_record() {
-                    push(&record);
+                    out.push(&record);
                     filed.push(Arc::new(under));
                 }
-            }
-            Cutter::Documents(mut documents) => {
+            }),
+            Cutter::Documents(mut documents) => Framed::of(|out| {
                 while let Some((record, under)) = documents.next_record() {
-                    push(&record);
+                    out.push(&record);
                     filed.push(Arc::new(under));
                 }
-            }
-            Cutter::Each(cuts) => {
+            }),
+            Cutter::Each(cuts) => Framed::of(|out| {
                 for i in 0..cuts.len() {
-                    push(cuts.record(i));
+                    out.push(cuts.record(i));
                     filed.push(cuts.filed(i).cloned().unwrap_or_default());
                 }
-            }
-            Cutter::Messages(messages) => messages.each(push),
+            }),
             Cutter::Otlp(export) => return Rest::rows(RowCutter::Otlp(export)),
             Cutter::Samples(samples) => return Rest::rows(RowCutter::Samples(Box::new(samples))),
-        }
+        };
         if out.is_empty() {
             return None;
         }
@@ -1170,7 +1170,7 @@ impl Rest {
             .enumerate()
             .filter(|(i, under)| *i == 0 || !Arc::ptr_eq(under, &filed[i - 1]));
         let size = out.size() + shared.map(|(_, under)| filed_size(under)).sum::<usize>();
-        let rows = ChunkRows::new(out.into_chunk());
+        let rows = ChunkRows::new(out.into_records().into_chunk());
         Some((Rest::Chunk { rows, filed }, size))
     }
 
