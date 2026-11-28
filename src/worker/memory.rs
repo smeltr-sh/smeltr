@@ -313,27 +313,9 @@ pub(super) fn fit(
         + pooled()
             .map(|k| (batch_bytes * queue_charge(k) + starting_senders_bytes(k)) as u64)
             .sum::<u64>();
-    // A client to many brokers can hold more than its `fetchBytes` (`io::kafka::consumer_ceiling`), whatever it is
-    // sized to: set aside first.
-    let mut clients: Vec<&KafkaSourceConfig> = Vec::new();
-    for &i in &sources {
-        if let SourceKind::Kafka(k) = &topology.sources[i].kind
-            && !clients.iter().any(|c| one_client(c, k))
-        {
-            clients.push(k);
-        }
-    }
-    let fixed = fixed
-        + clients
-            .iter()
-            .map(|k| {
-                let least = crate::io::kafka::least_fetch_request_bytes(&k.props);
-                crate::io::kafka::consumer_floor_bytes(crate::io::kafka::named_brokers(&k.brokers), least) as u64
-            })
-            .sum::<u64>();
-    let left = (memory as u64).saturating_sub(fixed) as usize;
+    let FetchClaims { mut claims, floor } = fetch_claims(sources.iter().map(|&i| &topology.sources[i].kind));
+    let left = (memory as u64).saturating_sub(fixed + floor) as usize;
 
-    let mut claims: Vec<Claim> = fetch_claims(sources.iter().map(|&i| &topology.sources[i].kind));
     // The pool weighs what its queues would together: each its weight, as often as its buffer is held. Nothing
     // bounds it above: a queue grows as far as its throughput asks and its share allows.
     let buffers: u64 = pooled().map(|k| buffer_weight(k) * buffer_halves(k)).sum();
@@ -406,17 +388,30 @@ pub(super) fn queue_charge(kind: &DestinationKind) -> usize {
     }
 }
 
+/// What the Kafka sources being fitted hold of their `fetchBytes`, and what their clients hold whatever it is.
+struct FetchClaims {
+    /// Each source's claim, in the order given.
+    claims: Vec<Claim>,
+    /// What each client to many brokers can hold beyond its `fetchBytes` (`io::kafka::consumer_floor_bytes`), summed:
+    /// set aside before any claim is sized.
+    floor: u64,
+}
+
 /// Each Kafka source's claim on its `fetchBytes`. A source holds all of it in its inbox; the first source of each
-/// client holds that client too: its `fetchBytes` once more, beyond the `consumer_floor_bytes` that `fit` sets aside
-/// first. Equal weights get equal sizes, so the sources of one client are sized alike and still share it.
-fn fetch_claims<'a>(sources: impl IntoIterator<Item = &'a SourceKind>) -> Vec<Claim> {
+/// client holds that client too: its `fetchBytes` once more, beyond the client's floor. Equal weights get equal sizes,
+/// so the sources of one client are sized alike and still share it.
+fn fetch_claims<'a>(sources: impl IntoIterator<Item = &'a SourceKind>) -> FetchClaims {
     let mut clients: Vec<&KafkaSourceConfig> = Vec::new();
-    sources
+    let mut floor = 0;
+    let claims = sources
         .into_iter()
         .map(|kind| {
             let client: u64 = match kind {
                 SourceKind::Kafka(k) if !clients.iter().any(|c| one_client(c, k)) => {
                     clients.push(k);
+                    let least = crate::io::kafka::least_fetch_request_bytes(&k.props);
+                    floor += crate::io::kafka::consumer_floor_bytes(crate::io::kafka::named_brokers(&k.brokers), least)
+                        as u64;
                     2
                 }
                 _ => 0,
@@ -428,7 +423,8 @@ fn fetch_claims<'a>(sources: impl IntoIterator<Item = &'a SourceKind>) -> Vec<Cl
                 most: FetchBytes::MAX,
             }
         })
-        .collect()
+        .collect();
+    FetchClaims { claims, floor }
 }
 
 /// How many halves of its `bufferBytes` a destination holds: an object store or table holds it twice, once more for
@@ -953,6 +949,7 @@ mod tests {
                                 .filter(|s| topology.fitted.sources.contains(&s.id))
                                 .map(|s| &s.kind),
                         )
+                        .claims
                         .iter()
                         .map(|c| c.halves * c.least as u64 / 2)
                         .sum::<u64>();
