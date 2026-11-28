@@ -107,12 +107,14 @@ impl Transport for FuzzStore {
                         }
                     }
                 }
-                answered.push(match (self.version, headers.is_empty()) {
-                    (RemoteWriteVersion::V2, true) => "answer 2xx naming nothing",
-                    (RemoteWriteVersion::V2, false) => "answer 2xx naming what it wrote",
+                let status = *rng.pick(&[200, 201, 202, 204, 204, 299]);
+                answered.push(match (self.version, headers.is_empty(), status) {
+                    (RemoteWriteVersion::V2, true, 202) => "answer 202 naming nothing",
+                    (RemoteWriteVersion::V2, true, _) => "answer 2xx naming nothing",
+                    (RemoteWriteVersion::V2, false, _) => "answer 2xx naming what it wrote",
                     _ => "answer 2xx",
                 });
-                *rng.pick(&[200, 201, 204, 204, 299])
+                status
             }
             58..=83 => {
                 // A 2.0 store that wrote part of the request says so, and one that refused it whole says 0 or nothing.
@@ -1042,6 +1044,7 @@ const ROW_OPTIONS: &[&str] = &[
     "answer 2xx",
     "answer 2xx naming what it wrote",
     "answer 2xx naming nothing",
+    "answer 202 naming nothing",
     "answer split",
     "answer 2.0 refusal naming what it wrote",
     "answer retry",
