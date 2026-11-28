@@ -1,6 +1,7 @@
-# Every check on main, at night, when main has moved since the last finished run: the live services, the whole of
-# the GUI specs, every fuzzer, Kerberos, Windows and Linux on arm64. Sunday's run goes ahead whatever moved, for what
-# changes outside the repository: advisories, npm audit, and new ECS and OCSF releases. A newer run cancels an older one.
+# Every check on main, at night, when main or stable Rust has moved since the last finished run: the live services,
+# the whole of the GUI specs, every fuzzer, Kerberos, Windows and Linux on arm64. Sunday's run goes ahead whatever
+# moved, for what changes outside the repository: advisories, npm audit, and new ECS and OCSF releases. A newer run
+# cancels an older one.
 name: Nightly
 
 on:
@@ -37,10 +38,13 @@ jobs:
             echo run=true >> "$GITHUB_OUTPUT"; exit 0
           fi
           # A cancelled run checked nothing, so only a run that passed or failed counts.
-          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch main --limit 20 \
-            --json headSha,conclusion --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0].headSha')
-          echo "last finished run: ${last:-none}"
-          if [ "$last" = "$GITHUB_SHA" ]; then echo run=false; else echo run=true; fi >> "$GITHUB_OUTPUT"
+          read -r last day < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch main --limit 20 \
+            --json headSha,conclusion,createdAt \
+            --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0] | "\(.headSha) \(.createdAt[:10])"')
+          # A new stable invalidates the cached build, and only this run saves another.
+          stable=$(curl -fsS https://static.rust-lang.org/dist/channel-rust-stable.toml | sed -n 's/^date = "\(.*\)"$/\1/p')
+          echo "last finished run: ${last:-none} on ${day:-never}; stable of ${stable:-unknown}"
+          if [ "$last" = "$GITHUB_SHA" ] && [[ "$stable" < "$day" ]]; then echo run=false; else echo run=true; fi >> "$GITHUB_OUTPUT"
 
   # `check-live` in two: `check-all` here, and the live tests on a runner of their own, so neither's timeouts
   # suffer the other's load.
