@@ -156,8 +156,6 @@ tower-service = "0.3"
 # The leader gzips what it answers and inflates what it is sent gzipped. Already in the tree under `reqwest`.
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip", "decompression-gzip"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-# HTTP and OTLP request bodies are gzipped whole, which libdeflate does with about a third less CPU than zlib-rs.
-libdeflater = "1.26"
 zstd = { version = "0.14", default-features = false }
 # A pipeline's export is a bundle in a zip, read back through the same loader as any bundle.
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
