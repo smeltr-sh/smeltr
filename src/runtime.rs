@@ -1775,6 +1775,7 @@ impl Transform {
                         .targets()
                         .is_empty();
                 let last = masks.peek().is_none() && !unmatched_read;
+                let kept = self.topology.kept_bytes(&lane.meta);
                 let docs = buffer::catch_over_budget(|| {
                     run_and_encode(
                         plan,
@@ -1782,6 +1783,7 @@ impl Transform {
                             meta: &lane.meta,
                             decoded: &mut decoded,
                             last,
+                            kept: &kept,
                             now,
                             tally: tally.as_mut(),
                             senders: (!counted.is_empty()).then_some(Senders {
@@ -3021,6 +3023,8 @@ struct Ingest<'a> {
     /// Whether nothing reads `decoded` after this route, so it takes its columns: no later route, and no row left
     /// unmatched.
     last: bool,
+    /// By the record's field, whether a destination writes it as bytes: it stays in `decoded`, which it is read from.
+    kept: &'a [bool],
     /// What `now()` reads for every row and every route of these records. See [`Ctx::now`].
     now: DateTime,
     /// Where each Parser tallies the fields it produces, for the one batch an interval describes to the leader
@@ -3501,7 +3505,9 @@ fn run_plan(
     let watched = !egress.taps.is_empty();
     let wanted =
         |i: usize| watched || plan.reads_meta[i] || egress.id_fields.iter().any(|(_, field)| field == fields[i].0);
-    let noted = ingest.decoded.give(&mut batch, meta, wanted, ingest.last, pool);
+    let noted = ingest
+        .decoded
+        .give(&mut batch, meta, wanted, ingest.last, ingest.kept, pool);
 
     let mut ctx = Ctx::at(pool, errors, ingest.now);
     ctx.fields = ingest.tally.take();
@@ -3898,6 +3904,7 @@ pub(crate) fn preview_routes_at(
                             meta: &meta,
                             decoded: &mut decoded,
                             last: false,
+                            kept: &[],
                             now,
                             tally: None,
                             senders: None,
