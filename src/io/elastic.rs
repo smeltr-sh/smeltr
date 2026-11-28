@@ -414,7 +414,7 @@ fn sending<T: Transport + 'static>(
     metrics: MetricsHandle,
 ) -> Box<dyn Destination> {
     Box::new(
-        http::HttpDestination::new(make(), protocol)
+        http::HttpDestinationBuilder::new(protocol)
             .with_subject(name)
             .with_metrics(metrics, id)
             .with_max_request_bytes(c.max_bulk_bytes)

@@ -42,7 +42,9 @@
 //!
 //! A store refuses a point older than its series' newest, and Prometheus appends a `TimeSeries`' samples before its
 //! histograms. So a series' points in a request go oldest first, one `TimeSeries` for each run of samples or of
-//! histograms among them, a row's exemplars with its point's run and their own oldest first.
+//! histograms among them, a row's exemplars with its point's run and their own oldest first. Requests go side by side,
+//! so nothing orders one request against another: a store takes points that arrive out of order only within its
+//! out-of-order window.
 //!
 //! What an answer means, as Prometheus and every remote_write store answer:
 //!
@@ -64,7 +66,7 @@ use std::sync::Arc;
 
 use prost::Message;
 
-use super::http::{HttpTransport, Order, Outcome, Protocol, Response, Unwritten};
+use super::http::{HttpTransport, Outcome, Protocol, Response, Unwritten};
 use super::prometheus::{
     BucketSpan, Exemplar, ExemplarV2, Histogram, HistogramCount, HistogramZeroCount, Label, MetadataV2, MetricMetadata,
     MetricType, NAME_LABEL, ResetHint, Sample, TimeSeries, TimeSeriesV2,
@@ -151,8 +153,7 @@ pub struct Item {
     metadata: Option<MetricMetadata>,
 }
 
-/// The time of a row that is metadata alone. It has none, and a store orders no metadata against points, so it goes
-/// first: a family's metadata then lands in the first request of its batch, no later than its points.
+/// The time of a row that is metadata alone, which has none.
 const METADATA_TIME: i64 = i64::MIN;
 
 /// What a row sends of one series.
@@ -243,13 +244,14 @@ pub fn open(
     let credentials = super::http::credential_headers("prometheus destination", &c.credentials, secrets)?;
     let config = super::http::agent_config(c.tls.as_ref(), secrets)?;
     let protocol = RemoteWrite::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name));
-    // No senders: every request goes from this thread, so one lands before the next is sent.
+    let make = || transport(c, &credentials, &config);
     Ok(Box::new(
-        super::http::HttpDestination::new(transport(c, &credentials, &config), protocol)
+        super::http::HttpDestinationBuilder::new(protocol)
             .with_subject(name)
             .with_metrics(metrics, id)
             .with_max_request_bytes(c.max_request_bytes)
-            .with_stall_after(c.stall_after),
+            .with_stall_after(c.stall_after)
+            .with_senders_from(make, c.max_in_flight(), c.in_flight),
     ))
 }
 
@@ -1035,12 +1037,6 @@ impl Protocol for RemoteWrite {
         &self.path
     }
 
-    /// A store refuses a point older than its series' newest, so a batch goes oldest first across its requests, its
-    /// metadata alone before all.
-    fn order(&self) -> Option<Order<Item>> {
-        Some(|a, b| a.time.cmp(&b.time))
-    }
-
     /// `name` a non-empty string, `time` a datetime, and `attributes` absent, null, or an object whose values are
     /// strings, numbers or booleans. An attribute that is null or the empty string is no label, as Prometheus reads a
     /// label with no value. JSON holds no NaN or infinity, so a number that was one arrives as none.
@@ -1239,9 +1235,10 @@ impl Protocol for RemoteWrite {
         let timeseries = self.timeseries(items);
         let request = match self.version {
             RemoteWriteVersion::V1 => {
-                // Each family's metadata, the first of the batch's order.
+                // Each family's metadata once: a record of metadata alone says it over a point's description.
                 let mut families: HashSet<&str> = HashSet::new();
-                let metadata = (items.iter())
+                let (alone, points): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.time == METADATA_TIME);
+                let metadata = (alone.into_iter().chain(points))
                     .filter_map(|item| item.metadata.as_ref())
                     .filter(|m| families.insert(&m.metric_family_name))
                     .cloned()
@@ -2219,14 +2216,6 @@ mod tests {
         // With no description or unit, both go empty.
         let bare = metadata_of(r#"{"name":"x"}"#);
         assert_eq!((bare.help.as_str(), bare.unit.as_str()), ("", ""));
-    }
-
-    #[test]
-    fn metadata_goes_before_every_point() {
-        let order = protocol().order().unwrap();
-        let alone = admit(r#"{"name":"x"}"#).unwrap();
-        let point = admit(r#"{"time":"0001-01-01T00:00:00Z","name":"x","value":1}"#).unwrap();
-        assert_eq!(order(&alone, &point), std::cmp::Ordering::Less);
     }
 
     #[test]
