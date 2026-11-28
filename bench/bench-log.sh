@@ -27,6 +27,7 @@ root=$(git rev-parse --show-toplevel)
 log=${BENCH_LOG:?BENCH_LOG names the log file, kept outside the repository}
 [ -s "$log" ] || echo '| date | pipeline | head | reference | ratio | per-CPU ratio | docs/s | docs/CPU-s | MB/s in | MB/s out | faults/doc | CPU µs/doc |
 |---|---|---|---|---|---|---|---|---|---|---|---|' >"$log"
+grep -q '| per-CPU ratio |' "$log" || { echo "$log has the older columns: add per-CPU ratio and docs/CPU-s" >&2; exit 1; }
 perf=$(ls /usr/lib/linux-tools/*/perf 2>/dev/null | head -1)
 [ -x "$perf" ] || { echo "perf missing: apt-get install linux-tools-generic" >&2; exit 1; }
 
