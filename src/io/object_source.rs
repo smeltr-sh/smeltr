@@ -26,7 +26,7 @@ use object_store::{GetOptions, GetRange, ObjectStore};
 use crate::io::avro::AvroReader;
 use crate::io::avro::Parsed;
 use crate::io::avro::container::Container;
-use crate::io::framing::{Framer, Messages};
+use crate::io::framing::{Framed, Framer};
 use crate::io::{
     ChunkRows, CommitMap, IoError, PartitionLag, Progress, RecordChunk, RecordChunkBuilder, Source, SourceRecord,
     TopicPartition,
@@ -1036,23 +1036,20 @@ fn frames(
     send: &impl Fn(Fetch) -> Result<(), String>,
     hold: &impl Fn(u64) -> Result<(), String>,
 ) -> Result<(), String> {
-    let nowhere: Arc<str> = Arc::from("");
     loop {
         let ready = lines.fill_buf().map_err(|e| e.to_string())?;
         let n = ready.len().min(READ_AHEAD);
-        let mut frames = Messages::default();
+        let mut records = Framed::default();
         let cut = match n {
-            0 => framer.finish(&mut frames),
+            0 => framer.finish(&mut records),
             n => {
                 hold(framer.growth(n) as u64)?;
                 framer.push(&ready[..n]);
                 lines.consume(n);
-                framer.cut(&mut frames).map(|()| 0)
+                framer.cut(&mut records).map(|()| 0)
             }
         };
-        let mut out = RecordChunkBuilder::new();
-        frames.each(|record| out.push(record, 0, 0, nowhere.clone(), None));
-        send_rows(out, send)?;
+        send_rows(records.into_records(), send)?;
         match cut {
             Err(malformed) => return Err(format!("{}, at byte {}", malformed.what, malformed.at)),
             Ok(partial) if partial > 0 => {
