@@ -925,8 +925,8 @@ fn time_destination(run: &str, decl: Value, rows: u64, case: &Case, cores: &Core
     worker.wait_for_receiver(run, port);
     let peer = containers(case.services);
     let url = format!("http://127.0.0.1:{port}/");
-    let bodies = bodies(&receivers::HTTP);
-    let send = |senders, from, to| Sender::start(&url, &receivers::HTTP, &bodies, senders, from, to);
+    let bodies = bodies(&receivers::HTTP, line);
+    let send = |senders, from, to| Sender::start(&url, &receivers::HTTP, line, &bodies, senders, from, to);
     if files {
         let sender = send(FILE_SENDERS, 0, u64::MAX);
         worker.warm_up(run, rows, cores, || sender.acked());
@@ -991,7 +991,8 @@ fn time_receiver(run: &str, declare: Receiver, sending: &Sending, rows: u64, lin
         Sending::Requests(push) => Some(Sender::start(
             &format!("http://127.0.0.1:{}{}", relay.port, push.path),
             push,
-            &bodies(push),
+            line,
+            &bodies(push, line),
             SENDERS,
             0,
             rows,
@@ -1194,7 +1195,7 @@ impl Smeltr {
 
     /// Deploys `source` routed unchanged to `destination`, as approving a change does.
     fn deploy(&self, source: Value, destination: Value) {
-        deploy(&self.data_dir, source, destination, json!([]));
+        deploy(&self.data_dir, source, destination, json!([]), &[], &[]);
     }
 
     /// Waits until the receiver on `port` takes connections. Its supervisor binds the port before the runtime serves
@@ -1270,28 +1271,44 @@ impl Drop for Smeltr {
 }
 
 /// Deploys to the leader in `data_dir` `source` routed through a pipeline of `steps` to `destination`, as approving a
-/// change does.
-fn deploy(data_dir: &std::path::Path, source: Value, destination: Value, steps: Value) {
+/// change does. The pipeline reads `tables`, over `lookups`, each file by its name under `lookups/`.
+fn deploy(
+    data_dir: &std::path::Path,
+    source: Value,
+    destination: Value,
+    steps: Value,
+    tables: &[Value],
+    lookups: &[(&str, Vec<u8>)],
+) {
     use smeltr::leader::git;
     let repo = git::repo_path(data_dir);
     let parent = git::main_head(&repo).expect("main has a commit");
-    let file = |path: &str, content: String| git::FileEdit {
+    let file = |path: &str, content: Vec<u8>| git::FileEdit {
         path: format!("groups/standalone/{path}"),
-        content: Some(content.into_bytes()),
+        content: Some(content),
     };
-    let edits = [
-        file("system.json", json!({"version": 1}).to_string()),
-        file("sources.json", json!([source]).to_string()),
-        file("destinations.json", json!([destination]).to_string()),
-        file(
+    let text = |path: &str, content: String| file(path, content.into_bytes());
+    let mut edits = vec![
+        text("system.json", json!({"version": 1}).to_string()),
+        text("sources.json", json!([source]).to_string()),
+        text("destinations.json", json!([destination]).to_string()),
+        text("lookup-tables.json", json!(tables).to_string()),
+        text(
             "pipelines/p.json",
             json!({"id": "p", "name": "p", "steps": steps}).to_string(),
         ),
-        file(
+        text(
             "routes.json",
             json!([{"id": "r", "source": "in", "pipeline": "p", "deliver": [{"to": ["out"]}]}]).to_string(),
         ),
     ];
+    // A commit names a lookup file by a pointer to the bytes, which the leader's store holds, as an upload leaves them.
+    for (name, contents) in lookups {
+        let mut stored = smeltr::lookup::store::Incoming::new(&repo).expect("the lookup store");
+        std::io::Write::write_all(&mut stored, contents).expect("the lookup file stored");
+        let pointer = stored.finish(None).expect("the lookup file named");
+        edits.push(file(&format!("lookups/{name}"), pointer.text().into_bytes()));
+    }
     let actor = smeltr::leader::store::Actor::system();
     let git::Committed::At(commit) =
         git::commit_edits(&repo, "main", &parent, Some(&parent), &edits, "connector speed", &actor)
@@ -1576,10 +1593,10 @@ fn bodies_count() -> u64 {
 
 /// The request bodies a `Sender` reuses, built before any clock starts: what is measured is the receiver, not the
 /// harness.
-fn bodies(push: &Push) -> Arc<Vec<Vec<u8>>> {
+fn bodies(push: &Push, line: Line) -> Arc<Vec<Vec<u8>>> {
     Arc::new(
         (0..bodies_count())
-            .map(|b| (push.body)(b * per_request(), per_request()))
+            .map(|b| (push.body)(line, b * per_request(), per_request()))
             .collect(),
     )
 }
@@ -1599,8 +1616,16 @@ struct Sender {
 }
 
 impl Sender {
-    /// Sends records `from..to` to `url`, as `bodies` holds them, `senders` requests at once.
-    fn start(url: &str, push: &Push, bodies: &Arc<Vec<Vec<u8>>>, senders: usize, from: u64, to: u64) -> Sender {
+    /// Sends records `from..to` of the corpus `line` makes to `url`, as `bodies` holds them, `senders` requests at once.
+    fn start(
+        url: &str,
+        push: &Push,
+        line: Line,
+        bodies: &Arc<Vec<Vec<u8>>>,
+        senders: usize,
+        from: u64,
+        to: u64,
+    ) -> Sender {
         let build = push.body;
         let next = Arc::new(AtomicU64::new(from));
         let (acked, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
@@ -1646,7 +1671,7 @@ impl Sender {
                     let body = if count == per_request() {
                         &bodies[which]
                     } else {
-                        short = build(at, count);
+                        short = build(line, at, count);
                         &short
                     };
                     // Busy is the receiver's backpressure: ask again when it says, as a sender does, or later each
@@ -2345,14 +2370,18 @@ mod splunk {
     }
 }
 
-/// How the harness sends a receiver the corpus: requests of `PER_REQUEST` records to `path`, each built by `body`.
+/// How the harness sends a receiver a corpus: requests of `PER_REQUEST` records to `path`, each built by `body` of
+/// the corpus's records `line` makes.
 struct Push {
     path: &'static str,
     /// The `Authorization` header, with `RECEIVER_TOKEN` where `{}` stands.
     authorization: &'static str,
     headers: &'static [(&'static str, &'static str)],
-    body: fn(first: u64, count: u64) -> Vec<u8>,
+    body: fn(line: Line, first: u64, count: u64) -> Vec<u8>,
 }
+
+/// A corpus's record of each index, as its text.
+type Line = fn(u64) -> String;
 
 /// The receiver's declaration on `port`, admitting `RECEIVER_TOKEN`.
 type Receiver = fn(port: u16) -> Value;
@@ -2385,7 +2414,7 @@ mod receivers {
         path: "/services/collector/event",
         authorization: "Splunk {}",
         headers: &[],
-        body: |first, count| {
+        body: |line, first, count| {
             (first..first + count)
                 .flat_map(|i| {
                     json!({"event": line(i), "time": 1_790_000_000 + i / 1000})
@@ -2404,7 +2433,7 @@ mod receivers {
         path: "/logs/_bulk",
         authorization: "Bearer {}",
         headers: &[("content-type", "application/x-ndjson")],
-        body: |first, count| {
+        body: |line, first, count| {
             (first..first + count)
                 .flat_map(|i| format!("{{\"create\":{{}}}}\n{}\n", line(i)).into_bytes())
                 .collect()
@@ -2422,7 +2451,7 @@ mod receivers {
         path: "/v1/logs",
         authorization: "Bearer {}",
         headers: &[("content-type", "application/x-protobuf")],
-        body: |first, count| {
+        body: |line, first, count| {
             let mut scope = Vec::new();
             for i in first..first + count {
                 let mut record = Vec::new();
@@ -2456,7 +2485,7 @@ mod receivers {
         body: remote_write,
     };
 
-    fn lines(first: u64, count: u64) -> Vec<u8> {
+    fn lines(line: Line, first: u64, count: u64) -> Vec<u8> {
         (first..first + count)
             .flat_map(|i| (line(i) + "\n").into_bytes())
             .collect()
@@ -2478,8 +2507,9 @@ mod receivers {
     }
 
     /// A remote write 1.0 `WriteRequest` of `count` series, a sample each, snappy-compressed. Its protobuf written
-    /// out by hand: field 1 of a request is a series, whose field 1 is a label and field 2 a sample.
-    fn remote_write(first: u64, count: u64) -> Vec<u8> {
+    /// out by hand: field 1 of a request is a series, whose field 1 is a label and field 2 a sample. A sample is made
+    /// of its index, not of a corpus's records.
+    fn remote_write(_line: Line, first: u64, count: u64) -> Vec<u8> {
         fn label(name: &str, value: &str) -> Vec<u8> {
             let mut l = Vec::new();
             field(&mut l, 1, name.as_bytes());

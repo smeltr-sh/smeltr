@@ -4,15 +4,15 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>sh.smeltr.bench</groupId>
-        <artifactId>json-app</artifactId>
+        <artifactId>bench</artifactId>
         <version>1.0</version>
     </parent>
-    <artifactId>json-app-nar</artifactId>
+    <artifactId>bench-nar</artifactId>
     <packaging>nar</packaging>
     <dependencies>
         <dependency>
             <groupId>sh.smeltr.bench</groupId>
-            <artifactId>json-app-processors</artifactId>
+            <artifactId>bench-processors</artifactId>
             <version>1.0</version>
         </dependency>
         <!-- The record readers and writers' API, which NiFi's own record services share. -->
