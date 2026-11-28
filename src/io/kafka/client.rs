@@ -338,6 +338,7 @@ impl Client {
         let routes = Routes(Arc::new(RoutesInner {
             group: config.group_id.clone(),
             brokers: config.brokers.clone(),
+            named: named_brokers(&config.brokers),
             ..RoutesInner::default()
         }));
         let ticket = super::kerberos::hold(client_config)?;
@@ -484,8 +485,8 @@ impl<'r> Drain<'r> {
             self.routes.clear_error();
         }
         self.rows += 1;
-        let held = msg.payload().map_or(0, <[u8]>::len) + msg.key().map_or(0, <[u8]>::len) + FETCHED_RECORD_BYTES;
-        self.taken += held as u64;
+        let held = msg.payload().map_or(0, <[u8]>::len) + msg.key().map_or(0, <[u8]>::len);
+        self.taken += (held * DECOMPRESS_SLACK_QUARTERS / 4 + FETCHED_RECORD_BYTES) as u64;
         // Read once: each read of a message's topic measures and checks the name again.
         let topic = msg.topic();
         let (name, at) = match self.topics.iter().find(|(t, _)| t.as_ref() == topic) {
@@ -866,21 +867,28 @@ struct RoutesInner {
     refetch: AtomicBool,
     /// How many revokes the client has been told of: a pass that saw one filters what it drained (`Drain::hand_off`).
     revokes: AtomicU64,
-    /// Every record the client thread took off librdkafka, counted at its payload and key and librdkafka's record for
-    /// it, [`FETCHED_RECORD_BYTES`].
+    /// Every record the client thread took off librdkafka, counted at its payload and key, the slack of the buffer they
+    /// were decompressed into ([`DECOMPRESS_SLACK_QUARTERS`]) and librdkafka's record for it, [`FETCHED_RECORD_BYTES`].
     taken: AtomicU64,
+    /// The brokers the bootstrap list names: what the client's memory is sized for (`io::kafka::consumer_ceiling`).
+    named: usize,
     /// What `stats` last weighed.
     expansion: Mutex<Expansion>,
 }
 
-/// What the client received and took when `Routes::stats` last weighed them, and whether they took more memory per
-/// byte received than [`FETCH_EXPANSION`].
+/// What the client received and took when `Routes::stats` last weighed them, whether they took more memory per byte
+/// received than [`FETCH_EXPANSION`], and whether the client fetched from more brokers than it names.
 #[derive(Default)]
 struct Expansion {
     received: u64,
     taken: u64,
     over: crate::logs::Relog,
+    unnamed: crate::logs::Relog,
 }
+
+/// The most a decompressed buffer holds for each four bytes of records in it: librdkafka grows it by three quarters at
+/// a time, so up to three quarters of it can be slack.
+const DECOMPRESS_SLACK_QUARTERS: usize = 7;
 
 /// The least received between two weighings: under it, a few records' framing would outweigh what they hold.
 const EXPANSION_SAMPLE_BYTES: u64 = 16 << 20;
@@ -1231,12 +1239,23 @@ impl ClientContext for Routes {
         super::librdkafka_said("sources", level, fac, message);
     }
 
-    /// Runs on librdkafka's own thread. Weighs what the client took against what it received: more than
-    /// [`FETCH_EXPANSION`] for each byte received can take the client past the memory it is sized to.
+    /// Runs on librdkafka's own thread. Weighs what the client took against what it received, and the brokers it
+    /// fetches from against those it names: more than [`FETCH_EXPANSION`] for each byte received, or more brokers, can
+    /// take the client past the memory it is sized to.
     fn stats(&self, stats: rdkafka::Statistics) {
         let received: u64 = stats.brokers.values().map(|b| b.rxbytes).sum();
         let taken = self.0.taken.load(Ordering::Relaxed);
         let mut last = self.0.expansion.lock();
+        // The brokers learned from the cluster's metadata have node ids; those the bootstrap list names have none.
+        let learned = stats.brokers.values().filter(|b| b.nodeid >= 0).count();
+        if learned <= self.0.named {
+            last.unnamed.clear();
+        } else if let Some(error) = last.unnamed.fail_due(format!(
+            "the client fetches from {learned} brokers, where memory is sized for the {} its bootstrap list names",
+            self.0.named
+        )) {
+            tracing::warn!(name: "unnamed_brokers", target: "sources", group = %self.group(), error, "a Kafka source reads from more brokers than its `brokers` field names, so its worker may run out of memory; name every broker of the cluster there");
+        }
         // A broker the client no longer lists takes its count with it.
         if received < last.received {
             (last.received, last.taken) = (received, taken);
@@ -1246,12 +1265,14 @@ impl ClientContext for Routes {
         if fetched < EXPANSION_SAMPLE_BYTES {
             return;
         }
-        let times = (taken - last.taken) / fetched;
+        let took = taken - last.taken;
         (last.received, last.taken) = (received, taken);
-        if times <= FETCH_EXPANSION as u64 {
+        if took <= fetched * FETCH_EXPANSION as u64 {
             last.over.clear();
         } else if let Some(error) = last.over.fail_due(format!(
-            "records took {times} times the memory of the bytes fetched for them, where memory is sized for {FETCH_EXPANSION}"
+            "records took {:.1} times the memory of the bytes fetched for them, where memory is sized for {FETCH_EXPANSION}",
+            // A ratio for a person to read: a tenth is all it shows.
+            took as f64 / fetched as f64
         )) {
             tracing::warn!(name: "fetch_expansion", target: "sources", group = %self.group(), error, "a Kafka source's records decompress to more than its memory is sized for, so its worker may run out of memory; lower its `fetchBytes` or give the worker more memory");
         }
