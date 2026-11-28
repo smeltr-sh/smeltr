@@ -12,7 +12,7 @@ use crate::plan::tree;
 
 /// A parse of `ParserKind::Grok`: a row parses where a candidate pattern matches it. The matcher is compiled once at
 /// plan-compile time (`Call::Parse::matcher`).
-pub struct Grok<'m> {
+pub(crate) struct Grok<'m> {
     matcher: &'m Matcher,
     /// Which capture group each output reads, per candidate pattern, by the output's index.
     groups: Vec<Vec<Option<Group>>>,
@@ -23,7 +23,7 @@ pub struct Grok<'m> {
 impl<'m> Grok<'m> {
     /// Each output's capture group is resolved once here, so the row loop indexes captures and stages by output index,
     /// hashing no name per row. A capture's name is the output's name, its key split at dots where `split_dots` says.
-    pub fn new(matcher: &'m Matcher, split_dots: bool, outputs: &[Output], input: &Column) -> Self {
+    pub(crate) fn new(matcher: &'m Matcher, split_dots: bool, outputs: &[Output], input: &Column) -> Self {
         let captures = matcher.capture_names();
         let capture = |name: &str| captures.iter().find(|c| tree::name_of(c, split_dots) == name).copied();
         let groups = (0..matcher.pattern_count())

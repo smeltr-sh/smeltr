@@ -11,7 +11,7 @@ use crate::plan::config::CsvConfig;
 use crate::plan::tree;
 
 /// A parse of `ParserKind::Csv`: a row parses where it splits whole into fields.
-pub struct Csv<'c> {
+pub(crate) struct Csv<'c> {
     config: &'c CsvConfig,
     /// The field each position of the column table names, by its index in the outputs.
     columns: Vec<Option<usize>>,
@@ -21,7 +21,7 @@ pub struct Csv<'c> {
 
 impl<'c> Csv<'c> {
     /// The column table is positional, so each position resolves to its field once here, and the row loop indexes.
-    pub fn new(config: &'c CsvConfig, outputs: &[Output], input: &Column) -> Self {
+    pub(crate) fn new(config: &'c CsvConfig, outputs: &[Output], input: &Column) -> Self {
         let columns = config
             .headers
             .iter()

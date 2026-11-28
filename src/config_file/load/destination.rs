@@ -91,7 +91,7 @@ impl DestinationKindDto {
     }
 
     /// Whether the bundle states this destination's `bufferBytes`. One it leaves out the worker sizes to its memory.
-    pub fn states_buffer(&self) -> bool {
+    pub(crate) fn states_buffer(&self) -> bool {
         self.spec().states_buffer()
     }
 }
@@ -99,18 +99,18 @@ impl DestinationKindDto {
 impl DestinationDto {
     /// Every address this destination reaches over HTTP: the service, and where it obtains credentials when that
     /// is configured apart, by the field naming each. Empty from a kind that is not reached over HTTP.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
+    pub(crate) fn urls(&self) -> Vec<(&'static str, &str)> {
         self.kind.spec().urls()
     }
 
     /// Every credential this destination names, by the field naming it. Exhaustive on purpose: a kind added here
     /// must answer, or its credentials would go unnamed, unchecked at deploy and left behind on a version move.
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
+    pub(crate) fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         self.kind.spec().secrets()
     }
 
     /// `secrets`, for the leader to move one onto a new version. Exhaustive as `secrets` is.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    pub(crate) fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         self.kind.spec_mut().secrets_mut()
     }
 

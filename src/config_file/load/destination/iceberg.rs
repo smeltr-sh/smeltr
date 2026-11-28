@@ -7,61 +7,61 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct IcebergDestinationDto {
     /// The catalog's base address, before `/v1`.
-    pub catalog: String,
+    catalog: String,
     /// Absent is the catalog's default warehouse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warehouse: Option<String>,
+    warehouse: Option<String>,
     /// The table's namespace, its levels joined by `.`.
-    pub namespace: String,
-    pub table: String,
+    namespace: String,
+    table: String,
     /// The partition spec a created table takes: `host`, `day(ts)`, `bucket(16, id)`, `truncate(4, name)`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub partition_by: Vec<String>,
+    partition_by: Vec<String>,
     /// A bearer token for the catalog. At most one of `token` and `clientId`; neither signs in as no one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<SecretRefDto>,
+    token: Option<SecretRefDto>,
     /// OAuth client credentials: `clientId` and `clientSecret` together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
+    client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<SecretRefDto>,
+    client_secret: Option<SecretRefDto>,
     /// Where client credentials are exchanged for a token. Absent is the catalog's own `/v1/oauth/tokens`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_url: Option<String>,
+    token_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    scope: Option<String>,
     /// Signs every catalog call with AWS Signature Version 4 for this service, `glue` or `s3tables`, with the AWS
     /// credentials storage names, else the host's, for the region the catalog's AWS address names, else `region`.
     /// In place of `token` and `clientId`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signing_name: Option<String>,
+    signing_name: Option<String>,
     /// Storage credentials of its own. None of its fields set uses what the catalog vends.
     #[serde(flatten)]
-    pub access: S3AccessDto,
+    access: S3AccessDto,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    tls: TlsDto,
     /// Absent is zstd.
     #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
-    pub compression: CompressionDto,
+    pub(crate) compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    compression_level: Option<u8>,
     /// Parts of one file uploading at once.
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "ObjectBytes::is_default")]
-    pub max_object_bytes: ObjectBytes,
+    pub(crate) max_object_bytes: ObjectBytes,
     /// Memory for records not yet committed. Unset is `BufferBytes::OBJECT_DEFAULT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    buffer_bytes: Option<BufferBytes>,
     /// Seconds one store or catalog call, or one commit, may take before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     /// Seconds files stay open before they are committed and their batches acknowledged.
     #[serde(default, skip_serializing_if = "FileInterval::is_default")]
-    pub file_interval_secs: FileInterval,
+    pub(crate) file_interval_secs: FileInterval,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for IcebergDestinationDto {

@@ -30,7 +30,7 @@ struct Failed {
 }
 
 /// One subscription, reached at its endpoint.
-pub struct PubSub {
+pub(crate) struct PubSub {
     /// `<endpoint>/v1/projects/<project>/subscriptions/<subscription>`, to which each call's `:<verb>` is added.
     url: String,
     signed: Signed<Gcp>,
@@ -39,7 +39,7 @@ pub struct PubSub {
 impl PubSub {
     /// `subscription`, at `endpoint` or else Google's in `gcp`'s universe, signed with `gcp`'s credentials, its calls
     /// run on `runtime`.
-    pub fn new(
+    pub(crate) fn new(
         subscription: &str,
         endpoint: Option<&str>,
         gcp: Gcp,

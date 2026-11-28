@@ -23,7 +23,7 @@ use crate::plan::config::TimeSource;
 /// One value on its way into a column: a text parser's field, a tag another parser typed already, or a value's
 /// encoded bytes (`core::variant`).
 #[derive(Clone, Copy)]
-pub enum Cell<'a, 'd> {
+pub(crate) enum Cell<'a, 'd> {
     /// `quoted` is the author's "this is text". The column coerces it all the same; the tally counts it as text.
     Text {
         text: &'a str,
@@ -45,11 +45,11 @@ enum Kind {
 }
 
 /// A row whose value did not fit, with the value as the pipeline language spells it where it arrived whole.
-pub type Failed = (usize, Option<String>);
+pub(crate) type Failed = (usize, Option<String>);
 
 /// A column of one declared type, written in row order. A row never written is null; a row written twice keeps the
 /// later value.
-pub struct TypedBuilder {
+pub(crate) struct TypedBuilder {
     store: Store,
     /// Rows written so far, nulls included.
     filled: usize,
@@ -107,7 +107,7 @@ enum Store {
 impl TypedBuilder {
     /// A builder for `ty`. A `datetime` reads text as `time` says, by the automatic reading where it says nothing,
     /// and a reading with no year takes it from `now`.
-    pub fn new(ty: &DataType, time: Option<&TimeSource>, now: i64, pool: &mut BufferPool) -> TypedBuilder {
+    pub(crate) fn new(ty: &DataType, time: Option<&TimeSource>, now: i64, pool: &mut BufferPool) -> TypedBuilder {
         let store = match ty {
             DataType::Bool => Store::Bool(Vec::new()),
             DataType::I64 => Store::I64(Vec::new()),
@@ -156,7 +156,7 @@ impl TypedBuilder {
 
     /// Write `cell` at `row`. Rows arrive in order; a row written twice keeps the later value. Unwinds with
     /// `OverBudget` when `pool`'s budget refuses what the cell stages.
-    pub fn set(&mut self, row: usize, cell: Cell<'_, '_>, pool: &mut BufferPool) {
+    pub(crate) fn set(&mut self, row: usize, cell: Cell<'_, '_>, pool: &mut BufferPool) {
         match cell {
             // Bytes are walked into the column, as any walk writes it, unless the column keeps them as they are.
             Cell::Variant(b) if !matches!(self.store, Store::Variant(_)) => {
@@ -215,12 +215,12 @@ impl TypedBuilder {
     }
 
     /// What the rows held.
-    pub fn counts(&self) -> TagCounts {
+    pub(crate) fn counts(&self) -> TagCounts {
         self.counts
     }
 
     /// The column, `rows` long, every row not written null, and the rows whose value did not fit.
-    pub fn finish(mut self, rows: usize, pool: &mut BufferPool) -> (Column, Vec<Failed>) {
+    pub(crate) fn finish(mut self, rows: usize, pool: &mut BufferPool) -> (Column, Vec<Failed>) {
         self.pad(rows, pool);
         let failed = std::mem::take(&mut self.failed);
         (self.into_column(pool), failed)
@@ -436,7 +436,7 @@ impl TypedBuilder {
 /// A declared column's value at one row, written as a walk reads it (`tag::Emit`). An array or an object the column
 /// takes apart goes straight into its builders, element by element and field by field; any other container is
 /// collected as bytes and read whole when it ends.
-pub enum Slot<'b> {
+pub(crate) enum Slot<'b> {
     Row(Row<'b>),
     /// Inside a container read whole, or an open object's unclaimed field.
     Bytes(Bytes<&'b mut Vec<u8>>),
@@ -445,7 +445,7 @@ pub enum Slot<'b> {
 }
 
 /// One row of one builder, and what of its value has arrived.
-pub struct Row<'b> {
+pub(crate) struct Row<'b> {
     b: &'b mut TypedBuilder,
     row: usize,
     pool: &'b mut BufferPool,
@@ -471,7 +471,7 @@ enum State {
 }
 
 impl<'b> Slot<'b> {
-    pub fn new(b: &'b mut TypedBuilder, row: usize, pool: &'b mut BufferPool) -> Self {
+    pub(crate) fn new(b: &'b mut TypedBuilder, row: usize, pool: &'b mut BufferPool) -> Self {
         Slot::Row(Row {
             b,
             row,
@@ -747,7 +747,7 @@ fn time_of(cell: Cell<'_, '_>, format: Option<&str>, hint: &mut usize, now: i64)
 /// Encode `tag` into `out` as a value of `to`, one of the types a parse reads text as (`schema::read_as`), by the
 /// table a declared field converts by. Returns whether it fit; where it did not, `out` holds null. Blank text under a
 /// type that is not `str` is null, and fits. `hint` and `now` are a `datetime`'s, as `TypedBuilder` keeps them.
-pub fn encode_as(tag: &Tag<'_>, to: &DataType, hint: &mut usize, now: i64, out: &mut Vec<u8>) -> bool {
+pub(crate) fn encode_as(tag: &Tag<'_>, to: &DataType, hint: &mut usize, now: i64, out: &mut Vec<u8>) -> bool {
     let cell = Cell::Tag(tag);
     if *to != DataType::Str && is_empty(cell, true) {
         variant::put_null(out);
@@ -817,7 +817,7 @@ fn bump(counts: &mut TagCounts, kind: Kind, up: bool) {
 }
 
 /// `values` written into a builder for `ty`, row by row: a column of `ty`, and the rows that did not fit.
-pub fn build<'a, 'd: 'a>(
+pub(crate) fn build<'a, 'd: 'a>(
     values: impl Iterator<Item = Option<Cell<'a, 'd>>>,
     rows: usize,
     ty: &DataType,

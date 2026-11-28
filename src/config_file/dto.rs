@@ -9,10 +9,11 @@ pub use super::load::destination::{
 };
 pub use super::load::source::{
     AzureBlobListSourceDto, AzureBlobQueueSourceDto, ElasticReceiverSourceDto, EventHubsSourceDto, GcsListSourceDto,
-    GcsPubSubSourceDto, HecReceiverSourceDto, HttpApiSourceDto, HttpReceiverSourceDto, KafkaSourceDto, LogsSourceDto,
-    MetricsSourceDto, OktaLogsSourceDto, OtlpReceiverDto, OtlpReceiverSourceDto, PrometheusReceiverSourceDto,
-    S2sReceiverSourceDto, S3ListSourceDto, S3SqsSourceDto, SftpSourceDto, SocketReceiverSourceDto,
+    GcsPubSubSourceDto, HecReceiverSourceDto, HttpApiSourceDto, HttpReceiverSourceDto, LogsSourceDto,
+    OktaLogsSourceDto, OtlpReceiverDto, OtlpReceiverSourceDto, PrometheusReceiverSourceDto, S2sReceiverSourceDto,
+    S3SqsSourceDto, SftpSourceDto, SocketReceiverSourceDto,
 };
+pub use super::load::source::{KafkaSourceDto, MetricsSourceDto, S3ListSourceDto};
 use std::collections::BTreeMap;
 
 use crate::plan::topology::Signal;
@@ -36,7 +37,7 @@ pub struct LeaderSecretDto {
 
 impl SecretRefDto {
     /// The variable or leader secret this names. Blank names nothing a worker could look up.
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         match self {
             SecretRefDto::WorkerLocal(var) => var,
             SecretRefDto::LeaderStored(l) => &l.secret,
@@ -46,7 +47,7 @@ impl SecretRefDto {
     /// Moves this reference onto `version` when it names `name`. `true` when it changed.
     ///
     /// A worker-local reference is never moved: it names a variable on a host, and a version means nothing there.
-    pub fn point_at(&mut self, name: &str, version: i64) -> bool {
+    pub(crate) fn point_at(&mut self, name: &str, version: i64) -> bool {
         match self {
             SecretRefDto::LeaderStored(l) if l.secret == name && l.version != version => {
                 l.version = version;
@@ -67,15 +68,15 @@ pub struct TlsDto {
     pub certificate: Option<String>,
     /// PEM. A trust store holds more than one root, so several may follow one another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trusted_authorities: Option<String>,
+    pub(crate) trusted_authorities: Option<String>,
     /// Absent is true: a client also trusts the public roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trust_public: Option<bool>,
+    pub(crate) trust_public: Option<bool>,
 }
 
 impl TlsDto {
     /// Whether the connector says anything about its TLS.
-    pub fn is_set(&self) -> bool {
+    pub(crate) fn is_set(&self) -> bool {
         self.certificate.is_some() || self.trusted_authorities.is_some() || self.trust_public.is_some()
     }
 }
@@ -86,23 +87,23 @@ impl TlsDto {
 /// of them (`io::senders`). A receiver trusts no public root, so it has no say over them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ServedTlsDto {
+pub(crate) struct ServedTlsDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub certificate: Option<String>,
+    pub(crate) certificate: Option<String>,
     /// PEM, one or more certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trusted_authorities: Option<String>,
+    pub(crate) trusted_authorities: Option<String>,
     /// As RFC 5425 (4.2.1) writes a fingerprint: `sha-256:AB:CD:…`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sender_fingerprints: Vec<String>,
+    pub(crate) sender_fingerprints: Vec<String>,
     /// Host names a certificate chaining to the authorities must be issued to, `*.` standing for any one label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sender_names: Vec<String>,
+    pub(crate) sender_names: Vec<String>,
 }
 
 impl ServedTlsDto {
     /// Whether the receiver says anything about its TLS.
-    pub fn is_set(&self) -> bool {
+    pub(crate) fn is_set(&self) -> bool {
         self.certificate.is_some()
             || self.trusted_authorities.is_some()
             || !self.sender_fingerprints.is_empty()
@@ -110,7 +111,7 @@ impl ServedTlsDto {
     }
 
     /// The same settings as any connector's.
-    pub fn tls(&self) -> TlsDto {
+    pub(crate) fn tls(&self) -> TlsDto {
         TlsDto {
             certificate: self.certificate.clone(),
             trusted_authorities: self.trusted_authorities.clone(),
@@ -126,25 +127,25 @@ impl ServedTlsDto {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct KafkaPropsDto {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub properties: BTreeMap<String, String>,
+    pub(crate) properties: BTreeMap<String, String>,
     /// Property name -> the credential holding its value. One a worker cannot obtain is a deploy that is refused,
     /// naming it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub credentials: BTreeMap<String, SecretRefDto>,
+    pub(crate) credentials: BTreeMap<String, SecretRefDto>,
 }
 
 impl KafkaPropsDto {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.properties.is_empty() && self.credentials.is_empty()
     }
 
     /// Every credential these properties name, by the field naming them.
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
+    pub(crate) fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         self.credentials.values().map(|r| ("credentials", r)).collect()
     }
 
     /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    pub(crate) fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         self.credentials.values_mut().collect()
     }
 }
@@ -381,52 +382,52 @@ pub enum SourceKindDto {
 /// fields, beside the TLS it serves.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ReceiverSettingsDto {
+pub(crate) struct ReceiverSettingsDto {
     /// The port it listens on, at the address its worker's startup settings name.
-    pub port: u16,
+    pub(crate) port: u16,
     #[serde(default, skip_serializing_if = "MaxRequestBytes::is_default")]
-    pub max_request_bytes: MaxRequestBytes,
+    pub(crate) max_request_bytes: MaxRequestBytes,
 }
 
 /// How many connections a receiver holds open over TCP, and how long it keeps an idle one. Flattened into every
 /// receiver's fields.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ConnectionLimitsDto {
+pub(crate) struct ConnectionLimitsDto {
     /// The most connections it holds at once, on each worker. Absent, as many as the worker's budget for every
     /// receiver's connections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_connections: Option<u64>,
+    pub(crate) max_connections: Option<u64>,
     /// The most it holds from one address. Absent, as many as `maxConnections`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_connections_per_sender: Option<u64>,
+    pub(crate) max_connections_per_sender: Option<u64>,
     /// How long a connection the receiver waits on may send nothing before it is closed. Absent, an idle one is held
     /// while there is room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_timeout_secs: Option<u64>,
+    pub(crate) idle_timeout_secs: Option<u64>,
 }
 
 /// A token a HEC receiver admits.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HecTokenDto {
+pub(crate) struct HecTokenDto {
     /// The credential holding the token.
-    pub token: SecretRefDto,
+    pub(crate) token: SecretRefDto,
     /// Whether its senders use indexer acknowledgement, as Splunk's `useACK`: each request names a channel and is
     /// answered at once with an `ackId`. Absent, a request is answered as the receiver's `answerAfterDelivery` says. Two names holding the same token
     /// value acknowledge if either does, since only the value is presented.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub acknowledgement: bool,
+    pub(crate) acknowledgement: bool,
 }
 
 /// How an S2S receiver breaks one sourcetype's stream into events, and a HEC receiver one sourcetype's raw body.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SourcetypeDto {
+pub(crate) struct SourcetypeDto {
     /// A pattern whose first capture group is where an event ends, the group dropped, as Splunk's `LINE_BREAKER`.
     /// Absent, or `PER_LINE`, an event per line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line_breaker: Option<String>,
+    pub(crate) line_breaker: Option<String>,
 }
 
 /// `$`. serde's default is a function, and Rust cannot name one `$`.
@@ -437,16 +438,16 @@ fn root() -> String {
 /// The largest request body a receiver reads.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct MaxRequestBytes(pub u64);
+pub(crate) struct MaxRequestBytes(pub(crate) u64);
 
 impl MaxRequestBytes {
-    pub const DEFAULT: u64 = 10 * 1024 * 1024;
+    pub(crate) const DEFAULT: u64 = 10 * 1024 * 1024;
     /// RFC 5425 (4.3.1) has a syslog receiver take messages of 2048 octets.
-    pub const MIN: u64 = 2048;
+    pub(crate) const MIN: u64 = 2048;
     /// What one request may hold of a receiver's inbox (`io::receiver::INBOX_BYTES`).
-    pub const MAX: u64 = 64 * 1024 * 1024;
+    pub(crate) const MAX: u64 = 64 * 1024 * 1024;
 
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -460,14 +461,14 @@ impl Default for MaxRequestBytes {
 /// How an API source asks.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
-pub enum ApiMethodDto {
+pub(crate) enum ApiMethodDto {
     #[default]
     Get,
     Post,
 }
 
 impl ApiMethodDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == ApiMethodDto::Get
     }
 }
@@ -475,7 +476,7 @@ impl ApiMethodDto {
 /// Where an API's answer holds its records.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum ApiRecordsDto {
+pub(crate) enum ApiRecordsDto {
     /// The whole answer is one record.
     #[default]
     Body,
@@ -486,7 +487,7 @@ pub enum ApiRecordsDto {
 }
 
 impl ApiRecordsDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == ApiRecordsDto::Body
     }
 }
@@ -501,7 +502,7 @@ impl SourceKindDto {
     /// Whether a capture of this source reads it itself even where a deployment reads it. An SQL source's capture is
     /// Run, which reads the query as its author has it now, and reports what the deployment's rows cannot: its
     /// columns and plan.
-    pub fn runs_its_own_query(&self) -> bool {
+    pub(crate) fn runs_its_own_query(&self) -> bool {
         self.sql().is_some()
     }
 
@@ -528,7 +529,7 @@ pub enum StartPositionDto {
 }
 
 impl StartPositionDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == StartPositionDto::Earliest
     }
 }
@@ -545,12 +546,12 @@ pub struct DestinationDto {
     pub id: String,
     /// The destination's answer to `Refused`, over the group's. It names no other kind.
     #[serde(default, rename = "exceptions", skip_serializing_if = "Option::is_none")]
-    pub on_exception: Option<OnExceptionDto>,
+    pub(crate) on_exception: Option<OnExceptionDto>,
     /// The schemas, by id, a pipeline that sends here produces one of. Empty accepts any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepts: Vec<String>,
     #[serde(flatten)]
-    pub kind: DestinationKindDto,
+    pub(crate) kind: DestinationKindDto,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -588,7 +589,7 @@ pub enum DestinationKindDto {
 
 impl SourceKindDto {
     /// Whether this is a Kafka source whose `fetchBytes` the bundle leaves out, which the worker sizes to its memory.
-    pub fn leaves_fetch(&self) -> bool {
+    pub(crate) fn leaves_fetch(&self) -> bool {
         matches!(
             self,
             SourceKindDto::Kafka(KafkaSourceDto { fetch_bytes: None, .. })
@@ -600,14 +601,14 @@ impl SourceKindDto {
 /// A Databricks Unity Catalog external table, signed in to as a service principal with OAuth client credentials.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UnityCatalogDto {
+pub(crate) struct UnityCatalogDto {
     /// The workspace's address, as `https://dbc-1234.cloud.databricks.com`.
-    pub workspace: String,
+    pub(crate) workspace: String,
     /// The table's three-part name, `catalog.schema.table`.
-    pub table: String,
+    pub(crate) table: String,
     /// The service principal's OAuth client id.
-    pub client_id: String,
-    pub client_secret: SecretRefDto,
+    pub(crate) client_id: String,
+    pub(crate) client_secret: SecretRefDto,
 }
 
 /// An app signing in with OAuth 2.0 client credentials, for a bearer token sent on every request. Flattened into the
@@ -615,31 +616,31 @@ pub struct UnityCatalogDto {
 /// its fields set signs nothing in.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct AppSignInDto {
+pub(crate) struct AppSignInDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
+    pub(crate) client_id: Option<String>,
     /// The credential holding the app's client secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<SecretRefDto>,
+    pub(crate) client_secret: Option<SecretRefDto>,
     /// The credential holding the app's private key, an RSA key as PEM PKCS#8, that signs its assertion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<SecretRefDto>,
+    pub(crate) private_key: Option<SecretRefDto>,
     /// Which of the app's keys `privateKey` is, for an app with several.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_id: Option<String>,
+    pub(crate) key_id: Option<String>,
     /// The token endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_url: Option<String>,
+    pub(crate) token_url: Option<String>,
     /// An OpenID provider, whose discovery document names the token endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
+    pub(crate) issuer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    pub(crate) scope: Option<String>,
 }
 
 impl AppSignInDto {
     /// Whether it names nothing.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         let AppSignInDto {
             client_id,
             client_secret,
@@ -656,7 +657,7 @@ impl AppSignInDto {
             && private_key.is_none()
     }
 
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
+    pub(crate) fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         let secret = self.client_secret.iter().map(|r| ("clientSecret", r));
         secret
             .chain(self.private_key.iter().map(|r| ("privateKey", r)))
@@ -664,7 +665,7 @@ impl AppSignInDto {
     }
 
     /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    pub(crate) fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         [&mut self.client_secret, &mut self.private_key]
             .into_iter()
             .flatten()
@@ -672,7 +673,7 @@ impl AppSignInDto {
     }
 
     /// Where it sends a credential, by the field naming each.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
+    pub(crate) fn urls(&self) -> Vec<(&'static str, &str)> {
         let token_url = self.token_url.as_deref().map(|u| ("tokenUrl", u));
         token_url
             .into_iter()
@@ -688,28 +689,28 @@ impl AppSignInDto {
 pub struct S3AccessDto {
     /// Absent takes the host's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
+    pub(crate) region: Option<String>,
     /// An S3-compatible service's address. Absent is AWS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
+    pub(crate) endpoint: Option<String>,
     /// Where credentials are obtained: STS, for assuming a role. Absent is the region's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_endpoint: Option<String>,
+    pub(crate) auth_endpoint: Option<String>,
     /// Both or neither. Neither takes the host's credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_key_id: Option<SecretRefDto>,
+    pub(crate) access_key_id: Option<SecretRefDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_access_key: Option<SecretRefDto>,
+    pub(crate) secret_access_key: Option<SecretRefDto>,
     /// A role to assume, for a bucket in another account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_arn: Option<String>,
+    pub(crate) role_arn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub external_id: Option<String>,
+    pub(crate) external_id: Option<String>,
 }
 
 impl S3AccessDto {
     /// Whether it names nothing.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         let S3AccessDto {
             region,
             endpoint,
@@ -734,10 +735,10 @@ impl S3AccessDto {
 pub struct GcsAccessDto {
     /// Another Cloud Storage address, such as an emulator's. Absent is Google's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
+    pub(crate) endpoint: Option<String>,
     /// A service account's JSON key. Absent takes the host's Application Default Credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_account_key: Option<SecretRefDto>,
+    pub(crate) service_account_key: Option<SecretRefDto>,
 }
 
 /// Where an Azure storage account is reached and how its requests are signed. Flattened into the Azure Blob
@@ -745,34 +746,34 @@ pub struct GcsAccessDto {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AzureAccessDto {
-    pub account: String,
+    pub(crate) account: String,
     /// Another address, such as Azurite's or a sovereign cloud's. Absent is the account's in Azure's public cloud.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
+    pub(crate) endpoint: Option<String>,
     /// Where a client secret is exchanged for a token. Absent is the one in the cloud the account's `endpoint` is in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_endpoint: Option<String>,
+    pub(crate) auth_endpoint: Option<String>,
     /// At most one of `accessKey`, `sasToken`, `clientSecret` and `managedIdentityClientId`. None takes the host's
     /// managed or workload identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_key: Option<SecretRefDto>,
+    pub(crate) access_key: Option<SecretRefDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sas_token: Option<SecretRefDto>,
+    pub(crate) sas_token: Option<SecretRefDto>,
     /// A service principal: all three or none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_id: Option<String>,
+    pub(crate) tenant_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
+    pub(crate) client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<SecretRefDto>,
+    pub(crate) client_secret: Option<SecretRefDto>,
     /// Which of the host's managed identities signs in: a user-assigned one's client id. Absent is the host's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub managed_identity_client_id: Option<String>,
+    pub(crate) managed_identity_client_id: Option<String>,
 }
 
 impl AzureAccessDto {
     /// Its Entra sign-in, whatever its access key or SAS token says.
-    pub fn entra(&self) -> EntraSignInDto {
+    pub(crate) fn entra(&self) -> EntraSignInDto {
         EntraSignInDto {
             tenant_id: self.tenant_id.clone(),
             client_id: self.client_id.clone(),
@@ -786,35 +787,35 @@ impl AzureAccessDto {
 /// How a client signs in to an Azure service with Entra ID. Flattened into each kind that signs in so.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct EntraSignInDto {
+pub(crate) struct EntraSignInDto {
     /// A service principal: all three or none. At most one of it and `managedIdentityClientId`; neither signs in as
     /// the host's managed identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_id: Option<String>,
+    pub(crate) tenant_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
+    pub(crate) client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<SecretRefDto>,
+    pub(crate) client_secret: Option<SecretRefDto>,
     /// Where a client secret is exchanged for a token. Absent is the one in the cloud the service is in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_endpoint: Option<String>,
+    pub(crate) auth_endpoint: Option<String>,
     /// Which of the host's managed identities signs in: a user-assigned one's client id. Absent is the host's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub managed_identity_client_id: Option<String>,
+    pub(crate) managed_identity_client_id: Option<String>,
 }
 
 impl EntraSignInDto {
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
+    pub(crate) fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         self.client_secret.iter().map(|r| ("clientSecret", r)).collect()
     }
 
     /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    pub(crate) fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         self.client_secret.iter_mut().collect()
     }
 
     /// Where a token is obtained when that is configured apart, by the field naming it.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
+    pub(crate) fn urls(&self) -> Vec<(&'static str, &str)> {
         self.auth_endpoint
             .as_deref()
             .map(|u| ("authEndpoint", u))
@@ -827,27 +828,27 @@ impl EntraSignInDto {
 /// source and destination.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct SftpAccessDto {
-    pub host: String,
+pub(crate) struct SftpAccessDto {
+    pub(crate) host: String,
     #[serde(
         default = "SftpAccessDto::default_port",
         skip_serializing_if = "SftpAccessDto::is_default_port"
     )]
     /// Wider than a port, so a number out of range reaches load, which says which field it is.
-    pub port: u32,
-    pub username: String,
+    pub(crate) port: u32,
+    pub(crate) username: String,
     /// Exactly one of `password` and `privateKey`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<SecretRefDto>,
+    pub(crate) password: Option<SecretRefDto>,
     /// An OpenSSH private key, unencrypted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<SecretRefDto>,
+    pub(crate) private_key: Option<SecretRefDto>,
     /// The server's public key as OpenSSH writes it, `ssh-ed25519 AAAA…`: the one server this connects to.
-    pub host_key: String,
+    pub(crate) host_key: String,
 }
 
 impl SftpAccessDto {
-    pub const DEFAULT_PORT: u32 = 22;
+    const DEFAULT_PORT: u32 = 22;
 
     fn default_port() -> u32 {
         Self::DEFAULT_PORT
@@ -857,7 +858,7 @@ impl SftpAccessDto {
         *port == Self::DEFAULT_PORT
     }
 
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
+    pub(crate) fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         [("password", &self.password), ("privateKey", &self.private_key)]
             .into_iter()
             .filter_map(|(field, r)| Some((field, r.as_ref()?)))
@@ -865,7 +866,7 @@ impl SftpAccessDto {
     }
 
     /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    pub(crate) fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         [&mut self.password, &mut self.private_key]
             .into_iter()
             .flatten()
@@ -880,17 +881,17 @@ impl SftpAccessDto {
 pub struct ListingDto {
     /// Only the objects whose name, under the bucket, container or directory, starts with it. Empty is all of them.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub prefix: String,
+    pub(crate) prefix: String,
     #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
-    pub poll_interval_secs: PollIntervalSecs,
+    pub(crate) poll_interval_secs: PollIntervalSecs,
     #[serde(default, skip_serializing_if = "ListStartDto::is_default")]
-    pub start: ListStartDto,
+    pub(crate) start: ListStartDto,
     #[serde(default, skip_serializing_if = "AfterCommitDto::is_default")]
-    pub after_commit: AfterCommitDto,
+    pub(crate) after_commit: AfterCommitDto,
     /// Where `"move"` puts an object, in place of `prefix`. Named with `"move"` and only then.
     /// Ends in `/` when `prefix` does or is empty, and only then, so a moved key keeps one `/` between them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub move_prefix: Option<String>,
+    pub(crate) move_prefix: Option<String>,
 }
 
 /// How a stream's bytes become records: an object source's objects, or what a socket receiver's senders send over
@@ -899,39 +900,39 @@ pub struct ListingDto {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct FramingSettingsDto {
     #[serde(default, skip_serializing_if = "FramingDto::is_default")]
-    pub framing: FramingDto,
+    pub(crate) framing: FramingDto,
     /// `"lines"` and `"syslog"` only: a pattern whose first capture group is where an event ends, the group dropped, as
     /// Splunk's `LINE_BREAKER`. Without one, an event ends at a line end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line_breaker: Option<String>,
+    pub(crate) line_breaker: Option<String>,
     /// `"lengthPrefix"` only, and required there: where each message's or record's length is and what it counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub length_prefix: Option<LengthPrefixDto>,
+    pub(crate) length_prefix: Option<LengthPrefixDto>,
     /// `"fixed"` only, and required there: how many bytes every message or record is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fixed_bytes: Option<u64>,
+    pub(crate) fixed_bytes: Option<u64>,
 }
 
 /// Where a message's length is and what it counts. It counts the whole message or record, its header and length
 /// included, or only the bytes after the length.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct LengthPrefixDto {
+pub(crate) struct LengthPrefixDto {
     /// How many bytes of the message come before its length. Absent is none.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub offset: u64,
+    pub(crate) offset: u64,
     /// How many bytes the length is, 1 to 8.
-    pub bytes: u64,
+    pub(crate) bytes: u64,
     #[serde(default, skip_serializing_if = "ByteOrderDto::is_default")]
-    pub order: ByteOrderDto,
+    pub(crate) order: ByteOrderDto,
     #[serde(default, skip_serializing_if = "CountsDto::is_default")]
-    pub counts: CountsDto,
+    pub(crate) counts: CountsDto,
 }
 
 /// Which byte of a number comes first.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum ByteOrderDto {
+pub(crate) enum ByteOrderDto {
     /// The most significant first, as a network protocol writes it.
     #[default]
     Big,
@@ -939,7 +940,7 @@ pub enum ByteOrderDto {
 }
 
 impl ByteOrderDto {
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == ByteOrderDto::Big
     }
 }
@@ -947,7 +948,7 @@ impl ByteOrderDto {
 /// What a message's length counts.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum CountsDto {
+pub(crate) enum CountsDto {
     /// The bytes that follow the length.
     #[default]
     Rest,
@@ -956,14 +957,14 @@ pub enum CountsDto {
 }
 
 impl CountsDto {
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == CountsDto::Rest
     }
 }
 
 impl FramingSettingsDto {
     /// Whether it says anything but the default, a line per record.
-    pub fn is_set(&self) -> bool {
+    fn is_set(&self) -> bool {
         !self.framing.is_default()
             || self.line_breaker.is_some()
             || self.length_prefix.is_some()
@@ -972,7 +973,7 @@ impl FramingSettingsDto {
 
     /// Whether it reads a datagram whole, as one record: the default does, and so does syslog with nothing else set,
     /// whose message over UDP is a datagram (RFC 5426).
-    pub fn reads_datagrams(&self) -> bool {
+    pub(crate) fn reads_datagrams(&self) -> bool {
         match self.framing {
             FramingDto::Syslog => {
                 self.line_breaker.is_none() && self.length_prefix.is_none() && self.fixed_bytes.is_none()
@@ -985,7 +986,7 @@ impl FramingSettingsDto {
 /// What an object's bytes become.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum FramingDto {
+pub(crate) enum FramingDto {
     /// One record per line, or per event where `lineBreaker` breaks the object.
     #[default]
     Lines,
@@ -1003,7 +1004,7 @@ pub enum FramingDto {
 }
 
 impl FramingDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == FramingDto::Lines
     }
 }
@@ -1016,15 +1017,15 @@ impl FramingDto {
 /// minute.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct VisibilitySecs(pub u64);
+pub(crate) struct VisibilitySecs(pub(crate) u64);
 
 impl VisibilitySecs {
-    pub const DEFAULT: u64 = 60;
+    pub(crate) const DEFAULT: u64 = 60;
     /// SQS's own bounds on a visibility timeout: a second to twelve hours. A Storage queue takes these too.
-    pub const MIN: u64 = 1;
-    pub const MAX: u64 = 43_200;
+    pub(crate) const MIN: u64 = 1;
+    pub(crate) const MAX: u64 = 43_200;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1041,9 +1042,9 @@ impl Default for VisibilitySecs {
 pub struct PollIntervalSecs(pub u64);
 
 impl PollIntervalSecs {
-    pub const DEFAULT: u64 = 60;
+    pub(crate) const DEFAULT: u64 = 60;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1060,28 +1061,28 @@ impl Default for PollIntervalSecs {
 pub struct SqlSourceDto {
     /// Which database this source reads, `postgres` or `mysql`.
     #[serde(skip)]
-    pub kind: SqlKind,
-    pub host: String,
+    pub(crate) kind: SqlKind,
+    pub(crate) host: String,
     /// Absent is the kind's own port (`SqlKind::port`). A source naming that port reads as one naming none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    pub database: String,
-    pub user: String,
+    pub(crate) port: Option<u16>,
+    pub(crate) database: String,
+    pub(crate) user: String,
     /// The credential holding the user's password. Absent is a server that asks for none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<SecretRefDto>,
+    pub(crate) password: Option<SecretRefDto>,
     /// `"require"` (default) encrypts and verifies the server's certificate and name; `"disable"` sends
     /// everything, the password too, in the clear.
     // The file's `tls` is this mode; `tls` in Rust is the TLS settings below, as on every other connector.
     #[serde(default, rename = "tls", skip_serializing_if = "SqlTlsDto::is_default")]
-    pub encrypted: SqlTlsDto,
+    pub(crate) encrypted: SqlTlsDto,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    pub(crate) tls: TlsDto,
     /// A `SELECT` or a `WITH`, with no `ORDER BY` or `LIMIT` of its own. smeltr runs it inside a statement of its
     /// own, which adds the position test, the order and the batch limit.
     pub query: String,
     /// How smeltr knows a row is due.
-    pub mode: SqlModeDto,
+    pub(crate) mode: SqlModeDto,
     /// Each field of the record, read from the result column of the same name.
     pub fields: Vec<SqlFieldDto>,
     #[serde(default, skip_serializing_if = "PollIntervalSecs::is_default")]
@@ -1110,12 +1111,12 @@ impl SqlSourceDto {
 
     /// The record its fields declare, read as `kind`. Validation refuses fields that do not declare a record, so the
     /// fallback, what the kind carries before it declares any, is never what a deployment runs.
-    pub fn meta(&self, kind: SqlKind) -> crate::plan::topology::SourceMeta {
+    pub(crate) fn meta(&self, kind: SqlKind) -> crate::plan::topology::SourceMeta {
         SqlFieldDto::meta(kind.meta(), &self.fields).unwrap_or(kind.meta())
     }
 
     /// The port it connects to, the kind's own where it names none.
-    pub fn port(&self, kind: SqlKind) -> u16 {
+    pub(crate) fn port(&self, kind: SqlKind) -> u16 {
         self.port.unwrap_or(kind.port())
     }
 }
@@ -1138,7 +1139,7 @@ impl SqlKind {
     }
 
     /// What its record carries before it declares its fields.
-    pub fn meta(self) -> crate::plan::topology::SourceMeta {
+    pub(crate) fn meta(self) -> crate::plan::topology::SourceMeta {
         match self {
             SqlKind::Postgres => crate::plan::topology::SourceMeta::POSTGRES,
             SqlKind::MySql => crate::plan::topology::SourceMeta::MYSQL,
@@ -1146,7 +1147,7 @@ impl SqlKind {
     }
 
     /// The port it connects to when it names none: its server's own.
-    pub fn port(self) -> u16 {
+    fn port(self) -> u16 {
         match self {
             SqlKind::Postgres => 5432,
             SqlKind::MySql => 3306,
@@ -1154,7 +1155,7 @@ impl SqlKind {
     }
 
     /// The scheme of its place, the kind's own name.
-    pub fn scheme(self) -> &'static str {
+    pub(crate) fn scheme(self) -> &'static str {
         match self {
             SqlKind::Postgres => "postgres",
             SqlKind::MySql => "mysql",
@@ -1165,14 +1166,14 @@ impl SqlKind {
 /// Whether an SQL source's connection is encrypted.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum SqlTlsDto {
+pub(crate) enum SqlTlsDto {
     #[default]
     Require,
     Disable,
 }
 
 impl SqlTlsDto {
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == SqlTlsDto::Require
     }
 }
@@ -1180,7 +1181,7 @@ impl SqlTlsDto {
 /// How an SQL source knows a row is due, cheapest first (`io::sql_source::Mode`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
-pub enum SqlModeDto {
+pub(crate) enum SqlModeDto {
     /// Rows past the last one sent, by a column that only grows as rows are added.
     #[serde(rename_all = "camelCase")]
     Incrementing {
@@ -1219,7 +1220,7 @@ pub enum SqlModeDto {
 /// Where an SQL source's position mode begins when it has no progress.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum SqlStartDto {
+pub(crate) enum SqlStartDto {
     /// At the largest value the query returns on the first poll.
     #[default]
     Now,
@@ -1230,7 +1231,7 @@ pub enum SqlStartDto {
 }
 
 impl SqlStartDto {
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == SqlStartDto::Now
     }
 }
@@ -1240,26 +1241,26 @@ impl SqlStartDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaRegistryDto {
     /// Its address, as `https://registry.example.com`.
-    pub url: String,
+    pub(crate) url: String,
     /// Basic auth: `username` and `password` together. Neither signs in as no one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
+    pub(crate) username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<SecretRefDto>,
+    pub(crate) password: Option<SecretRefDto>,
 }
 
 impl SchemaRegistryDto {
     /// Its password, by the field naming it.
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
+    pub(crate) fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         self.password.iter().map(|r| ("schemaRegistry.password", r)).collect()
     }
 
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    pub(crate) fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
         self.password.iter_mut().collect()
     }
 
     /// Its address, by the field naming it.
-    pub fn url(&self) -> (&'static str, &str) {
+    pub(crate) fn url(&self) -> (&'static str, &str) {
         ("schemaRegistry.url", &self.url)
     }
 }
@@ -1270,23 +1271,23 @@ impl SchemaRegistryDto {
 #[serde(rename_all = "camelCase")]
 pub struct ReadFormatDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub format: Option<SourceFormatDto>,
+    pub(crate) format: Option<SourceFormatDto>,
     /// The record each payload is read into, each field by its name in the writer's record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<SqlFieldDto>,
+    pub(crate) fields: Vec<SqlFieldDto>,
 }
 
 /// A payload format a source reads into declared fields.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum SourceFormatDto {
+pub(crate) enum SourceFormatDto {
     Avro,
 }
 
 impl ReadFormatDto {
     /// `kind`'s meta, its record the declared fields where it reads Avro. Validation refuses fields that do not
     /// declare a record, so the fallback is never what a deployment runs.
-    pub fn meta(&self, kind: crate::plan::topology::SourceMeta) -> crate::plan::topology::SourceMeta {
+    pub(crate) fn meta(&self, kind: crate::plan::topology::SourceMeta) -> crate::plan::topology::SourceMeta {
         match self.format {
             Some(SourceFormatDto::Avro) => SqlFieldDto::open_meta(kind.clone(), &self.fields).unwrap_or(kind),
             None => kind,
@@ -1299,14 +1300,14 @@ impl ReadFormatDto {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SqlFieldDto {
-    pub name: String,
+    pub(crate) name: String,
     #[serde(rename = "type")]
-    pub ty: String,
+    pub(crate) ty: String,
 }
 
 impl SqlFieldDto {
     /// `kind`'s meta, declaring `fields` as its record. Err names the first field that does not.
-    pub fn meta(
+    pub(crate) fn meta(
         kind: crate::plan::topology::SourceMeta,
         fields: &[SqlFieldDto],
     ) -> Result<crate::plan::topology::SourceMeta, String> {
@@ -1314,7 +1315,7 @@ impl SqlFieldDto {
     }
 
     /// `kind`'s meta, declaring `fields` as its open record (`SourceMeta::declaring_open`): an Avro read's.
-    pub fn open_meta(
+    pub(crate) fn open_meta(
         kind: crate::plan::topology::SourceMeta,
         fields: &[SqlFieldDto],
     ) -> Result<crate::plan::topology::SourceMeta, String> {
@@ -1344,10 +1345,10 @@ impl SqlFieldDto {
 pub struct SqlBatch(pub u32);
 
 impl SqlBatch {
-    pub const DEFAULT: u32 = 5_000;
-    pub const MAX: u32 = 100_000;
+    const DEFAULT: u32 = 5_000;
+    pub(crate) const MAX: u32 = 100_000;
 
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1361,7 +1362,7 @@ impl Default for SqlBatch {
 /// What a listing source reads first.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum ListStartDto {
+pub(crate) enum ListStartDto {
     /// Every object its first listing finds.
     #[default]
     Everything,
@@ -1371,7 +1372,7 @@ pub enum ListStartDto {
 }
 
 impl ListStartDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == ListStartDto::Everything
     }
 }
@@ -1379,7 +1380,7 @@ impl ListStartDto {
 /// What a listing source does with an object once every record of it is committed.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum AfterCommitDto {
+pub(crate) enum AfterCommitDto {
     /// Leaves it, and records it in the source's ledger. Needs only read access.
     #[default]
     Keep,
@@ -1390,7 +1391,7 @@ pub enum AfterCommitDto {
 }
 
 impl AfterCommitDto {
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == AfterCommitDto::Keep
     }
 }
@@ -1398,44 +1399,44 @@ impl AfterCommitDto {
 /// What every object store destination writes, and how much at once. Flattened into each cloud's own fields.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ObjectSettingsDto {
+pub(crate) struct ObjectSettingsDto {
     /// What every object key starts with, for a row with no `__destination.prefix`. `%Y %m %d %H %M` are the
     /// write time, UTC.
     #[serde(default, skip_serializing_if = "ObjectPrefix::is_default")]
-    pub prefix: ObjectPrefix,
+    pub(crate) prefix: ObjectPrefix,
     /// `"ndjson"` (default), `"json"`, `"parquet"`, `"avro"`, `"csv"`, `"text"` or `"bytes"`.
     #[serde(default, skip_serializing_if = "ObjectFormatDto::is_default")]
-    pub format: ObjectFormatDto,
+    pub(crate) format: ObjectFormatDto,
     /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
+    pub(crate) field: Option<String>,
     /// What `"bytes"` does with a row that holds a line break. Absent is `"escape"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub newlines: Option<NewlinesDto>,
+    pub(crate) newlines: Option<NewlinesDto>,
     /// How `"parquet"` writes a variant. Absent is `"json"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantDto>,
+    pub(crate) variant: Option<VariantDto>,
     /// Absent is gzip.
     #[serde(default = "CompressionDto::gzip", skip_serializing_if = "CompressionDto::is_gzip")]
-    pub compression: CompressionDto,
+    pub(crate) compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    pub(crate) compression_level: Option<u8>,
     /// Parts of one file uploading at once.
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "ObjectBytes::is_default")]
-    pub max_object_bytes: ObjectBytes,
+    pub(crate) max_object_bytes: ObjectBytes,
     /// Memory for records not yet in the bucket. Unset is `BufferBytes::OBJECT_DEFAULT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    pub(crate) buffer_bytes: Option<BufferBytes>,
     /// Seconds one store call, or one finishing of the files, may take before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     /// Seconds a file stays open, taking batch after batch, before it is finished and its batches
     /// acknowledged.
     #[serde(default, skip_serializing_if = "FileInterval::is_default")]
-    pub file_interval_secs: FileInterval,
+    pub(crate) file_interval_secs: FileInterval,
 }
 
 /// Seconds an object or table destination's files stay open before they are finished or committed. A source waits
@@ -1445,14 +1446,14 @@ pub struct ObjectSettingsDto {
 /// least Amazon Security Lake takes, and long enough that a quiet stream makes files a query engine reads well.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct FileInterval(pub u64);
+pub(crate) struct FileInterval(pub(crate) u64);
 
 impl FileInterval {
-    pub const DEFAULT: u64 = 300;
-    pub const MIN: u64 = 5;
-    pub const MAX: u64 = 3600;
+    pub(crate) const DEFAULT: u64 = 300;
+    pub(crate) const MIN: u64 = 5;
+    pub(crate) const MAX: u64 = 3600;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1467,26 +1468,26 @@ impl Default for FileInterval {
 /// S3, GCS and Azure Blob destinations.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct CloudSettingsDto {
+pub(crate) struct CloudSettingsDto {
     /// One of the cloud's own storage classes. Absent is the bucket's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage_class: Option<String>,
+    pub(crate) storage_class: Option<String>,
 }
 
 /// Where an S3 destination with no `endpoint` is reached.
-pub const S3_ENDPOINT: &str = "https://s3.amazonaws.com";
+pub(crate) const S3_ENDPOINT: &str = "https://s3.amazonaws.com";
 
 /// How many times a Queue/Azure Blob source receives a message before it moves it to the poison queue.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct MaxDeliveries(pub u32);
+pub(crate) struct MaxDeliveries(pub(crate) u32);
 
 impl MaxDeliveries {
-    pub const DEFAULT: u32 = 5;
-    pub const MIN: u32 = 1;
-    pub const MAX: u32 = 1_000;
+    pub(crate) const DEFAULT: u32 = 5;
+    pub(crate) const MIN: u32 = 1;
+    pub(crate) const MAX: u32 = 1_000;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1498,23 +1499,23 @@ impl Default for MaxDeliveries {
 }
 
 /// Where a Google Cloud Storage destination with no `endpoint` is reached.
-pub const GCS_ENDPOINT: &str = "https://storage.googleapis.com";
+pub(crate) const GCS_ENDPOINT: &str = "https://storage.googleapis.com";
 
 /// Where a Pub/Sub/GCS source with no `pubsubEndpoint` is reached.
-pub const PUBSUB_ENDPOINT: &str = "https://pubsub.googleapis.com";
+pub(crate) const PUBSUB_ENDPOINT: &str = "https://pubsub.googleapis.com";
 
 /// Where an Azure Blob Storage destination with no `endpoint` is reached, under its account's own name.
-pub const AZURE_ENDPOINT: &str = "https://blob.core.windows.net";
+pub(crate) const AZURE_ENDPOINT: &str = "https://blob.core.windows.net";
 
 /// An S3 destination's key prefix.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct ObjectPrefix(pub String);
+pub(crate) struct ObjectPrefix(pub(crate) String);
 
 impl ObjectPrefix {
-    pub const DEFAULT: &str = "%Y/%m/%d/%H/";
+    const DEFAULT: &str = "%Y/%m/%d/%H/";
 
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1529,7 +1530,7 @@ impl Default for ObjectPrefix {
 /// bytes.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum FormatDto {
+pub(crate) enum FormatDto {
     #[default]
     Json,
     Text,
@@ -1540,7 +1541,7 @@ pub enum FormatDto {
 }
 
 impl FormatDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == FormatDto::Json
     }
 }
@@ -1548,7 +1549,7 @@ impl FormatDto {
 /// Wire form of `plan::topology::RequestBody`.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum RequestBodyDto {
+pub(crate) enum RequestBodyDto {
     #[default]
     Lines,
     JsonArray,
@@ -1556,14 +1557,14 @@ pub enum RequestBodyDto {
 }
 
 impl RequestBodyDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == RequestBodyDto::Lines
     }
 }
 
 /// Wire form of `plan::topology::RemoteWriteVersion`.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub enum RemoteWriteVersionDto {
+pub(crate) enum RemoteWriteVersionDto {
     #[default]
     #[serde(rename = "1.0")]
     V1,
@@ -1572,7 +1573,7 @@ pub enum RemoteWriteVersionDto {
 }
 
 impl RemoteWriteVersionDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == RemoteWriteVersionDto::V1
     }
 }
@@ -1580,7 +1581,7 @@ impl RemoteWriteVersionDto {
 /// Wire form of `plan::topology::ObjectFormat`, less the text field.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum ObjectFormatDto {
+pub(crate) enum ObjectFormatDto {
     #[default]
     Ndjson,
     Json,
@@ -1596,14 +1597,14 @@ pub enum ObjectFormatDto {
 
 impl ObjectFormatDto {
     /// Who compresses a file of this format.
-    pub fn compressor(self) -> Compressor {
+    pub(crate) fn compressor(self) -> Compressor {
         match self {
             ObjectFormatDto::Parquet => Compressor::Parquet,
             _ => Compressor::Smeltr,
         }
     }
 
-    pub fn is_default(&self) -> bool {
+    fn is_default(&self) -> bool {
         *self == ObjectFormatDto::Ndjson
     }
 }
@@ -1611,7 +1612,7 @@ impl ObjectFormatDto {
 /// Wire form of `plan::topology::Newlines`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum NewlinesDto {
+pub(crate) enum NewlinesDto {
     Escape,
     Refuse,
 }
@@ -1619,7 +1620,7 @@ pub enum NewlinesDto {
 /// How a Parquet object holds a variant: `json`, a string of its JSON text, or `native`, Parquet's variant type.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum VariantDto {
+pub(crate) enum VariantDto {
     Json,
     Native,
 }
@@ -1627,15 +1628,15 @@ pub enum VariantDto {
 /// The largest file an object destination puts in its bucket, compressed.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct ObjectBytes(#[serde(with = "super::bytes")] pub usize);
+pub(crate) struct ObjectBytes(#[serde(with = "super::bytes")] pub(crate) usize);
 
 impl ObjectBytes {
-    pub const DEFAULT: usize = 64 * 1024 * 1024;
-    pub const MIN: usize = 64 * 1024;
+    pub(crate) const DEFAULT: usize = 64 * 1024 * 1024;
+    pub(crate) const MIN: usize = 64 * 1024;
     /// Under S3's largest multipart upload, 10,000 parts of `io::files`' 8 MiB.
-    pub const MAX: usize = 64 * 1024 * 1024 * 1024;
+    pub(crate) const MAX: usize = 64 * 1024 * 1024 * 1024;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1649,14 +1650,14 @@ impl Default for ObjectBytes {
 /// Wire form of `plan::topology::Endpoint`.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum EndpointDto {
+pub(crate) enum EndpointDto {
     #[default]
     Event,
     Raw,
 }
 
 impl EndpointDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == EndpointDto::Event
     }
 }
@@ -1664,14 +1665,14 @@ impl EndpointDto {
 /// Wire form of `plan::topology::Acknowledgement`.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum AcknowledgementDto {
+pub(crate) enum AcknowledgementDto {
     #[default]
     Indexer,
     Receipt,
 }
 
 impl AcknowledgementDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == AcknowledgementDto::Indexer
     }
 }
@@ -1683,25 +1684,27 @@ impl AcknowledgementDto {
 /// (<https://docs.splunk.com/Documentation/SplunkCloud/latest/Service/SplunkCloudservice>).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct RequestBytes<const DEFAULT: usize = { 1024 * 1024 }>(#[serde(with = "super::bytes")] pub usize);
+pub(crate) struct RequestBytes<const DEFAULT: usize = { 1024 * 1024 }>(
+    #[serde(with = "super::bytes")] pub(crate) usize,
+);
 
 /// An HTTP destination's request size: one whole batch by default, so a batch is one request. A literal, so a change
 /// to the batch size does not change what a stored destination means.
-pub type HttpRequestBytes = RequestBytes<{ 4 * 1024 * 1024 }>;
+pub(crate) type HttpRequestBytes = RequestBytes<{ 4 * 1024 * 1024 }>;
 const _: () = assert!(
     HttpRequestBytes::DEFAULT >= crate::worker::TICK_MAX_BYTES,
     "a batch is one request"
 );
 
 impl RequestBytes {
-    pub const MIN: usize = 4 * 1024;
-    pub const MAX: usize = 100 * 1024 * 1024;
+    pub(crate) const MIN: usize = 4 * 1024;
+    pub(crate) const MAX: usize = 100 * 1024 * 1024;
 }
 
 impl<const DEFAULT: usize> RequestBytes<DEFAULT> {
-    pub const DEFAULT: usize = DEFAULT;
+    pub(crate) const DEFAULT: usize = DEFAULT;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == DEFAULT
     }
 }
@@ -1716,7 +1719,7 @@ impl<const DEFAULT: usize> Default for RequestBytes<DEFAULT> {
 /// the one place it is set.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum AcksDto {
+pub(crate) enum AcksDto {
     None,
     One,
     #[default]
@@ -1724,11 +1727,11 @@ pub enum AcksDto {
 }
 
 impl AcksDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == AcksDto::All
     }
 
-    pub fn to_plan(self) -> crate::plan::topology::Acks {
+    pub(crate) fn to_plan(self) -> crate::plan::topology::Acks {
         use crate::plan::topology::Acks;
         match self {
             AcksDto::None => Acks::None,
@@ -1742,7 +1745,7 @@ impl AcksDto {
 /// `compression.type` in `props` is reserved for the same reason.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum CompressionDto {
+pub(crate) enum CompressionDto {
     #[default]
     None,
     Gzip,
@@ -1752,31 +1755,31 @@ pub enum CompressionDto {
 }
 
 impl CompressionDto {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         *self == CompressionDto::None
     }
 
     /// An object destination's default.
-    pub fn gzip() -> Self {
+    fn gzip() -> Self {
         CompressionDto::Gzip
     }
 
-    pub fn is_gzip(&self) -> bool {
+    fn is_gzip(&self) -> bool {
         *self == CompressionDto::Gzip
     }
 
     /// A table destination's default.
-    pub fn zstd() -> Self {
+    pub(crate) fn zstd() -> Self {
         CompressionDto::Zstd
     }
 
-    pub fn is_zstd(&self) -> bool {
+    pub(crate) fn is_zstd(&self) -> bool {
         *self == CompressionDto::Zstd
     }
 
     /// The levels this codec takes where `by` compresses, lowest first, and the one it is given when none is set;
     /// `None` for a codec that takes none there.
-    pub fn levels(self, by: Compressor) -> Option<(std::ops::RangeInclusive<u8>, u8)> {
+    pub(crate) fn levels(self, by: Compressor) -> Option<(std::ops::RangeInclusive<u8>, u8)> {
         Some(match (self, by) {
             (CompressionDto::Gzip, Compressor::Smeltr) => (0..=3, 1),
             (CompressionDto::Gzip, Compressor::Librdkafka | Compressor::Parquet) => (1..=9, 6),
@@ -1789,7 +1792,7 @@ impl CompressionDto {
 
     /// The codec at `level`, or at its default where `by` compresses (`Self::levels`) when `level` is `None`. The
     /// loader has checked `level` against [`Self::levels`].
-    pub fn to_plan(self, level: Option<u8>, by: Compressor) -> crate::plan::topology::Compression {
+    pub(crate) fn to_plan(self, level: Option<u8>, by: Compressor) -> crate::plan::topology::Compression {
         use crate::plan::topology::Compression;
         let [none, gzip, snappy, lz4, zstd] = Compression::ALL;
         let codec = match self {
@@ -1808,7 +1811,7 @@ impl CompressionDto {
 
 /// Whose code compresses a destination's output, which decides the levels its codec takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Compressor {
+pub(crate) enum Compressor {
     /// smeltr itself: gzip through ISA-L, zstd through libzstd.
     Smeltr,
     /// librdkafka, for Kafka and Event Hubs.
@@ -1821,15 +1824,15 @@ pub enum Compressor {
 /// a number of bytes, like every byte figure in a bundle (`config_file::bytes`).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct BulkBytes(#[serde(with = "super::bytes")] pub usize);
+pub(crate) struct BulkBytes(#[serde(with = "super::bytes")] pub(crate) usize);
 
 impl BulkBytes {
-    pub const DEFAULT: usize = 5 * 1024 * 1024;
-    pub const MIN: usize = 64 * 1024;
+    pub(crate) const DEFAULT: usize = 5 * 1024 * 1024;
+    pub(crate) const MIN: usize = 64 * 1024;
     /// Elasticsearch's default `http.max_content_length`.
-    pub const MAX: usize = 100 * 1024 * 1024;
+    pub(crate) const MAX: usize = 100 * 1024 * 1024;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1852,17 +1855,17 @@ impl Default for BulkBytes {
 pub struct BufferBytes(#[serde(with = "super::bytes")] pub usize);
 
 impl BufferBytes {
-    pub const DEFAULT: usize = 64 * 1024 * 1024;
+    pub(crate) const DEFAULT: usize = 64 * 1024 * 1024;
     /// One tick's worth of source bytes (`worker::TICK_MAX_BYTES`); below it an ordinary batch reports a stall.
-    pub const MIN: usize = 4 * 1024 * 1024;
+    pub(crate) const MIN: usize = 4 * 1024 * 1024;
     /// librdkafka's own default.
-    pub const MAX: usize = 1024 * 1024 * 1024;
+    pub(crate) const MAX: usize = 1024 * 1024 * 1024;
     /// An object store destination's: memory for records not yet in the bucket. Its files are finished early when it
     /// fills (`io::files`), so it bounds them too.
-    pub const OBJECT_DEFAULT: usize = 256 * 1024 * 1024;
+    pub(crate) const OBJECT_DEFAULT: usize = 256 * 1024 * 1024;
     /// An object store destination's: the memory of the largest memory-optimized cloud machine, 32 TiB (AWS
     /// u7in-32tb).
-    pub const OBJECT_MAX: usize = 32 * 1024 * 1024 * 1024 * 1024;
+    pub(crate) const OBJECT_MAX: usize = 32 * 1024 * 1024 * 1024 * 1024;
 
     pub fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
@@ -1886,7 +1889,7 @@ pub struct FetchBytes(#[serde(with = "super::bytes")] pub usize);
 
 impl FetchBytes {
     /// librdkafka's own default.
-    pub const DEFAULT: usize = 64 * 1024 * 1024;
+    pub(crate) const DEFAULT: usize = 64 * 1024 * 1024;
     /// One tick's batch.
     pub const MIN: usize = 4 * 1024 * 1024;
     pub const MAX: usize = 512 * 1024 * 1024;
@@ -1913,9 +1916,9 @@ pub struct EncodingLabel(pub String);
 
 impl EncodingLabel {
     /// Detect per record. See `format::encoding`.
-    pub const DEFAULT: &str = "auto";
+    pub(crate) const DEFAULT: &str = "auto";
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1929,14 +1932,14 @@ impl Default for EncodingLabel {
 /// A severity written down: one of `logs::LEVEL_LABELS`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct LevelLabel(pub String);
+pub(crate) struct LevelLabel(pub(crate) String);
 
 impl LevelLabel {
     /// The startup level unless one is set, so a source that names nothing carries what a process keeps until an
     /// operator sets levels.
-    pub const DEFAULT: &str = "info";
+    const DEFAULT: &str = "info";
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1950,16 +1953,16 @@ impl Default for LevelLabel {
 /// Seconds a destination may spend delivering one batch before it gives up and reports a stall.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct StallAfter(pub u64);
+pub(crate) struct StallAfter(pub(crate) u64);
 
 impl StallAfter {
-    pub const DEFAULT: u64 = 30;
-    pub const MIN: u64 = 1;
+    pub(crate) const DEFAULT: u64 = 30;
+    pub(crate) const MIN: u64 = 1;
     /// A fraction of the consumer's `max.poll.interval.ms` (300 s), which a flush must not outlast
     /// (`io::kafka::MAX_POLL_INTERVAL`).
-    pub const MAX: u64 = 120;
+    pub(crate) const MAX: u64 = 120;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 }
@@ -1973,21 +1976,21 @@ impl Default for StallAfter {
 /// Concurrent bulk requests to a destination. A newtype so an absent field means the default, not zero.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct InFlight(pub usize);
+pub(crate) struct InFlight(pub(crate) usize);
 
 impl InFlight {
     /// Where the loop starts, not where it stops: a destination climbs from here to what its buffer affords
     /// (`plan::topology::ElasticDestinationConfig::max_in_flight`).
-    pub const DEFAULT: usize = 4;
+    pub(crate) const DEFAULT: usize = 4;
 
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.0 == Self::DEFAULT
     }
 
     /// Where a destination whose buffer affords `affords` requests starts. The default starts no higher than that, so
     /// raising the request size alone never leaves the start out of reach; any other start above it is refused. A
     /// bundle cannot tell a stated default from an absent one, so a stated default is lowered too.
-    pub fn start(&self, affords: usize) -> usize {
+    pub(crate) fn start(&self, affords: usize) -> usize {
         if self.is_default() {
             self.0.min(affords).max(1)
         } else {
@@ -2006,7 +2009,7 @@ impl Default for InFlight {
 /// as `index`.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum BulkActionDto {
+pub(crate) enum BulkActionDto {
     #[default]
     #[serde(alias = "auto", alias = "dedupe")]
     Create,
@@ -2047,9 +2050,9 @@ pub struct RouteDto {
 pub struct DeliverRuleDto {
     /// Omitted matches every surviving row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub when: Option<String>,
+    pub(crate) when: Option<String>,
     /// `DestinationDto.id`s.
-    pub to: Vec<String>,
+    pub(crate) to: Vec<String>,
 }
 
 // -- pipelines ------------------------------------------------------------
@@ -2207,8 +2210,8 @@ pub struct AssignmentDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenamePairDto {
-    pub from: String,
-    pub to: String,
+    pub(crate) from: String,
+    pub(crate) to: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2262,8 +2265,8 @@ pub enum ParserKindDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CustomPatternDto {
-    pub name: String,
-    pub pattern: String,
+    pub(crate) name: String,
+    pub(crate) pattern: String,
 }
 
 /// A schema the bundle declares (`schema`): a table of fields, named by id from the pipelines that produce it and
@@ -2274,40 +2277,40 @@ pub struct SchemaDto {
     pub id: String,
     /// Shown for it. The id where empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub title: String,
+    pub(crate) title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub description: String,
+    pub(crate) description: String,
     #[serde(default)]
-    pub fields: Vec<SchemaFieldDto>,
+    pub(crate) fields: Vec<SchemaFieldDto>,
 }
 
 /// One field of a schema: a row of its table.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct SchemaFieldDto {
+pub(crate) struct SchemaFieldDto {
     /// Its keys from the record's root, dotted.
-    pub field: String,
+    pub(crate) field: String,
     /// What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object.
     #[serde(rename = "type")]
-    pub ty: String,
+    pub(crate) ty: String,
     /// Whether a row must hold it, should, or may.
     #[serde(default, skip_serializing_if = "Requirement::is_optional")]
-    pub requirement: Requirement,
+    pub(crate) requirement: Requirement,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub description: String,
+    pub(crate) description: String,
     /// A value it may hold, as text: what a standard or a spreadsheet gives as its example.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub example: String,
+    pub(crate) example: String,
     /// How it maps in an Elasticsearch index: a field's mapping, laid over the one its type has (`io::elastic_mapping`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
+    pub(crate) elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// How much a schema asks of a row for one field. A field sits in the object its path names, so it is asked of a row
 /// only where that object is there.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
-pub enum Requirement {
+pub(crate) enum Requirement {
     /// A row that lacks it breaks the schema.
     Required,
     /// A row should hold it; one that lacks it is told so, and still keeps the schema.
@@ -2317,13 +2320,13 @@ pub enum Requirement {
 }
 
 impl Requirement {
-    pub fn is_optional(&self) -> bool {
+    fn is_optional(&self) -> bool {
         *self == Requirement::Optional
     }
 
     /// The requirement a standard or a spreadsheet names: `required`, `recommended` or `optional`, without regard
     /// to case.
-    pub fn named(name: &str) -> Option<Requirement> {
+    pub(crate) fn named(name: &str) -> Option<Requirement> {
         match name.trim().to_ascii_lowercase().as_str() {
             "required" => Some(Requirement::Required),
             "recommended" => Some(Requirement::Recommended),
@@ -2338,7 +2341,7 @@ impl Requirement {
 #[serde(deny_unknown_fields)]
 pub struct GrokPatternDto {
     pub id: String,
-    pub pattern: String,
+    pub(crate) pattern: String,
 }
 
 /// A shared lookup table, referenced by id from any number of `StepDto::Lookup` steps.
@@ -2405,9 +2408,9 @@ pub struct LookupOutputDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldDto {
-    pub name: String,
+    pub(crate) name: String,
     #[serde(rename = "type")]
-    pub ty: DataTypeDto,
+    pub(crate) ty: DataTypeDto,
 }
 
 /// A scalar is a bare lowercase string (`"i64"`); everything else is a tagged object.

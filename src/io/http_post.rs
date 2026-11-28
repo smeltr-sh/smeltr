@@ -61,14 +61,14 @@ impl Post {
     }
 
     /// Names the service `name` in errors and refusals, for a destination of its own built on this one.
-    pub fn named(mut self, name: &'static str) -> Post {
+    fn named(mut self, name: &'static str) -> Post {
         self.name = name;
         self
     }
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &HttpDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -82,7 +82,7 @@ pub fn open(
 }
 
 /// [`open`] for Log Analytics: the same posts, each with an Entra access token.
-pub fn open_log_analytics(
+pub(crate) fn open_log_analytics(
     c: &LogAnalyticsDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -102,7 +102,7 @@ pub fn open_log_analytics(
 /// The destination posting to `config`'s URL: as `name` in what it says of itself and as `subject` in its log lines,
 /// over the transports `make` makes ([`transport`], signed in where the service asks), counting into `metrics` as
 /// destination `id`.
-pub fn destination(
+fn destination(
     config: &HttpDestinationConfig,
     make: impl Fn() -> HttpTransport,
     name: &'static str,
@@ -114,7 +114,7 @@ pub fn destination(
 }
 
 /// The destination speaking `protocol` to `config`'s URL, as [`destination`] makes one.
-pub fn destination_of<P: Protocol>(
+pub(crate) fn destination_of<P: Protocol>(
     protocol: P,
     config: &HttpDestinationConfig,
     make: impl Fn() -> HttpTransport,
@@ -269,7 +269,7 @@ impl Protocol for Post {
 }
 
 /// `body` gzipped at level `gzip`, or as it is when `gzip` is `None`.
-pub fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
+pub(crate) fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
     let Some(level) = gzip else {
         return body;
     };
@@ -277,7 +277,7 @@ pub fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
 }
 
 /// What `response` says of the `count` items its request carried, as the module's table gives it.
-pub fn answered(response: &Response, count: usize) -> Result<Outcome, IoError> {
+pub(crate) fn answered(response: &Response, count: usize) -> Result<Outcome, IoError> {
     match response.status {
         200..=299 => Ok(Outcome::default()),
         // Every one of these says "not now", and a retry that does not back off would only say it louder.

@@ -125,15 +125,15 @@ impl Codec {
 }
 
 /// A container file being read: its schema, its codec and its sync marker.
-pub struct Container {
-    pub schema: Arc<Parsed>,
+pub(crate) struct Container {
+    pub(crate) schema: Arc<Parsed>,
     codec: Codec,
     sync: [u8; 16],
 }
 
 impl Container {
     /// Reads the header off `input`. Err says why it is no container file smeltr reads.
-    pub fn open(input: &mut dyn BufRead) -> Result<Container, String> {
+    pub(crate) fn open(input: &mut dyn BufRead) -> Result<Container, String> {
         let mut magic = [0; 4];
         input
             .read_exact(&mut magic)
@@ -177,7 +177,7 @@ impl Container {
 
     /// The values of the next block off `input`, each its bytes, or `None` past the last block. A block or a value
     /// over `max` bytes is Err.
-    pub fn block(&self, input: &mut dyn BufRead, max: u64) -> Result<Option<Vec<Vec<u8>>>, String> {
+    pub(crate) fn block(&self, input: &mut dyn BufRead, max: u64) -> Result<Option<Vec<Vec<u8>>>, String> {
         if input.fill_buf().map_err(|e| e.to_string())?.is_empty() {
             return Ok(None);
         }
@@ -288,7 +288,7 @@ pub(crate) fn header(schema: &str, codec: &str, metadata: &[(&str, &[u8])], sync
 
 /// Container files, one record per part, as `files::ParquetFormat` writes Parquet: each row's chunk is cut to its
 /// part's schema, and the file's schema is that record's (`schema_of`).
-pub struct AvroFormat {
+pub(crate) struct AvroFormat {
     columns: Vec<Columns>,
     /// Each part's schema: its text and parsed.
     schemas: Vec<Arc<(String, Schema)>>,
@@ -299,7 +299,7 @@ pub struct AvroFormat {
 
 impl AvroFormat {
     /// Err names a record Avro cannot write, or a compression it has no codec for.
-    pub fn new(columns: Vec<Columns>, compression: Compression) -> Result<AvroFormat, String> {
+    pub(crate) fn new(columns: Vec<Columns>, compression: Compression) -> Result<AvroFormat, String> {
         let schemas = (columns.iter())
             .map(|c| parsed_schema_of(c.arrow()).map(Arc::new))
             .collect::<Result<_, String>>()?;

@@ -231,7 +231,7 @@ pub fn cidr_network(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// number or a name, `tcp`, `udp`, `sctp`, `icmp`, `icmpv6`, `igmp`, `gre`, `eigrp`, `ospf` or `pim`. For ICMP, the
 /// ports are the type and the code. A row is null where an address or the transport is null or does not parse, or
 /// where TCP, UDP or SCTP has a port missing or outside 1-65535.
-pub fn community_id(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn community_id(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     if let Some(e) = short_circuit_empty(&[ins[0], ins[2], ins[4]], &DataType::Str, len) {
         return e;

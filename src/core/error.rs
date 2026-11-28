@@ -36,7 +36,7 @@ impl Category {
 
     /// Whether a `try` catches this category's kinds (Language): an encoding exception kept its value, and a
     /// delivery exception happens outside every pipeline.
-    pub fn caught(self) -> bool {
+    pub(crate) fn caught(self) -> bool {
         !matches!(self, Category::Encoding | Category::Delivery)
     }
 }
@@ -82,7 +82,7 @@ pub enum ExceptionKind {
 }
 
 impl ExceptionKind {
-    pub fn category(&self) -> Category {
+    fn category(&self) -> Category {
         Self::KINDS[self.index()].1
     }
 
@@ -137,34 +137,34 @@ impl ExceptionKind {
 }
 
 /// The `function` label of `smeltr_rows_errored_total` for an exception from ingest, which no step raised.
-pub const INGEST_LABEL: &str = "ingest";
+pub(crate) const INGEST_LABEL: &str = "ingest";
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Exception {
     pub row: u32,
     /// The step that raised it. `None` when ingest did: decoding a record happens before any step runs.
-    pub function: Option<FunctionId>,
+    pub(crate) function: Option<FunctionId>,
     /// The slot it is about, where it is about one.
     pub field: Option<SlotId>,
     pub kind: ExceptionKind,
     /// What the exception read: one per operand of the call that raised it, in order. Empty until its producer fills it.
-    pub read: Vec<Read>,
+    pub(crate) read: Vec<Read>,
     /// The operator, function or parser that raised it, as the pipeline spells it.
-    pub call: &'static str,
+    pub(crate) call: &'static str,
 }
 
 /// One value an exception read.
 #[derive(Clone, PartialEq, Debug)]
-pub struct Read {
+pub(crate) struct Read {
     /// The slot read and the key path under its record, empty for the slot itself. `None` for a literal or computed
     /// value, which a message names by its value alone.
-    pub source: Option<(SlotId, String)>,
+    source: Option<(SlotId, String)>,
     /// The value as the pipeline language spells it, cut at 64 bytes with `…`.
-    pub value: Option<String>,
+    value: Option<String>,
 }
 
 impl Read {
-    pub fn new(source: Option<(SlotId, String)>, value: Option<String>) -> Read {
+    pub(crate) fn new(source: Option<(SlotId, String)>, value: Option<String>) -> Read {
         let value = value.map(|mut v| {
             if v.len() > 64 {
                 v.truncate(v.floor_char_boundary(64));
@@ -178,7 +178,7 @@ impl Read {
     }
 
     /// Row `row` of `col`, which `source` holds where it is a slot.
-    pub fn of(source: Option<SlotId>, col: &Column, row: usize) -> Read {
+    pub(crate) fn of(source: Option<SlotId>, col: &Column, row: usize) -> Read {
         let mut out = Vec::new();
         let value = match crate::format::json::write_value(col, &col.data_type(), row, &mut out) {
             true => String::from_utf8_lossy(&out).into_owned(),
@@ -274,7 +274,7 @@ impl ErrorSink {
     }
 
     /// The entry, for a producer to fill what it read.
-    pub fn raise(
+    pub(crate) fn raise(
         &mut self,
         row: usize,
         function: Option<FunctionId>,
@@ -293,14 +293,14 @@ impl ErrorSink {
     }
 
     /// Give each entry from `start` on that has read nothing `call` and what `read` says its row read.
-    pub fn fill_from(&mut self, start: usize, call: &'static str, read: impl Fn(usize) -> Vec<Read>) {
+    pub(crate) fn fill_from(&mut self, start: usize, call: &'static str, read: impl Fn(usize) -> Vec<Read>) {
         for a in self.entries[start..].iter_mut().filter(|a| a.read.is_empty()) {
             (a.call, a.read) = (call, read(a.row as usize));
         }
     }
 
     /// Put back entries taken out of this sink, after every entry it holds.
-    pub fn extend(&mut self, entries: impl IntoIterator<Item = Exception>) {
+    pub(crate) fn extend(&mut self, entries: impl IntoIterator<Item = Exception>) {
         self.entries.extend(entries);
     }
 
@@ -321,7 +321,7 @@ impl ErrorSink {
     /// Replace every entry from `start` on: an entry at row `R` becomes one entry per row `expand(R)` returns. How
     /// `Op::Unroll` keeps this run's exceptions attributed after it renumbers rows; `start` is
     /// `Ctx::pipeline_error_start`.
-    pub fn remap_rows_from(&mut self, start: usize, expand: impl Fn(u32) -> Vec<u32>) {
+    pub(crate) fn remap_rows_from(&mut self, start: usize, expand: impl Fn(u32) -> Vec<u32>) {
         let tail = self.entries.split_off(start.min(self.entries.len()));
         for a in tail {
             for new_row in expand(a.row) {
@@ -336,14 +336,14 @@ impl ErrorSink {
     /// Drop every entry from `start` on whose row `taken` refuses. An exception belongs to a row only when the row
     /// takes the value it came from: a selection computes every branch on every row (design doc, Columnar data model),
     /// so the branch a row did not take is retracted here, after the fact, and never fails the row.
-    pub fn retract_from(&mut self, start: usize, taken: impl Fn(u32) -> bool) {
+    pub(crate) fn retract_from(&mut self, start: usize, taken: impl Fn(u32) -> bool) {
         let end = self.entries.len();
         self.retract_range(start, end, taken);
     }
 
     /// `retract_from` over the entries in `start..end` only; the rest stay where they are. Indices at or above `end`
     /// shift down by what was dropped, so a caller retracting two ranges takes the upper one first.
-    pub fn retract_range(&mut self, start: usize, end: usize, taken: impl Fn(u32) -> bool) {
+    pub(crate) fn retract_range(&mut self, start: usize, end: usize, taken: impl Fn(u32) -> bool) {
         let end = end.min(self.entries.len());
         if start >= end {
             return;

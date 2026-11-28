@@ -23,13 +23,13 @@ pub struct RecordView<'a> {
 /// One object of the tree: its fields, and where its unclaimed fields come from.
 pub(crate) struct Object<'a> {
     pub(crate) fields: Vec<(Key, Field<'a>)>,
-    pub(crate) unclaimed: Unclaimed<'a>,
+    unclaimed: Unclaimed<'a>,
     /// Keys of the unclaimed fields that are gone, though their column still holds them (`plan::tree::Object::removed`).
     pub(crate) removed: Vec<String>,
     /// Whether this is the record's own object, whose `__` keys are the engine's and never written.
-    pub(crate) hide_internal: bool,
+    hide_internal: bool,
     /// The fields' keys, made at the first `claims`.
-    pub(crate) keys: std::cell::OnceCell<Keys<String, ()>>,
+    keys: std::cell::OnceCell<Keys<String, ()>>,
 }
 
 pub(crate) enum Field<'a> {
@@ -40,7 +40,7 @@ pub(crate) enum Field<'a> {
 }
 
 /// Where an object's unclaimed fields come from on a row.
-pub(crate) enum Unclaimed<'a> {
+enum Unclaimed<'a> {
     None,
     /// A slot's column: a variant object per row.
     Slot(VariantRows<'a>),
@@ -174,12 +174,12 @@ impl<'a> RecordView<'a> {
 
     /// Like `new`, but also serializes `__`-prefixed control variables. For the GUI preview only; a real destination
     /// must never see one.
-    pub fn new_with_internal(tree: &tree::Object, column: impl Fn(SlotId) -> &'a Column) -> Self {
+    pub(crate) fn new_with_internal(tree: &tree::Object, column: impl Fn(SlotId) -> &'a Column) -> Self {
         Self::build(tree, &column, true)
     }
 
     /// A record of `fields`, each at its dotted name.
-    pub fn from_named(fields: impl IntoIterator<Item = (&'a str, &'a Column)>) -> Self {
+    pub(crate) fn from_named(fields: impl IntoIterator<Item = (&'a str, &'a Column)>) -> Self {
         Self::from_places(
             fields
                 .into_iter()
@@ -188,7 +188,7 @@ impl<'a> RecordView<'a> {
     }
 
     /// A record of the column at each place: a field at its dotted name, or the unclaimed fields of the object named.
-    pub fn from_places(places: impl IntoIterator<Item = (tree::Place, &'a Column)>) -> Self {
+    pub(crate) fn from_places(places: impl IntoIterator<Item = (tree::Place, &'a Column)>) -> Self {
         let mut s = RecordView {
             root: Object::new(Unclaimed::None),
             leaves: Vec::new(),
@@ -246,7 +246,7 @@ impl<'a> RecordView<'a> {
 
     /// `self` with `col` written at `name` as well, ahead of the record's own fields at its level: the exception tag.
     /// The name claims its key, and an object made on the way to it holds the record's own key there beneath it.
-    pub fn with_field(mut self, name: &str, col: &'a Column) -> Self {
+    pub(crate) fn with_field(mut self, name: &str, col: &'a Column) -> Self {
         let segs: Vec<Cow<str>> = tree::segments(name).collect();
         let segs: Vec<&str> = segs.iter().map(AsRef::as_ref).collect();
         self.root.put(&segs, col, &mut self.leaves, true);

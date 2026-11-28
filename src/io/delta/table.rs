@@ -97,7 +97,7 @@ const NULL_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 /// The destination `config` names. Its table is read, or created from the record when missing, and the record's new
 /// columns are added to it before any file is written. Err is transient: the bucket cannot be reached, or the table
 /// cannot take the record, which a restart asks again.
-pub fn destination(
+pub(crate) fn destination(
     config: &DeltaDestinationConfig,
     subject: &str,
     records: Option<&Records>,

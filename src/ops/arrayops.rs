@@ -270,7 +270,7 @@ fn insert_at<'a>(
 
 /// `push(array, value, ..)`: every value at the end. Every output row is a valid array, so a null array is an empty
 /// one rather than a null result.
-pub fn array_push(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn array_push(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     insert_at(ctx, ins[0], &ins[1..], |_, n| Some(n))
 }
 
@@ -279,7 +279,7 @@ pub fn array_push(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 ///
 /// `-1` is the last element, as it is for `at` and `slice`, so `insert(xs, -1, v)` puts `v` *before* the last element.
 /// Appending is `push`, which is this with the split at the end -- no negative index names the gap past it.
-pub fn array_insert(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn array_insert(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     // An index column with nothing in it is null on every row, so no row has a position.
     let Some(idx) = side::i64(ins[1]) else {
         return insert_at(ctx, ins[0], &ins[2..], |_, _| None);
@@ -290,7 +290,7 @@ pub fn array_insert(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// `remove(array, index)`: the array without element `index`, which counts from the end when negative, as it does for
 /// `at` and `insert`. An index outside the array removes nothing. A null array or index is a null row.
-pub fn array_remove(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn array_remove(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
@@ -337,7 +337,7 @@ pub fn array_remove(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `array` with position `index` set to `value`, per row: what `a[i] = x` writes. A negative index counts from the
 /// end. A null value clears the position, which stays. An index outside the array writes nothing, and the row carries
 /// an `IndexOutOfRange` warning; a null index writes nothing. A null array stays null. `ty` is the result's array type.
-pub fn array_set(ctx: &mut Ctx, array: &Column, index: &Column, value: &Column, ty: &DataType) -> Column {
+pub(crate) fn array_set(ctx: &mut Ctx, array: &Column, index: &Column, value: &Column, ty: &DataType) -> Column {
     let len = array.len();
     let Ok(list) = array.list() else {
         return Column::empty(ty.clone(), len);
@@ -403,7 +403,7 @@ pub fn array_set(ctx: &mut Ctx, array: &Column, index: &Column, value: &Column, 
 /// `resize(array, size)`: the array with exactly `size` positions -- its first `size` where it has more, and after its
 /// own, positions that hold nothing where it has fewer. A negative size names no array, so that row is null, as is a
 /// null array or size. More positions than a column can count is refused as an allocation over the memory budget.
-pub fn array_resize(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn array_resize(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
@@ -677,7 +677,7 @@ fn element_eq(child: &Column, i: usize, value: &Elem<'_>) -> bool {
 /// `sort(array)` and `sort(array, descending)`: the elements in order, text by its bytes, numbers by value and `false`
 /// before `true`. Equal elements keep their order, and null elements go last either way. A null array or `descending`
 /// is a null row.
-pub fn array_sort(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn array_sort(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
@@ -813,7 +813,7 @@ pub fn array_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 /// `lastIndexOf(array, value[, from])`: the last equal element's position, or `-1`.
-pub fn array_last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn array_last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     search(ctx, ins, true, DataType::I64)
 }
 

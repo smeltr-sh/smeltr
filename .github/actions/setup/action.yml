@@ -32,6 +32,9 @@ runs:
     - if: runner.os == 'Windows'
       shell: pwsh
       run: ./tools/msvc-env.ps1
+    # The checks build with the newest stable, so the cache's key must name it, not the runner image's.
+    - shell: bash
+      run: rustup update stable --no-self-update
     - if: inputs.cache == 'true'
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:

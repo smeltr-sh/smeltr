@@ -18,16 +18,16 @@ use serde_json::{Value, json};
 use super::model::{self, Call, Effort, Fresh, Heard, Model, Request, Said, Stop, Tool, Turn};
 
 /// The rounds of tool calls one turn may take. The calls of the last are left unrun, and said so next turn.
-pub const MAX_ROUNDS: usize = 25;
+const MAX_ROUNDS: usize = 25;
 
 /// The most of one request's answer the model reads. The rest is cut, and the model told so.
-pub const MAX_RESULT: usize = 64 * 1024;
+const MAX_RESULT: usize = 64 * 1024;
 
 /// The most one answer may spend, thinking included.
 const MAX_TOKENS: u32 = 16_000;
 
 /// The one tool the model is given.
-pub const TOOL: &str = "request";
+const TOOL: &str = "request";
 
 /// What a call the turn ended before is answered with.
 const NOT_RUN: &str = "not run: the turn ended before this call ran";
@@ -98,7 +98,7 @@ impl Ended {
 }
 
 /// The tool the model calls the API with.
-pub fn tool() -> Tool {
+fn tool() -> Tool {
     Tool {
         name: TOOL.to_string(),
         description: "Send one request to the Smeltr leader's API, as the person you act for. Only the routes the \
@@ -174,7 +174,7 @@ pub fn system_prompt(catalog: &[Route]) -> String {
 
 /// Whether `method` on `path` is a route in `catalog`. A `:parameter` stands for one segment, and a last `*parameter`
 /// for one or more.
-pub fn allowed(catalog: &[Route], method: &str, path: &str) -> bool {
+fn allowed(catalog: &[Route], method: &str, path: &str) -> bool {
     let Some(asked) = path.strip_prefix('/').map(|p| p.split('/').collect::<Vec<_>>()) else {
         return false;
     };
@@ -194,7 +194,7 @@ pub fn allowed(catalog: &[Route], method: &str, path: &str) -> bool {
 }
 
 /// The request a call asks for, or why it cannot be sent.
-pub fn parse(catalog: &[Route], input: &Value) -> Result<ApiCall, String> {
+fn parse(catalog: &[Route], input: &Value) -> Result<ApiCall, String> {
     let method = input["method"]
         .as_str()
         .ok_or("`method` is missing")?
@@ -248,7 +248,7 @@ fn cut(text: String) -> String {
 
 /// `turns` as a model can be asked them: a call the conversation left unanswered is answered [`NOT_RUN`], and
 /// what was said between two answers is one turn.
-pub fn ready(turns: Vec<Turn>) -> Vec<Turn> {
+fn ready(turns: Vec<Turn>) -> Vec<Turn> {
     let mut out: Vec<Turn> = Vec::with_capacity(turns.len());
     let mut owed: Vec<String> = Vec::new();
     for turn in turns {
