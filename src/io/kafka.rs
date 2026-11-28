@@ -1261,8 +1261,8 @@ const FETCH_EXPANSION: usize = 12;
 /// jemalloc's 320-byte size class.
 const FETCHED_RECORD_BYTES: usize = 320;
 
-/// The least a fetch request may carry: librdkafka refuses one below `message.max.bytes`, its own default unless the
-/// operator's `props` set it.
+/// The least a fetch request may carry: librdkafka refuses one below `message.max.bytes`, which is 1,000,000 unless
+/// the operator's `props` set it.
 pub(crate) fn least_fetch_request_bytes(props: &KafkaProps) -> usize {
     props
         .literal
@@ -1299,13 +1299,13 @@ fn queue_records(fetch_bytes: usize) -> usize {
 /// The most a Kafka source's client reading with `fetch_bytes` from `brokers` named brokers holds: its queue, at half
 /// of `fetchBytes` with the records and buffers behind it, and the fetch in flight to each broker, at
 /// [`FETCH_EXPANSION`] times its wire bytes. Only the queue's bounds stop a fetch, so both halves can be full at once.
-/// It is `fetchBytes` unless the `least` request outweighs the share of it each broker would get.
+/// It is `fetchBytes` unless the least request outweighs the share of it each broker would get.
 pub(crate) fn consumer_ceiling(fetch_bytes: usize, brokers: usize, least: usize) -> usize {
     fetch_bytes / 2 + brokers * fetch_request_bytes(fetch_bytes, brokers, least) * FETCH_EXPANSION
 }
 
 /// What [`consumer_ceiling`] can hold beyond `fetchBytes` for `brokers` named brokers, at most, whatever `fetchBytes` is:
-/// the `least` request in flight to each.
+/// the least request in flight to each.
 pub(crate) fn consumer_floor_bytes(brokers: usize, least: usize) -> usize {
     brokers * least * FETCH_EXPANSION
 }
