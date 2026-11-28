@@ -240,8 +240,10 @@ libc = "0.2.189"
 # The global allocator. glibc's returns a freed batch's memory to the OS and faults it back in on the next batch;
 # mimalloc keeps what idle threads freed until they work again. jemalloc hands freed pages back from its own threads.
 tikv-jemallocator = "0.7"
-# `mallctl`, so an idle thread hands back the blocks its cache holds.
-tikv-jemalloc-sys = "0.7"
+# `mallctl`, so an idle thread hands back the blocks its cache holds. Unprefixed, so jemalloc is the C libraries'
+# `malloc` too (librdkafka, curl, AWS-LC, zstd): what they free decays and is purged with the rest, where glibc's
+# arenas kept it. Apple targets stay prefixed: the crate does not unprefix them.
+tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
 
 [target.'cfg(windows)'.dependencies]
 # The global allocator. jemalloc does not build for MSVC.
