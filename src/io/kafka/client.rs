@@ -3,10 +3,15 @@
 //! topic.
 //!
 //! ```text
-//!   client thread ──poll──► route by topic ──► inbox of source 1 ──► reader 1 (KafkaSource::poll_batch)
-//!                                         └──► inbox of source N ──► reader N
+//!   partitions ──► the client's own queue ──batch──┐
+//!   consumer's queue (rebalances, errors) ──poll──►├─► client thread ──route by topic──► inbox of source 1 ──► reader 1
+//!                                                                                  └──► inbox of source N ──► reader N
 //!   readers ──commit, place, pause──► the shared consumer
 //! ```
+//!
+//! Every assigned partition delivers its records to a queue of the client's own, which the client thread takes a batch
+//! at a time (`rd_kafka_consume_batch_queue`): librdkafka takes its per-poll locks once a batch rather than once a
+//! record. Rebalances stay on the consumer's queue, which the batch call would answer for itself.
 //!
 //! One client has one `group.id`, so sources share a client only when they share a group, brokers, TLS,
 //! properties, `fetchBytes` and whether a fresh partition starts at the earliest or the latest record. Topics, the
@@ -17,8 +22,10 @@
 //! while a partition waits to be placed or is at its stop. [`Slot::sync`] is the one place that decides.
 
 use crate::sync::{Condvar, Mutex, MutexGuard};
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::{CStr, CString, c_void};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::thread::JoinHandle;
@@ -29,9 +36,8 @@ use rdkafka::bindings;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance, RebalanceProtocol};
 use rdkafka::error::KafkaError;
-use rdkafka::message::Message;
+use rdkafka::message::{Header, Headers, Message};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
-use rdkafka::util::Timeout;
 use regex::Regex;
 
 use crate::io::batch_wait::BatchWait;
@@ -46,6 +52,9 @@ use super::{
 /// How long the client thread waits in one poll: how soon it sees a stop, a subscription to send, or a reader that
 /// stopped reading.
 const CLIENT_POLL: Duration = Duration::from_millis(100);
+
+/// The most records one batch call takes off the client's own queue: what a pass may hold past a full inbox.
+const FETCH_BATCH: usize = 256;
 
 /// How long a changed subscription waits for the next change before it is sent. A deployment attaches its sources
 /// one after another, and every subscription sent is a rebalance.
@@ -341,13 +350,23 @@ impl Client {
             ..RoutesInner::default()
         }));
         let ticket = super::kerberos::hold(client_config)?;
-        let consumer: Arc<BaseConsumer<Routes>> = Arc::new(client_config.create_with_context(routes.clone())?);
+        let mut consumer: BaseConsumer<Routes> = client_config.create_with_context(routes.clone())?;
+        routes.open_queues(&mut consumer);
+        let consumer = Arc::new(consumer);
         let stop = Arc::new(AtomicBool::new(false));
         let sampler = Sampler::start(Arc::clone(&consumer), routes.clone(), clients.clone());
-        let thread = {
+        let spawned = {
             let (consumer, routes, stop) = (Arc::clone(&consumer), routes.clone(), Arc::clone(&stop));
             crate::sync::spawn("kafka-client", move || run(&consumer, &routes, &stop, &clients))
-                .map_err(|e| IoError::transient(format!("could not start the Kafka client's thread: {e}")))?
+        };
+        let thread = match spawned {
+            Ok(thread) => thread,
+            Err(e) => {
+                routes.close_queues();
+                return Err(IoError::transient(format!(
+                    "could not start the Kafka client's thread: {e}"
+                )));
+            }
         };
         Ok(Arc::new(Client {
             consumer,
@@ -371,6 +390,8 @@ impl Drop for Client {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        // librdkafka waits for every queue handle to go before the client it belongs to.
+        self.routes.close_queues();
         // The sampler shares the consumer, so it goes before the consumer closes.
         self.sampler.take();
     }
@@ -398,40 +419,220 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 clients.note_cluster(routes, cluster);
             }
         }
-        // The first poll waits for a record; the rest take only what librdkafka already holds, until a source's inbox
-        // would be full, so a reader is handed a fetch's records together rather than its first few; a batch's rows
-        // also end the pass, so records arriving as fast as they are drained still reach the reader.
+        // A pass takes only what librdkafka already holds, until a source's inbox would be full, so a reader is handed
+        // a fetch's records together rather than its first few; a batch's rows also end the pass, so records arriving
+        // as fast as they are drained still reach the reader. The consumer's queue goes first: its events, and the
+        // records a partition fetched before it delivered to the client's own queue.
         let mut drain = Drain::new(routes);
-        let mut wait = CLIENT_POLL;
-        let fatal = loop {
-            match consumer.poll(Timeout::from(wait)) {
-                // The timeout, or an event the client handled on the way: a rebalance, a commit's answer, an error.
-                None => break None,
+        let (mut more, fatal) = loop {
+            match consumer.poll(Duration::ZERO) {
+                // Nothing held, or an event the client handled on the way: a rebalance, a commit's answer, an error.
+                None => break (routes.events_held(), None),
                 Some(Ok(msg)) => {
                     if drain.push(&msg) || drain.rows >= crate::worker::TICK_MAX_ROWS {
-                        break None;
+                        break (true, None);
                     }
                 }
                 // The client instance is unusable: every source on it says so on its next poll.
-                Some(Err(KafkaError::MessageConsumptionFatal(code))) => break Some(code),
+                Some(Err(KafkaError::MessageConsumptionFatal(code))) => break (false, Some(code)),
                 // Any other consumption error is transient (the client reconnects underneath), or says a partition
                 // is caught up.
                 Some(Err(KafkaError::MessageConsumption(_) | KafkaError::PartitionEOF(_))) => {}
-                Some(Err(e)) => {
-                    if let Some(error) = polling.fail_due(e.to_string()) {
-                        tracing::warn!(name: "poll_failed", target: "sources", group = %routes.group(), error, "a source could not read from Kafka; trying again");
-                    }
-                }
+                Some(Err(e)) => polling_failed(routes, &mut polling, &e),
             }
-            wait = Duration::ZERO;
         };
+        if fatal.is_none() && drain.rows < crate::worker::TICK_MAX_ROWS {
+            more |= routes.take_fetched(&mut drain, &mut polling);
+        }
         for slot in drain.hand_off(consumer) {
             slot.arrived.notify_all();
         }
         if let Some(code) = fatal {
             routes.fail(KafkaError::MessageConsumptionFatal(code));
             std::thread::sleep(CLIENT_POLL);
+        } else if !more {
+            routes.0.wake.wait(CLIENT_POLL);
         }
+    }
+}
+
+fn polling_failed(routes: &Routes, polling: &mut crate::logs::Relog, e: &KafkaError) {
+    if let Some(error) = polling.fail_due(e.to_string()) {
+        tracing::warn!(name: "poll_failed", target: "sources", group = %routes.group(), error, "a source could not read from Kafka; trying again");
+    }
+}
+
+/// The client's two queue handles of its own (`Routes::open_queues`).
+struct Queues {
+    /// Where every assigned partition delivers its records.
+    fetched: QueueHandle,
+    /// The consumer's queue, asked only how much it holds.
+    events: QueueHandle,
+}
+
+/// A librdkafka queue handle, released when dropped.
+struct QueueHandle(NonNull<bindings::rd_kafka_queue_t>);
+
+// SAFETY: librdkafka's queue calls lock the queue themselves, so a handle may be used and released from any thread.
+unsafe impl Send for QueueHandle {}
+
+impl Drop for QueueHandle {
+    fn drop(&mut self) {
+        // SAFETY: each handle is released once, here, before its client is destroyed (`Client::drop`).
+        unsafe { bindings::rd_kafka_queue_destroy(self.0.as_ptr()) }
+    }
+}
+
+/// Wakes the client thread when one of its queues goes from empty to holding something.
+#[derive(Default)]
+struct Wake {
+    ready: Mutex<bool>,
+    arrived: Condvar,
+}
+
+impl Wake {
+    fn wake(&self) {
+        *self.ready.lock() = true;
+        self.arrived.notify_one();
+    }
+
+    /// Waits for a queue to hold something, up to `timeout`.
+    fn wait(&self, timeout: Duration) {
+        let mut ready = self.ready.lock();
+        if !*ready {
+            ready = self.arrived.wait_timeout(ready, timeout).0;
+        }
+        *ready = false;
+    }
+}
+
+/// librdkafka's callback for the client's own queue going from empty to holding records.
+unsafe extern "C" fn wake_client(_: *mut bindings::rd_kafka_t, wake: *mut c_void) {
+    // SAFETY: `wake` is `RoutesInner::wake`, which the consumer's context holds, so it outlives the queue that calls
+    // this (`Routes::open_queues`).
+    unsafe { &*(wake as *const Wake) }.wake();
+}
+
+/// A record a batch call took off the client's own queue, destroyed when dropped.
+struct Fetched {
+    msg: NonNull<bindings::rd_kafka_message_t>,
+    headers: OnceCell<Option<FetchedHeaders>>,
+}
+
+impl Fetched {
+    /// The error librdkafka put in this message's place, if any.
+    fn error(&self) -> Option<bindings::rd_kafka_resp_err_t> {
+        // SAFETY: `msg` is live until `drop`.
+        let err = unsafe { self.msg.as_ref() }.err;
+        (err != bindings::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR).then_some(err)
+    }
+
+    fn raw(&self) -> &bindings::rd_kafka_message_t {
+        // SAFETY: `msg` is live until `drop`.
+        unsafe { self.msg.as_ref() }
+    }
+}
+
+impl Drop for Fetched {
+    fn drop(&mut self) {
+        // SAFETY: the batch call handed this message over, and it is destroyed once, here.
+        unsafe { bindings::rd_kafka_message_destroy(self.msg.as_ptr()) }
+    }
+}
+
+/// A slice librdkafka owns, or none for a null pointer.
+///
+/// # Safety
+/// `ptr` is null or points at `len` bytes that live as long as `'a`.
+unsafe fn borrowed<'a>(ptr: *const c_void, len: usize) -> Option<&'a [u8]> {
+    // SAFETY: as the caller promises.
+    (!ptr.is_null()).then(|| unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })
+}
+
+impl Message for Fetched {
+    type Headers = FetchedHeaders;
+
+    fn key(&self) -> Option<&[u8]> {
+        let m = self.raw();
+        // SAFETY: the key lives as long as the message.
+        unsafe { borrowed(m.key, m.key_len) }
+    }
+
+    fn payload(&self) -> Option<&[u8]> {
+        let m = self.raw();
+        // SAFETY: the payload lives as long as the message.
+        unsafe { borrowed(m.payload, m.len) }
+    }
+
+    unsafe fn payload_mut(&mut self) -> Option<&mut [u8]> {
+        let m = self.raw();
+        // SAFETY: the payload lives as long as the message, and the caller takes librdkafka's risk (`Message`).
+        (!m.payload.is_null()).then(|| unsafe { std::slice::from_raw_parts_mut(m.payload.cast::<u8>(), m.len) })
+    }
+
+    fn topic(&self) -> &str {
+        // SAFETY: a fetched message names its topic, whose name lives as long as the message.
+        let name = unsafe { CStr::from_ptr(bindings::rd_kafka_topic_name(self.raw().rkt)) };
+        name.to_str().unwrap_or_default()
+    }
+
+    fn partition(&self) -> i32 {
+        self.raw().partition
+    }
+
+    fn offset(&self) -> i64 {
+        self.raw().offset
+    }
+
+    fn timestamp(&self) -> rdkafka::Timestamp {
+        use bindings::rd_kafka_timestamp_type_t as Kind;
+        let mut kind = Kind::RD_KAFKA_TIMESTAMP_NOT_AVAILABLE;
+        // SAFETY: `msg` is live until `drop`.
+        let millis = unsafe { bindings::rd_kafka_message_timestamp(self.msg.as_ptr(), &mut kind) };
+        match kind {
+            Kind::RD_KAFKA_TIMESTAMP_CREATE_TIME => rdkafka::Timestamp::CreateTime(millis),
+            Kind::RD_KAFKA_TIMESTAMP_LOG_APPEND_TIME => rdkafka::Timestamp::LogAppendTime(millis),
+            Kind::RD_KAFKA_TIMESTAMP_NOT_AVAILABLE => rdkafka::Timestamp::NotAvailable,
+        }
+    }
+
+    fn headers(&self) -> Option<&FetchedHeaders> {
+        self.headers
+            .get_or_init(|| {
+                let mut headers = std::ptr::null_mut();
+                // SAFETY: `msg` is live until `drop`; the headers it answers live as long as it does.
+                let err = unsafe { bindings::rd_kafka_message_headers(self.msg.as_ptr(), &mut headers) };
+                (err == bindings::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR)
+                    .then(|| NonNull::new(headers).map(FetchedHeaders))
+                    .flatten()
+            })
+            .as_ref()
+    }
+}
+
+/// A fetched message's headers, owned by the message.
+struct FetchedHeaders(NonNull<bindings::rd_kafka_headers_t>);
+
+impl Headers for FetchedHeaders {
+    fn count(&self) -> usize {
+        // SAFETY: the headers live as long as their message.
+        unsafe { bindings::rd_kafka_header_cnt(self.0.as_ptr()) }
+    }
+
+    fn try_get(&self, idx: usize) -> Option<Header<'_, &[u8]>> {
+        let (mut name, mut value, mut len) = (std::ptr::null(), std::ptr::null(), 0);
+        // SAFETY: the headers live as long as their message; the call fills the three pointers on success.
+        let err = unsafe { bindings::rd_kafka_header_get_all(self.0.as_ptr(), idx, &mut name, &mut value, &mut len) };
+        if err != bindings::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+            return None;
+        }
+        // SAFETY: on success `name` is a NUL-terminated string and `value` null or `len` bytes, both owned by the
+        // headers.
+        let (key, value) = unsafe { (CStr::from_ptr(name), borrowed(value, len)) };
+        Some(Header {
+            key: key.to_str().unwrap_or_default(),
+            value,
+        })
     }
 }
 
@@ -860,9 +1061,110 @@ struct RoutesInner {
     refetch: AtomicBool,
     /// How many revokes the client has been told of: a pass that saw one filters what it drained (`Drain::hand_off`).
     revokes: AtomicU64,
+    /// The client's own queue handles, from its start until its thread has stopped.
+    queues: Mutex<Option<Queues>>,
+    wake: Arc<Wake>,
 }
 
 impl Routes {
+    /// Gives the client a queue of its own for its partitions' records, and has it and the consumer's queue wake the
+    /// client thread. Without one, records stay on the consumer's queue, which the client thread polls too.
+    fn open_queues(&self, consumer: &mut BaseConsumer<Routes>) {
+        let wake = Arc::clone(&self.0.wake);
+        consumer.set_nonempty_callback(move || wake.wake());
+        let rk = consumer.client().native_ptr();
+        // SAFETY: `rk` is the live client. Each handle is released before it (`close_queues`). The callback's `wake`
+        // is `RoutesInner::wake`, which the consumer's context holds, so it outlives the queue.
+        let queues = unsafe {
+            let fetched = NonNull::new(bindings::rd_kafka_queue_new(rk)).map(QueueHandle);
+            let events = NonNull::new(bindings::rd_kafka_queue_get_consumer(rk)).map(QueueHandle);
+            if let Some(fetched) = &fetched {
+                let wake = Arc::as_ptr(&self.0.wake).cast_mut().cast::<c_void>();
+                bindings::rd_kafka_queue_cb_event_enable(fetched.0.as_ptr(), Some(wake_client), wake);
+            }
+            fetched.zip(events)
+        };
+        *self.0.queues.lock() = queues.map(|(fetched, events)| Queues { fetched, events });
+    }
+
+    fn close_queues(&self) {
+        drop(self.0.queues.lock().take());
+    }
+
+    /// Has each of `tpl`'s partitions deliver its records to the client's own queue.
+    fn deliver_to_own_queue(&self, rk: *mut bindings::rd_kafka_t, tpl: &TopicPartitionList) {
+        let queues = self.0.queues.lock();
+        let Some(queues) = queues.as_ref() else {
+            return;
+        };
+        for e in tpl.elements() {
+            let Ok(topic) = CString::new(e.topic()) else {
+                continue;
+            };
+            // SAFETY: `rk` is the live client. The partition's handle is released once forwarded: the forward holds a
+            // reference of its own.
+            unsafe {
+                if let Some(partition) = NonNull::new(bindings::rd_kafka_queue_get_partition(
+                    rk,
+                    topic.as_ptr(),
+                    e.partition(),
+                )) {
+                    bindings::rd_kafka_queue_forward(partition.as_ptr(), queues.fetched.0.as_ptr());
+                    bindings::rd_kafka_queue_destroy(partition.as_ptr());
+                }
+            }
+        }
+    }
+
+    /// Whether the consumer's queue still holds events: a poll answers one at a time.
+    fn events_held(&self) -> bool {
+        let queues = self.0.queues.lock();
+        // SAFETY: the handle is live while its lock is held.
+        queues
+            .as_ref()
+            .is_some_and(|q| unsafe { bindings::rd_kafka_queue_length(q.events.0.as_ptr()) } > 0)
+    }
+
+    /// Takes records off the client's own queue into `drain` a batch at a time, until it is empty, a source's inbox
+    /// is full, or the pass holds a batch's rows. Answers whether records may remain.
+    fn take_fetched(&self, drain: &mut Drain<'_>, polling: &mut crate::logs::Relog) -> bool {
+        let queues = self.0.queues.lock();
+        let Some(queues) = queues.as_ref() else {
+            return false;
+        };
+        let mut taken = [std::ptr::null_mut(); FETCH_BATCH];
+        loop {
+            let want = FETCH_BATCH.min(crate::worker::TICK_MAX_ROWS.saturating_sub(drain.rows));
+            // SAFETY: the queue is live while its lock is held, and `taken` holds `want` pointers.
+            let n = unsafe {
+                bindings::rd_kafka_consume_batch_queue(queues.fetched.0.as_ptr(), 0, taken.as_mut_ptr(), want)
+            };
+            // A negative count is an error, which leaves nothing taken.
+            let n = usize::try_from(n).unwrap_or(0);
+            let mut full = false;
+            for &msg in &taken[..n] {
+                let Some(msg) = NonNull::new(msg) else {
+                    continue;
+                };
+                let msg = Fetched {
+                    msg,
+                    headers: OnceCell::new(),
+                };
+                match msg.error() {
+                    None => full |= drain.push(&msg),
+                    Some(bindings::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__PARTITION_EOF) => {}
+                    Some(code) => polling_failed(self, polling, &KafkaError::MessageConsumption(code.into())),
+                }
+            }
+            if full || drain.rows >= crate::worker::TICK_MAX_ROWS {
+                return true;
+            }
+            if n < want {
+                return false;
+            }
+        }
+    }
+
     fn slots(&self) -> Vec<Arc<Slot>> {
         self.0.slots.lock().clone()
     }
@@ -1262,6 +1564,9 @@ impl ConsumerContext for Routes {
         self.pre_rebalance(base_consumer, &rebalance);
         let rk = base_consumer.client().native_ptr();
         let cooperative = matches!(base_consumer.rebalance_protocol(), RebalanceProtocol::Cooperative);
+        if assign {
+            self.deliver_to_own_queue(rk, tpl);
+        }
         // SAFETY: `rk` is the live client calling this handler, and `tpl` is the list it handed over, alive for the
         // call. The same calls rdkafka's default handler makes.
         unsafe {
