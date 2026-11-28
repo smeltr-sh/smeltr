@@ -30,6 +30,7 @@ mod elastic_receiver;
 pub(crate) mod entra;
 pub mod files;
 pub mod framing;
+mod gzip;
 pub(crate) mod hec;
 pub mod http;
 mod http_api;

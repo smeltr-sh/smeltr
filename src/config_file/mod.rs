@@ -87,7 +87,7 @@ pub use test::{
 
 /// The `"version"` this build writes and reads. A change to the format bumps it and adds a converter from the
 /// version before it, so a file nobody has saved since still loads (`docs/architecture/control-plane.md`, Upgrades).
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 
 /// Structural resolution, then compilation. The one check every write path runs.
 pub fn validate(file: FileConfig) -> Result<LoadedSystem, LoadError> {

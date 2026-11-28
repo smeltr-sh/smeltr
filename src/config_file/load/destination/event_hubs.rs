@@ -70,7 +70,13 @@ impl DestinationSpec for EventHubsDestinationDto {
                 d.id
             ));
         } else {
-            check_compression_level(&d.id, self.compression, self.compression_level, true, errors);
+            check_compression_level(
+                &d.id,
+                self.compression,
+                self.compression_level,
+                Compressor::Librdkafka,
+                errors,
+            );
         }
     }
 
@@ -96,7 +102,7 @@ impl DestinationSpec for EventHubsDestinationDto {
             props: event_hubs_props(&brokers, connection_string.as_ref(), sign_in),
             brokers,
             default_topic: default_event_hub.clone(),
-            compression: compression.to_plan(*compression_level),
+            compression: compression.to_plan(*compression_level, Compressor::Librdkafka),
             acks: crate::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),

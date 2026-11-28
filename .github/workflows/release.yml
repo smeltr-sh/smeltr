@@ -116,6 +116,8 @@ jobs:
           tool: just,cargo-auditable@0.7.8
       # AWS-LC's FIPS build wants NASM and Ninja on Windows; the runner has cmake, Go and perl.
       - run: choco install nasm ninja --no-progress -y
+      # ISA-L builds with nmake, which needs the compiler's environment a Developer PowerShell sets.
+      - run: ./tools/msvc-env.ps1
       - name: just dist
         run: |
           $env:PATH = "C:\Program Files\NASM;$env:PATH"

@@ -16,6 +16,7 @@
 //! (`just check-log-analytics`), land in its Log Analytics table and are queried back.
 
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
@@ -504,7 +505,7 @@ fn check_loaded(draw: &Draw, c: &LogAnalyticsDestinationConfig, named: &[SecretR
     expect("payload", format!("{:?}", Payload::Record), format!("{:?}", h.payload));
     expect(
         "compression",
-        format!("{:?}", Compression::Gzip(6)),
+        format!("{:?}", Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT))),
         format!("{:?}", h.compression),
     );
     expect("headers", "[]".to_string(), format!("{:?}", h.headers));

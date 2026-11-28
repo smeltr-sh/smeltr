@@ -81,7 +81,7 @@ impl DestinationSpec for LogAnalyticsDestinationDto {
         DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig {
             http: HttpDestinationConfig {
                 body: RequestBody::JsonArray,
-                compression: CompressionDto::Gzip.to_plan(None),
+                compression: CompressionDto::Gzip.to_plan(None, Compressor::Smeltr),
                 ..to_http_core(
                     log_analytics_stream_url(endpoint, rule_id, stream),
                     to_tls(tls, of, Side::Client),

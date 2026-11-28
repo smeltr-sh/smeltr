@@ -1091,7 +1091,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     }
     let (compression, codec) = *rng.pick(&[
         (Compression::None, "none"),
-        (Compression::Gzip(6), "gzip"),
+        (Compression::Gzip(crate::plan::topology::GzipLevel::Zlib(6)), "gzip"),
         (Compression::Snappy, "snappy"),
         (Compression::Lz4(0), "lz4"),
         (Compression::Zstd(3), "zstd"),
@@ -1100,7 +1100,13 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     let compression = match compression.level() {
         Some(_) if codec != "lz4" && rng.chance(2) => {
             reached.push("compression level".into());
-            compression.at(1 + rng.below(9) as u8)
+            // The parquet writer's levels.
+            let level = 1 + rng.below(9) as u8;
+            match compression {
+                Compression::Gzip(_) => Compression::Gzip(crate::plan::topology::GzipLevel::Zlib(level)),
+                Compression::Zstd(_) => Compression::Zstd(level),
+                other => other,
+            }
         }
         _ => compression,
     };

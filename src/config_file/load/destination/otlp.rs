@@ -75,7 +75,7 @@ impl DestinationSpec for OtlpDestinationDto {
             errors,
         );
         check_http_compression(&d.id, compression, errors);
-        check_compression_level(&d.id, *compression, *compression_level, false, errors);
+        check_compression_level(&d.id, *compression, *compression_level, Compressor::Smeltr, errors);
         // An exporter's per-signal endpoint, as `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` holds one, names its path.
         let signals = [Signal::Logs, Signal::Metrics, Signal::Traces].map(crate::io::otlp::http_path);
         if let Some(path) = (signals.into_iter()).find(|path| url.trim().trim_end_matches('/').ends_with(path)) {
@@ -112,7 +112,7 @@ impl DestinationSpec for OtlpDestinationDto {
         } = self;
         DestinationKind::Otlp(OtlpDestinationConfig {
             http: HttpDestinationConfig {
-                compression: compression.to_plan(*compression_level),
+                compression: compression.to_plan(*compression_level, Compressor::Smeltr),
                 headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
                 ..to_http_core(

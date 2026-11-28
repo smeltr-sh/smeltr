@@ -873,7 +873,7 @@ impl WriteOptions {
             Compression::Gzip(level) => Codec::GZIP(
                 (self.level.and_then(|l| u32::try_from(l).ok()))
                     .and_then(|l| GzipLevel::try_new(l).ok())
-                    .unwrap_or(GzipLevel::try_new(level.into()).expect("a gzip level the loader checked")),
+                    .unwrap_or(GzipLevel::try_new(level.get().into()).expect("a gzip level the loader checked")),
             ),
             Compression::Snappy => Codec::SNAPPY,
             Compression::Lz4(_) => Codec::LZ4_RAW,
@@ -1589,7 +1589,7 @@ mod tests {
     fn a_file_carries_the_codec_and_the_bloom_filters_asked() {
         let schema = raw_schema();
         let options = WriteOptions {
-            codec: Compression::Gzip(6),
+            codec: Compression::Gzip(crate::plan::topology::GzipLevel::Zlib(6)),
             level: Some(9),
             bloom_filters: vec![(vec!["_raw".into()], 0.05), (vec!["nowhere".into()], 0.05)],
         };
@@ -1599,7 +1599,10 @@ mod tests {
         let column = metadata.row_group(0).column(0);
         assert!(matches!(column.compression(), parquet::basic::Compression::GZIP(_)));
         assert!(column.bloom_filter_offset().is_some(), "a bloom filter for _raw");
-        let mut plain = FileWriter::open(&schema, &Compression::Gzip(6).into());
+        let mut plain = FileWriter::open(
+            &schema,
+            &Compression::Gzip(crate::plan::topology::GzipLevel::Zlib(6)).into(),
+        );
         plain.write(&rows(&schema, &["a", "b"]));
         assert_eq!(plain.finish().1.row_group(0).column(0).bloom_filter_offset(), None);
     }

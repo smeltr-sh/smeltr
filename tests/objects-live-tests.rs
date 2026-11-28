@@ -14,6 +14,7 @@
 use crate::harness;
 use crate::live;
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -79,7 +80,7 @@ fn on(cloud: Cloud) -> ObjectsDestinationConfig {
         cloud,
         prefix: "default/%Y/".to_string(),
         format: ObjectFormat::Ndjson,
-        compression: Compression::Gzip(6),
+        compression: Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
         storage_class: None,
         tls: None,
         in_flight: 2,

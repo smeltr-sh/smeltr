@@ -21,7 +21,7 @@ use super::{Parsed, parsed_schema_of, row_of};
 use crate::io::OwnedRecord;
 use crate::io::files::{FileEncoder, FileFormat, FileRow, Partition, admit_columns};
 use crate::io::parquet::Schema as Columns;
-use crate::plan::topology::Compression;
+use crate::plan::topology::{Compression, GzipLevel};
 
 /// What every container file starts with.
 const MAGIC: &[u8; 4] = b"Obj\x01";
@@ -71,14 +71,16 @@ impl Codec {
         }
     }
 
-    /// `data` compressed at `level`, where the codec takes one.
-    fn compress(self, data: &[u8], level: u8) -> Vec<u8> {
+    /// `data` compressed at `compression`'s level, where the codec takes one. `compression` is the one this codec was
+    /// made from ([`Codec::of`]).
+    fn compress(self, data: &[u8], compression: Compression) -> Vec<u8> {
         match self {
             Codec::Null => data.to_vec(),
             Codec::Deflate => {
-                let mut out = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(level.into()));
-                std::io::Write::write_all(&mut out, data).expect("a Vec takes every byte");
-                out.finish().expect("a Vec takes every byte")
+                let Compression::Gzip(GzipLevel::Igzip(level)) = compression else {
+                    unreachable!("an Avro file is gzipped by smeltr, at an igzip level")
+                };
+                crate::io::gzip::deflate(data, level)
             }
             Codec::Snappy => {
                 let mut out = snap::raw::Encoder::new()
@@ -87,7 +89,10 @@ impl Codec {
                 out.extend_from_slice(&crc32fast::hash(data).to_be_bytes());
                 out
             }
-            Codec::Zstandard => zstd::bulk::compress(data, level.into()).expect("a Vec takes every byte"),
+            Codec::Zstandard => {
+                let level = compression.level().unwrap_or_default();
+                zstd::bulk::compress(data, level.into()).expect("a Vec takes every byte")
+            }
         }
     }
 
@@ -297,8 +302,8 @@ pub(crate) struct AvroFormat {
     /// Each part's schema: its text and parsed.
     schemas: Vec<Arc<(String, Schema)>>,
     codec: Codec,
-    /// The destination's level for `codec`, where it takes one.
-    level: u8,
+    /// The destination's compression, which `codec` writes.
+    compression: Compression,
 }
 
 impl AvroFormat {
@@ -311,7 +316,7 @@ impl AvroFormat {
             columns,
             schemas,
             codec: Codec::of(compression)?,
-            level: compression.level().unwrap_or_default(),
+            compression,
         })
     }
 }
@@ -330,7 +335,7 @@ impl FileFormat for AvroFormat {
         Box::new(AvroEncoder {
             schema,
             codec: self.codec,
-            level: self.level,
+            compression: self.compression,
             sync,
             header: Some(header),
             values: Vec::new(),
@@ -345,7 +350,7 @@ impl FileFormat for AvroFormat {
 struct AvroEncoder {
     schema: Arc<(String, Schema)>,
     codec: Codec,
-    level: u8,
+    compression: Compression,
     sync: [u8; 16],
     header: Option<Vec<u8>>,
     values: Vec<u8>,
@@ -382,7 +387,7 @@ impl FileEncoder for AvroEncoder {
             _ => self.header.take().unwrap_or_default(),
         };
         if self.count > 0 {
-            let block = self.codec.compress(&self.values, self.level);
+            let block = self.codec.compress(&self.values, self.compression);
             put_long(&mut out, self.count);
             put_bytes(&mut out, &block);
             out.extend_from_slice(&self.sync);

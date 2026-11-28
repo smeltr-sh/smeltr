@@ -280,6 +280,25 @@ fn read_sources(files: &mut dyn FileSet, version: Option<u32>) -> Result<Vec<Sou
     })
 }
 
+/// `destinations.json`, brought from the bundle's version to the current one, as [`read_sources`] brings sources.
+fn read_destinations(files: &mut dyn FileSet, version: Option<u32>) -> Result<Vec<DestinationDto>, BundleError> {
+    const PATH: &str = "destinations.json";
+    let Some(bytes) = files.read(PATH).map_err(|e| io_err(PATH, e))? else {
+        return Ok(Vec::new());
+    };
+    if version == Some(CURRENT_VERSION) {
+        return parse_json(PATH, &bytes);
+    }
+    let upgraded = serde_json::from_slice(&bytes).and_then(|mut destinations: Vec<serde_json::Value>| {
+        upgrade::destinations(version.unwrap_or(0), &mut destinations);
+        serde_json::from_value(serde_json::Value::Array(destinations))
+    });
+    upgraded.map_err(|source| BundleError::Json {
+        path: PATH.to_string(),
+        source,
+    })
+}
+
 /// A current bundle's sources parse as they are, so an error keeps its line and column.
 fn sources_at(version: Option<u32>, bytes: &[u8]) -> Result<Vec<SourceDto>, serde_json::Error> {
     if version == Some(CURRENT_VERSION) {
@@ -338,11 +357,13 @@ fn read_parts(files: &mut dyn FileSet, at: &str) -> Result<Parts, BundleError> {
         schemas.push(read_per_file(files, "schema", &path, named, |s: &SchemaDto| &s.id)?);
     }
 
-    let sources = read_sources(files, manifest.as_ref().map(|m| m.version)).map_err(|e| at_path(e, at))?;
+    let version = manifest.as_ref().map(|m| m.version);
+    let sources = read_sources(files, version).map_err(|e| at_path(e, at))?;
+    let destinations = read_destinations(files, version).map_err(|e| at_path(e, at))?;
     Ok(Parts {
         manifest,
         sources,
-        destinations: read_optional_array(files, "destinations.json").map_err(|e| at_path(e, at))?,
+        destinations,
         routes: read_optional_array(files, "routes.json").map_err(|e| at_path(e, at))?,
         lookup_tables: read_optional_array(files, "lookup-tables.json").map_err(|e| at_path(e, at))?,
         grok_patterns: read_optional_array(files, GROK_PATTERNS_FILE).map_err(|e| at_path(e, at))?,

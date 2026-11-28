@@ -47,7 +47,13 @@ impl DestinationSpec for KafkaDestinationDto {
         );
         check_stream_avro(self.format, &self.schema_registry, &d.id, errors);
         check_stall_after(self.stall_after_secs, &d.id, errors);
-        check_compression_level(&d.id, self.compression, self.compression_level, true, errors);
+        check_compression_level(
+            &d.id,
+            self.compression,
+            self.compression_level,
+            Compressor::Librdkafka,
+            errors,
+        );
         validate_kafka_props(&self.props, &format!("destination {:?}", d.id), errors);
         check_kafka_tls(&self.tls, &self.props, &format!("destination {:?}", d.id), errors);
         check_kafka_buffer(self.buffer_bytes, &d.id, errors);
@@ -85,7 +91,7 @@ impl DestinationSpec for KafkaDestinationDto {
             brokers: brokers.clone(),
             props: to_kafka_props(props),
             default_topic: default_topic.clone(),
-            compression: compression.to_plan(*compression_level),
+            compression: compression.to_plan(*compression_level, Compressor::Librdkafka),
             acks: acks.to_plan(),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),
