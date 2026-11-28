@@ -304,7 +304,8 @@ mod tests {
         ] {
             let before = crate::core::buffer::allocated_bytes();
             let mut encoder = LineEncoder::open(false, codec);
-            // A first line past every lz4 block size, which would pick lz4's largest block if it chose by it.
+            // A first line longer than any lz4 block: lz4_flex, left to size its block by the first write, would take
+            // 4 MiB.
             encoder.put(&line.repeat(1024));
             for _ in 0..1024 {
                 encoder.put(&line);
