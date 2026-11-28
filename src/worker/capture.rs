@@ -772,8 +772,9 @@ impl Captures {
         let rows: Vec<Option<CapturedRow>> = {
             let decoded = own.as_ref().unwrap_or(decoded);
             let fields = decoded.source_objects(&filter.meta);
+            let noted = noted_by_row(decoded);
             (filter.keeps(decoded).iter().zip(&fields).enumerate())
-                .map(|(row, (keep, source))| keep.then(|| source_row(&filter.meta, decoded, row, source)))
+                .map(|(row, (keep, source))| keep.then(|| source_row(&filter.meta, decoded, row, source, &noted[row])))
                 .collect()
         };
         if let Some(own) = own {
@@ -977,14 +978,30 @@ fn source_columns(meta: &SourceMeta) -> Vec<CaptureColumn> {
     record_columns(meta.record()).chain(source).collect()
 }
 
+/// What `decoded` noted, by row.
+fn noted_by_row(decoded: &DecodedBatch) -> Vec<Vec<&crate::plan::topology::Noted>> {
+    let mut by_row = vec![Vec::new(); decoded.batch.rows()];
+    for note in &decoded.noted {
+        by_row[note.0 as usize].push(note);
+    }
+    by_row
+}
+
 /// Row `row` of `decoded` as a row of `source_columns(meta)`: its fields from its record object, a value that failed
-/// its type as the source spelled it, then its `__source` fields from `source`, the row's `__source` object.
-fn source_row(meta: &SourceMeta, decoded: &DecodedBatch, row: usize, source: &crate::io::SourceFields) -> CapturedRow {
+/// its type as the source spelled it, then its `__source` fields from `source`, the row's `__source` object. `noted`
+/// is what decoding noted against the row.
+fn source_row(
+    meta: &SourceMeta,
+    decoded: &DecodedBatch,
+    row: usize,
+    source: &crate::io::SourceFields,
+    noted: &[&crate::plan::topology::Noted],
+) -> CapturedRow {
     let mut values = record_values(meta.record(), &decoded.record_object(meta, row));
     let mut failed = Vec::new();
     // What decoding noted against a field of the record, with the value as read: a value that is not its field's
     // type, or why the payload could not be read, held in the record's first field.
-    for (_, slot, _, original) in decoded.noted.iter().filter(|note| note.0 as usize == row) {
+    for (_, slot, _, original) in noted {
         let field = slot.index().checked_sub(crate::core::batch::PREFIX_SLOTS);
         if let (Some(field), Some(original)) = (field.filter(|field| *field < values.len()), original) {
             values[field] = serde_json::Value::String(original.clone());
@@ -1807,7 +1824,13 @@ mod tests {
         let mut pool = BufferPool::new();
         let writers = Arc::default();
         let decoded = meta.decode(records, None::<&[&str]>, Some(&writers), None, &mut pool);
-        let row = source_row(meta, &decoded, 0, &crate::io::SourceFields::new());
+        let row = source_row(
+            meta,
+            &decoded,
+            0,
+            &crate::io::SourceFields::new(),
+            &noted_by_row(&decoded)[0],
+        );
         decoded.batch.reclaim(&mut pool);
         row
     }

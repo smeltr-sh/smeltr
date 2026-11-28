@@ -34,7 +34,7 @@ sequenceDiagram
   R->>R: track the batch id and offsets, waiting on every reachable destination
   R->>H: push the batch
   H->>T: take the batch
-  T->>T: decode_records: each payload into _raw text
+  T->>T: decode: each payload into its record
   T->>T: route_masks: which routes match each row
   T->>T: per route, run the pipeline, encode, apply the deliver rules
   T->>T: keep each destination's records for the turn
