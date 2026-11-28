@@ -7,54 +7,54 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "camelCase")]
 pub struct SplunkHecDestinationDto {
     /// The collector's base address; the destination adds the endpoint paths itself.
-    pub url: String,
+    url: String,
     /// Zone -> the address a worker in that zone sends to instead of `url`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub zone_urls: BTreeMap<String, String>,
+    zone_urls: BTreeMap<String, String>,
     /// The credential holding the HEC token, never the token itself.
-    pub token: SecretRefDto,
+    token: SecretRefDto,
     /// Where a row with no `__destination.index` goes. Absent leaves the token's own default index. The raw
     /// endpoint files every row here, so it refuses a row whose `__destination.index` names another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index: Option<String>,
+    index: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sourcetype: Option<String>,
+    sourcetype: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
+    source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
+    host: Option<String>,
     /// `"event"` (default) or `"raw"`; see `plan::topology::Endpoint`.
     #[serde(default, skip_serializing_if = "EndpointDto::is_default")]
-    pub endpoint: EndpointDto,
+    pub(crate) endpoint: EndpointDto,
     /// `"json"` (default) or `"text"`; the raw endpoint also takes `"bytes"`.
     #[serde(default, skip_serializing_if = "FormatDto::is_default")]
-    pub format: FormatDto,
+    pub(crate) format: FormatDto,
     /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
+    field: Option<String>,
     /// `"indexer"` (default) or `"receipt"`; see `plan::topology::Acknowledgement`.
     #[serde(default, skip_serializing_if = "AcknowledgementDto::is_default")]
-    pub acknowledgement: AcknowledgementDto,
+    pub(crate) acknowledgement: AcknowledgementDto,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    tls: TlsDto,
     /// `"none"` (default) or `"gzip"`.
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-    pub compression: CompressionDto,
+    compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    compression_level: Option<u8>,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-    pub max_request_bytes: RequestBytes,
+    pub(crate) max_request_bytes: RequestBytes,
     /// Unset means the default, or one whole request if that is larger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver, its acknowledgement included, before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for SplunkHecDestinationDto {
@@ -79,7 +79,7 @@ impl DestinationSpec for SplunkHecDestinationDto {
             ..
         } = self;
         check_http_compression(&d.id, compression, errors);
-        check_compression_level(&d.id, *compression, *compression_level, false, errors);
+        check_compression_level(&d.id, *compression, *compression_level, Compressor::Smeltr, errors);
         check_field(
             &d.id,
             matches!(format, FormatDto::Text | FormatDto::Bytes),
@@ -178,7 +178,7 @@ impl DestinationSpec for SplunkHecDestinationDto {
                 AcknowledgementDto::Indexer => Acknowledgement::Indexer,
                 AcknowledgementDto::Receipt => Acknowledgement::Receipt,
             },
-            compression: compression.to_plan(*compression_level),
+            compression: compression.to_plan(*compression_level, Compressor::Smeltr),
             tls: to_tls(tls, of, Side::Client),
             in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
             max_request_bytes: max_request_bytes.0,

@@ -10,7 +10,7 @@ use crate::plan::config::{CsvConfig, KvConfig};
 
 /// `csvRebuild(text, headers, delimiter, quote, escape, squeeze, trim)`: `text` with each column whose header is `null`
 /// left empty. `escape` is `""` where a quote is doubled.
-pub fn csv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn csv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     rebuild(ctx, ins, |args, row, text| {
         let config = CsvConfig {
             delimiter: args.byte(2, row)?,
@@ -30,7 +30,7 @@ pub fn csv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// `kvRebuild(text, skip, pairSep, kvSep, quote, escapes, nextKey)`: `text` without the pairs whose key `skip` names.
 /// `quote` is `""` where no value is quoted.
-pub fn kv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn kv_rebuild(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     rebuild(ctx, ins, |args, row, text| {
         let config = KvConfig {
             pair_sep: args.byte(2, row)?,

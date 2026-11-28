@@ -30,17 +30,17 @@ use crate::leader::store::{Actor, Store, WorkerCredentialRecord, WorkerKind};
 use crate::leader::{AppState, run_store};
 
 /// Where the setting is kept. Seconds, as the session deadlines are.
-pub const FORGET_AFTER_KEY: &str = "workers.ephemeral_forget_after_seconds";
+const FORGET_AFTER_KEY: &str = "workers.ephemeral_forget_after_seconds";
 
 /// How long an ephemeral worker may be silent before it is forgotten, where nobody has said. Past a container
 /// restarting in the same pod, so a crash is not a new worker; short enough that a lost node's workers are gone
 /// from the roster and from any rotation's wait well inside the hour.
-pub const DEFAULT_FORGET_AFTER: Duration = Duration::from_secs(10 * 60);
+pub(crate) const DEFAULT_FORGET_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// Its bounds. Silence shorter than a minute is a few missed heartbeats, not a worker gone. Longer than a month, and
 /// an autoscaled fleet carries a month of pods it will never see again.
-pub const MIN_FORGET_AFTER: Duration = Duration::from_secs(60);
-pub const MAX_FORGET_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const MIN_FORGET_AFTER: Duration = Duration::from_secs(60);
+const MAX_FORGET_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// How often the fleet is looked at for gone workers, however many heartbeats and page reads ask.
 const LOOK_EVERY: Duration = Duration::from_secs(10);
@@ -49,7 +49,7 @@ const LOOK_EVERY: Duration = Duration::from_secs(10);
 ///
 /// A stored value that is no longer allowed -- written by hand, or by an older build with other bounds -- is
 /// reported rather than replaced.
-pub fn forget_after(store: &Store) -> Result<Duration, String> {
+fn forget_after(store: &Store) -> Result<Duration, String> {
     match store.setting(FORGET_AFTER_KEY).map_err(|e| e.to_string())? {
         None => Ok(DEFAULT_FORGET_AFTER),
         Some(text) => {
@@ -75,7 +75,7 @@ fn checked(forget_after: Duration) -> Result<Duration, String> {
 
 /// Forgets `worker_id` if it is ephemeral and not revoked. What a heartbeat saying an ephemeral worker is stopping
 /// ends in.
-pub async fn forget(state: &AppState, worker_id: &str) {
+pub(crate) async fn forget(state: &AppState, worker_id: &str) {
     let id = worker_id.to_string();
     match run_store(state.store.clone(), move |s| s.forget_worker(&id)).await {
         Ok(true) => {
@@ -118,7 +118,7 @@ pub(crate) async fn free_holds(state: &AppState, worker_id: &str) {
 /// A worker the registry holds rows for and the roster does not know is forgotten on the same terms. The one way
 /// there is a heartbeat already past the gate when its worker was forgotten, and nothing else would ever remove
 /// what it wrote.
-pub async fn sweep(state: &AppState, now_ms: i64) {
+pub(crate) async fn sweep(state: &AppState, now_ms: i64) {
     if !state.registry.sweep_due(now_ms, LOOK_EVERY) {
         return;
     }
@@ -229,7 +229,7 @@ fn gone(
 /// bounds the form may offer, and the default it marks a change from. Seconds on the wire.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkerSettingsDto {
+struct WorkerSettingsDto {
     ephemeral_forget_after_seconds: u64,
     default_seconds: u64,
     min_seconds: u64,
@@ -237,7 +237,7 @@ pub struct WorkerSettingsDto {
 }
 
 #[derive(Default, serde::Serialize)]
-pub struct WorkerSettings {
+pub(crate) struct WorkerSettings {
     settings: Option<WorkerSettingsDto>,
 }
 
@@ -259,12 +259,12 @@ impl WorkerSettings {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PutWorkerSettings {
+pub(crate) struct PutWorkerSettings {
     ephemeral_forget_after_seconds: u64,
 }
 
 /// `GET /api/settings/workers`.
-pub async fn get_settings(State(state): State<AppState>) -> Envelope<WorkerSettings> {
+pub(crate) async fn get_settings(State(state): State<AppState>) -> Envelope<WorkerSettings> {
     // A stored setting the bounds no longer allow is the form's to correct.
     let read = run_store(state.store, |s| Ok(forget_after(s).map_err(Refusal::invalid))).await;
     WorkerSettings::answer(read.unwrap_or_else(|e| Err(e.into())))
@@ -273,7 +273,7 @@ pub async fn get_settings(State(state): State<AppState>) -> Envelope<WorkerSetti
 /// `PUT /api/settings/workers`. Recorded with who set it, in the transaction that sets it.
 ///
 /// `actor` is optional for the reason [`crate::leader::enrollment_codes::mint`]'s is: a router composed without a gate.
-pub async fn put_settings(
+pub(crate) async fn put_settings(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<PutWorkerSettings>,

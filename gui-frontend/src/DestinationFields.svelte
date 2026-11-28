@@ -132,13 +132,14 @@
   }
 
   /** What the shared format select edits: a destination's `format`, the `field` only `text` and `bytes` write,
-   * the `newlines` only `bytes` reads, the `variant` only `parquet` reads, the `schemaRegistry` only a stream's `avro` registers in, and the
+   * the `newlines` only `bytes` reads, the `variant` only `parquet` reads, the `compressionLevel` whose range `parquet` changes, the `schemaRegistry` only a stream's `avro` registers in, and the
    * `compression` an Avro file has no `lz4` of. */
   type Formatted = {
     format?: string;
     field?: string;
     newlines?: string;
     variant?: string;
+    compressionLevel?: number;
     schemaRegistry?: SchemaRegistry;
     compression?: Compression;
   };
@@ -203,7 +204,11 @@
           {/each}
         </select>
       </Field>
-      <CompressionLevel value={destination} codec={destination.compression ?? 'none'} kafka />
+      <CompressionLevel
+        value={destination}
+        codec={destination.compression ?? 'none'}
+        by="librdkafka"
+      />
       <Field optional field="acks" label="acks">
         {#snippet help()}
           How many replicas must hold a batch before it counts as delivered. Choose all unless you
@@ -299,7 +304,11 @@
           <option value="gzip">gzip</option>
         </select>
       </Field>
-      <CompressionLevel value={destination} codec={destination.compression ?? 'none'} kafka />
+      <CompressionLevel
+        value={destination}
+        codec={destination.compression ?? 'none'}
+        by="librdkafka"
+      />
       <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one batch may take to deliver before this destination counts as stalled.
@@ -888,7 +897,11 @@
           {/each}
         </select>
       </Field>
-      <CompressionLevel value={o} codec={o.compression ?? 'gzip'} />
+      <CompressionLevel
+        value={o}
+        codec={o.compression ?? 'gzip'}
+        by={o.format === 'parquet' ? 'parquet' : 'smeltr'}
+      />
       {#if isCloud(o)}
         <Field field="storageClass" label="storage class">
           {#snippet help()}
@@ -995,14 +1008,17 @@
       value={d.format ?? fallback}
       onchange={(e) => {
         const v = e.currentTarget.value;
+        const was = d.format ?? fallback;
         // text and bytes default their field apart, so one named for either does not carry to the other.
-        if (v !== (d.format ?? fallback)) delete d.field;
+        if (v !== was) delete d.field;
         if (v === fallback) delete d.format;
         else d.format = v;
         // Only bytes reads newlines; the load refuses it beside any other format.
         if (v !== 'bytes') delete d.newlines;
         // Only parquet reads variant.
         if (v !== 'parquet') delete d.variant;
+        // The parquet writer compresses a parquet file, and its levels are not smeltr's.
+        if ((v === 'parquet') !== (was === 'parquet')) delete d.compressionLevel;
         // Only a stream's Avro registers in a schema registry, and an Avro file has no lz4.
         if (v !== 'avro') delete d.schemaRegistry;
         else if (formats === AVRO_STREAM_FORMATS) d.schemaRegistry ??= { url: '' };

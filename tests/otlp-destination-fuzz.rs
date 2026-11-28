@@ -199,10 +199,11 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         let level = if loose(rng) {
             any(
                 rng,
-                vec![json!(0), json!(10), json!(256), json!(-1), json!(1.5), json!("6")],
+                vec![json!(4), json!(10), json!(256), json!(-1), json!(1.5), json!("1")],
             )
         } else {
-            json!(1 + rng.below(9))
+            // igzip's levels, 0 to 3.
+            json!(rng.below(4))
         };
         d.insert("compressionLevel".into(), level);
     }
@@ -306,7 +307,7 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         set.push("compression gzip".into());
     }
     let system = json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [d],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
@@ -1006,7 +1007,7 @@ fn bundle(url: &str, signal: Signal, mut d: Map<String, Value>) -> String {
     d.insert("url".into(), json!(url));
     d.insert("signal".into(), json!(signal.name()));
     json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [d],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],

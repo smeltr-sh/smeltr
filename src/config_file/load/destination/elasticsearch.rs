@@ -6,53 +6,53 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElasticsearchDestinationDto {
-    pub url: String,
+    url: String,
     /// Zone -> the address a worker in that zone sends to instead of `url`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub zone_urls: BTreeMap<String, String>,
-    pub default_index: String,
+    zone_urls: BTreeMap<String, String>,
+    default_index: String,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    tls: TlsDto,
     /// The credential holding the API key or a whole `Authorization` header value, never the value itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<SecretRefDto>,
+    pub(crate) auth: Option<SecretRefDto>,
     /// Basic auth, in place of `auth`: `username` and `password` together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
+    username: Option<String>,
     /// The credential holding `username`'s password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<SecretRefDto>,
+    password: Option<SecretRefDto>,
     /// `"create"` (default) or `"index"`; see `plan::topology::BulkAction`.
     #[serde(default, alias = "docId", skip_serializing_if = "BulkActionDto::is_default")]
-    pub action: BulkActionDto,
+    pub(crate) action: BulkActionDto,
     /// The row field holding the document's `_id`. Omitted, it is `__destination.id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id_field: Option<String>,
+    id_field: Option<String>,
     /// `"none"` (default) or `"gzip"`.
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-    pub compression: CompressionDto,
+    compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    compression_level: Option<u8>,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "BulkBytes::is_default")]
-    pub max_bulk_bytes: BulkBytes,
+    pub(crate) max_bulk_bytes: BulkBytes,
     /// Unset means the default, or one whole bulk request if that is larger: raising `max_bulk_bytes` alone must
     /// never leave a destination unable to hand a request over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     /// Whether a worker learns the cluster's nodes from `url` and spreads its requests across them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub sniff: bool,
+    sniff: bool,
     /// The node attribute naming a node's zone, which sniffing prefers the worker's own of. Absent is `zone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zone_attribute: Option<String>,
+    zone_attribute: Option<String>,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for ElasticsearchDestinationDto {
@@ -113,7 +113,7 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             errors,
         );
         check_http_compression(&d.id, compression, errors);
-        check_compression_level(&d.id, *compression, *compression_level, false, errors);
+        check_compression_level(&d.id, *compression, *compression_level, Compressor::Smeltr, errors);
         if blank(default_index) {
             errors
                 .at("defaultIndex")
@@ -155,7 +155,7 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             url: url.clone(),
             zone_urls: zone_urls.clone(),
             default_index: default_index.clone(),
-            compression: compression.to_plan(*compression_level),
+            compression: compression.to_plan(*compression_level, Compressor::Smeltr),
             auth: auth.as_ref().map(to_secret_ref),
             // Validation refused a username without a password, and a password without a username.
             basic: username.clone().zip(password.as_ref().map(to_secret_ref)),

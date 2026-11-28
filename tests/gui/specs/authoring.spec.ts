@@ -3782,7 +3782,7 @@ test('A10: Elasticsearch and Splunk HEC send each request gzipped', async ({
   await expect(esCompression.locator('option')).toHaveText(['none', 'gzip']);
   await expect(dialog.getByRole('slider', { name: /^compression level/ })).toHaveCount(0);
   await esCompression.selectOption('gzip');
-  await expect(dialog.getByRole('slider', { name: 'compression level: 6' })).toBeVisible();
+  await expect(dialog.getByRole('slider', { name: 'compression level: 1' })).toBeVisible();
   await dialog.getByRole('slider', { name: /^compression level/ }).fill('3');
   await expect(dialog.getByRole('slider', { name: 'compression level: 3' })).toBeVisible();
   await dialog.screenshot({ path: test.info().outputPath('elasticsearch-compression.png') });
@@ -3797,7 +3797,7 @@ test('A10: Elasticsearch and Splunk HEC send each request gzipped', async ({
   await dialog.getByRole('combobox', { name: 'token source' }).selectOption('hec-token');
   await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await dialog.getByRole('combobox', { name: /^compression/ }).selectOption('gzip');
-  await expect(dialog.getByRole('slider', { name: 'compression level: 6' })).toBeVisible();
+  await expect(dialog.getByRole('slider', { name: 'compression level: 1' })).toBeVisible();
   await dialog.screenshot({ path: test.info().outputPath('splunk-hec-compression.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
@@ -4292,9 +4292,9 @@ test('A10: an OTLP destination is added from its form, sending spans gzipped, it
   await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await dialog.getByRole('combobox', { name: /^compression/ }).selectOption('gzip');
   // gzip's level starts at its default, and the label shows the level the slider is at.
-  await expect(dialog.getByRole('slider', { name: 'compression level: 6' })).toBeVisible();
-  await dialog.getByRole('slider', { name: /^compression level/ }).fill('9');
-  await expect(dialog.getByRole('slider', { name: 'compression level: 9' })).toBeVisible();
+  await expect(dialog.getByRole('slider', { name: 'compression level: 1' })).toBeVisible();
+  await dialog.getByRole('slider', { name: /^compression level/ }).fill('3');
+  await expect(dialog.getByRole('slider', { name: 'compression level: 3' })).toBeVisible();
   await expect(dialog.getByRole('spinbutton', { name: /^starting concurrency/ })).toBeVisible();
   await dialog.screenshot({ path: test.info().outputPath('otlp-destination-form.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
@@ -4310,7 +4310,7 @@ test('A10: an OTLP destination is added from its form, sending spans gzipped, it
       url: 'https://otel-collector.example.com:4318',
       signal: 'traces',
       compression: 'gzip',
-      compressionLevel: 9,
+      compressionLevel: 3,
       credentials: { Authorization: { secret: 'otlp-token', version: 1 } },
     },
   ]);
@@ -4531,6 +4531,40 @@ test('A10: a Parquet destination writes native variants, and another format drop
   expect(saved.config.destinations).toMatchObject([
     { id: 'lake', type: 's3', format: 'parquet', variant: 'native' },
   ]);
+});
+
+// A10, sources and destinations from a form. smeltr gzips a line file itself, at igzip's levels; the parquet writer
+// gzips a parquet file, at its own.
+test("A10: a parquet file takes the parquet writer's gzip levels, and changing format drops the level", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await goto(admin, leader, '#/build/destinations');
+  await expect(admin.getByRole('heading', { name: 'Destinations' })).toBeVisible();
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'S3', exact: true }).click();
+  await dialog.getByRole('textbox', { name: /^bucket/ }).fill('lake-zone');
+  await dialog.getByRole('textbox', { name: /^id/ }).fill('lake');
+  await dialog.getByRole('button', { name: /^Endpoint and delivery/ }).click();
+  const level = dialog.getByRole('slider', { name: /^compression level/ });
+  await expect(dialog.getByRole('slider', { name: 'compression level: 1' })).toBeVisible();
+  await expect(level).toHaveAttribute('max', '3');
+  await level.fill('3');
+  await dialog.screenshot({ path: test.info().outputPath('destination-gzip-level-lines.png') });
+  await dialog.getByRole('combobox', { name: /^format/ }).selectOption('parquet');
+  await expect(dialog.getByRole('slider', { name: 'compression level: 6' })).toBeVisible();
+  await expect(level).toHaveAttribute('max', '9');
+  await dialog.screenshot({ path: test.info().outputPath('destination-gzip-level-parquet.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.destinations).toMatchObject([{ id: 'lake', type: 's3', format: 'parquet' }]);
+  expect(saved.config.destinations[0].compressionLevel).toBeUndefined();
 });
 
 // A10, sources and destinations from a form. Nothing answers at the source's endpoint: holding a listing source

@@ -35,7 +35,7 @@ fn object_type(o: &Object, layout: &Slots<DataType>) -> DataType {
 /// The step that wrote the field at `keys` of what `plan` writes: the one that bound its leaf, or the unclaimed
 /// fields of the object holding it, or the last to copy a value there (`Plan::aliases`). `None` where the source gave
 /// it.
-pub fn writer(plan: &Plan, keys: &[String]) -> Option<FunctionId> {
+pub(crate) fn writer(plan: &Plan, keys: &[String]) -> Option<FunctionId> {
     let mut at = &plan.tree;
     let mut name = String::new();
     let mut slot = None;
@@ -135,7 +135,7 @@ fn filled(ty: &DataType, seen: &DataType) -> DataType {
 
 /// Each leaf of `record` by its name, with its type spelled, in name order: an object's fields, then, where it is
 /// open, its unclaimed fields as `name.*`, a variant.
-pub fn fields(record: &DataType) -> Vec<(String, String)> {
+pub(crate) fn fields(record: &DataType) -> Vec<(String, String)> {
     let mut out = Vec::new();
     leaves(record, &mut String::new(), &mut out);
     out

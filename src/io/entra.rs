@@ -25,13 +25,13 @@ use super::http::percent_encode;
 use crate::plan::topology::{EntraSignIn, HeldSecrets};
 
 /// The Azure Instance Metadata Service version a managed identity's token is asked of.
-pub const IMDS_API_VERSION: &str = "2018-02-01";
+pub(crate) const IMDS_API_VERSION: &str = "2018-02-01";
 
 /// Where the host's instance metadata service gives a managed identity its tokens.
 const IMDS: &str = "http://169.254.169.254/metadata/identity/oauth2/token";
 
 /// A sign-in to the Azure service `resource` names, made the first time a token is needed.
-pub struct Entra {
+pub(crate) struct Entra {
     how: How,
     resource: String,
     held: Option<Held>,
@@ -59,7 +59,12 @@ enum Held {
 impl Entra {
     /// A sign-in as `sign_in` says, for a token to `resource`, such as `https://monitor.azure.com`. `what` names the
     /// connector when the secret it takes is not held.
-    pub fn new(sign_in: &EntraSignIn, resource: &str, secrets: &HeldSecrets, what: &str) -> Result<Entra, IoError> {
+    pub(crate) fn new(
+        sign_in: &EntraSignIn,
+        resource: &str,
+        secrets: &HeldSecrets,
+        what: &str,
+    ) -> Result<Entra, IoError> {
         let how = match sign_in {
             EntraSignIn::ServicePrincipal {
                 authority,
@@ -206,7 +211,7 @@ fn imds_token(
 /// The user-assigned managed identity this host names in `AZURE_CLIENT_ID`. The same variable names a workload
 /// identity's or an environment's service principal, which are not managed identities: their own variables beside
 /// it say so, and then it names none.
-pub fn managed_identity_client_id() -> Option<String> {
+pub(crate) fn managed_identity_client_id() -> Option<String> {
     let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
     if set("AZURE_FEDERATED_TOKEN_FILE") || set("AZURE_CLIENT_SECRET") {
         return None;
@@ -215,13 +220,13 @@ pub fn managed_identity_client_id() -> Option<String> {
 }
 
 /// Whether this host is a pod with a workload identity, as Azure's webhook marks one.
-pub fn in_workload() -> bool {
+pub(crate) fn in_workload() -> bool {
     std::env::var_os("AZURE_FEDERATED_TOKEN_FILE").is_some_and(|v| !v.is_empty())
 }
 
 /// A pod's workload identity: the pod's Kubernetes token, from the file Azure's webhook names, traded at Entra as an
 /// assertion in place of a secret.
-pub struct Workload {
+pub(crate) struct Workload {
     token_url: String,
     client_id: String,
     file: PathBuf,
@@ -230,7 +235,7 @@ pub struct Workload {
 impl Workload {
     /// The workload identity the variables Azure's webhook sets name, read through `env`, signing in where the cloud
     /// `resource` is in does unless the webhook names an authority.
-    pub fn from_env(env: &dyn Fn(&str) -> Option<String>, resource: &str) -> Result<Workload, IoError> {
+    pub(crate) fn from_env(env: &dyn Fn(&str) -> Option<String>, resource: &str) -> Result<Workload, IoError> {
         let var = |name: &str| {
             env(name)
                 .map(|v| v.trim().to_string())
@@ -259,17 +264,17 @@ impl Workload {
     }
 
     /// The client id it signs in as.
-    pub fn client_id(&self) -> &str {
+    pub(crate) fn client_id(&self) -> &str {
         &self.client_id
     }
 
     /// Where it signs in.
-    pub fn token_url(&self) -> &str {
+    pub(crate) fn token_url(&self) -> &str {
         &self.token_url
     }
 
     /// Its sign-in for `scope`. Nothing is asked until the first token is needed.
-    pub fn credentials(&self, scope: String, agent: ureq::Agent, timeout: Duration) -> ClientCredentials {
+    pub(crate) fn credentials(&self, scope: String, agent: ureq::Agent, timeout: Duration) -> ClientCredentials {
         ClientCredentials::new(
             self.token_url.clone(),
             self.client_id.clone(),
@@ -283,7 +288,7 @@ impl Workload {
 }
 
 /// The resource an Azure Monitor endpoint at `url` takes tokens for: Azure Monitor in the cloud its host is in.
-pub fn monitor_resource(url: &str) -> &'static str {
+pub(crate) fn monitor_resource(url: &str) -> &'static str {
     match super::entra_authority(url) {
         "https://login.microsoftonline.us" => "https://monitor.azure.us",
         "https://login.chinacloudapi.cn" => "https://monitor.azure.cn",

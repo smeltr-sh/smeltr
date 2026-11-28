@@ -11,19 +11,19 @@ use super::{FileConfig, LoadError, LoadedSystem, ValidationError, load_str, vali
 use crate::fuzz::{Coverage, Rng};
 
 /// Each pool pairs a value, as JSON text, with whether the loader must refuse it at its own field.
-pub type Pool = &'static [(&'static str, bool)];
+pub(crate) type Pool = &'static [(&'static str, bool)];
 
-pub fn parse(json: &str) -> Value {
+pub(crate) fn parse(json: &str) -> Value {
     serde_json::from_str(json).unwrap()
 }
 
 /// Text pasted from up to seven of `pieces`, the fuzzer's own cuts of what breaks its fields' parsers.
-pub fn random_text(rng: &mut Rng, pieces: &[&str]) -> String {
+pub(crate) fn random_text(rng: &mut Rng, pieces: &[&str]) -> String {
     (0..rng.below(8)).map(|_| *rng.pick(pieces)).collect()
 }
 
 /// A value of any JSON type, to stand where a field expects another.
-pub fn random_value(rng: &mut Rng, pieces: &[&str]) -> Value {
+pub(crate) fn random_value(rng: &mut Rng, pieces: &[&str]) -> Value {
     match rng.below(9) {
         0 => Value::from(rng.next_u64() as i64),
         1 => Value::from(rng.next_u64()),
@@ -38,7 +38,7 @@ pub fn random_value(rng: &mut Rng, pieces: &[&str]) -> Value {
 }
 
 /// A number at or past the edges of every bound: a count, a port, a byte count, a negative, or a size in words.
-pub fn random_number(rng: &mut Rng, pieces: &[&str]) -> Value {
+fn random_number(rng: &mut Rng, pieces: &[&str]) -> Value {
     match rng.below(8) {
         0 => Value::from(0),
         1 => Value::from(u64::MAX),
@@ -53,7 +53,7 @@ pub fn random_number(rng: &mut Rng, pieces: &[&str]) -> Value {
 
 /// A field's value: one of its known values, or, one time in `density`, one of the field's type off the pool, and
 /// now and then one of any type.
-pub fn garbage_value(rng: &mut Rng, pieces: &[&str], pool: Pool, density: usize) -> Value {
+pub(crate) fn garbage_value(rng: &mut Rng, pieces: &[&str], pool: Pool, density: usize) -> Value {
     if !rng.chance(density) {
         return parse(rng.pick(pool).0);
     }
@@ -68,7 +68,7 @@ pub fn garbage_value(rng: &mut Rng, pieces: &[&str], pool: Pool, density: usize)
 }
 
 /// One generated item, and what the loader must make of it.
-pub trait Fuzzed {
+pub(crate) trait Fuzzed {
     /// The section of the file the item is put in, and its id there.
     const SECTION: &'static str;
     const ID: &'static str;
@@ -87,7 +87,7 @@ pub trait Fuzzed {
 
 /// What the loader made of one bundle.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Verdict {
+pub(crate) enum Verdict {
     /// Refused by its JSON shape, before any rule.
     Shape,
     Refused,
@@ -95,7 +95,7 @@ pub enum Verdict {
 }
 
 /// What the loader made of one bundle, or why it is wrong.
-pub fn check<C: Fuzzed>(case: &C, json: &str) -> Result<Verdict, String> {
+fn check<C: Fuzzed>(case: &C, json: &str) -> Result<Verdict, String> {
     let file: FileConfig = match serde_json::from_str(json) {
         Ok(file) => file,
         // A value of the wrong type is refused by its shape. A known case has none.
@@ -157,7 +157,7 @@ fn check_refusals<C: Fuzzed>(errors: &[ValidationError]) -> Result<(), String> {
 /// Runs `generate` over the seeds, and fails naming each seed whose case the loader got wrong, with its item. Every
 /// option and `expected` must be reached between the seeds: `reached` marks what one case and its verdict reach
 /// besides the fields it was refused at, which are marked here.
-pub fn run<C: Fuzzed>(
+pub(crate) fn run<C: Fuzzed>(
     seeds: Range<u64>,
     generate: fn(&mut Rng) -> C,
     options: &[&str],

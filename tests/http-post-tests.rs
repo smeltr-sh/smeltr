@@ -2,6 +2,7 @@
 //! and what goes on the wire.
 
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use smeltr::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -414,7 +415,7 @@ fn answering(n: usize, status: &'static str) -> (String, std::thread::JoinHandle
 fn every_request_carries_the_headers_and_says_what_its_body_is() {
     let (url, served) = service(1);
     let c = HttpDestinationConfig {
-        compression: Compression::Gzip(6),
+        compression: Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
         headers: vec![("X-Source".to_string(), "smeltr".to_string())],
         ..config(&url, RequestBody::JsonArray)
     };

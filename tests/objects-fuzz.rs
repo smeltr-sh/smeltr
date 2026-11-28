@@ -12,6 +12,7 @@
 //! read back the same.
 
 use smeltr::core::id::DestId;
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::Arc;
@@ -257,8 +258,10 @@ fn draw_objects(rng: &mut Rng, cov: &mut Reached, store: Store, d: &mut Map<Stri
     if compression != "gzip" || rng.chance(2) {
         d.insert("compression".into(), json!(compression));
     }
+    // igzip's levels, or the parquet writer's for a parquet file.
     let levels = match compression {
-        "gzip" => Some(1..=9),
+        "gzip" if format == "parquet" => Some(1..=9),
+        "gzip" => Some(0..=3),
         "zstd" => Some(1..=22),
         _ => None,
     };
@@ -357,8 +360,10 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         }
         // Past the top of the codec's levels, or any level for a codec that takes none.
         "compressionLevel" => {
+            let parquet = d.get("format").and_then(Value::as_str) == Some("parquet");
             let level = match d.get("compression").and_then(Value::as_str).unwrap_or("gzip") {
-                "gzip" => 10,
+                "gzip" if parquet => 10,
+                "gzip" => 4,
                 "zstd" => 23,
                 _ => 1,
             };
@@ -427,7 +432,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
 /// `draw` as a whole bundle: a Kafka source, and one route through `pipeline` to the destination.
 fn bundle(draw: &Draw, pipeline: &str) -> Value {
     json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [Value::Object(draw.destination.clone())],
         "pipelines": [{"id": "p", "name": "p", "steps": pipeline_steps(pipeline)}],
@@ -470,13 +475,20 @@ fn check_loaded(draw: &Draw, c: &ObjectsDestinationConfig, named: &[SecretRef]) 
     cmp.expect("prefix", text(d, "prefix").unwrap_or("%Y/%m/%d/%H/".into()), &c.prefix);
     let compression = match text(d, "compression").as_deref().unwrap_or("gzip") {
         "none" => Compression::None,
-        "gzip" => Compression::Gzip(6),
+        "gzip" if text(d, "format").as_deref() == Some("parquet") => Compression::Gzip(GzipLevel::Zlib(6)),
+        "gzip" => Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)),
         "snappy" => Compression::Snappy,
         "lz4" => Compression::Lz4(0),
         _ => Compression::Zstd(3),
     };
-    let compression =
-        (d.get("compressionLevel").and_then(Value::as_u64)).map_or(compression, |l| compression.at(l as u8));
+    let compression = match (compression, d.get("compressionLevel").and_then(Value::as_u64)) {
+        (Compression::Gzip(GzipLevel::Zlib(_)), Some(l)) => Compression::Gzip(GzipLevel::Zlib(l as u8)),
+        (Compression::Gzip(GzipLevel::Igzip(_)), Some(l)) => {
+            Compression::Gzip(GzipLevel::Igzip(IgzipLevel::new(l as u8).unwrap()))
+        }
+        (Compression::Zstd(_), Some(l)) => Compression::Zstd(l as u8),
+        (codec, _) => codec,
+    };
     cmp.expect("compression", compression, c.compression);
     let field = text(d, "field");
     let format = match text(d, "format").as_deref().unwrap_or("ndjson") {

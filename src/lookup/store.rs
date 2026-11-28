@@ -15,7 +15,7 @@ use super::LookupError;
 
 /// The store's folder inside a repository's git directory. Git leaves a folder it does not know alone, and neither
 /// clones nor fetches carry it.
-pub const STORE_DIR: &str = "lookup-store";
+pub(crate) const STORE_DIR: &str = "lookup-store";
 
 /// What a commit holds at a lookup file's path: the Git LFS pointer format, so that git tooling shows it as what it
 /// is. Smeltr does not speak the LFS protocol.
@@ -28,7 +28,7 @@ pub struct Pointer {
 
 impl Pointer {
     /// The pointer `text` is, or `None` when it is not one.
-    pub fn parse(text: &[u8]) -> Option<Pointer> {
+    fn parse(text: &[u8]) -> Option<Pointer> {
         let text = std::str::from_utf8(text).ok()?;
         let mut lines = text.lines();
         lines.next()?.strip_prefix("version https://git-lfs.github.com/spec/")?;
@@ -49,7 +49,7 @@ impl Pointer {
 }
 
 /// Whether `oid` is a SHA-256 in lowercase hex: what may name a file in the store, and nothing else may.
-pub fn is_oid(oid: &str) -> bool {
+pub(crate) fn is_oid(oid: &str) -> bool {
     oid.len() == 64 && oid.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
@@ -68,7 +68,7 @@ pub fn map(path: &Path) -> std::io::Result<memmap2::Mmap> {
 }
 
 /// The file at `path`, copied: for a file its author may change while a plan holds it, which a map must not see.
-pub fn copy(path: &Path) -> std::io::Result<memmap2::Mmap> {
+pub(crate) fn copy(path: &Path) -> std::io::Result<memmap2::Mmap> {
     let bytes = std::fs::read(path)?;
     if bytes.is_empty() {
         // Windows refuses to make an empty anonymous map read-only.
@@ -82,7 +82,7 @@ pub fn copy(path: &Path) -> std::io::Result<memmap2::Mmap> {
 
 /// The pointer `blob`, the file committed at `named`'s path, is. A lookup file is committed as a pointer, by an upload
 /// or by git-lfs: committed as its bytes it would reach every clone of the repository, every worker's included.
-pub fn pointer_in(blob: &[u8], named: &str) -> Result<Pointer, LookupError> {
+pub(crate) fn pointer_in(blob: &[u8], named: &str) -> Result<Pointer, LookupError> {
     Pointer::parse(blob).ok_or_else(|| {
         LookupError(format!(
             "lookup file `{named}` is committed as its bytes, not as a Git LFS pointer. Commit it with git-lfs, or \
@@ -95,7 +95,7 @@ pub fn pointer_in(blob: &[u8], named: &str) -> Result<Pointer, LookupError> {
 pub const MAX_FILE_BYTES: u64 = 2 << 30;
 
 /// The ones of `pointers` that `repo`'s store lacks.
-pub fn missing<'a>(repo: &Path, pointers: impl IntoIterator<Item = &'a Pointer>) -> Vec<&'a Pointer> {
+pub(crate) fn missing<'a>(repo: &Path, pointers: impl IntoIterator<Item = &'a Pointer>) -> Vec<&'a Pointer> {
     pointers
         .into_iter()
         .filter(|pointer| !path_of(repo, &pointer.oid).exists())
@@ -104,7 +104,7 @@ pub fn missing<'a>(repo: &Path, pointers: impl IntoIterator<Item = &'a Pointer>)
 
 /// Fetch into `repo`'s store every one of `pointers` it lacks, each read from what `fetch` answers for it and checked
 /// against its pointer.
-pub fn fetch_missing<'a, R: std::io::Read>(
+pub(crate) fn fetch_missing<'a, R: std::io::Read>(
     repo: &Path,
     pointers: impl IntoIterator<Item = &'a Pointer>,
     mut fetch: impl FnMut(&Pointer) -> Result<R, String>,
@@ -184,7 +184,7 @@ impl Incoming {
 impl Incoming {
     /// Name the file `name`, for a file derived from a stored one whose name says what from, and map it. A file of
     /// that name is replaced: it is being written again because it did not read back.
-    pub fn finish_as(mut self, name: &str) -> std::io::Result<memmap2::Mmap> {
+    fn finish_as(mut self, name: &str) -> std::io::Result<memmap2::Mmap> {
         drop(self.file.take());
         let at = self.dir.join(name);
         std::fs::rename(&self.temp, &at)?;
@@ -193,7 +193,7 @@ impl Incoming {
 }
 
 /// `bytes` put in a store as the file at `at`, a path inside it, and mapped.
-pub fn derive(at: &Path, bytes: &[u8]) -> std::io::Result<memmap2::Mmap> {
+pub(crate) fn derive(at: &Path, bytes: &[u8]) -> std::io::Result<memmap2::Mmap> {
     let (Some(repo), Some(name)) = (
         at.parent().and_then(Path::parent),
         at.file_name().and_then(|n| n.to_str()),
@@ -206,7 +206,7 @@ pub fn derive(at: &Path, bytes: &[u8]) -> std::io::Result<memmap2::Mmap> {
 }
 
 /// How the temporary files of the process `pid` are named.
-pub fn incoming_prefix(pid: u32) -> String {
+pub(crate) fn incoming_prefix(pid: u32) -> String {
     format!(".incoming-{pid}-")
 }
 
@@ -232,7 +232,7 @@ impl Drop for Incoming {
 
 /// Remove every file in `repo`'s store but those `keep` names. A file that will not go is left for the next call:
 /// Windows refuses to delete a file something still maps.
-pub fn keep_only(repo: &Path, keep: &std::collections::HashSet<String>) {
+pub(crate) fn keep_only(repo: &Path, keep: &std::collections::HashSet<String>) {
     let Ok(entries) = std::fs::read_dir(repo.join(STORE_DIR)) else {
         return;
     };
@@ -253,7 +253,7 @@ pub fn keep_only(repo: &Path, keep: &std::collections::HashSet<String>) {
 /// Remove `oid` from `repo`'s store, and then every file derived from it. Derived files outlive a refused
 /// delete of the stored one, so it can be tried again; a derived file that will not go is an orphan, which
 /// `is_orphan` names.
-pub fn remove(repo: &Path, oid: &str) -> std::io::Result<()> {
+pub(crate) fn remove(repo: &Path, oid: &str) -> std::io::Result<()> {
     std::fs::remove_file(path_of(repo, oid))?;
     let derived = format!("{oid}.");
     for entry in std::fs::read_dir(repo.join(STORE_DIR))?.flatten() {
@@ -309,7 +309,7 @@ fn hash_of(path: &Path) -> std::io::Result<String> {
 }
 
 /// Whether `name` in `repo`'s store is derived from a stored file that is gone.
-pub fn is_orphan(repo: &Path, name: &str) -> bool {
+pub(crate) fn is_orphan(repo: &Path, name: &str) -> bool {
     name.split_once('.')
         .is_some_and(|(oid, _)| is_oid(oid) && !path_of(repo, oid).exists())
 }

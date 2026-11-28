@@ -88,7 +88,7 @@ pub fn transport(config: &SplunkHecDestinationConfig, token: &str, agent: &ureq:
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &SplunkHecDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,

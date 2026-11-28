@@ -8,7 +8,7 @@ use crate::expr::ast::{RegexFlags, Span};
 use crate::ops::BinOp;
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum Token {
+pub(crate) enum Token {
     /// A bare or dotted name: `x`, `source.ip`
     Ident(String),
     Int(i64),
@@ -28,7 +28,7 @@ pub enum Token {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum TemplatePart {
+pub(crate) enum TemplatePart {
     /// Literal text between holes, escapes already resolved.
     Lit(String),
     /// One `${...}`; `offset` is where `src` begins in the original input.
@@ -71,7 +71,7 @@ pub enum Keyword {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Punct {
+pub(crate) enum Punct {
     Plus,
     Minus,
     Star,
@@ -117,22 +117,22 @@ pub enum Punct {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct Spanned {
-    pub token: Token,
-    pub span: Span,
+pub(crate) struct Spanned {
+    pub(crate) token: Token,
+    pub(crate) span: Span,
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct LexError {
-    pub span: Span,
-    pub message: String,
+pub(crate) struct LexError {
+    pub(crate) span: Span,
+    pub(crate) message: String,
 }
 
 /// The ASCII bytes a token can begin or end with, which is where a would-be name stops when the lexer names it in an
 /// error. Everything else, a non-ASCII byte included, is taken as part of the name.
 const NAME_BREAKERS: &[u8] = b"+-*/%<>=!&|?:,;()[]{}\"'`";
 
-pub struct Lexer<'a> {
+pub(crate) struct Lexer<'a> {
     src: &'a [u8],
     text: &'a str,
     pos: usize,
@@ -141,7 +141,7 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(text: &'a str) -> Lexer<'a> {
+    pub(crate) fn new(text: &'a str) -> Lexer<'a> {
         Lexer {
             src: text.as_bytes(),
             text,
@@ -150,7 +150,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn tokenize(text: &'a str) -> Result<Vec<Spanned>, LexError> {
+    pub(crate) fn tokenize(text: &'a str) -> Result<Vec<Spanned>, LexError> {
         let mut lx = Lexer::new(text);
         let mut out = Vec::new();
         loop {
@@ -240,7 +240,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next_token(&mut self) -> Result<Spanned, LexError> {
+    pub(crate) fn next_token(&mut self) -> Result<Spanned, LexError> {
         self.skip_trivia();
         let start = self.pos;
 

@@ -9,7 +9,7 @@ use crate::plan::config::{DeclaredField, FunctionKind, LookupOutput, MatchKind, 
 use crate::plan::tree::{self, ROOT};
 
 /// What the tree holds at a name when a step that declares it is reached.
-pub enum Held {
+pub(crate) enum Held {
     /// Bound, at this type.
     Bound(DataType),
     /// Not bound, but a key an open object may hold.
@@ -20,9 +20,9 @@ pub enum Held {
 
 /// A step's statements: `body` runs under the step's filter, `after` after it, under the guard around the step.
 #[derive(Default)]
-pub struct Lowered {
-    pub body: Vec<Stmt>,
-    pub after: Vec<Stmt>,
+pub(crate) struct Lowered {
+    pub(crate) body: Vec<Stmt>,
+    pub(crate) after: Vec<Stmt>,
 }
 
 impl From<Vec<Stmt>> for Lowered {
@@ -38,7 +38,7 @@ impl From<Vec<Stmt>> for Lowered {
 /// `kind` with each field of the step that holds a name read into its spelling (`tree::parse_name`), so a key that
 /// is not plain is the one key it spells. A blank field stays blank, for the step's own error. `Err` names the field
 /// that does not read as a name.
-pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
+pub(crate) fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
     let name = |text: &str| match text.trim() {
         "" => Ok(text.to_string()),
         _ => tree::parse_name(text),
@@ -90,7 +90,7 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
 }
 
 /// `move(from, to)` for each pair that names two places.
-pub fn rename(pairs: &[(String, String)]) -> Vec<Stmt> {
+pub(crate) fn rename(pairs: &[(String, String)]) -> Vec<Stmt> {
     pairs
         .iter()
         .filter(|(from, to)| from != to)
@@ -102,7 +102,7 @@ pub fn rename(pairs: &[(String, String)]) -> Vec<Stmt> {
 /// `delete(fields)`, clearing them on the rows a filter selects as a Rename does. A blank name removes nothing. A name
 /// listed twice, or under an object also listed, goes with the first or the object: deleting it again would find no
 /// field.
-pub fn remove(fields: &[String]) -> Vec<Stmt> {
+pub(crate) fn remove(fields: &[String]) -> Vec<Stmt> {
     let listed: std::collections::HashSet<&str> = fields.iter().map(String::as_str).collect();
     let mut seen = std::collections::HashSet::new();
     let names: Vec<String> = (fields.iter())
@@ -121,7 +121,7 @@ pub fn remove(fields: &[String]) -> Vec<Stmt> {
 }
 
 /// `if (cond) drop()`. A blank condition drops nothing.
-pub fn drop(cond: Option<Expr>) -> Vec<Stmt> {
+pub(crate) fn drop(cond: Option<Expr>) -> Vec<Stmt> {
     let span = Span::default();
     cond.map(|cond| Stmt::If {
         cond,
@@ -134,7 +134,7 @@ pub fn drop(cond: Option<Expr>) -> Vec<Stmt> {
 
 /// `Object.assign(into, json(input))`, and the call each other kind makes, after a declaration of each of `fields`
 /// under `into`.
-pub fn parser(
+pub(crate) fn parser(
     input: &str,
     into: &str,
     kind: &ParserKind,
@@ -234,7 +234,7 @@ fn rebuild(input: &str, kind: &ParserKind) -> Option<Stmt> {
 }
 
 /// `Object.assign($, lookup(table, input, {…}))`, after a declaration of each output.
-pub fn lookup(
+pub(crate) fn lookup(
     table: &str,
     input: &str,
     match_kind: MatchKind,

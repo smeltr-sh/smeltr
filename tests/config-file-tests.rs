@@ -5,6 +5,7 @@
 use smeltr::config_file::{load_bundle_dir, load_str};
 use smeltr::core::batch::{Batch, RAW_SLOTS, SLOT_LIVE, SLOT_RAW, raw_layout};
 use smeltr::core::id::{DestId, Id, SlotId};
+use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 
 /// `__source.offset` for a Kafka source: third of the three fields it declares.
 const SLOT_OFFSET: usize = RAW_SLOTS + 2;
@@ -2468,7 +2469,7 @@ fn a_minimal_splunk_hec_destination_loads_with_the_defaults() {
 /// codec.
 #[test]
 fn elasticsearch_and_splunk_hec_compress_with_gzip_alone() {
-    use smeltr::plan::topology::{Compression, DestinationKind};
+    use smeltr::plan::topology::{Compression, DestinationKind, GzipLevel, IgzipLevel};
 
     let es = |extra: &str| {
         cfg(
@@ -2484,15 +2485,21 @@ fn elasticsearch_and_splunk_hec_compress_with_gzip_alone() {
     };
     let configs: [&dyn Fn(&str) -> String; 2] = [&es, &hec_config];
     for config in configs {
+        // At the current version, which no upgrade step brings a level into range for.
+        let config = |extra: &str| {
+            let current = format!(r#""version":{}"#, smeltr::config_file::CURRENT_VERSION);
+            config(extra).replacen(r#""version":1"#, &current, 1)
+        };
         assert_eq!(compression(&config("")), Compression::None);
-        assert_eq!(compression(&config(r#","compression":"gzip""#)), Compression::Gzip(6));
+        let igzip = |level| Compression::Gzip(GzipLevel::Igzip(IgzipLevel::new(level).unwrap()));
+        assert_eq!(compression(&config(r#","compression":"gzip""#)), igzip(1));
         assert_eq!(
             compression(&config(r#","compression":"gzip","compressionLevel":3"#)),
-            Compression::Gzip(3)
+            igzip(3)
         );
         for (extra, says) in [
             (r#","compression":"zstd""#, "none or gzip"),
-            (r#","compression":"gzip","compressionLevel":10"#, "gzip takes levels"),
+            (r#","compression":"gzip","compressionLevel":4"#, "gzip takes levels"),
             (r#","compressionLevel":3"#, "does not take"),
         ] {
             let e = refusal(&config(extra));
@@ -3024,7 +3031,7 @@ fn a_minimal_s3_destination_loads_with_the_defaults() {
     let c = objects(&system);
     assert_eq!(c.prefix, "%Y/%m/%d/%H/");
     assert_eq!(c.format, ObjectFormat::Ndjson);
-    assert_eq!(c.compression, Compression::Gzip(6));
+    assert_eq!(c.compression, Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)));
     let s3 = s3(&system);
     assert_eq!(s3.bucket, "logs");
     assert!(s3.access.access_key.is_none() && s3.access.role.is_none());
@@ -4775,7 +4782,7 @@ fn an_event_hubs_destination_loads_as_a_kafka_destination_signed_in_with_its_con
         };
         assert_eq!(k.brokers, brokers);
         assert_eq!(k.default_topic, "alerts");
-        assert_eq!(k.compression, Compression::Gzip(6));
+        assert_eq!(k.compression, Compression::Gzip(GzipLevel::Zlib(6)));
         assert_eq!(k.service, KafkaService::EventHubs);
         assert!(k.tls.is_none());
         let source = event_hubs_kafka(&event_hubs_config(namespace, ""));

@@ -22,7 +22,7 @@ use crate::plan::topology::{Listen, Transport};
 use crate::startup_config as cfg;
 
 /// Where a scraper reads, Prometheus's default.
-pub const PATH: &str = "/metrics";
+pub(crate) const PATH: &str = "/metrics";
 
 /// The metrics endpoint, bound and ready to serve.
 pub struct MetricsEndpoint {
@@ -138,7 +138,7 @@ impl Settings {
 
 impl MetricsEndpoint {
     /// Serves `scrape`'s answer at [`PATH`] for the life of the process.
-    pub fn serve(self, scrape: impl Fn() -> String + Send + Sync + 'static) -> Result<SocketAddr, String> {
+    pub(crate) fn serve(self, scrape: impl Fn() -> String + Send + Sync + 'static) -> Result<SocketAddr, String> {
         let tls = self.tls.map(Arc::new);
         let state = Arc::new(Scraped {
             scrape: Box::new(scrape),

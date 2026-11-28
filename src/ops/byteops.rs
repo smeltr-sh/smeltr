@@ -16,7 +16,7 @@ use memchr::memmem;
 
 /// A number's type in a layout.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum NumType {
+pub(crate) enum NumType {
     U8,
     U16,
     U32,
@@ -45,7 +45,7 @@ const NUM_TYPES: [(NumType, &str, usize); 10] = [
 
 impl NumType {
     /// The type `name` spells, or `None`.
-    pub fn of(name: &str) -> Option<NumType> {
+    pub(crate) fn of(name: &str) -> Option<NumType> {
         NUM_TYPES.iter().find(|(_, n, _)| *n == name).map(|(t, _, _)| *t)
     }
 
@@ -57,15 +57,15 @@ impl NumType {
     }
 
     /// How a call spells it: what `of` reads.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         self.row().1
     }
 
-    pub fn width(self) -> usize {
+    pub(crate) fn width(self) -> usize {
         self.row().2
     }
 
-    pub fn is_float(self) -> bool {
+    pub(crate) fn is_float(self) -> bool {
         matches!(self, NumType::F32 | NumType::F64)
     }
 
@@ -148,14 +148,14 @@ impl NumType {
 
 /// A byte order.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Order {
+pub(crate) enum Order {
     Big,
     Little,
 }
 
 impl Order {
     /// The order `name` spells, or `None`.
-    pub fn of(name: &str) -> Option<Order> {
+    pub(crate) fn of(name: &str) -> Option<Order> {
         match name {
             "big" => Some(Order::Big),
             "little" => Some(Order::Little),
@@ -241,7 +241,7 @@ fn read_num<T: Copy + Default>(
 }
 
 /// `readInt(b, at, type[, order])` -> `I64`: the integer of `type`, `"u8"` to `"i64"`, at byte `at`.
-pub fn read_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn read_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     read_num(
         ctx,
         ins,
@@ -253,7 +253,7 @@ pub fn read_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// `readFloat(b, at, type[, order])` -> `F64`: the float of `type`, `"f32"` or `"f64"`, at byte `at`. A NaN or an
 /// infinity, which the language's `f64` does not hold, is null with a `NaN` error.
-pub fn read_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn read_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     read_num(
         ctx,
         ins,
@@ -269,7 +269,7 @@ pub fn read_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 /// `readBytes(b, at, n)` -> `Bytes`: the `n` bytes from byte `at`.
-pub fn read_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn read_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let (Some(b), Some(at), Some(n)) = (side::var(ins[0]), side::i64(ins[1]), side::i64(ins[2])) else {
         return Column::empty(DataType::Bytes, len);
@@ -355,21 +355,21 @@ fn write_num<'a, T: Copy>(ctx: &mut Ctx, ins: &[&'a Column], value: Numbers<'a, 
 }
 
 /// `writeInt(n, type[, order])` -> `Bytes`: `n` as the integer type `type`, `"u8"` to `"i64"`.
-pub fn write_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn write_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     write_num(ctx, ins, side::i64, |ty, n, order, out| {
         (!ty.is_float()).then(|| ty.put_int(n, order, out))
     })
 }
 
 /// `writeFloat(x, type[, order])` -> `Bytes`: `x` as the float type `type`, `"f32"` or `"f64"`.
-pub fn write_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn write_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     write_num(ctx, ins, side::f64, |ty, x, order, out| {
         ty.is_float().then(|| ty.put_float(x, order, out))
     })
 }
 
 /// `concat(a, b, ...)` -> `Bytes`: the bytes of each in turn, or null where any is null.
-pub fn concat(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn concat(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     if let Some(e) = short_circuit_empty(ins, &DataType::Bytes, len) {
         return e;
@@ -489,17 +489,17 @@ fn search(ctx: &mut Ctx, ins: &[&Column], from_end: bool, to: DataType) -> Colum
 }
 
 /// `indexOf(b, search[, from])` -> `I64`: where `search`, a byte's number or `bytes`, first comes at or after `from`.
-pub fn index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     search(ctx, ins, false, DataType::I64)
 }
 
 /// `lastIndexOf(b, search[, from])` -> `I64`: where `search` last comes at or before `from`.
-pub fn last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     search(ctx, ins, true, DataType::I64)
 }
 
 /// `includes(b, search[, from])` -> `Bool`: whether `search` occurs at or after `from`.
-pub fn includes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn includes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     search(ctx, ins, false, DataType::Bool)
 }
 

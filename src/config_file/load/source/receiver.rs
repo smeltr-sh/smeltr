@@ -9,17 +9,17 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ReceiverSourceDto<Kind, Framing> {
     #[serde(flatten)]
-    pub listener: ReceiverSettingsDto,
+    pub(crate) listener: ReceiverSettingsDto,
     #[serde(flatten)]
-    pub connections: ConnectionLimitsDto,
+    pub(crate) connections: ConnectionLimitsDto,
     #[serde(flatten)]
-    pub tls: ServedTlsDto,
+    pub(crate) tls: ServedTlsDto,
     #[serde(flatten)]
-    pub kind: Kind,
+    pub(crate) kind: Kind,
     #[serde(flatten)]
-    pub framing: Framing,
+    pub(crate) framing: Framing,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 /// The framing of a receiver whose protocol marks where a record ends.

@@ -556,7 +556,7 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         json!([])
     };
     let mut b = json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [Value::Object(draw.destination.clone())],
         "pipelines": [{"id": "p", "name": "p", "steps": steps}],

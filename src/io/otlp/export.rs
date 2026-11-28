@@ -339,7 +339,7 @@ fn by_metric(resources: Nested<(Arc<Family>, DataPoint)>) -> Nested<Metric> {
 }
 
 /// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
-pub fn open(
+pub(crate) fn open(
     c: &OtlpDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
@@ -362,7 +362,7 @@ mod tests {
     use crate::core::id::DestId;
     use crate::io::otlp::{Cell, Export};
     use crate::plan::config::Payload;
-    use crate::plan::topology::{Compression, HttpDestinationConfig};
+    use crate::plan::topology::HttpDestinationConfig;
 
     fn protocol(signal: Signal) -> Otlp {
         Otlp::new(&OtlpDestinationConfig {
@@ -371,7 +371,7 @@ mod tests {
                 zone_urls: Default::default(),
                 body: Default::default(),
                 payload: Payload::Record,
-                compression: Compression::None,
+                compression: crate::plan::topology::Compression::None,
                 headers: Vec::new(),
                 credentials: Vec::new(),
                 tls: None,

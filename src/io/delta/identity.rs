@@ -32,7 +32,7 @@ use crate::io::files::{CommitError, Retry};
 use crate::io::parquet::{Columns, Computed};
 
 /// How many values a commit reserves for a column.
-pub const BLOCK: u64 = 1 << 20;
+pub(crate) const BLOCK: u64 = 1 << 20;
 
 /// How few values left unclaimed make a commit reserve a block more: a data commit reserves before the rows run out.
 const LOW: u64 = BLOCK / 2;
@@ -44,17 +44,17 @@ const ALLOW_EXPLICIT_INSERT: &str = "delta.identity.allowExplicitInsert";
 
 /// One identity column, as its metadata defines it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Identity {
-    pub name: String,
-    pub start: i64,
-    pub step: i64,
+pub(crate) struct Identity {
+    pub(crate) name: String,
+    pub(crate) start: i64,
+    pub(crate) step: i64,
     /// Whether a writer may write the column's values itself.
-    pub explicit: bool,
+    pub(crate) explicit: bool,
 }
 
 impl Identity {
     /// `field`'s identity; None when it is no identity column. Err when its metadata does not read as one.
-    pub fn of(field: &StructField) -> Result<Option<Identity>, String> {
+    pub(crate) fn of(field: &StructField) -> Result<Option<Identity>, String> {
         if !field.metadata.keys().any(|k| k.starts_with("delta.identity.")) {
             return Ok(None);
         }
@@ -117,7 +117,7 @@ fn mark(field: &StructField) -> Result<Option<i64>, String> {
 }
 
 /// The table's identity columns, each a top-level `long`. Err names one whose metadata does not read.
-pub fn columns(schema: &StructType) -> Result<Vec<Identity>, String> {
+pub(crate) fn columns(schema: &StructType) -> Result<Vec<Identity>, String> {
     schema
         .fields
         .iter()
@@ -142,7 +142,7 @@ struct Reserve {
 
 /// The identity columns this writer generates, the values each has reserved, and how a row admitted reserves more.
 #[derive(Debug)]
-pub struct Sequences {
+pub(crate) struct Sequences {
     columns: Vec<Identity>,
     reserves: Mutex<Vec<Reserve>>,
     /// Where a row admitted when none is left reserves a block.
@@ -150,15 +150,15 @@ pub struct Sequences {
 }
 
 /// The values of `columns` taken for a commit: the table's metadata with their marks raised, and the blocks raised.
-pub struct Raised {
-    pub metadata: Metadata,
+pub(crate) struct Raised {
+    pub(crate) metadata: Metadata,
     blocks: Vec<(usize, Block)>,
 }
 
 impl Sequences {
     /// The sequences of `columns`, none reserved yet. A row admitted when none is left reserves a block in `log`,
     /// trying again until the log's stall threshold.
-    pub fn new(columns: Vec<Identity>, log: Log) -> Sequences {
+    pub(crate) fn new(columns: Vec<Identity>, log: Log) -> Sequences {
         Sequences {
             reserves: Mutex::new(columns.iter().map(|_| Reserve::default()).collect()),
             columns,
@@ -167,7 +167,7 @@ impl Sequences {
     }
 
     /// Each column as a file carries it, from `table`'s physical names and ids.
-    pub fn computed(self: &Arc<Self>, table: &StructType) -> Vec<Arc<dyn Computed>> {
+    pub(crate) fn computed(self: &Arc<Self>, table: &StructType) -> Vec<Arc<dyn Computed>> {
         let names = ArrowSchema::new(
             (self.columns.iter())
                 .map(|c| Field::new(&c.name, Arrow::Int64, true))
@@ -187,7 +187,7 @@ impl Sequences {
 
     /// `metadata` with a block more reserved for each column with fewer than `LOW` values unclaimed. None when none
     /// has, or every one that has is out of values. Err when the table's identity columns are no longer these.
-    pub fn raised(&self, metadata: &Metadata) -> Result<Option<Raised>, String> {
+    pub(crate) fn raised(&self, metadata: &Metadata) -> Result<Option<Raised>, String> {
         let low: Vec<usize> = {
             let reserves = self.reserves.lock();
             (0..self.columns.len()).filter(|&i| reserves[i].free < LOW).collect()
@@ -221,7 +221,7 @@ impl Sequences {
     }
 
     /// Takes the blocks of `raised`, committed: their values are this writer's to give out.
-    pub fn reserved(&self, raised: Raised) {
+    pub(crate) fn reserved(&self, raised: Raised) {
         let mut reserves = self.reserves.lock();
         for (i, block) in raised.blocks {
             reserves[i].free += block.left;

@@ -816,7 +816,7 @@ fn hold_running(repo_dir: &Path, commit: &str) {
 // -- running the deployed bundle ---------------------------------------------
 
 /// How long one poll blocks before the thread checks `stop`.
-pub const TICK_TIMEOUT: Duration = Duration::from_millis(500);
+const TICK_TIMEOUT: Duration = Duration::from_millis(500);
 /// Rows in one batch, whichever of this and [`TICK_MAX_BYTES`] is reached first. A source hands over what is ready
 /// rather than wait to fill a batch (one whose records wait in memory waits a moment for [`LEAST_BATCH_BYTES`]), so
 /// this binds only under load.
@@ -1942,7 +1942,7 @@ const COUNTERS_BYTES_PER_HEARTBEAT: usize = heartbeat::HEARTBEAT_BODY_LIMIT / 4;
 /// so hand them to `retire_threads_except` to throw away on the next redeploy. The buffer belongs to the process,
 /// and so does what it reports about itself. A line's class and type are its call site's, or a library's name and the
 /// class of the span around it, so the labels' cardinality is a property of the code rather than of the traffic.
-pub(crate) fn record_log_counts(registry: &Metrics, process: &str) {
+fn record_log_counts(registry: &Metrics, process: &str) {
     let process = ("process", process);
     registry.count_to("smeltr_logs_dropped_total", &[process], crate::logs::dropped());
     registry.count_to("smeltr_logs_unwritable_total", &[process], crate::logs::unwritable());
@@ -1960,7 +1960,7 @@ pub(crate) fn record_log_counts(registry: &Metrics, process: &str) {
 /// What `process` holds in memory, as a gauge in its `registry`, labeled as [`record_log_counts`] labels its own and
 /// for the same reason. The runtime's is what its memory parts (`smeltr_memory_part_bytes`) are checked against.
 /// Gives the bytes it recorded.
-pub(crate) fn record_memory_gauge(registry: &Metrics, process: &str) -> u64 {
+fn record_memory_gauge(registry: &Metrics, process: &str) -> u64 {
     let bytes = crate::resources::own_memory_bytes();
     registry.gauge("smeltr_process_memory_bytes", &[("process", process)], bytes as f64);
     bytes

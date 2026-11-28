@@ -138,7 +138,8 @@ pub fn draw_request_compression(rng: &mut Rng, cov: &mut Reached, d: &mut serde_
     }
     if compression == "gzip" && rng.chance(2) {
         cov.reach("compressionLevel");
-        d.insert("compressionLevel".into(), serde_json::json!(1 + rng.below(9)));
+        // igzip's levels, 0 to 3.
+        d.insert("compressionLevel".into(), serde_json::json!(rng.below(4)));
     }
 }
 
@@ -158,7 +159,7 @@ pub fn break_request_compression(
         return "compression";
     }
     let gzip = d.get("compression").and_then(serde_json::Value::as_str) == Some("gzip");
-    d.insert("compressionLevel".into(), serde_json::json!(if gzip { 10 } else { 1 }));
+    d.insert("compressionLevel".into(), serde_json::json!(if gzip { 4 } else { 1 }));
     "compressionLevel"
 }
 
@@ -166,13 +167,18 @@ pub fn break_request_compression(
 pub fn drawn_request_compression(
     d: &serde_json::Map<String, serde_json::Value>,
 ) -> smeltr::plan::topology::Compression {
-    use smeltr::plan::topology::Compression;
+    use smeltr::plan::topology::{Compression, GzipLevel, IgzipLevel};
     match d.get("compression").and_then(serde_json::Value::as_str) {
-        Some("gzip") => Compression::Gzip(
+        Some("gzip") => Compression::Gzip(GzipLevel::Igzip(
             d.get("compressionLevel")
                 .and_then(serde_json::Value::as_u64)
-                .map_or(6, |l| u8::try_from(l).expect("a drawn level is 1 to 9")),
-        ),
+                .map_or(IgzipLevel::DEFAULT, |l| {
+                    u8::try_from(l)
+                        .ok()
+                        .and_then(IgzipLevel::new)
+                        .expect("a drawn level is 0 to 3")
+                }),
+        )),
         _ => Compression::None,
     }
 }

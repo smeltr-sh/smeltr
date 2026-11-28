@@ -1037,7 +1037,9 @@ fn a_compressed_file_is_finished_by_its_written_size() {
     let mut c = config(&schema, Arc::new(Unpartitioned));
     c.format = Arc::new(smeltr::io::lines::LineFormat::new(
         smeltr::plan::topology::ObjectFormat::Ndjson,
-        smeltr::plan::topology::Compression::Gzip(6),
+        smeltr::plan::topology::Compression::Gzip(smeltr::plan::topology::GzipLevel::Igzip(
+            smeltr::plan::topology::IgzipLevel::DEFAULT,
+        )),
     ));
     c.max_file_bytes = 1024 * 1024;
     let mut t = table(c, &[]);
