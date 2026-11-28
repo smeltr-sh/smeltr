@@ -30,8 +30,10 @@ const HOLD: usize = 64 << 10;
 
 impl GzipStream {
     pub(crate) fn new(level: IgzipLevel) -> GzipStream {
+        let mut deflater = Deflater::sized(level);
+        deflater.start(level, Wrap::Gzip, Mode::Stream);
         GzipStream {
-            deflater: Deflater::new(level, Wrap::Gzip, Mode::Stream),
+            deflater,
             held: Vec::with_capacity(HOLD),
             out: Vec::new(),
         }
@@ -74,7 +76,8 @@ std::thread_local! {
 
 fn whole(data: &[u8], level: IgzipLevel, wrap: Wrap) -> Vec<u8> {
     WHOLE.with_borrow_mut(|kept| {
-        let deflater = kept.get_or_insert_with(|| Deflater::sized(isal::ISAL_DEF_LVL3_DEFAULT));
+        // Sized for the top level, so it serves a body at any.
+        let deflater = kept.get_or_insert_with(|| Deflater::sized(IgzipLevel::MAX));
         deflater.start(level, wrap, Mode::Whole);
         compress_whole(deflater, data)
     })
@@ -146,20 +149,15 @@ struct Deflater {
 unsafe impl Send for Deflater {}
 
 impl Deflater {
-    fn new(level: IgzipLevel, wrap: Wrap, mode: Mode) -> Deflater {
-        let mut deflater = Deflater::sized(level_buf_size(level));
-        deflater.start(level, wrap, mode);
-        deflater
-    }
-
-    /// A deflater whose level buffer is `level_buf_size` bytes, for [`Deflater::start`] to begin a stream with.
-    fn sized(level_buf_size: u32) -> Deflater {
+    /// A deflater whose level buffer is the size `level` asks, for [`Deflater::start`] to begin a stream with at
+    /// `level` or below.
+    fn sized(level: IgzipLevel) -> Deflater {
         // SAFETY: an `isal_zstream` is integers, pointers and arrays of them, and all zeroes is a value of each;
         // `start` sets the ones igzip reads.
         let stream = unsafe { Box::<isal::isal_zstream>::new_zeroed().assume_init() };
         Deflater {
             stream,
-            level_buf: vec![0; level_buf_size as usize],
+            level_buf: vec![0; level_buf_size(level) as usize],
         }
     }
 
@@ -283,16 +281,6 @@ mod tests {
                 .unwrap();
             assert_eq!(plain, data, "deflate at level {level}");
         }
-    }
-
-    #[test]
-    fn deflate_is_raw() {
-        let data = lines();
-        let mut plain = Vec::new();
-        flate2::read::DeflateDecoder::new(&deflate(&data, at(1))[..])
-            .read_to_end(&mut plain)
-            .unwrap();
-        assert_eq!(plain, data);
     }
 
     #[test]

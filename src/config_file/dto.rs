@@ -1783,7 +1783,7 @@ impl CompressionDto {
         Some(match (self, by) {
             (CompressionDto::Gzip, Compressor::Smeltr) => {
                 use crate::plan::topology::IgzipLevel;
-                (0..=IgzipLevel::MAX, IgzipLevel::DEFAULT.get())
+                (0..=IgzipLevel::MAX.get(), IgzipLevel::DEFAULT.get())
             }
             (CompressionDto::Gzip, Compressor::Librdkafka | Compressor::Parquet) => (1..=9, 6),
             (CompressionDto::Zstd, Compressor::Librdkafka) => (1..=12, 3),

@@ -2897,13 +2897,13 @@ impl GzipLevel {
 pub struct IgzipLevel(u8);
 
 impl IgzipLevel {
-    pub const MAX: u8 = 3;
+    pub const MAX: IgzipLevel = IgzipLevel(3);
     /// The level a destination is given when it names none.
     pub const DEFAULT: IgzipLevel = IgzipLevel(1);
 
     /// `level` as an igzip level, or `None` where igzip has no such level.
     pub const fn new(level: u8) -> Option<IgzipLevel> {
-        if level <= IgzipLevel::MAX {
+        if level <= IgzipLevel::MAX.0 {
             Some(IgzipLevel(level))
         } else {
             None
