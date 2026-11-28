@@ -222,6 +222,7 @@ mod tests {
             "avro",
             "batch_wait",
             "csv",
+            "gzip",
             "line_breaker",
             "lines",
             "logs",

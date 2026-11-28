@@ -92,7 +92,7 @@ impl DestinationSpec for HttpDestinationDto {
         );
         refuse_avro(*format, &d.id, errors);
         check_http_compression(&d.id, compression, errors);
-        check_compression_level(&d.id, *compression, *compression_level, false, errors);
+        check_compression_level(&d.id, *compression, *compression_level, Compressor::Smeltr, errors);
         check_http_headers(
             &format!("destination {:?}", d.id),
             headers,
@@ -132,7 +132,7 @@ impl DestinationSpec for HttpDestinationDto {
                 RequestBodyDto::Single => RequestBody::Single,
             },
             payload: to_payload(*format, field),
-            compression: compression.to_plan(*compression_level),
+            compression: compression.to_plan(*compression_level, Compressor::Smeltr),
             headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
             ..to_http_core(

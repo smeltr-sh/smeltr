@@ -149,7 +149,7 @@ impl FileEncoder for LineEncoder {
 /// its output, so draining it between writes leaves the stream whole.
 enum Stream {
     None(Vec<u8>),
-    Gzip(Box<flate2::write::GzEncoder<Vec<u8>>>),
+    Gzip(Box<super::gzip::GzipStream>),
     // Snappy and lz4 are written framed, as their command-line tools read them.
     Snappy(Box<snap::write::FrameEncoder<Vec<u8>>>),
     Lz4(Box<lz4_flex::frame::FrameEncoder<Vec<u8>>>),
@@ -160,10 +160,7 @@ impl Stream {
     fn open(compression: Compression) -> Stream {
         match compression {
             Compression::None => Stream::None(Vec::new()),
-            Compression::Gzip(level) => Stream::Gzip(Box::new(flate2::write::GzEncoder::new(
-                Vec::new(),
-                flate2::Compression::new(level.into()),
-            ))),
+            Compression::Gzip(level) => Stream::Gzip(Box::new(super::gzip::GzipStream::new(level))),
             Compression::Snappy => Stream::Snappy(Box::new(snap::write::FrameEncoder::new(Vec::new()))),
             Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::new(Vec::new()))),
             Compression::Zstd(level) => Stream::Zstd(Box::new(
@@ -175,7 +172,7 @@ impl Stream {
     fn write(&mut self, bytes: &[u8]) {
         match self {
             Stream::None(out) => out.extend_from_slice(bytes),
-            Stream::Gzip(out) => out.write_all(bytes).expect("writing to memory"),
+            Stream::Gzip(out) => out.write(bytes),
             Stream::Snappy(out) => out.write_all(bytes).expect("writing to memory"),
             Stream::Lz4(out) => out.write_all(bytes).expect("writing to memory"),
             Stream::Zstd(out) => out.write_all(bytes).expect("writing to memory"),
@@ -186,7 +183,7 @@ impl Stream {
     fn pending(&self) -> usize {
         match self {
             Stream::None(out) => out.len(),
-            Stream::Gzip(out) => out.get_ref().len(),
+            Stream::Gzip(out) => out.pending(),
             Stream::Snappy(out) => out.get_ref().len(),
             Stream::Lz4(out) => out.get_ref().len(),
             Stream::Zstd(out) => out.get_ref().len(),
@@ -198,7 +195,7 @@ impl Stream {
     fn take(&mut self) -> Vec<u8> {
         let out = match self {
             Stream::None(out) => out,
-            Stream::Gzip(out) => out.get_mut(),
+            Stream::Gzip(out) => return out.take(),
             Stream::Snappy(out) => {
                 out.flush().expect("writing to memory");
                 out.get_mut()
@@ -219,7 +216,7 @@ impl Stream {
     fn finish(self) -> Vec<u8> {
         match self {
             Stream::None(out) => out,
-            Stream::Gzip(out) => (*out).finish().expect("writing to memory"),
+            Stream::Gzip(out) => (*out).finish(),
             Stream::Snappy(out) => (*out)
                 .into_inner()
                 .map_err(|e| e.to_string())
@@ -272,7 +269,7 @@ mod tests {
 
     const CODECS: [Compression; 5] = [
         Compression::None,
-        Compression::Gzip(6),
+        Compression::Gzip(1),
         Compression::Snappy,
         Compression::Lz4(0),
         Compression::Zstd(3),

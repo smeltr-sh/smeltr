@@ -2986,7 +2986,7 @@ fn a_minimal_s3_destination_loads_with_the_defaults() {
     let c = objects(&system);
     assert_eq!(c.prefix, "%Y/%m/%d/%H/");
     assert_eq!(c.format, ObjectFormat::Ndjson);
-    assert_eq!(c.compression, Compression::Gzip(6));
+    assert_eq!(c.compression, Compression::Gzip(1));
     let s3 = s3(&system);
     assert_eq!(s3.bucket, "logs");
     assert!(s3.access.access_key.is_none() && s3.access.role.is_none());

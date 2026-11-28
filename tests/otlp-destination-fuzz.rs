@@ -200,10 +200,11 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         let level = if loose(rng) {
             any(
                 rng,
-                vec![json!(0), json!(10), json!(256), json!(-1), json!(1.5), json!("6")],
+                vec![json!(4), json!(10), json!(256), json!(-1), json!(1.5), json!("1")],
             )
         } else {
-            json!(1 + rng.below(9))
+            // igzip's levels, 0 to 3.
+            json!(rng.below(4))
         };
         d.insert("compressionLevel".into(), level);
     }
@@ -767,7 +768,7 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
             zone_urls: Default::default(),
             body: Default::default(),
             payload: Payload::Record,
-            compression: if gzip { Compression::Gzip(6) } else { Compression::None },
+            compression: if gzip { Compression::Gzip(1) } else { Compression::None },
             headers: Vec::new(),
             credentials: Vec::new(),
             tls: None,

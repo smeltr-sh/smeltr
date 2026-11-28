@@ -79,7 +79,7 @@ fn on(cloud: Cloud) -> ObjectsDestinationConfig {
         cloud,
         prefix: "default/%Y/".to_string(),
         format: ObjectFormat::Ndjson,
-        compression: Compression::Gzip(6),
+        compression: Compression::Gzip(1),
         storage_class: None,
         tls: None,
         in_flight: 2,

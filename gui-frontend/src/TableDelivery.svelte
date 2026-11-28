@@ -76,7 +76,7 @@
       {/each}
     </select>
   </Field>
-  <CompressionLevel value={d} codec={d.compression ?? 'zstd'} />
+  <CompressionLevel value={d} codec={d.compression ?? 'zstd'} by="parquet" />
   <Field optional field="inFlight" label="parts uploading at once">
     {#snippet help()}
       How many parts of one file upload at once.

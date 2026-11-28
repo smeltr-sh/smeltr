@@ -75,11 +75,7 @@ impl Codec {
     fn compress(self, data: &[u8], level: u8) -> Vec<u8> {
         match self {
             Codec::Null => data.to_vec(),
-            Codec::Deflate => {
-                let mut out = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(level.into()));
-                std::io::Write::write_all(&mut out, data).expect("a Vec takes every byte");
-                out.finish().expect("a Vec takes every byte")
-            }
+            Codec::Deflate => crate::io::gzip::deflate(data, level),
             Codec::Snappy => {
                 let mut out = snap::raw::Encoder::new()
                     .compress_vec(data)

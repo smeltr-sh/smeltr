@@ -1835,7 +1835,7 @@ pub(super) fn check_objects(id: &str, o: &ObjectSettingsDto, url: &str, tls: &Tl
             "destination {id:?} names variant, which only the \"parquet\" format reads"
         ));
     }
-    check_compression_level(id, o.compression, o.compression_level, false, errors);
+    check_compression_level(id, o.compression, o.compression_level, o.format.compressor(), errors);
     if o.format == ObjectFormatDto::Avro && o.compression == CompressionDto::Lz4 {
         errors.at("compression").push(format!(
             "destination {id:?} writes Avro compressed with lz4, which Avro has no codec for; use \"gzip\", \"snappy\", \"zstd\" or \"none\""
@@ -2894,18 +2894,18 @@ pub(super) fn to_http_core(
     }
 }
 
-/// Checks that a destination's `compressionLevel` is one its codec takes (`CompressionDto::levels`); `kafka` for a destination
-/// librdkafka compresses for.
+/// Checks that a destination's `compressionLevel` is one its codec takes where `by` compresses
+/// (`CompressionDto::levels`).
 pub(super) fn check_compression_level(
     id: &str,
     compression: CompressionDto,
     level: Option<u8>,
-    kafka: bool,
+    by: Compressor,
     errors: &mut ItemErrors<'_>,
 ) {
     let Some(level) = level else { return };
-    let codec = compression.to_plan(None).as_property();
-    match compression.levels(kafka) {
+    let codec = compression.to_plan(None, by).as_property();
+    match compression.levels(by) {
         Some((levels, _)) if levels.contains(&level) => {}
         Some((levels, _)) => errors.at("compressionLevel").push(format!(
             "destination {id:?} compresses with {codec} at level {level}; {codec} takes levels {} to {}",
@@ -2970,7 +2970,7 @@ pub(super) fn to_objects(
                 field: text_field(&o.field).into(),
             },
         },
-        compression: o.compression.to_plan(o.compression_level),
+        compression: o.compression.to_plan(o.compression_level, o.format.compressor()),
         storage_class: settings.storage_class.clone(),
         tls: to_tls(tls, of, Side::Client),
         in_flight: o.in_flight.0,

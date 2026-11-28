@@ -504,7 +504,7 @@ fn check_loaded(draw: &Draw, c: &LogAnalyticsDestinationConfig, named: &[SecretR
     expect("payload", format!("{:?}", Payload::Record), format!("{:?}", h.payload));
     expect(
         "compression",
-        format!("{:?}", Compression::Gzip(6)),
+        format!("{:?}", Compression::Gzip(1)),
         format!("{:?}", h.compression),
     );
     expect("headers", "[]".to_string(), format!("{:?}", h.headers));

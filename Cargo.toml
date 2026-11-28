@@ -156,6 +156,9 @@ tower-service = "0.3"
 # The leader gzips what it answers and inflates what it is sent gzipped. Already in the tree under `reqwest`.
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip", "decompression-gzip"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# What smeltr gzips itself, ISA-L compresses, with several times less CPU than zlib-rs at level 6, and somewhat
+# larger output.
+isal-sys = "0.5"
 zstd = { version = "0.14", default-features = false }
 # A pipeline's export is a bundle in a zip, read back through the same loader as any bundle.
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }

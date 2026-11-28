@@ -179,7 +179,7 @@ fn single_rows_go_to_the_pool_as_one_batch() {
 #[test]
 fn gzip_compresses_the_whole_body() {
     let c = HttpDestinationConfig {
-        compression: Compression::Gzip(6),
+        compression: Compression::Gzip(1),
         ..config("http://unused", RequestBody::Lines)
     };
     let (mut d, sent) = destination(&c, &[200]);
@@ -430,7 +430,7 @@ fn answering(n: usize, status: &'static str) -> (String, std::thread::JoinHandle
 fn every_request_carries_the_headers_and_says_what_its_body_is() {
     let (url, served) = service(1);
     let c = HttpDestinationConfig {
-        compression: Compression::Gzip(6),
+        compression: Compression::Gzip(1),
         headers: vec![("X-Source".to_string(), "smeltr".to_string())],
         ..config(&url, RequestBody::JsonArray)
     };

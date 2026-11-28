@@ -10,7 +10,6 @@
 //! | 400, 413, 422 | split until the row at fault is alone, which is refused |
 //! | anything else | the destination stalls, naming the status |
 
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -274,13 +273,7 @@ pub fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
     let Some(level) = gzip else {
         return body;
     };
-    let mut out = flate2::write::GzEncoder::new(
-        Vec::with_capacity(body.len() / 4),
-        flate2::Compression::new(level.into()),
-    );
-    // Writing to a Vec cannot fail.
-    out.write_all(&body).expect("gzip into memory");
-    out.finish().expect("gzip into memory")
+    super::gzip::gzip(&body, level)
 }
 
 /// What `response` says of the `count` items its request carried, as the module's table gives it.

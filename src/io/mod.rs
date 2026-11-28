@@ -30,6 +30,7 @@ mod elastic_receiver;
 pub mod entra;
 pub mod files;
 pub mod framing;
+mod gzip;
 pub mod hec;
 pub mod http;
 pub mod http_api;

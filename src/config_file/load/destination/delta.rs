@@ -64,7 +64,7 @@ impl DestinationSpec for DeltaDestinationDto {
             file_interval_secs,
         } = self;
         let id = d.id.as_str();
-        check_compression_level(id, *compression, *compression_level, false, errors);
+        check_compression_level(id, *compression, *compression_level, Compressor::Parquet, errors);
         check_http_delivery(
             &HttpDelivery {
                 id,
@@ -154,7 +154,7 @@ impl DestinationSpec for DeltaDestinationDto {
             }),
             partition_by: partition_by.clone(),
             storage: to_s3_access(access),
-            compression: compression.to_plan(*compression_level),
+            compression: compression.to_plan(*compression_level, Compressor::Parquet),
             tls: to_tls(tls, of, Side::Client),
             in_flight: in_flight.0,
             max_object_bytes: max_object_bytes.0,

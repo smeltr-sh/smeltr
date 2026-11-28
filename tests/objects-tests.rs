@@ -175,7 +175,7 @@ fn decode(codec: Compression, bytes: &[u8]) -> Vec<u8> {
 /// format writes every route's rows alike.
 #[test]
 fn each_prefix_gets_an_object_of_its_own() {
-    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Gzip(6)));
+    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Gzip(1)));
     let refused = f.deliver(vec![
         row(r#"{"n":1}"#, Some("a/")),
         row(r#"{"n":2}"#, Some("b/")),
@@ -280,7 +280,7 @@ fn every_line_format_and_codec_names_types_and_reads_back() {
     for (format, stem, plain_type, rows, lines) in formats {
         for (codec, suffix, packed_type) in [
             (Compression::None, "", plain_type),
-            (Compression::Gzip(6), ".gz", "application/gzip"),
+            (Compression::Gzip(1), ".gz", "application/gzip"),
             (Compression::Snappy, ".sz", "application/x-snappy-framed"),
             (Compression::Lz4(0), ".lz4", "application/x-lz4"),
             (Compression::Zstd(3), ".zst", "application/zstd"),
@@ -488,7 +488,7 @@ fn batches_within_the_interval_share_one_line_object() {
         (ObjectFormat::Ndjson, "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"),
         (ObjectFormat::Json, "[{\"n\":1},{\"n\":2},{\"n\":3}]\n"),
     ] {
-        let mut f = fixture(&config(format.clone(), Compression::Gzip(6)));
+        let mut f = fixture(&config(format.clone(), Compression::Gzip(1)));
         assert!(f.hand_over(1, vec![row(r#"{"n":1}"#, None)]).is_empty());
         assert!(
             f.hand_over(2, vec![row(r#"{"n":2}"#, None), row(r#"{"n":3}"#, None)])
@@ -765,7 +765,7 @@ fn a_csv_object_holds_the_records_leaves() {
         ],
     );
     let record = harness::record(&plan);
-    let mut f = writing(&config(ObjectFormat::Csv, Compression::Gzip(6)), &record);
+    let mut f = writing(&config(ObjectFormat::Csv, Compression::Gzip(1)), &record);
     let refused = f.hand_over(0, (0..2).map(|at| cut_row(&chunk, at, None)).collect());
     assert!(refused.is_empty(), "{refused:?}");
     assert_eq!(f.finish(), [0]);

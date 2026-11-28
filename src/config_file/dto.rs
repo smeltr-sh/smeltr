@@ -1595,6 +1595,14 @@ pub enum ObjectFormatDto {
 }
 
 impl ObjectFormatDto {
+    /// Who compresses a file of this format.
+    pub fn compressor(self) -> Compressor {
+        match self {
+            ObjectFormatDto::Parquet => Compressor::Parquet,
+            _ => Compressor::Smeltr,
+        }
+    }
+
     pub fn is_default(&self) -> bool {
         *self == ObjectFormatDto::Ndjson
     }
@@ -1766,21 +1774,22 @@ impl CompressionDto {
         *self == CompressionDto::Zstd
     }
 
-    /// The levels this codec takes on a destination, lowest first, and the one it is given when none is set; `None`
-    /// for a codec that takes none. librdkafka (`kafka`) caps every level at 12, and only its lz4 takes one.
-    pub fn levels(self, kafka: bool) -> Option<(std::ops::RangeInclusive<u8>, u8)> {
-        let levels = match self {
-            CompressionDto::Gzip => 1..=9,
-            CompressionDto::Zstd => 1..=if kafka { 12 } else { 22 },
-            CompressionDto::Lz4 if kafka => 0..=12,
-            CompressionDto::None | CompressionDto::Snappy | CompressionDto::Lz4 => return None,
-        };
-        Some((levels, self.to_plan(None).level()?))
+    /// The levels this codec takes where `by` compresses, lowest first, and the one it is given when none is set;
+    /// `None` for a codec that takes none there.
+    pub fn levels(self, by: Compressor) -> Option<(std::ops::RangeInclusive<u8>, u8)> {
+        Some(match (self, by) {
+            (CompressionDto::Gzip, Compressor::Smeltr) => (0..=3, 1),
+            (CompressionDto::Gzip, Compressor::Librdkafka | Compressor::Parquet) => (1..=9, 6),
+            (CompressionDto::Zstd, Compressor::Librdkafka) => (1..=12, 3),
+            (CompressionDto::Zstd, Compressor::Smeltr | Compressor::Parquet) => (1..=22, 3),
+            (CompressionDto::Lz4, Compressor::Librdkafka) => (0..=12, 0),
+            (CompressionDto::None | CompressionDto::Snappy | CompressionDto::Lz4, _) => return None,
+        })
     }
 
-    /// The codec at `level`, or at its default (`Compression::ALL`) when `level` is `None`. The loader has checked
-    /// `level` against [`Self::levels`].
-    pub fn to_plan(self, level: Option<u8>) -> crate::plan::topology::Compression {
+    /// The codec at `level`, or at its default where `by` compresses (`Self::levels`) when `level` is `None`. The
+    /// loader has checked `level` against [`Self::levels`].
+    pub fn to_plan(self, level: Option<u8>, by: Compressor) -> crate::plan::topology::Compression {
         use crate::plan::topology::Compression;
         let [none, gzip, snappy, lz4, zstd] = Compression::ALL;
         let codec = match self {
@@ -1790,8 +1799,22 @@ impl CompressionDto {
             CompressionDto::Lz4 => lz4,
             CompressionDto::Zstd => zstd,
         };
-        level.map_or(codec, |l| codec.at(l))
+        match level.or_else(|| Some(self.levels(by)?.1)) {
+            Some(l) => codec.at(l),
+            None => codec,
+        }
     }
+}
+
+/// Whose code compresses a destination's output, which decides the levels its codec takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compressor {
+    /// smeltr itself: gzip through ISA-L, zstd through libzstd.
+    Smeltr,
+    /// librdkafka, for Kafka and Event Hubs.
+    Librdkafka,
+    /// The parquet writer, for Parquet files and Delta and Iceberg tables.
+    Parquet,
 }
 
 /// Bytes of documents one bulk request may carry before the destination sends early. Stated as a size (`"5 MiB"`) or

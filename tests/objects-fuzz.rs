@@ -257,8 +257,10 @@ fn draw_objects(rng: &mut Rng, cov: &mut Reached, store: Store, d: &mut Map<Stri
     if compression != "gzip" || rng.chance(2) {
         d.insert("compression".into(), json!(compression));
     }
+    // igzip's levels, or the parquet writer's for a parquet file.
     let levels = match compression {
-        "gzip" => Some(1..=9),
+        "gzip" if format == "parquet" => Some(1..=9),
+        "gzip" => Some(0..=3),
         "zstd" => Some(1..=22),
         _ => None,
     };
@@ -357,8 +359,10 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         }
         // Past the top of the codec's levels, or any level for a codec that takes none.
         "compressionLevel" => {
+            let parquet = d.get("format").and_then(Value::as_str) == Some("parquet");
             let level = match d.get("compression").and_then(Value::as_str).unwrap_or("gzip") {
-                "gzip" => 10,
+                "gzip" if parquet => 10,
+                "gzip" => 4,
                 "zstd" => 23,
                 _ => 1,
             };
@@ -470,7 +474,8 @@ fn check_loaded(draw: &Draw, c: &ObjectsDestinationConfig, named: &[SecretRef]) 
     cmp.expect("prefix", text(d, "prefix").unwrap_or("%Y/%m/%d/%H/".into()), &c.prefix);
     let compression = match text(d, "compression").as_deref().unwrap_or("gzip") {
         "none" => Compression::None,
-        "gzip" => Compression::Gzip(6),
+        "gzip" if text(d, "format").as_deref() == Some("parquet") => Compression::Gzip(6),
+        "gzip" => Compression::Gzip(1),
         "snappy" => Compression::Snappy,
         "lz4" => Compression::Lz4(0),
         _ => Compression::Zstd(3),
