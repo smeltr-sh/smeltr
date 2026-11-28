@@ -1724,7 +1724,7 @@ mod tests {
             let opened = opened.clone();
             Box::new(move || {
                 opened.fetch_add(1, Ordering::Relaxed);
-                Ok(Box::new(crate::io::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
+                Ok(Box::new(crate::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
             })
         });
         assert!(obey(read.into_iter().next().unwrap(), &runtime));

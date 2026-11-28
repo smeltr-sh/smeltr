@@ -4,13 +4,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::harness::fake::{AsyncDestination, FakeDestination, FakeSource};
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::error::ExceptionKind;
 use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::egress::Egress;
 use smeltr::format::encoding::Encoding;
 use smeltr::handoff::{BlockCause, Handoff, reports};
-use smeltr::io::fake::{AsyncDestination, FakeDestination, FakeSource};
 use smeltr::io::{
     BatchId, CommitMap, Destination, IoError, OwnedRecord, PartitionLag, Rejection, Source, SourceRecord,
     TopicPartition,

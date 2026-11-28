@@ -603,7 +603,7 @@ impl Source for HeldSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::fake::FakeSource;
+    use crate::fake::FakeSource;
 
     /// A fake that yields progress on commit and records where it was resumed from. Each open is a new one, as a
     /// real source would be, sharing what it was resumed from with the test.
