@@ -90,7 +90,6 @@ pub(crate) struct Channel {
 #[derive(Debug)]
 pub struct Event {
     pub(crate) channel: Arc<Channel>,
-    pub stream: Option<Stream>,
     /// What the receiver acks it by. `httpout` sends none: it is acked by its request's answer.
     pub(crate) id: Option<u64>,
     /// Unix seconds.
@@ -380,14 +379,13 @@ fn event(
     if flags & !KNOWN != 0 {
         return Err(Cut::Bad(format!("an event with unknown flags {:#x}", flags & !KNOWN)));
     }
-    let stream = match flags & STREAM {
-        0 => None,
-        _ => Some(Stream {
-            id: c.varint()?,
-            offset: c.varint()?,
-            index: c.varint()?,
-        }),
-    };
+    if flags & STREAM != 0 {
+        // The event's place in its source: the stream's id, the offset of its bytes and its index among the events
+        // framed from one chunk. Smeltr uses none of it, so the three are read past.
+        for _ in 0..3 {
+            c.varint()?;
+        }
+    }
     let id = (flags & ID != 0).then(|| c.varint()).transpose()?;
     let time = (flags & TIME != 0).then(|| c.varint()).transpose()?;
     let fields = match flags & FIELDS {
@@ -407,7 +405,6 @@ fn event(
     }
     Ok(Event {
         channel,
-        stream,
         id,
         time,
         fields,

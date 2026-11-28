@@ -89,14 +89,9 @@ pub use test::{
 /// version before it, so a file nobody has saved since still loads (`docs/architecture/control-plane.md`, Upgrades).
 pub const CURRENT_VERSION: u32 = 2;
 
-/// Structural resolution, then compilation. The one check every write path runs.
-pub fn validate(file: FileConfig) -> Result<LoadedSystem, LoadError> {
-    validate_at(file, &load::DeclaredAt::new())
-}
-
-/// `validate` for a bundle read from a directory: `declared_at` says where each lookup table was declared, which is
-/// what a relative lookup path resolves against.
-pub(crate) fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<LoadedSystem, LoadError> {
+/// Structural resolution, then compilation. The one check every write path runs. `declared_at` says where each lookup
+/// table was declared, which is what a relative lookup path resolves against.
+pub(crate) fn validate(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<LoadedSystem, LoadError> {
     let mut system = load::from_file_config_at(file, declared_at)?;
     let compiled = system
         .compile_topology()
@@ -645,7 +640,7 @@ mod tests {
 
     fn validation_of(json: &str) -> Vec<ValidationError> {
         let file: FileConfig = serde_json::from_str(json).unwrap();
-        let LoadError::Validation(errors) = validate(file).unwrap_err() else {
+        let LoadError::Validation(errors) = validate(file, &load::DeclaredAt::new()).unwrap_err() else {
             panic!("expected a Validation error");
         };
         errors

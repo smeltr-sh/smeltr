@@ -224,14 +224,16 @@ impl StrBuilder {
     }
 
     /// The bytes of the row last pushed.
-    pub fn last(&self) -> &[u8] {
+    #[cfg(test)]
+    pub(crate) fn last(&self) -> &[u8] {
         debug_assert!(self.row > 0, "nothing pushed");
         let offsets = self.offsets.as_slice::<u32>();
         &self.data.as_slice::<u8>()[offsets[self.row - 1] as usize..offsets[self.row] as usize]
     }
 
     /// Take back the row last pushed, so the next push replaces it. Its bytes are overwritten by that push.
-    pub fn pop_last(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn pop_last(&mut self) {
         debug_assert!(self.row > 0, "nothing pushed to take back");
         self.truncate(self.row - 1);
     }

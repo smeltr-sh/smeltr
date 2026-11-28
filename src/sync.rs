@@ -35,10 +35,6 @@ impl<T: ?Sized> Mutex<T> {
             Err(std::sync::TryLockError::WouldBlock) => None,
         }
     }
-
-    pub fn get_mut(&mut self) -> &mut T {
-        self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
-    }
 }
 
 /// A condition variable for a [`Mutex`]. Its waits always return the guard.
@@ -52,16 +48,6 @@ impl Condvar {
 
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         self.0.wait(guard).unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub fn wait_while<'a, T>(
-        &self,
-        guard: MutexGuard<'a, T>,
-        waiting: impl FnMut(&mut T) -> bool,
-    ) -> MutexGuard<'a, T> {
-        self.0
-            .wait_while(guard, waiting)
-            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn wait_timeout<'a, T>(

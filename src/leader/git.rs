@@ -2061,21 +2061,17 @@ pub struct Squash {
     pub(crate) tip: String,
 }
 
-/// Squash `branch` onto `main` as Approve would deploy it, refusing what Approve refuses, and move nothing: the commit
-/// is written but no ref names it until [`deploy_squash`].
-pub fn squash_change(data_dir: &Path, branch: &str, author: &Actor) -> Result<Squash, GitError> {
-    squash_change_from(data_dir, branch, None, author)
-}
-
-/// [`squash_change`] of `branch` while it is at `tip`, refused once it has moved: what a caller judged is what is
+/// [`squash_change_from`] of `branch` while it is at `tip`, refused once it has moved: what a caller judged is what is
 /// squashed.
 pub(crate) fn squash_change_at(data_dir: &Path, branch: &str, tip: &str, author: &Actor) -> Result<Squash, GitError> {
     squash_change_from(data_dir, branch, Some(tip), author)
 }
 
-/// [`squash_change`] of the tip `branch` is at, or with `expected` -- a whole commit id -- of that tip, refused when
-/// `branch` has moved from it. Every check reads that one tip, so a save landing meanwhile cannot slip past them.
-fn squash_change_from(
+/// Squash `branch` onto `main` as Approve would deploy it, refusing what Approve refuses, and move nothing: the commit
+/// is written but no ref names it until [`deploy_squash`]. With `expected` -- a whole commit id -- it squashes that
+/// tip, refused when `branch` has moved from it. Every check reads that one tip, so a save made meanwhile cannot slip
+/// past them.
+pub(crate) fn squash_change_from(
     data_dir: &Path,
     branch: &str,
     expected: Option<&str>,

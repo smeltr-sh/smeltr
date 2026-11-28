@@ -352,7 +352,6 @@ pub struct Plan {
     /// Each copy that shares its value's slot under another name, which `provenance` does not see: the slot, the name,
     /// how many slots there were when it was made, and the step that made it.
     pub(crate) aliases: Vec<(SlotId, String, usize, FunctionId)>,
-    pub patterns: ById<PatternId, crate::expr::ast::PatternSrc>,
     pub warnings: Vec<CompileError>,
     /// Instruction indices that are row barriers. Declared by the function, never discovered from the data: finding
     /// one at runtime would cost roughly a thousandfold over the vectorized path while looking identical in the config.
@@ -711,7 +710,6 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         instrs: c.instrs,
         provenance: c.syms.origins,
         aliases: c.syms.aliases,
-        patterns: c.res.patterns,
         warnings: c.syms.warnings,
         barriers,
         tree,

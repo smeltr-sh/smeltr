@@ -9,7 +9,6 @@
 use super::id::{FunctionId, SlotId};
 use crate::core::column::{Column, DataType};
 use std::collections::HashMap;
-use std::ops::Range;
 
 /// The group a kind belongs to: an `exceptions` setting can answer a category as one.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -305,9 +304,10 @@ impl ErrorSink {
     }
 
     /// Raise an exception on every row in `rows`, for column-level events.
-    pub fn raise_range(
+    #[cfg(test)]
+    pub(crate) fn raise_range(
         &mut self,
-        rows: Range<usize>,
+        rows: std::ops::Range<usize>,
         function: Option<FunctionId>,
         field: Option<SlotId>,
         kind: ExceptionKind,

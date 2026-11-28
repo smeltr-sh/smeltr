@@ -39,15 +39,7 @@ pub enum Unread {
     Refused(String),
 }
 
-impl Unread {
-    /// As an error to retry, whichever it is.
-    pub fn into_error(self) -> IoError {
-        match self {
-            Unread::Transient(e) => e,
-            Unread::Refused(why) => IoError::transient(why),
-        }
-    }
-}
+impl Unread {}
 
 /// A schema as the registry holds it: its Avro text, and each schema it references by name.
 #[derive(Clone, Debug, PartialEq, Eq)]

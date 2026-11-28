@@ -117,8 +117,4 @@ impl<'a> Ctx<'a> {
     pub(crate) fn raise_at(&mut self, row: usize, field: SlotId, kind: ExceptionKind) -> &mut Exception {
         self.errors.raise(row, Some(self.function), Some(field), kind)
     }
-
-    pub fn raise_range(&mut self, rows: std::ops::Range<usize>, kind: ExceptionKind) {
-        self.errors.raise_range(rows, Some(self.function), self.field, kind);
-    }
 }

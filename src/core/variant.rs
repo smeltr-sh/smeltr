@@ -240,10 +240,6 @@ impl<'a> Items<'a> {
     pub(crate) fn len(&self) -> usize {
         self.left as usize
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.left == 0
-    }
 }
 
 impl<'a> Iterator for Items<'a> {
@@ -266,10 +262,6 @@ impl<'a> Iterator for Items<'a> {
 impl<'a> Entries<'a> {
     pub(crate) fn len(&self) -> usize {
         self.left as usize
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.left == 0
     }
 }
 

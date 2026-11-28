@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::commit::WaitsOn;
 use crate::core::id::DestId;
-use crate::io::{BatchId, IoError, SourceRecord};
+use crate::io::{BatchId, SourceRecord};
 
 /// Bytes of raw records one queue may hold before ingest waits, per batch of depth. A lane's depth is how many
 /// transform threads could be working on it at once, plus one of slack so the reader can poll while they do
@@ -86,7 +86,6 @@ struct State {
 #[derive(Debug)]
 pub struct Unsent {
     pub(crate) batch: Handed,
-    pub error: IoError,
 }
 
 /// One signal across every queue a transform thread watches. A thread that found nothing anywhere waits here rather
@@ -191,19 +190,13 @@ impl Handoff {
         while !st.closed && st.bytes + bytes > self.capacity && st.bytes > 0 {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(Unsent {
-                    batch,
-                    error: IoError::transient(format!("transform did not take a batch within {timeout:?}")),
-                });
+                return Err(Unsent { batch });
             }
             let (guard, _) = self.room.wait_timeout(st, left);
             st = guard;
         }
         if st.closed {
-            return Err(Unsent {
-                batch,
-                error: IoError::transient("worker is shutting down"),
-            });
+            return Err(Unsent { batch });
         }
         st.bytes += bytes;
         st.queued.push_back(batch);
@@ -237,7 +230,8 @@ impl Handoff {
     }
 
     /// A waiting reader fails; transform drains what is queued, then ends.
-    pub fn close(&self) {
+    #[cfg(test)]
+    pub(crate) fn close(&self) {
         let mut st = self.state.lock();
         st.closed = true;
         self.room.notify_all();

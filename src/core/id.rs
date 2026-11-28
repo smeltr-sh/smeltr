@@ -47,7 +47,7 @@ impl<I: Id, T> ById<I, T> {
     }
 
     /// The entries from the one `id` reads, on, in order.
-    pub fn from_id(&self, id: I) -> &[T] {
+    pub(crate) fn starting_at(&self, id: I) -> &[T] {
         &self.entries[id.index()..]
     }
 

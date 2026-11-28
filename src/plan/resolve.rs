@@ -102,11 +102,7 @@ pub struct Scope {
     serial: usize,
 }
 
-impl Scope {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
+impl Scope {}
 
 impl SymbolTable {
     /// A table over a *compiled pipeline's output*, for resolving an expression that runs after the pipeline rather
@@ -403,13 +399,8 @@ impl SymbolTable {
         &self.layout[slot]
     }
 
-    /// Whether `name` is a leaf bound to a variant.
-    pub fn is_dynamic(&self, name: &str) -> bool {
-        self.lookup(name)
-            .is_some_and(|slot| self.layout[slot] == DataType::Variant)
-    }
-
-    pub fn slot_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn slot_count(&self) -> usize {
         self.layout.len()
     }
 
@@ -440,7 +431,7 @@ impl SymbolTable {
                 let name = place.to_string();
                 let first_bound = self
                     .origins
-                    .from_id(first)
+                    .starting_at(first)
                     .iter()
                     .find(|o| o.name == name && assigned(o))
                     .map_or(slot, |o| o.slot);
@@ -551,7 +542,8 @@ impl SymbolTable {
     ///
     /// **Emits no instruction and moves no data.** The columns stay exactly where they are; only the names pointing at
     /// them change.
-    pub fn rebind(&mut self, from: &str, to: &str) -> Result<(), CompileError> {
+    #[cfg(test)]
+    pub(crate) fn rebind(&mut self, from: &str, to: &str) -> Result<(), CompileError> {
         let Some(node) = self.root.take(from) else {
             return Err(CompileError::new(
                 None,

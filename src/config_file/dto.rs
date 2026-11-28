@@ -1843,10 +1843,6 @@ impl BufferBytes {
     /// An object store destination's: the memory of the largest memory-optimized cloud machine, 32 TiB (AWS
     /// u7in-32tb).
     pub(crate) const OBJECT_MAX: usize = 32 * 1024 * 1024 * 1024 * 1024;
-
-    pub fn is_default(&self) -> bool {
-        self.0 == Self::DEFAULT
-    }
 }
 
 impl Default for BufferBytes {
@@ -1870,10 +1866,6 @@ impl FetchBytes {
     /// One tick's batch.
     pub const MIN: usize = 4 * 1024 * 1024;
     pub const MAX: usize = 512 * 1024 * 1024;
-
-    pub fn is_default(&self) -> bool {
-        self.0 == Self::DEFAULT
-    }
 }
 
 impl Default for FetchBytes {

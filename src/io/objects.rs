@@ -601,11 +601,6 @@ impl Aws {
         Ok(Arc::new(store))
     }
 
-    /// The region every request is signed for.
-    pub fn region(&self) -> &str {
-        &self.region
-    }
-
     /// Signs `request` for `service` with the current credentials.
     async fn sign(&self, request: &mut http::Request<HttpRequestBody>, service: &str) -> Result<(), String> {
         let credential = self.credentials.get_credential().await.map_err(|e| e.to_string())?;

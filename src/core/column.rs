@@ -504,13 +504,6 @@ impl Column {
         }
     }
 
-    /// Turn this column into an all-null one of the same type, returning its buffers to the pool.
-    pub fn set_all_null(&mut self, pool: &mut BufferPool) {
-        let ty = self.data_type();
-        self.reclaim_in_place(pool);
-        self.storage = Storage::Empty(ty);
-    }
-
     // -- typed accessors -----------------------------------------------------
     //
     // Err for the wrong type AND for Empty: a kernel that reaches an accessor with an Empty input has skipped its

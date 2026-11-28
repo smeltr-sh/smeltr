@@ -22,7 +22,8 @@ impl Noted {
         Noted(message)
     }
 
-    pub fn as_str(&self) -> &str {
+    #[cfg(test)]
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
