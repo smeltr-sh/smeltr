@@ -2260,7 +2260,9 @@ impl Transform {
         self.place_range(out, targets, records, lane, read);
     }
 
-    /// `place_arrived` for `records`, decoded when `read` says a form needs it.
+    /// `place_arrived` for `records`, one range of a batch: decoded under the memory budget when `read` says a form
+    /// needs it. A range the budget refuses is halved and each half placed in order; a record it refuses alone has
+    /// only its `__source.bytes`.
     fn place_range(&self, out: &mut Output, targets: &[DestId], records: &[SourceRecord], lane: &Lane, read: bool) {
         let mut pool = BufferPool::with_budget(self.memory.clone());
         let decoded = read.then(|| {
