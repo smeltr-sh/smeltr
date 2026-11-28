@@ -6,8 +6,11 @@
 #
 # The host is shared and its speed drifts, so absolute rates are not
 # comparable across rows. The ratio is head's median docs/s over the
-# reference's in the same run; a move under about 0.1 is noise. faults/doc
-# (page faults per document, from perf stat) does not depend on host speed.
+# reference's in the same run; a move under about 0.1 is noise. The per-CPU
+# ratio is the reference's median CPU µs/doc over head's, and docs/CPU-s is
+# documents per second of CPU, head's with the reference's in parentheses.
+# faults/doc (page faults per document, from perf stat) does not depend on host
+# speed.
 # CPU µs/doc does, so read head against the reference, in parentheses, in the
 # same row.
 #
@@ -22,8 +25,9 @@ REF=${BENCH_REF:-130b7412}
 RUNS=${BENCH_RUNS:-7}
 root=$(git rev-parse --show-toplevel)
 log=${BENCH_LOG:?BENCH_LOG names the log file, kept outside the repository}
-[ -s "$log" ] || echo '| date | pipeline | head | reference | ratio | docs/s | MB/s in | MB/s out | faults/doc | CPU µs/doc |
-|---|---|---|---|---|---|---|---|---|---|' >"$log"
+[ -s "$log" ] || echo '| date | pipeline | head | reference | ratio | per-CPU ratio | docs/s | docs/CPU-s | MB/s in | MB/s out | faults/doc | CPU µs/doc |
+|---|---|---|---|---|---|---|---|---|---|---|---|' >"$log"
+grep -q '| per-CPU ratio |' "$log" || { echo "$log has the older columns: add per-CPU ratio and docs/CPU-s" >&2; exit 1; }
 perf=$(ls /usr/lib/linux-tools/*/perf 2>/dev/null | head -1)
 [ -x "$perf" ] || { echo "perf missing: apt-get install linux-tools-generic" >&2; exit 1; }
 
@@ -102,9 +106,13 @@ with open(log, "a") as out:
         mb_in = med("head", lambda r: r["bytes_in"] / r["secs"] / 1e6)
         mb_out = med("head", lambda r: r["bytes_out"] / r["secs"] / 1e6)
         pf = lambda s: f"{med(s, lambda r: r['page-faults'] / r['docs']):.2f}" if s == "head" or has_ref else "n/a"
-        cpu = lambda s: f"{med(s, lambda r: r['task-clock'] * 1000 / r['docs']):.2f}" if s == "head" or has_ref else "n/a"
-        row = (f"| {datetime.date.today()} | {name} | {head} | {ref} | {ratio} | {h / 1000:.0f}k "
-               f"| {mb_in:.0f} | {mb_out:.0f} | {pf('head')} ({pf('ref')}) | {cpu('head')} ({cpu('ref')}) |")
+        cpu_us = lambda s: med(s, lambda r: r['task-clock'] * 1000 / r['docs'])
+        cpu = lambda s: f"{cpu_us(s):.2f}" if s == "head" or has_ref else "n/a"
+        per_cpu = lambda s: f"{1e6 / cpu_us(s) / 1000:.1f}k" if s == "head" or has_ref else "n/a"
+        cpu_ratio = f"{cpu_us('ref') / cpu_us('head'):.2f}" if has_ref else "n/a"
+        row = (f"| {datetime.date.today()} | {name} | {head} | {ref} | {ratio} | {cpu_ratio} | {h / 1000:.0f}k "
+               f"| {per_cpu('head')} ({per_cpu('ref')}) | {mb_in:.0f} | {mb_out:.0f} | {pf('head')} ({pf('ref')}) "
+               f"| {cpu('head')} ({cpu('ref')}) |")
         out.write(row + "\n")
         print(row)
 EOF
