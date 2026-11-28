@@ -12,34 +12,34 @@ use std::time::{Duration, Instant};
 use crate::format::json_scan::{Malformed, Next, Reader};
 
 /// Where a HEC receiver answers whether it takes requests, as Splunk does.
-pub const HEALTH_PATH: &str = "/services/collector/health";
+pub(crate) const HEALTH_PATH: &str = "/services/collector/health";
 
 /// What an event is filed under, each by the `__source` field it is read as: `SourceRecord::headers` carries them.
 /// `host`, `source`, `sourcetype` and `index` are text; `time` is microseconds since the epoch as decimal text; and
 /// `fields` is in `core::variant`'s encoding.
-pub type Filed = Vec<(String, Vec<u8>)>;
+pub(crate) type Filed = Vec<(String, Vec<u8>)>;
 
 /// The keys of [`Filed`] that are text, as the envelope and the raw endpoint's query name them.
-pub const NAMED: [&str; 4] = ["host", "source", "sourcetype", "index"];
-pub const TIME: &str = "time";
-pub const FIELDS: &str = "fields";
+pub(crate) const NAMED: [&str; 4] = ["host", "source", "sourcetype", "index"];
+pub(crate) const TIME: &str = "time";
+pub(crate) const FIELDS: &str = "fields";
 
 /// Why HEC refuses a body: its code, its text, and the envelope it refuses, counted from 0.
 #[derive(Debug, PartialEq)]
-pub struct Invalid {
-    pub code: u16,
-    pub text: &'static str,
-    pub event: Option<usize>,
+pub(crate) struct Invalid {
+    pub(crate) code: u16,
+    pub(crate) text: &'static str,
+    pub(crate) event: Option<usize>,
 }
 
 impl Invalid {
-    pub const NO_DATA: Invalid = Invalid {
+    pub(crate) const NO_DATA: Invalid = Invalid {
         code: 5,
         text: "No data",
         event: None,
     };
 
-    pub const NO_CHANNEL: Invalid = Invalid {
+    pub(crate) const NO_CHANNEL: Invalid = Invalid {
         code: 10,
         text: "Data channel is missing",
         event: None,
@@ -60,11 +60,11 @@ impl Invalid {
 
 /// The records of an event endpoint's body, each with what it is filed under, cut when the body was read.
 #[derive(Debug)]
-pub struct Events(std::vec::IntoIter<(Vec<u8>, Filed)>);
+pub(crate) struct Events(std::vec::IntoIter<(Vec<u8>, Filed)>);
 
 impl Events {
     /// `body`'s envelopes, or why HEC refuses it. Every envelope is read here, so none of a refused body is taken.
-    pub fn new(body: Vec<u8>) -> Result<Events, Invalid> {
+    pub(crate) fn new(body: Vec<u8>) -> Result<Events, Invalid> {
         let body = match String::from_utf8(body) {
             Ok(body) => body,
             // The envelopes before the first byte that is no UTF-8 read; the one holding it does not.
@@ -81,7 +81,7 @@ impl Events {
     }
 
     /// The next envelope's record and what it is filed under.
-    pub fn next_record(&mut self) -> Option<(Vec<u8>, Filed)> {
+    pub(crate) fn next_record(&mut self) -> Option<(Vec<u8>, Filed)> {
         self.0.next()
     }
 }
@@ -197,7 +197,7 @@ fn epoch_micros(time: &str) -> Option<i64> {
 }
 
 /// What the raw endpoint's query files every line of a request under. A `time` that is not Unix seconds files none.
-pub fn raw_filed(query: &HashMap<String, String>) -> Filed {
+pub(crate) fn raw_filed(query: &HashMap<String, String>) -> Filed {
     let mut filed: Filed = NAMED
         .into_iter()
         .filter_map(|key| Some((key.to_string(), query.get(key)?.clone().into_bytes())))
@@ -211,10 +211,10 @@ pub fn raw_filed(query: &HashMap<String, String>) -> Filed {
 
 /// The most channels a receiver keeps `ackId`s for. A request on a new channel past it first forgets the channels idle
 /// past [`CHANNEL_IDLE`], and is answered busy if that leaves no room.
-pub const MAX_CHANNELS: usize = 10_000;
+pub(crate) const MAX_CHANNELS: usize = 10_000;
 
 /// How long a channel nobody sends on or asks after is kept.
-pub const CHANNEL_IDLE: Duration = Duration::from_secs(10 * 60);
+pub(crate) const CHANNEL_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// How often a receiver with no room for a new channel looks for idle ones to forget. Looking reads every channel,
 /// under the lock the reader takes too.
@@ -223,14 +223,14 @@ const SWEEP_EVERY: Duration = Duration::from_secs(1);
 /// The most delivered `ackId`s a receiver keeps, across its channels, for senders to ask after. Past it the channel
 /// holding the most forgets its oldest, so a sender that never asks costs only itself, and a sender asking after one
 /// forgotten hears `false` and sends its request again: a duplicate, never a loss.
-pub const MAX_DELIVERED: usize = 1_000_000;
+pub(crate) const MAX_DELIVERED: usize = 1_000_000;
 
 /// The `ackId`s a receiver has given, by channel. Each is pending until its request is delivered, then delivered until
 /// its sender asks after it. One no channel here knows is never delivered: it was given by another worker, or by this
 /// one before it restarted, and its sender sends it again. A channel's IDs start at a random number, so an ID another
 /// worker, or an earlier life of this channel, gave is not mistaken for one of this channel's.
 #[derive(Default)]
-pub struct Acks {
+pub(crate) struct Acks {
     channels: HashMap<Arc<str>, Channel>,
     /// Delivered IDs, across every channel.
     delivered: usize,
@@ -248,7 +248,7 @@ struct Channel {
 impl Acks {
     /// A new `ackId` on `channel`, or `None` when this receiver keeps as many channels as it may, or cannot draw a
     /// channel's first ID.
-    pub fn give(&mut self, channel: &Arc<str>, now: Instant) -> Option<u64> {
+    pub(crate) fn give(&mut self, channel: &Arc<str>, now: Instant) -> Option<u64> {
         if !self.channels.contains_key(channel) && self.channels.len() >= MAX_CHANNELS {
             if self.swept.is_some_and(|at| now.duration_since(at) < SWEEP_EVERY) {
                 return None;
@@ -280,7 +280,7 @@ impl Acks {
         Some(open.next - 1)
     }
 
-    pub fn deliver(&mut self, channel: &str, id: u64) {
+    pub(crate) fn deliver(&mut self, channel: &str, id: u64) {
         let Some((name, _)) = self.channels.get_key_value(channel) else {
             return;
         };
@@ -320,7 +320,7 @@ impl Acks {
     }
 
     /// Whether each of `ids` on `channel` is delivered. One that is, is forgotten once asked after.
-    pub fn ask(&mut self, channel: &str, ids: &[u64], now: Instant) -> Vec<(u64, bool)> {
+    pub(crate) fn ask(&mut self, channel: &str, ids: &[u64], now: Instant) -> Vec<(u64, bool)> {
         let mut open = self.channels.get_mut(channel);
         if let Some(open) = open.as_deref_mut() {
             open.used = now;
@@ -346,7 +346,7 @@ fn first_id() -> Option<u64> {
 }
 
 /// The channel a request names in `X-Splunk-Request-Channel` or its `channel` query, or why HEC refuses it.
-pub fn channel(header: Option<&[u8]>, query: Option<&str>) -> Result<Option<Arc<str>>, Invalid> {
+pub(crate) fn channel(header: Option<&[u8]>, query: Option<&str>) -> Result<Option<Arc<str>>, Invalid> {
     match header.or(query.map(str::as_bytes)).map(<[u8]>::trim_ascii) {
         None => Ok(None),
         Some(named)

@@ -58,12 +58,12 @@ impl StrBuilder {
     /// A builder for a column whose length is not known until it is done, such as the rows of one poll of a source:
     /// `push_grow` and `push_null_grow` grow its offsets as they grow its data, and `finish_growing` seals the rows
     /// pushed.
-    pub fn growing(pool: &mut BufferPool, var_type: VarType) -> Self {
+    pub(crate) fn growing(pool: &mut BufferPool, var_type: VarType) -> Self {
         StrBuilder::growing_with(pool, var_type, 0, 0)
     }
 
     /// `growing`, with room already for `rows` rows of `bytes` bytes in all, as a guess from the last column like it.
-    pub fn growing_with(pool: &mut BufferPool, var_type: VarType, rows: usize, bytes: usize) -> Self {
+    pub(crate) fn growing_with(pool: &mut BufferPool, var_type: VarType, rows: usize, bytes: usize) -> Self {
         let mut b = StrBuilder {
             growing: true,
             ..StrBuilder::new(pool, var_type, rows)
@@ -74,7 +74,7 @@ impl StrBuilder {
 
     /// Whether `bytes` more fit as a row with no growing.
     #[inline]
-    pub fn fits(&self, bytes: usize) -> bool {
+    pub(crate) fn fits(&self, bytes: usize) -> bool {
         self.row < self.len && self.pos as usize + bytes <= self.cap
     }
 
@@ -140,12 +140,12 @@ impl StrBuilder {
     }
 
     /// `push` for kernels whose output size is unknowable in advance. Grows by doubling.
-    pub fn push_grow(&mut self, pool: &mut BufferPool, s: &[u8]) {
+    pub(crate) fn push_grow(&mut self, pool: &mut BufferPool, s: &[u8]) {
         self.push_parts_grow(pool, &[s]);
     }
 
     /// `push_grow` of `parts` written one after another as one row, so a caller joins them without a copy of its own.
-    pub fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
+    pub(crate) fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
         self.unchecked = true;
         self.put_parts_grow(pool, parts);
     }
@@ -175,7 +175,7 @@ impl StrBuilder {
 
     /// `push_grow` of a row of `len` bytes that `write` fills in place, so a row larger than its input is held to the
     /// pool's budget before it is written, not after a copy of it is.
-    pub fn push_written_grow(&mut self, pool: &mut BufferPool, len: usize, write: impl FnOnce(&mut [u8])) {
+    pub(crate) fn push_written_grow(&mut self, pool: &mut BufferPool, len: usize, write: impl FnOnce(&mut [u8])) {
         self.unchecked = true;
         self.room_for(pool, len);
         let start = self.pos as usize;
@@ -218,7 +218,7 @@ impl StrBuilder {
     }
 
     /// `push_null` for a `growing` builder.
-    pub fn push_null_grow(&mut self, pool: &mut BufferPool) {
+    pub(crate) fn push_null_grow(&mut self, pool: &mut BufferPool) {
         self.room_for(pool, 0);
         self.push_null();
     }
@@ -247,7 +247,7 @@ impl StrBuilder {
     }
 
     /// Seal a `growing` builder's column, which holds the rows pushed.
-    pub fn finish_growing(mut self) -> Column {
+    pub(crate) fn finish_growing(mut self) -> Column {
         debug_assert!(self.growing, "a builder of known length finishes with `finish`");
         self.len = self.row;
         self.validity.truncate(self.row);

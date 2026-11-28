@@ -12,19 +12,19 @@ pub struct HttpReceiverDto {
     /// Whether a request is answered only once every destination has its records, rather than as soon as it is
     /// received.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub answer_after_delivery: bool,
+    pub(crate) answer_after_delivery: bool,
     /// The path senders POST to.
     #[serde(default = "root_path", skip_serializing_if = "is_root_path")]
-    pub path: String,
+    pub(crate) path: String,
     /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tokens: BTreeMap<String, SecretRefDto>,
+    pub(crate) tokens: BTreeMap<String, SecretRefDto>,
     /// `"body"` (default), `"lines"` or `"array"`.
     #[serde(default, skip_serializing_if = "ApiRecordsDto::is_default")]
-    pub records: ApiRecordsDto,
+    pub(crate) records: ApiRecordsDto,
     /// The JSON pointer to the array `"array"` reads, such as `/events`. Absent is a body that is the array.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub records_at: Option<String>,
+    pub(crate) records_at: Option<String>,
 }
 
 impl ReceiverKindDto for HttpReceiverDto {

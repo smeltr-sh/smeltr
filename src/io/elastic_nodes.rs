@@ -108,7 +108,7 @@ impl Nodes {
     }
 
     /// The address the next request goes to, learning the nodes first when that is due and `deadline` allows.
-    pub fn pick(&self, deadline: Instant) -> String {
+    pub(crate) fn pick(&self, deadline: Instant) -> String {
         self.learn_if_due(deadline);
         let mut state = self.state();
         let now = Instant::now();

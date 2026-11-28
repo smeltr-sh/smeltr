@@ -37,7 +37,7 @@ const FURTHEST_YEAR: i64 = 6_000_000;
 
 /// `days_from_civil` for a date the calendar has; `None` for a month or day it does not, or a year past
 /// `FURTHEST_YEAR`.
-pub fn valid_date_days(y: i64, m: u32, d: u32) -> Option<i64> {
+pub(crate) fn valid_date_days(y: i64, m: u32, d: u32) -> Option<i64> {
     if !(-FURTHEST_YEAR..=FURTHEST_YEAR).contains(&y) {
         return None;
     }

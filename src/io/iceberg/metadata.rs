@@ -11,53 +11,53 @@ use crate::io::table::Kind;
 pub use crate::io::table::Literal;
 
 /// The format version a table is created at.
-pub const FORMAT_VERSION: u8 = 2;
+pub(crate) const FORMAT_VERSION: u8 = 2;
 
 /// The first format version that tracks row lineage.
-pub const ROW_LINEAGE_VERSION: u8 = 3;
+pub(crate) const ROW_LINEAGE_VERSION: u8 = 3;
 
 /// The first format version with a variant type.
-pub const VARIANT_VERSION: u8 = 3;
+pub(crate) const VARIANT_VERSION: u8 = 3;
 
 /// `current-snapshot-id` of a table with no snapshot, in tables written before the key became optional.
-pub const NO_SNAPSHOT: i64 = -1;
+pub(crate) const NO_SNAPSHOT: i64 = -1;
 
 /// The first partition field id; ids below it are columns.
-pub const FIRST_PARTITION_ID: i32 = 1000;
+pub(crate) const FIRST_PARTITION_ID: i32 = 1000;
 
 /// A table's `metadata.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct TableMetadata {
-    pub format_version: u8,
-    pub table_uuid: String,
+    pub(crate) format_version: u8,
+    pub(crate) table_uuid: String,
     pub location: String,
     #[serde(default)]
-    pub last_sequence_number: i64,
-    pub last_column_id: i32,
-    pub current_schema_id: i32,
-    pub schemas: Vec<Schema>,
-    pub default_spec_id: i32,
-    pub partition_specs: Vec<PartitionSpec>,
-    pub last_partition_id: i32,
+    pub(crate) last_sequence_number: i64,
+    pub(crate) last_column_id: i32,
+    pub(crate) current_schema_id: i32,
+    pub(crate) schemas: Vec<Schema>,
+    pub(crate) default_spec_id: i32,
+    pub(crate) partition_specs: Vec<PartitionSpec>,
+    pub(crate) last_partition_id: i32,
     #[serde(default)]
-    pub properties: BTreeMap<String, String>,
+    pub(crate) properties: BTreeMap<String, String>,
     #[serde(default)]
-    pub current_snapshot_id: Option<i64>,
+    pub(crate) current_snapshot_id: Option<i64>,
     #[serde(default)]
-    pub snapshots: Vec<Snapshot>,
+    pub(crate) snapshots: Vec<Snapshot>,
     #[serde(default)]
-    pub refs: BTreeMap<String, SnapshotRef>,
+    pub(crate) refs: BTreeMap<String, SnapshotRef>,
     /// Higher than every row id assigned; the next snapshot's `first-row-id`. Format version 3 on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_row_id: Option<i64>,
+    pub(crate) next_row_id: Option<i64>,
     #[serde(flatten)]
-    pub other: BTreeMap<String, serde_json::Value>,
+    pub(crate) other: BTreeMap<String, serde_json::Value>,
 }
 
 impl TableMetadata {
     /// The first row id a snapshot committed now takes, when the table tracks row lineage.
-    pub fn next_row_id(&self) -> Option<i64> {
+    pub(crate) fn next_row_id(&self) -> Option<i64> {
         (self.format_version >= ROW_LINEAGE_VERSION).then(|| self.next_row_id.unwrap_or(0))
     }
 
@@ -80,24 +80,24 @@ impl TableMetadata {
 }
 
 /// The branch readers read.
-pub const MAIN: &str = "main";
+pub(crate) const MAIN: &str = "main";
 
 /// A schema: a struct whose every field, at any depth, has an id unique in the table.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Schema {
     #[serde(rename = "type", default)]
-    pub kind: StructTag,
+    pub(crate) kind: StructTag,
     #[serde(default)]
-    pub schema_id: i32,
+    pub(crate) schema_id: i32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub identifier_field_ids: Vec<i32>,
+    pub(crate) identifier_field_ids: Vec<i32>,
     pub fields: Vec<NestedField>,
 }
 
 /// The `"type": "struct"` a schema is written with.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct StructTag;
+pub(crate) struct StructTag;
 
 impl Serialize for StructTag {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -112,7 +112,7 @@ impl<'de> Deserialize<'de> for StructTag {
 }
 
 impl Schema {
-    pub fn field(&self, id: i32) -> Option<&NestedField> {
+    pub(crate) fn field(&self, id: i32) -> Option<&NestedField> {
         fn find(fields: &[NestedField], id: i32) -> Option<&NestedField> {
             fields.iter().find_map(|f| {
                 if f.id == id {
@@ -137,15 +137,15 @@ impl Schema {
 pub struct NestedField {
     pub id: i32,
     pub name: String,
-    pub required: bool,
+    pub(crate) required: bool,
     #[serde(rename = "type")]
     pub field_type: Type,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub doc: Option<String>,
+    pub(crate) doc: Option<String>,
     /// The keys this model does not name, such as a version 3 field's defaults, kept as they came so that a schema
     /// evolved from this one keeps them.
     #[serde(flatten)]
-    pub other: BTreeMap<String, serde_json::Value>,
+    pub(crate) other: BTreeMap<String, serde_json::Value>,
 }
 
 /// A field's type.
@@ -166,9 +166,9 @@ pub struct StructType {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ListType {
-    pub element_id: i32,
-    pub element_required: bool,
-    pub element: Box<Type>,
+    pub(crate) element_id: i32,
+    pub(crate) element_required: bool,
+    pub(crate) element: Box<Type>,
 }
 
 /// The primitive types. `Other` is one this writer never writes, kept by its name.
@@ -189,7 +189,7 @@ pub enum Primitive {
 
 impl Primitive {
     /// The type as `io::table` reads it; `None` for `Other`.
-    pub fn kind(&self) -> Option<Kind> {
+    pub(crate) fn kind(&self) -> Option<Kind> {
         Some(match self {
             Primitive::Boolean => Kind::Boolean,
             Primitive::Int => Kind::Int,
@@ -304,7 +304,7 @@ impl<'de> Deserialize<'de> for Type {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct PartitionSpec {
-    pub spec_id: i32,
+    pub(crate) spec_id: i32,
     pub fields: Vec<PartitionField>,
 }
 
@@ -317,12 +317,12 @@ pub struct PartitionField {
     #[serde(default = "no_source", skip_serializing_if = "is_no_source")]
     pub source_id: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_ids: Option<Vec<i32>>,
-    pub field_id: i32,
+    pub(crate) source_ids: Option<Vec<i32>>,
+    pub(crate) field_id: i32,
 }
 
 /// The `source_id` of a partition field that has none of its own.
-pub const NO_SOURCE: i32 = -1;
+pub(crate) const NO_SOURCE: i32 = -1;
 
 fn no_source() -> i32 {
     NO_SOURCE
@@ -407,36 +407,36 @@ impl<'de> Deserialize<'de> for Transform {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Snapshot {
-    pub snapshot_id: i64,
+    pub(crate) snapshot_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_snapshot_id: Option<i64>,
+    pub(crate) parent_snapshot_id: Option<i64>,
     #[serde(default)]
-    pub sequence_number: i64,
-    pub timestamp_ms: i64,
+    pub(crate) sequence_number: i64,
+    pub(crate) timestamp_ms: i64,
     pub manifest_list: String,
     pub summary: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_id: Option<i32>,
+    pub(crate) schema_id: Option<i32>,
     /// The first row id the snapshot assigns, and how many it assigns. Format version 3 on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_row_id: Option<i64>,
+    pub(crate) first_row_id: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub added_rows: Option<i64>,
+    pub(crate) added_rows: Option<i64>,
 }
 
 /// A branch or tag. A commit that moves one keeps its retention: a catalog replaces the whole ref.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct SnapshotRef {
-    pub snapshot_id: i64,
+pub(crate) struct SnapshotRef {
+    pub(crate) snapshot_id: i64,
     #[serde(rename = "type")]
-    pub kind: String,
+    pub(crate) kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_snapshots_to_keep: Option<i32>,
+    pub(crate) min_snapshots_to_keep: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_snapshot_age_ms: Option<i64>,
+    pub(crate) max_snapshot_age_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_ref_age_ms: Option<i64>,
+    pub(crate) max_ref_age_ms: Option<i64>,
 }
 
 #[cfg(test)]

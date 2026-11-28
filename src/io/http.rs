@@ -37,7 +37,7 @@ pub struct Outcome {
     pub permanent: Vec<(usize, String)>,
     /// The service refused the request as a whole, for this reason, without naming an item. The request is split
     /// until each part lands or is one item, which is then refused for it.
-    pub split: Option<String>,
+    pub(crate) split: Option<String>,
     /// The service asked to be sent less. The retries back off, and the pool's loop hears it.
     pub throttled: bool,
 }
@@ -80,13 +80,13 @@ impl Unwritten {
     }
 
     /// The destination as its author named it.
-    pub fn subject(&self) -> &str {
+    pub(crate) fn subject(&self) -> &str {
         &self.subject
     }
 
     /// Counts `count` of `kind` unwritten, and warns, saying what `why` makes, when no warning of this destination's is
     /// recent. `why` runs only for a warning, as most notes make none.
-    pub fn note(&self, kind: &str, count: u64, why: impl FnOnce() -> String) {
+    pub(crate) fn note(&self, kind: &str, count: u64, why: impl FnOnce() -> String) {
         if count == 0 {
             return;
         }
@@ -112,7 +112,7 @@ impl Unwritten {
 ///
 /// Sized for the one answer that grows with the request: a bulk index answers a few hundred bytes per document, so
 /// this holds the answer to any bulk an operator is likely to set, and only a misbehaving service draws it in full.
-pub const MAX_ANSWER_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_ANSWER_BYTES: u64 = 50 * 1024 * 1024;
 
 /// An answer, whatever its status: a protocol decides what a status means.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,12 +125,12 @@ pub struct Response {
 
 impl Response {
     /// The value of the first header named `name`, which is lowercase.
-    pub fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         (self.headers.iter()).find(|(n, _)| n == name).map(|(_, v)| v.as_str())
     }
 
     /// How long the answer's `Retry-After` asks to wait, a date measured from the answer's own `Date`.
-    pub fn asked_wait(&self) -> Option<Duration> {
+    pub(crate) fn asked_wait(&self) -> Option<Duration> {
         let now = (self.header("date"))
             .and_then(super::api::http_date)
             .unwrap_or_else(std::time::SystemTime::now);
@@ -138,7 +138,7 @@ impl Response {
     }
 
     /// The status and the start of the body, for an error an operator reads.
-    pub fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         let start: String = String::from_utf8_lossy(&self.body).chars().take(400).collect();
         format!("HTTP {}: {start}", self.status)
     }
@@ -146,7 +146,7 @@ impl Response {
 
 /// Writes `s` as a JSON string. A value that can come from a pipeline expression (`__destination.topic`) is escaped as
 /// data.
-pub fn push_json_string(out: &mut Vec<u8>, s: &str) {
+pub(crate) fn push_json_string(out: &mut Vec<u8>, s: &str) {
     crate::format::json::write_json_string(s.as_bytes(), out);
 }
 
@@ -163,7 +163,7 @@ pub fn percent_encode(value: &str) -> String {
 }
 
 /// How two items compare in the order a service must receive them. See [`Protocol::order`].
-pub type Order<I> = fn(&I, &I) -> std::cmp::Ordering;
+pub(crate) type Order<I> = fn(&I, &I) -> std::cmp::Ordering;
 
 /// What a service's requests and answers look like. `Clone` because every pool sender holds its own.
 pub trait Protocol: Clone + Send + 'static {
@@ -288,7 +288,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
 
     /// Name the destination as its author did in its lines. Before [`HttpDestination::with_senders`], which hands
     /// each sender the name.
-    pub fn with_subject(mut self, subject: &str) -> Self {
+    pub(crate) fn with_subject(mut self, subject: &str) -> Self {
         self.subject = Arc::from(subject);
         self
     }
@@ -318,7 +318,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     }
 
     /// [`HttpDestination::with_senders`] with `n` senders, each `make()`'s.
-    pub fn with_senders_from(self, make: impl Fn() -> T, n: usize, start: usize) -> Self {
+    pub(crate) fn with_senders_from(self, make: impl Fn() -> T, n: usize, start: usize) -> Self {
         self.with_senders((0..n).map(|_| make()).collect(), start)
     }
 
@@ -749,7 +749,7 @@ pub struct HttpTransport {
 }
 
 /// One sign-in, shared by the transports that send with its token.
-pub type SharedSignIn = Arc<Mutex<Box<dyn super::api::Authorize>>>;
+pub(crate) type SharedSignIn = Arc<Mutex<Box<dyn super::api::Authorize>>>;
 
 /// The most cookies one transport keeps: a load balancer's affinity needs one or two, and a service that sets a new
 /// name on every answer must not grow the jar without end.
@@ -779,13 +779,13 @@ impl HttpTransport {
 
     /// Signs every request in with `sign_in`'s token. A request whose token is refused with a 401 is sent once more
     /// with a new token when `sign_in` says one is worth asking for.
-    pub fn signed_in(mut self, sign_in: SharedSignIn) -> Self {
+    pub(crate) fn signed_in(mut self, sign_in: SharedSignIn) -> Self {
         self.sign_in = Some(sign_in);
         self
     }
 
     /// Sends later requests under `url`. A new address is another service, so the cookies the old one set go.
-    pub fn rebase(&mut self, url: &str) {
+    pub(crate) fn rebase(&mut self, url: &str) {
         let url = url.trim_end_matches('/');
         if self.url != url {
             self.url = url.to_string();
@@ -794,13 +794,13 @@ impl HttpTransport {
     }
 
     /// Gives up on a connection that has not opened within `within`, so a request can move on to another address.
-    pub fn with_connect_within(mut self, within: Duration) -> Self {
+    pub(crate) fn with_connect_within(mut self, within: Duration) -> Self {
         self.connect_within = Some(within);
         self
     }
 
     /// Hands a 3xx to the protocol as the answer, rather than following it.
-    pub fn without_redirects(mut self) -> Self {
+    pub(crate) fn without_redirects(mut self) -> Self {
         self.follow_redirects = false;
         self
     }
@@ -947,7 +947,7 @@ pub fn credential_headers(
 }
 
 /// The value of the credential `what` names `name`, refused as `credential_headers` refuses a header's.
-pub fn credential(
+pub(crate) fn credential(
     what: &str,
     name: &str,
     reference: &crate::plan::topology::SecretRef,
@@ -966,7 +966,7 @@ pub fn credential(
 
 /// The `Authorization` value signing in as `user` with the password the credential `what` names `password` holds,
 /// refused as `credential` refuses one.
-pub fn basic(
+pub(crate) fn basic(
     what: &str,
     name: &str,
     user: &str,
@@ -977,7 +977,7 @@ pub fn basic(
 }
 
 /// The `Authorization` value signing in as `user` with `password` (RFC 7617).
-pub fn basic_authorization(user: &str, password: &str) -> String {
+pub(crate) fn basic_authorization(user: &str, password: &str) -> String {
     format!(
         "Basic {}",
         crate::format::bytes_text::BytesForm::Base64.text(format!("{user}:{password}").as_bytes())
@@ -997,14 +997,14 @@ pub fn agent_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::co
 
 /// An agent on `config`, whose resolver names the host when it fails to resolve it. Every agent smeltr talks to a
 /// service through is built here.
-pub fn agent(config: ureq::config::Config) -> ureq::Agent {
+pub(crate) fn agent(config: ureq::config::Config) -> ureq::Agent {
     ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::new(), Naming)
 }
 
 /// The platform's resolver, its failure naming the host. The platform's own error does not name the host, and can be
 /// an error number that has nothing to do with names, such as "Device or resource busy".
 #[derive(Debug)]
-pub struct Naming;
+pub(crate) struct Naming;
 
 impl ureq::unversioned::resolver::Resolver for Naming {
     fn resolve(
@@ -1026,7 +1026,7 @@ impl ureq::unversioned::resolver::Resolver for Naming {
 }
 
 /// `agent_config`'s TLS alone, for a caller that sets the rest of the agent itself.
-pub fn tls_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
+pub(crate) fn tls_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
     let config = ureq::tls::TlsConfig::builder().root_certs(super::trust::ureq_roots(tls)?);
     let Some(presented) = tls.map(|t| super::trust::presented(t, secrets)).transpose()?.flatten() else {
         return Ok(config.build());

@@ -281,7 +281,7 @@ fn take_am_pm(text: &[u8], pos: &mut usize) -> Option<bool> {
 }
 
 /// Parse `text` against `fmt`, returning epoch microseconds. `None` on any mismatch, trailing input included.
-pub fn parse_with_format(text: &str, fmt: &str) -> Option<i64> {
+pub(crate) fn parse_with_format(text: &str, fmt: &str) -> Option<i64> {
     parse_with_format_at(text, fmt, None)
 }
 
@@ -312,7 +312,7 @@ fn century_nearest(reference: i64, yy: i64) -> i64 {
 
 /// Parse `text` against `fmt`, returning epoch microseconds. `None` on any mismatch, trailing input included. A
 /// format with no `%Y` infers its year from `reference` (the module doc), or reads 1970 without one.
-pub fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Option<i64> {
+pub(crate) fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Option<i64> {
     let tb = text.as_bytes();
     let fb = fmt.as_bytes();
     let (mut ti, mut fi) = (0usize, 0usize);
@@ -483,7 +483,7 @@ const CANDIDATE_FORMATS: &[&str] = &[
 
 /// Auto-detect, trying `CANDIDATE_FORMATS[hint]` before the ordered scan. Returns the value and the index of the
 /// candidate that matched; an out-of-range hint means no hint.
-pub fn parse_auto_hinted(text: &str, hint: usize) -> Option<(i64, usize)> {
+pub(crate) fn parse_auto_hinted(text: &str, hint: usize) -> Option<(i64, usize)> {
     parse_auto_hinted_at(text, hint, None)
 }
 
@@ -503,7 +503,7 @@ const COMPACT_CANDIDATES: usize = 3;
 /// seconds, milliseconds, microseconds and nanoseconds whose bound the integer part is below (the module doc). `None`
 /// for anything that is not that shape, and for a count that does not fit in microseconds. Surrounding whitespace is
 /// ignored, as `parseInt` ignores it: a CSV cell often carries the space after its delimiter.
-pub fn parse_epoch_digits(text: &str) -> Option<i64> {
+pub(crate) fn parse_epoch_digits(text: &str) -> Option<i64> {
     let b = text.trim().as_bytes();
     let mut pos = 0;
     let (negative, whole, frac) = take_count(b, &mut pos)?;
@@ -520,7 +520,7 @@ pub fn parse_epoch_digits(text: &str) -> Option<i64> {
 /// Checks `fmt` before any row is read: it must hold a specifier, each `%` in it must open one that
 /// `parse_with_format_at` takes, and an epoch specifier must be the whole format. `Err` names the first check that
 /// fails, so a format is refused where it is written, not failed on every row.
-pub fn check_format(fmt: &str) -> Result<(), String> {
+pub(crate) fn check_format(fmt: &str) -> Result<(), String> {
     let mut chars = fmt.chars();
     let mut whole: Option<String> = None;
     let mut fields = 0usize;
@@ -557,7 +557,7 @@ pub fn check_format(fmt: &str) -> Result<(), String> {
 /// `%z` `+0000`, `%b`/`%a` the three-letter English name and `%B`/`%A` the whole one, `%s` and `%Q` the epoch in
 /// seconds and milliseconds, floored. A year outside 0 to 9999 is written whole, which `%Y` does not read back.
 /// `false`, with `out` partly written, where a `%` opens no specifier.
-pub fn format_into(us: i64, fmt: &str, out: &mut Vec<u8>) -> bool {
+pub(crate) fn format_into(us: i64, fmt: &str, out: &mut Vec<u8>) -> bool {
     let days = us.div_euclid(MICROS_PER_DAY);
     let of_day = us.rem_euclid(MICROS_PER_DAY);
     let (year, month, day) = civil_from_days(days);
@@ -607,7 +607,7 @@ fn write_name(out: &mut Vec<u8>, name: &str) -> std::io::Result<()> {
 }
 
 /// `parse_auto_hinted` with the reference a yearless candidate infers its year from.
-pub fn parse_auto_hinted_at(text: &str, hint: usize, reference: Option<i64>) -> Option<(i64, usize)> {
+pub(crate) fn parse_auto_hinted_at(text: &str, hint: usize, reference: Option<i64>) -> Option<(i64, usize)> {
     // A run of digits: a compact date, an epoch, or both. The compact shapes are the first candidates and fail on
     // the first byte of any other text, so trying them first costs almost nothing on the common case.
     let date = CANDIDATE_FORMATS[..COMPACT_CANDIDATES]
@@ -638,7 +638,7 @@ pub fn parse_auto_hinted_at(text: &str, hint: usize, reference: Option<i64>) -> 
 /// Whether `text` reads as a time an author would declare one: a shape the automatic reading takes, with a count
 /// only when it has an epoch's digits ([`is_epoch_count`]). Every count reads as some epoch, so its length is what
 /// tells a time from an id or a port. `hint` is [`parse_auto_hinted`]'s, kept from value to value of one field.
-pub fn reads_as_time(text: &str, hint: &mut usize) -> bool {
+pub(crate) fn reads_as_time(text: &str, hint: &mut usize) -> bool {
     match parse_auto_hinted_at(text, *hint, None) {
         Some((_, EPOCH_HINT)) => is_epoch_count(text),
         Some((_, i)) => {
@@ -651,7 +651,7 @@ pub fn reads_as_time(text: &str, hint: &mut usize) -> bool {
 
 /// Whether `text` is an unsigned count with the digits of an epoch in seconds, milliseconds, microseconds or
 /// nanoseconds of this era: 10, 13, 16 or 19 before any fraction.
-pub fn is_epoch_count(text: &str) -> bool {
+pub(crate) fn is_epoch_count(text: &str) -> bool {
     let text = text.trim();
     let whole = text.split_once('.').map_or(text, |(w, _)| w);
     matches!(whole.len(), 10 | 13 | 16 | 19) && whole.bytes().all(|b| b.is_ascii_digit())

@@ -14,7 +14,7 @@ const KEY: &str = "log_levels";
 
 /// What is stored, or nothing when nothing is: every line then at each process's startup level. A stored value this
 /// build cannot read is nothing too.
-pub fn stored(store: &Store) -> Result<LogLevels, StoreError> {
+pub(crate) fn stored(store: &Store) -> Result<LogLevels, StoreError> {
     Ok(store
         .setting(KEY)?
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -26,7 +26,7 @@ pub fn stored(store: &Store) -> Result<LogLevels, StoreError> {
 pub struct Held(crate::sync::RwLock<LogLevels>);
 
 impl Held {
-    pub fn get(&self) -> LogLevels {
+    pub(crate) fn get(&self) -> LogLevels {
         self.0.read().clone()
     }
 
@@ -50,7 +50,7 @@ pub async fn keep_stored(state: &AppState) {
 /// The levels, and what they may name.
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LogLevelsAnswer {
+pub(crate) struct LogLevelsAnswer {
     levels: Option<LogLevels>,
     classes: &'static [&'static str],
     services: Vec<&'static str>,
@@ -137,7 +137,7 @@ fn refused(levels: &LogLevels) -> Option<String> {
 }
 
 /// `GET /api/settings/log-levels`.
-pub async fn get_settings(State(state): State<AppState>) -> Envelope<LogLevelsAnswer> {
+pub(crate) async fn get_settings(State(state): State<AppState>) -> Envelope<LogLevelsAnswer> {
     answer(run_store(state.store, stored).await.map_err(Refusal::from))
 }
 
@@ -145,7 +145,7 @@ pub async fn get_settings(State(state): State<AppState>) -> Envelope<LogLevelsAn
 /// and kept by the leader at once; a worker keeps it from its next heartbeat.
 ///
 /// `actor` is optional for the reason [`crate::leader::enrollment_codes::mint`]'s is: a router composed without a gate.
-pub async fn put_settings(
+pub(crate) async fn put_settings(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(levels): Json<LogLevels>,

@@ -7,11 +7,11 @@ use std::sync::LazyLock;
 use serde_json::Value;
 
 /// ECS's `fields.csv`.
-pub const ECS: &str = include_str!("standards/ecs-fields.csv");
+pub(crate) const ECS: &str = include_str!("standards/ecs-fields.csv");
 
 /// The ECS fields Elastic Security requires and uses: a line for each, its requirement and its name, beneath a
 /// comment line. smeltr keeps the list by hand; `just schemas-refresh` does not touch it.
-pub const ELASTIC_SECURITY: &str = include_str!("standards/elastic-security.txt");
+pub(crate) const ELASTIC_SECURITY: &str = include_str!("standards/elastic-security.txt");
 
 /// The OCSF releases smeltr carries, each `ocsf-schema-compiler`'s output cut, newest first. An older one is kept
 /// where a destination reads only up to it.
@@ -22,7 +22,7 @@ const OCSF: [&str; 2] = [
 
 /// The compiled OCSF `version`, parsed afresh on each call: a schema is added seldom, and the parse is held only
 /// while it reads. `None` where smeltr carries no such release.
-pub fn ocsf(version: &str) -> Option<Value> {
+pub(crate) fn ocsf(version: &str) -> Option<Value> {
     let at = OCSF_RELEASES.iter().position(|r| r.version == version)?;
     Some(parse(OCSF[at]))
 }
@@ -33,9 +33,9 @@ fn parse(release: &str) -> Value {
 
 /// One OCSF release and its classes.
 #[derive(Debug)]
-pub struct OcsfRelease {
-    pub version: String,
-    pub classes: Vec<OcsfClass>,
+pub(crate) struct OcsfRelease {
+    pub(crate) version: String,
+    pub(crate) classes: Vec<OcsfClass>,
 }
 
 /// Each OCSF release and its classes, kept from one parse because the dialog asks for them each time it opens.
@@ -69,7 +69,7 @@ static OCSF_RELEASES: LazyLock<Vec<OcsfRelease>> = LazyLock::new(|| {
 });
 
 /// The ECS release, as each row of its CSV names it.
-pub fn ecs_version() -> &'static str {
+pub(crate) fn ecs_version() -> &'static str {
     ECS.lines()
         .nth(1)
         .and_then(|row| row.split(',').next())
@@ -77,28 +77,28 @@ pub fn ecs_version() -> &'static str {
 }
 
 /// The OCSF releases, newest first.
-pub fn ocsf_releases() -> &'static [OcsfRelease] {
+pub(crate) fn ocsf_releases() -> &'static [OcsfRelease] {
     &OCSF_RELEASES
 }
 
 /// One OCSF class, as the dialog offers it.
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct OcsfClass {
+pub(crate) struct OcsfClass {
     /// What a schema is read from by.
-    pub name: String,
-    pub caption: String,
+    pub(crate) name: String,
+    pub(crate) caption: String,
     /// OCSF's category, such as "Identity & Access Management"; empty for a class in none.
-    pub category: String,
+    pub(crate) category: String,
     /// The profiles the class takes, any of which a schema may be read with.
-    pub profiles: Vec<OcsfProfile>,
+    pub(crate) profiles: Vec<OcsfProfile>,
 }
 
 /// One OCSF profile a class takes.
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct OcsfProfile {
+pub(crate) struct OcsfProfile {
     /// What `ocsf::Cut::profiles` names it by.
-    pub name: String,
-    pub caption: String,
+    pub(crate) name: String,
+    pub(crate) caption: String,
 }
 
 #[cfg(test)]

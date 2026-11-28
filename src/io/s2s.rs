@@ -64,8 +64,8 @@ const KNOWN: u64 = STREAM | ID | TIME | FIELDS | 1 << 4 | 1 << 5 | BROKEN | DONE
 pub struct Malformed {
     /// The offset of the frame at fault in the decoded stream; for [`Inflate`], the offset in the zlib stream; for
     /// the signature and a v3 message, 0, its own start, which its caller places in the stream.
-    pub at: u64,
-    pub what: String,
+    pub(crate) at: u64,
+    pub(crate) what: String,
 }
 
 impl std::fmt::Display for Malformed {
@@ -76,12 +76,12 @@ impl std::fmt::Display for Malformed {
 
 /// What a channel's events are filed under, as the forwarder names them: `source::…`, `host::…`, `sourcetype::…`.
 #[derive(Debug, Default, PartialEq)]
-pub struct Channel {
+pub(crate) struct Channel {
     /// The id the forwarder names it by. A channel freed and defined again under the same id is another `Channel`.
-    pub id: u64,
-    pub source: Option<Vec<u8>>,
-    pub host: Option<Vec<u8>>,
-    pub sourcetype: Option<Vec<u8>>,
+    pub(crate) id: u64,
+    pub(crate) source: Option<Vec<u8>>,
+    pub(crate) host: Option<Vec<u8>>,
+    pub(crate) sourcetype: Option<Vec<u8>>,
     /// The field names a field may name by index.
     names: Vec<Arc<[u8]>>,
 }
@@ -89,39 +89,39 @@ pub struct Channel {
 /// One event: a chunk of a file, or an event the forwarder broke itself.
 #[derive(Debug)]
 pub struct Event {
-    pub channel: Arc<Channel>,
+    pub(crate) channel: Arc<Channel>,
     pub stream: Option<Stream>,
     /// What the receiver acks it by. `httpout` sends none: it is acked by its request's answer.
-    pub id: Option<u64>,
+    pub(crate) id: Option<u64>,
     /// Unix seconds.
-    pub time: Option<u64>,
-    pub fields: Vec<Field>,
-    pub raw: Vec<u8>,
+    pub(crate) time: Option<u64>,
+    pub(crate) fields: Vec<Field>,
+    pub(crate) raw: Vec<u8>,
     /// The forwarder broke this event itself, so it is whole: structured input, or its own line breaking.
-    pub broken: bool,
+    pub(crate) broken: bool,
     /// The forwarder has sent all its source holds for now: no more of this stream follows until the source grows.
-    pub done: bool,
+    pub(crate) done: bool,
 }
 
 /// Where an event's bytes sit in the source the forwarder reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stream {
-    pub id: u64,
+    pub(crate) id: u64,
     /// Where in the source the event's bytes start.
-    pub offset: u64,
+    pub(crate) offset: u64,
     /// The event's place among those broken from one chunk.
-    pub index: u64,
+    pub(crate) index: u64,
 }
 
 /// An indexed field: from inputs.conf `_meta`, from INDEXED_EXTRACTIONS, or the forwarder's own.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Field {
-    pub key: Key,
-    pub value: Value,
+pub(crate) struct Field {
+    pub(crate) key: Key,
+    pub(crate) value: Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Key {
+pub(crate) enum Key {
     /// Shared, as a channel's field name is by every field naming it.
     Text(Arc<[u8]>),
     /// An entry of Splunk's static dictionary ([`dictionary`]).
@@ -129,7 +129,7 @@ pub enum Key {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Value {
+pub(crate) enum Value {
     Int(u64),
     Text(Vec<u8>),
     /// An entry of Splunk's static dictionary ([`dictionary`]).
@@ -144,7 +144,7 @@ pub enum Value {
 
 /// The escapes a raw slice holds: a field taken from structured input keeps its source's.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Escapes {
+pub(crate) enum Escapes {
     None,
     /// JSON's backslash escapes.
     Json,
@@ -154,7 +154,7 @@ pub enum Escapes {
 
 impl Event {
     /// The bytes a `Value::Raw` names. The decoder checked that every one lies inside the raw.
-    pub fn slice(&self, start: usize, len: usize) -> &[u8] {
+    pub(crate) fn slice(&self, start: usize, len: usize) -> &[u8] {
         &self.raw[start..start + len]
     }
 }
@@ -257,7 +257,7 @@ pub struct Decoder {
 
 impl Decoder {
     /// The memory it holds for frames not yet whole.
-    pub fn memory(&self) -> usize {
+    pub(crate) fn memory(&self) -> usize {
         self.pending.capacity()
     }
 
@@ -290,7 +290,7 @@ impl Decoder {
     }
 
     /// How far the stream is decoded: the end of the last frame read, which is where the last event returned ends.
-    pub fn offset(&self) -> u64 {
+    pub(crate) fn offset(&self) -> u64 {
         self.base + self.at as u64
     }
 
@@ -465,7 +465,7 @@ fn field(c: &mut Cursor, channel: &Channel) -> Result<Field, Cut> {
 }
 
 /// The frame acking event ids `first..=last`, appended to `out`.
-pub fn ack(first: u64, last: u64, out: &mut Vec<u8>) {
+pub(crate) fn ack(first: u64, last: u64, out: &mut Vec<u8>) {
     match first == last {
         true => out.push(ACK),
         false => {
@@ -506,7 +506,7 @@ impl Default for Inflate {
 
 impl Inflate {
     /// The memory it holds for compressed bytes not yet inflated.
-    pub fn memory(&self) -> usize {
+    pub(crate) fn memory(&self) -> usize {
         self.input.capacity()
     }
 
@@ -572,21 +572,21 @@ const COOKED: &[u8] = b"--splunk-cooked-mode-v3--";
 
 /// How long a forwarder's signature is: [`COOKED`] in 128 bytes, its server name in 256, its management port in 16,
 /// each NUL-padded.
-pub const SIGNATURE_LEN: usize = 400;
+pub(crate) const SIGNATURE_LEN: usize = 400;
 
 /// Who opened the connection, in its own words, for naming it in logs.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Signature {
+pub(crate) struct Signature {
     /// The forwarder's server name, its hostname by default.
-    pub server: String,
+    pub(crate) server: String,
     /// Its management port, as the text it sent.
-    pub port: String,
+    pub(crate) port: String,
 }
 
 /// The signature a connection opens with, once [`SIGNATURE_LEN`] bytes are held, and `None` before. A first field
 /// other than [`COOKED`] is refused as soon as its first wrong byte is held, so an HTTP client on the port is refused
 /// at once.
-pub fn signature(bytes: &[u8]) -> Result<Option<Signature>, Malformed> {
+pub(crate) fn signature(bytes: &[u8]) -> Result<Option<Signature>, Malformed> {
     let held = &bytes[..bytes.len().min(128)];
     let cooked = COOKED.iter().chain(std::iter::repeat(&0)).take(held.len());
     if !held.iter().eq(cooked) {
@@ -611,13 +611,13 @@ pub fn signature(bytes: &[u8]) -> Result<Option<Signature>, Malformed> {
 /// A v3 message: its keys and values, in the order sent, each without the NUL that ends it on the wire. They are
 /// bytes because `_raw` is a chunk of a file cut wherever the forwarder cut it, inside a character too.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Message {
-    pub pairs: Vec<(Vec<u8>, Vec<u8>)>,
+pub(crate) struct Message {
+    pub(crate) pairs: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Message {
     /// The first value under `key`.
-    pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
+    pub(crate) fn get(&self, key: &[u8]) -> Option<&[u8]> {
         self.pairs.iter().find(|(k, _)| k == key).map(|(_, v)| &v[..])
     }
 }
@@ -637,7 +637,7 @@ const TRAILER_KEY: &[u8] = b"_raw";
 ///
 /// Every integer is big-endian. A message longer than `max`, its size field included, is refused as soon as its
 /// size is held, so waiting for one holds no more than `max`.
-pub fn read_message(bytes: &[u8], max: usize) -> Result<Option<(Message, usize)>, Malformed> {
+pub(crate) fn read_message(bytes: &[u8], max: usize) -> Result<Option<(Message, usize)>, Malformed> {
     let Some(len) = framed(bytes, max)? else {
         return Ok(None);
     };
@@ -656,7 +656,7 @@ pub fn read_message(bytes: &[u8], max: usize) -> Result<Option<(Message, usize)>
 ///
 /// The two leading integers are big-endian. A frame longer than `max` is refused as soon as its size is held, and one
 /// whose message, counted as [`read_message`] counts it, is longer than `max` once that much has inflated.
-pub fn read_compressed(bytes: &[u8], max: usize) -> Result<Option<(Message, usize)>, Malformed> {
+pub(crate) fn read_compressed(bytes: &[u8], max: usize) -> Result<Option<(Message, usize)>, Malformed> {
     let Some(len) = framed(bytes, max)? else {
         return Ok(None);
     };
@@ -757,7 +757,7 @@ fn refused(what: String) -> Malformed {
 }
 
 /// Appends the v3 message holding `pairs` to `out`, uncompressed, as a receiver sends whatever the forwarder sends.
-pub fn write_message(pairs: &[(&[u8], &[u8])], out: &mut Vec<u8>) {
+pub(crate) fn write_message(pairs: &[(&[u8], &[u8])], out: &mut Vec<u8>) {
     let start = out.len();
     out.extend([0; 4]);
     let put = |n: usize, out: &mut Vec<u8>| {
@@ -781,7 +781,7 @@ pub fn write_message(pairs: &[(&[u8], &[u8])], out: &mut Vec<u8>) {
 
 /// Appends the answer to a forwarder's capabilities: the same answer to every forwarder, whatever it asked, with
 /// this receiver's [`CHANNEL_LIMIT`]. `v4=true;pl=7` offers the v4 level 9.4 and 10.6 forwarders speak.
-pub fn write_capabilities_answer(out: &mut Vec<u8>) {
+pub(crate) fn write_capabilities_answer(out: &mut Vec<u8>) {
     let answer = format!(
         "cap_response=success;cap_flush_key=true;idx_can_send_hb=true;idx_can_recv_token=true;\
          request_certificate=true;v4=true;channel_limit={CHANNEL_LIMIT};pl=7"
@@ -791,16 +791,16 @@ pub fn write_capabilities_answer(out: &mut Vec<u8>) {
 
 /// What a forwarder asks of the receiver, in its first message.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Capabilities {
+pub(crate) struct Capabilities {
     /// It holds what it sent until the receiver acks it (`useACK`).
-    pub ack: bool,
+    pub(crate) ack: bool,
     /// It sends compressed: v4 after [`COMPRESSED`], and over TCP v3 in [`read_compressed`] frames.
-    pub compression: bool,
+    pub(crate) compression: bool,
 }
 
 /// Reads a message's `__s2s_capabilities`: `key=value` pairs separated by `;`. `ack` and `compression` are 0 or 1,
 /// and 0 when absent. Other keys say what the forwarder can do, which asks nothing of the receiver.
-pub fn capabilities(message: &Message) -> Result<Capabilities, Malformed> {
+pub(crate) fn capabilities(message: &Message) -> Result<Capabilities, Malformed> {
     let text = message
         .get(b"__s2s_capabilities")
         .ok_or_else(|| refused("a forwarder's first message without __s2s_capabilities".to_string()))?;
@@ -825,7 +825,7 @@ pub fn capabilities(message: &Message) -> Result<Capabilities, Malformed> {
 
 /// What a forwarder's next bytes are, once the receiver has answered.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Format {
+pub(crate) enum Format {
     /// A v3 message, plain or in a compressed frame: the forwarder is set to stay on v3.
     V3,
     /// The v4 stream, for the rest of the connection.
@@ -837,7 +837,7 @@ pub enum Format {
 /// Tells which [`Format`] the bytes starting with `first` are. A v3 message, or a compressed v3 frame, opens with
 /// the high byte of its big-endian size, which a limit under `0xf9 << 24` bytes keeps below [`COMPRESSED`]. v4
 /// opens with a frame's opcode, the timezone's `0xff` first, or with [`COMPRESSED`].
-pub fn format(first: u8) -> Format {
+pub(crate) fn format(first: u8) -> Format {
     match first {
         COMPRESSED => Format::CompressedV4,
         f if f > COMPRESSED => Format::V4,

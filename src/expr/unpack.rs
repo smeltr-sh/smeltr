@@ -59,14 +59,14 @@ struct Layout<'a> {
 
 /// The function a call of `unpack` with these arguments expands to, taking the bytes. `Err` says which argument is
 /// wrong.
-pub fn function(args: &[Expr], span: Span) -> Result<Function, String> {
+pub(crate) fn function(args: &[Expr], span: Span) -> Result<Function, String> {
     let layout = layout(UNPACK, args)?;
     expand(&unpack_source(&layout), span)
 }
 
 /// The function a call of `pack` with these arguments expands to, taking the value. `Err` says which argument is
 /// wrong.
-pub fn pack_function(args: &[Expr], span: Span) -> Result<Function, String> {
+pub(crate) fn pack_function(args: &[Expr], span: Span) -> Result<Function, String> {
     let layout = layout(PACK, args)?;
     expand(&pack_source(&layout), span)
 }

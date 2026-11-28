@@ -61,13 +61,13 @@ impl AccessDto for GcsAccessDto {
 #[serde(rename_all = "camelCase")]
 pub struct PubSubDto {
     /// `projects/<project>/subscriptions/<subscription>`.
-    pub subscription: String,
+    pub(crate) subscription: String,
     /// Another Pub/Sub address, such as an emulator's. Absent is Google's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pubsub_endpoint: Option<String>,
+    pub(crate) pubsub_endpoint: Option<String>,
     /// At most 600, Pub/Sub's longest ack deadline.
     #[serde(default, skip_serializing_if = "VisibilitySecs::is_default")]
-    pub visibility_secs: VisibilitySecs,
+    pub(crate) visibility_secs: VisibilitySecs,
 }
 
 impl QueueDto<AnnouncedDto, GcsAccessDto> for PubSubDto {

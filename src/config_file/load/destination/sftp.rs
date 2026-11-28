@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 pub struct SftpDestinationDto {
     /// Absolute, or under the user's home directory. Empty is the home directory.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub directory: String,
+    pub(crate) directory: String,
     #[serde(flatten)]
-    pub access: SftpAccessDto,
+    pub(crate) access: SftpAccessDto,
     #[serde(flatten)]
-    pub objects: ObjectSettingsDto,
+    pub(crate) objects: ObjectSettingsDto,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    pub(crate) unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for SftpDestinationDto {

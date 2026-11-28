@@ -65,28 +65,28 @@ pub enum Seen {
 }
 
 /// What one heartbeat says about single-worker sources.
-pub struct Beat<'a> {
-    pub worker: &'a str,
-    pub group: &'a str,
+pub(crate) struct Beat<'a> {
+    pub(crate) worker: &'a str,
+    pub(crate) group: &'a str,
     /// Every single-worker source the worker's deployment runs: the ones it may be given.
-    pub runs: Vec<SourceKey>,
-    pub progress: Vec<SourceProgress>,
+    pub(crate) runs: Vec<SourceKey>,
+    pub(crate) progress: Vec<SourceProgress>,
     /// The worker is going. Its progress is recorded, it is given nothing, and what it held is free.
-    pub stopping: bool,
+    pub(crate) stopping: bool,
 }
 
 /// How long a leader is up before it forgets progress: longer than any worker's heartbeat interval.
-pub const FORGET_AFTER_UP: Duration = Duration::from_secs(3600);
+pub(crate) const FORGET_AFTER_UP: Duration = Duration::from_secs(3600);
 
 /// The times one beat is judged by.
 #[derive(Clone, Copy, Debug)]
 pub struct Clock {
-    pub now: Instant,
+    pub(crate) now: Instant,
     /// How long this leader has been up. A holder it has not heard from yet counts as live until the hold time has
     /// passed since it started, so a restart never gives a source to a second worker while its holder still reads.
-    pub up_for: Duration,
+    pub(crate) up_for: Duration,
     /// How long a holder may go unheard, or not list a source, before the source is free.
-    pub hold_time: Duration,
+    pub(crate) hold_time: Duration,
 }
 
 impl Clock {
@@ -129,7 +129,7 @@ impl Holds {
     ///
     /// Serialised across workers, so two beats never both take one free source. Blocking: it reads and writes the
     /// store under the lock every other call here takes.
-    pub fn beat(&self, store: &Store, mut beat: Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
+    pub(crate) fn beat(&self, store: &Store, mut beat: Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
         let mut workers = self.0.lock();
         if !clock.young() {
             workers.gone.clear();
@@ -169,7 +169,7 @@ impl Holds {
 
     /// The group `worker` holds `key` in, by its last answer. The store still has the last word: a hold can move
     /// while its former holder is silent. Blocking: it waits on any beat in progress.
-    pub fn held_in(&self, worker: &str, key: &SourceKey) -> Option<String> {
+    pub(crate) fn held_in(&self, worker: &str, key: &SourceKey) -> Option<String> {
         let workers = self.0.lock();
         let heard = workers.heard.get(worker)?;
         heard
@@ -181,7 +181,7 @@ impl Holds {
 
     /// The worker of `group` whose last answer gave it the source named `source`. Blocking: it waits on any beat in
     /// progress.
-    pub fn holder(&self, group: &str, source: &str) -> Option<String> {
+    pub(crate) fn holder(&self, group: &str, source: &str) -> Option<String> {
         let workers = self.0.lock();
         workers
             .heard
@@ -205,7 +205,7 @@ impl Holds {
 
     /// Drops `worker`, forgotten or revoked, so the sources it held are free on the next beat that lists them
     /// rather than after the hold time. Blocking: it waits on any beat in progress.
-    pub fn forget(&self, worker: &str) {
+    pub(crate) fn forget(&self, worker: &str) {
         let mut workers = self.0.lock();
         workers.heard.remove(worker);
         workers.gone.insert(worker.to_string());
@@ -217,7 +217,7 @@ impl Holds {
     /// Nothing until the leader has been up for [`FORGET_AFTER_UP`], since a worker it has not heard from yet may still
     /// be reading. Under the lock beats take, so no beat records progress for a source while it is being forgotten.
     /// Blocking.
-    pub fn forget_unread(
+    pub(crate) fn forget_unread(
         &self,
         store: &Store,
         read: &HashSet<(String, SourceKey)>,

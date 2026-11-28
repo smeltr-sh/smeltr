@@ -17,11 +17,11 @@ use super::map::{GroupBundle, merged_file};
 
 /// One object linked to the one asked about.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct Connected {
-    pub kind: Kind,
-    pub id: String,
+pub(crate) struct Connected {
+    pub(crate) kind: Kind,
+    pub(crate) id: String,
     /// The group that declares it, or `shared`.
-    pub area: String,
+    pub(crate) area: String,
 }
 
 /// What a change to one object reaches, and the groups that run it.
@@ -29,8 +29,8 @@ pub struct Connected {
 #[serde(rename_all = "camelCase")]
 pub struct ObjectConnections {
     /// What it holds a contract with on fields, though upstream ([`config_file::Connections::upstream`]).
-    pub upstream: Vec<Connected>,
-    pub downstream: Vec<Connected>,
+    pub(crate) upstream: Vec<Connected>,
+    pub(crate) downstream: Vec<Connected>,
     /// The groups that run it: its own, or every one for an object `shared/` declares, since each group runs all of
     /// `shared/` merged with its own.
     pub groups: Vec<String>,

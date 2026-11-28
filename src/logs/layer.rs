@@ -21,7 +21,7 @@ use super::hand_off;
 /// at its own level, with how long it was open. Every span of ours lends its class, kept or not, since a library's
 /// line inside it has no other. A library's spans are neither: what it names in them is its own business, and
 /// it opens far too many to say.
-pub struct LogLayer;
+pub(crate) struct LogLayer;
 
 /// What a span of ours knew, kept on it for the lines raised inside it and for its own closing line.
 struct Known {
@@ -169,7 +169,7 @@ where
 
 /// A line `library` said for a part of smeltr of `class`, where no span of ours is around it to lend one.
 /// librdkafka calls back on its own threads, for a source's client or a destination's.
-pub fn library_said(
+pub(crate) fn library_said(
     class: &'static str,
     library: &'static str,
     level: Level,

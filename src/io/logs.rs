@@ -14,7 +14,7 @@ use crate::io::{CommitMap, IoError, Source, SourceRecord};
 use crate::logs::{Event, Tap, Value};
 
 /// The `__source.topic` every logs record carries, so a route can select them like any other source's.
-pub const LOGS_TOPIC: &str = "__smeltr_logs";
+pub(crate) const LOGS_TOPIC: &str = "__smeltr_logs";
 
 /// How this source is configured. Nothing to reach and nothing to authenticate: what it reads is already here.
 #[derive(Clone, Copy, Debug, PartialEq)]

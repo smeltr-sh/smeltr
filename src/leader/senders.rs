@@ -33,7 +33,7 @@ use crate::heartbeat::SenderCounts;
 
 /// The tier a sender's buckets are counted in, and its rows kept and judged at. Every day row holds one bit or count
 /// per bucket of it (store step 15), so changing it takes a new store step.
-pub const TIER: Tier = Tier::FiveMinutes;
+pub(crate) const TIER: Tier = Tier::FiveMinutes;
 
 /// The most [`TIER`] buckets in a row a watched sender may go without a row on each of the days it is picked on.
 const LONGEST_EMPTY: usize = 12;
@@ -46,20 +46,20 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// One value of one field.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Sender {
-    pub field: String,
-    pub value: String,
+pub(crate) struct Sender {
+    pub(crate) field: String,
+    pub(crate) value: String,
 }
 
 /// A sender, by its group and source.
-pub type SenderKey = (String, String, Sender);
+pub(crate) type SenderKey = (String, String, Sender);
 
 /// A field, by its group, source and name.
-pub type FieldKey = (String, String, String);
+pub(crate) type FieldKey = (String, String, String);
 
 /// The [`TIER`] buckets of one day that something held, a bit each, from the day's first; a bucket past the last byte
 /// is not held.
-pub type Buckets = Vec<u8>;
+pub(crate) type Buckets = Vec<u8>;
 
 /// Which of its day's [`TIER`] buckets `bucket_ms` is, from the day's first.
 fn index(bucket_ms: i64) -> usize {
@@ -73,10 +73,10 @@ fn bit(bucket_ms: i64) -> (usize, u8) {
 }
 
 /// Each day's [`Buckets`] of one field or value, by the day's start, oldest first.
-pub type Days = Vec<(i64, Buckets)>;
+pub(crate) type Days = Vec<(i64, Buckets)>;
 
 /// Adds `bucket_ms` to its day's `buckets`.
-pub fn mark(buckets: &mut Buckets, bucket_ms: i64) {
+pub(crate) fn mark(buckets: &mut Buckets, bucket_ms: i64) {
     let (byte, bit) = bit(bucket_ms);
     if buckets.len() <= byte {
         buckets.resize(byte + 1, 0);
@@ -100,10 +100,10 @@ fn each_marked(day_ms: i64, buckets: &[u8]) -> impl Iterator<Item = i64> + '_ {
 /// The rows a watched value held in each [`TIER`] bucket of one day, from the day's first, each count a LEB128
 /// varint: one byte below 128 rows, two below 16,384, three below about two million. A bucket past the last reads as
 /// none.
-pub type Rows = Vec<u8>;
+pub(crate) type Rows = Vec<u8>;
 
 /// Adds `rows` to what its day's `kept` holds for `bucket_ms`.
-pub fn add_rows(kept: &mut Rows, bucket_ms: i64, rows: u64) {
+pub(crate) fn add_rows(kept: &mut Rows, bucket_ms: i64, rows: u64) {
     let mut each: Vec<u64> = each_count(kept).collect();
     let i = index(bucket_ms);
     if each.len() <= i {
@@ -139,26 +139,26 @@ fn each_count(kept: &[u8]) -> impl Iterator<Item = u64> + '_ {
 
 /// The sender counts of one [`TIER`] bucket, summed across the heartbeats that brought them, until it is written.
 #[derive(Debug, Default)]
-pub struct Pending {
-    pub bucket_ms: i64,
+pub(crate) struct Pending {
+    pub(crate) bucket_ms: i64,
     /// Each field, by group, source and name.
-    pub fields: HashMap<String, HashMap<String, HashMap<String, FieldCounts>>>,
+    pub(crate) fields: HashMap<String, HashMap<String, HashMap<String, FieldCounts>>>,
 }
 
 /// What workers said of one field in one bucket.
 #[derive(Debug, Default)]
-pub struct FieldCounts {
+pub(crate) struct FieldCounts {
     /// A worker counted it.
-    pub counted: bool,
+    pub(crate) counted: bool,
     /// A worker counts it no more, for holding too many values.
-    pub over: bool,
+    pub(crate) over: bool,
     /// Each value's rows.
-    pub values: HashMap<String, u64>,
+    pub(crate) values: HashMap<String, u64>,
 }
 
 impl Pending {
     /// Adds `group`'s `senders`, as one heartbeat reported them.
-    pub fn add(&mut self, group: &str, senders: &[SenderCounts]) {
+    pub(crate) fn add(&mut self, group: &str, senders: &[SenderCounts]) {
         for counts in senders {
             let of_group = entry(&mut self.fields, group);
             let field = entry(entry(of_group, &counts.source), &counts.field);
@@ -183,22 +183,22 @@ fn entry<'a, T: Default>(map: &'a mut HashMap<String, T>, key: &str) -> &'a mut 
 /// What the leader holds of senders between writes: the bucket not yet written, and the values whose rows it keeps,
 /// every value's until a pick has said (`keep`).
 #[derive(Debug, Default)]
-pub struct Held {
-    pub pending: Pending,
-    pub watched: Option<HashSet<SenderKey>>,
+pub(crate) struct Held {
+    pub(crate) pending: Pending,
+    pub(crate) watched: Option<HashSet<SenderKey>>,
 }
 
 /// One field's days: the buckets it was counted in, by day, and the days a worker said it passed its cap.
 #[derive(Debug, Default)]
-pub struct FieldDays {
-    pub counted: BTreeMap<i64, Buckets>,
-    pub over: BTreeSet<i64>,
+pub(crate) struct FieldDays {
+    pub(crate) counted: BTreeMap<i64, Buckets>,
+    pub(crate) over: BTreeSet<i64>,
 }
 
 /// What one field of one source is, as of the day the pick read.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "state")]
-pub enum FieldPick {
+pub(crate) enum FieldPick {
     /// Its senders, which may be none.
     Watched { values: Vec<String> },
     /// Counted for less than [`PICK_DAYS`] full days, so none of its values can be watched until then.
@@ -211,14 +211,14 @@ pub enum FieldPick {
 
 /// Every source's sender fields as of the start of one day, by (group, source) and field.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Pick {
-    pub day_ms: i64,
-    pub fields: BTreeMap<(String, String), BTreeMap<String, FieldPick>>,
+pub(crate) struct Pick {
+    pub(crate) day_ms: i64,
+    pub(crate) fields: BTreeMap<(String, String), BTreeMap<String, FieldPick>>,
 }
 
 impl Pick {
     /// Every sender watched, less the fields `unchecked` names for its source.
-    pub fn watched(&self, unchecked: impl Fn(&str, &str, &str) -> bool) -> Vec<SenderKey> {
+    pub(crate) fn watched(&self, unchecked: impl Fn(&str, &str, &str) -> bool) -> Vec<SenderKey> {
         let mut out = Vec::new();
         for ((group, source), fields) in &self.fields {
             for (field, pick) in fields {
@@ -240,7 +240,7 @@ impl Pick {
 }
 
 /// The day `ms` falls in, as the epoch milliseconds it began at.
-pub fn day_of(ms: i64) -> i64 {
+pub(crate) fn day_of(ms: i64) -> i64 {
     ms.div_euclid(DAY_MS) * DAY_MS
 }
 
@@ -265,7 +265,7 @@ struct Values {
 }
 
 /// Every source's sender fields as of `day_ms`, from the days since [`read_from`], read one value at a time.
-pub fn pick(store: &RegistryStore, day_ms: i64) -> Result<Pick, StoreError> {
+pub(crate) fn pick(store: &RegistryStore, day_ms: i64) -> Result<Pick, StoreError> {
     let since = read_from(day_ms);
     let fields = store.sender_fields_since(since)?;
     let mut read: BTreeMap<FieldKey, Values> = BTreeMap::new();
@@ -310,7 +310,7 @@ pub fn pick(store: &RegistryStore, day_ms: i64) -> Result<Pick, StoreError> {
 
 /// Keeps rows only for the values `pick` watches, drops the rows kept for the rest, and forgets the day rows no later
 /// pick or judge reads.
-pub fn keep(store: &RegistryStore, pick: &Pick) -> Result<(), StoreError> {
+pub(crate) fn keep(store: &RegistryStore, pick: &Pick) -> Result<(), StoreError> {
     let watched: HashSet<SenderKey> = pick.watched(|_, _, _| false).into_iter().collect();
     store.watch_senders(watched.clone());
     store.forget_senders(
@@ -352,7 +352,7 @@ fn steady(sent: &BTreeMap<i64, Buckets>, counted: &BTreeMap<i64, Buckets>, day_m
 /// Each of `watched`'s rows by bucket from `since_ms`, from its first row on. A bucket its field was counted in reads
 /// as no rows where the sender has none; a bucket its field was not counted in has no point. A sender with no row kept
 /// yet has none at all.
-pub fn history(
+pub(crate) fn history(
     store: &RegistryStore,
     watched: &[SenderKey],
     since_ms: i64,
@@ -402,13 +402,13 @@ pub(super) fn each_held(day_ms: i64, kept: &[u8]) -> impl Iterator<Item = (i64, 
 /// One source's sender fields, as the Senders tab shows them.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceSenders {
+pub(crate) struct SourceSenders {
     /// Those with a sender below normal first, then by what the pick read of each.
-    pub fields: Vec<FieldNow>,
+    pub(crate) fields: Vec<FieldNow>,
     /// A field that comes later is watched, until an editor says not (`marks::SourceFields::locked`).
-    pub watches_new: bool,
+    pub(crate) watches_new: bool,
     /// The preset its senders are judged at (`marks::Picked`).
-    pub preset: Preset,
+    pub(crate) preset: Preset,
 }
 
 impl Default for SourceSenders {
@@ -426,51 +426,51 @@ impl Default for SourceSenders {
 /// One field of a source, and its senders.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FieldNow {
-    pub field: String,
+pub(crate) struct FieldNow {
+    pub(crate) field: String,
     /// It is watched (`marks::SourceFields::watches`).
-    pub checked: bool,
+    pub(crate) checked: bool,
     /// An editor added it.
-    pub added: bool,
+    pub(crate) added: bool,
     /// It came after an editor stopped watching new fields, and is not watched until one checks it.
-    pub new: bool,
+    pub(crate) new: bool,
     /// What the pick read of it today, or `None` before it has read any of it.
-    pub pick: Option<FieldPick>,
+    pub(crate) pick: Option<FieldPick>,
     /// Its senders watched, those below normal first.
-    pub senders: Vec<SenderNow>,
+    pub(crate) senders: Vec<SenderNow>,
 }
 
 /// One sender, and what it reads.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SenderNow {
-    pub value: String,
+pub(crate) struct SenderNow {
+    pub(crate) value: String,
     /// Rows per second in each bucket of the last day, by when it began. A bucket its field was not counted in has
     /// none.
-    pub points: Vec<(i64, f64)>,
-    pub expected: Vec<ExpectedPoint>,
+    pub(crate) points: Vec<(i64, f64)>,
+    pub(crate) expected: Vec<ExpectedPoint>,
     /// Rows per second now, and its range, at the width it is shown at (`throughput::Reading::shown`). `None` while
     /// no width judges it.
-    pub now: Option<f64>,
-    pub low: Option<f64>,
-    pub high: Option<f64>,
-    pub below: bool,
+    pub(crate) now: Option<f64>,
+    pub(crate) low: Option<f64>,
+    pub(crate) high: Option<f64>,
+    pub(crate) below: bool,
     /// When its warning that holds began, which names it to a mark (`marks::Mark`).
-    pub since_millis: Option<i64>,
+    pub(crate) since_millis: Option<i64>,
     /// Who answered what its warning that holds was, if anyone did.
-    pub marked_by: Option<String>,
+    pub(crate) marked_by: Option<String>,
     /// An editor answered its warning that holds was normal ([`warnings::Warning::said_normal`]); answered and not
     /// this, it was an outage.
-    pub said_normal: bool,
+    pub(crate) said_normal: bool,
     /// How many below-normal warnings about it held in the last [`RECENT_DAYS`] days.
-    pub warned: usize,
+    pub(crate) warned: usize,
 }
 
 /// How many days back [`SenderNow::warned`] counts.
-pub const RECENT_DAYS: i64 = 30;
+pub(crate) const RECENT_DAYS: i64 = 30;
 
 /// `GET /api/areas/:area/sources/:id/senders`: the source's sender fields and their senders.
-pub async fn get(
+pub(crate) async fn get(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
 ) -> Envelope<SourceSenders> {

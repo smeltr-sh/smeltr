@@ -90,7 +90,7 @@ const ID_BYTES: usize = 16;
 
 /// Why `prefix` cannot be a destination's prefix, if it cannot: a `%` other than the placeholders, or a key S3 or
 /// `object_store` would refuse or rewrite.
-pub fn check_prefix(prefix: &str) -> Result<(), String> {
+pub(crate) fn check_prefix(prefix: &str) -> Result<(), String> {
     let mut chars = prefix.chars();
     while let Some(c) = chars.next() {
         if c == '%' {
@@ -210,7 +210,7 @@ fn key_of(prefix: &str, id: &str, extension: &str) -> String {
 /// Opens `c` as a live destination, named `name` in its log lines, on an object store client and a runtime that it
 /// owns. `secrets` holds the credentials the client signs with. `records` is what each route writes, which the
 /// formats that write columns need.
-pub fn open(
+pub(crate) fn open(
     c: &ObjectsDestinationConfig,
     name: &str,
     records: Option<&Records>,
@@ -330,7 +330,7 @@ impl Committer for ObjectsCommitter {
 }
 
 /// A new object's id: `ID_BYTES` random bytes as lowercase hex.
-pub fn object_id() -> String {
+pub(crate) fn object_id() -> String {
     crate::crypto::random_bytes(ID_BYTES)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -460,9 +460,9 @@ pub(crate) fn s3_bucket(
 
 /// What a table's catalog vends for the table's storage.
 pub(crate) struct CatalogGrant {
-    pub credentials: AwsCredentialProvider,
+    pub(crate) credentials: AwsCredentialProvider,
     /// The ARN of the S3 access point the credentials are for, which every request then goes to.
-    pub access_point: Option<String>,
+    pub(crate) access_point: Option<String>,
 }
 
 /// AWS as one [`S3Access`] reaches it: a store for any bucket, and the signature for any other AWS call, all under
@@ -615,7 +615,7 @@ impl Aws {
     }
 
     /// This AWS signing for one `service`, such as `sqs`.
-    pub fn service(self, service: impl Into<String>) -> AwsService {
+    pub(crate) fn service(self, service: impl Into<String>) -> AwsService {
         AwsService {
             aws: self,
             service: service.into(),
@@ -624,7 +624,7 @@ impl Aws {
 }
 
 /// AWS bound to the one service a client calls, since an AWS signature names its service.
-pub struct AwsService {
+pub(crate) struct AwsService {
     aws: Aws,
     service: String,
 }
@@ -643,7 +643,7 @@ impl Signing for AwsService {
 
 /// What signs a client's calls to a cloud beside its stores: the connector the stores use, and a signature from the same
 /// credentials.
-pub trait Signing: Send + Sync {
+pub(crate) trait Signing: Send + Sync {
     /// The cloud, as an error names it.
     const CLOUD: &'static str;
 
@@ -655,14 +655,14 @@ pub trait Signing: Send + Sync {
 }
 
 /// What a call answered, at any status.
-pub struct Answered {
-    pub status: http::StatusCode,
-    pub headers: http::HeaderMap,
-    pub body: Bytes,
+pub(crate) struct Answered {
+    pub(crate) status: http::StatusCode,
+    pub(crate) headers: http::HeaderMap,
+    pub(crate) body: Bytes,
 }
 
 /// A cloud's calls from one client: each signed, bounded by a timeout, over the same TLS and proxy as the stores.
-pub struct Signed<C> {
+pub(crate) struct Signed<C> {
     cloud: C,
     /// The service, as an error names it.
     name: &'static str,
@@ -672,7 +672,7 @@ pub struct Signed<C> {
 
 impl<C: Signing> Signed<C> {
     /// Calls to `address` on `cloud`, run on `runtime`. Plain HTTP only if `address` is http://.
-    pub fn new(
+    pub(crate) fn new(
         cloud: C,
         name: &'static str,
         address: &str,
@@ -692,7 +692,7 @@ impl<C: Signing> Signed<C> {
 
     /// `request` with `body`, signed and sent: what it answered within `timeout`, or why there is none. `what` names
     /// the call in that reason.
-    pub fn call(
+    pub(crate) fn call(
         &self,
         request: http::request::Builder,
         body: HttpRequestBody,
@@ -801,7 +801,7 @@ impl Gcp {
     }
 
     /// The address of Google's service `name`, such as `pubsub`, in the universe the key names.
-    pub fn service(&self, name: &str) -> String {
+    pub(crate) fn service(&self, name: &str) -> String {
         format!("https://{name}.{}", self.universe)
     }
 
@@ -1058,7 +1058,7 @@ fn aws_domain(region: &str) -> &'static str {
 /// The client the store and the AssumeRole call go through: this process's TLS, so its FIPS provider and the
 /// connector's authorities, and the environment's proxy, which never covers loopback.
 #[derive(Clone, Debug)]
-pub struct Connector {
+pub(crate) struct Connector {
     tls: rustls::ClientConfig,
 }
 

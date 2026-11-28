@@ -13,7 +13,7 @@ use crate::plan::tree::{self, Node, Object, Place};
 
 /// What a slot of an assignment's value takes.
 #[derive(Clone, Debug)]
-pub enum Source<'e> {
+pub(crate) enum Source<'e> {
     /// The value an expression computes.
     Expr(Cow<'e, Expr>),
     /// The value a slot already holds: a copy.
@@ -33,15 +33,15 @@ pub enum Source<'e> {
 /// An object as a literal or an assignment lays it down: each field and what it takes, and the layers of its unclaimed
 /// fields.
 #[derive(Debug, Default)]
-pub struct Draft<'e> {
-    pub fields: BTreeMap<String, Part<'e>>,
-    pub unclaimed: Vec<Source<'e>>,
+pub(crate) struct Draft<'e> {
+    pub(crate) fields: BTreeMap<String, Part<'e>>,
+    pub(crate) unclaimed: Vec<Source<'e>>,
     /// Whether a literal builds it: bound, it is open, its unclaimed fields holding no key where nothing lays any.
-    pub built: bool,
+    pub(crate) built: bool,
 }
 
 #[derive(Debug)]
-pub enum Part<'e> {
+pub(crate) enum Part<'e> {
     Leaf(Source<'e>),
     Object(Draft<'e>),
 }
@@ -50,7 +50,11 @@ pub enum Part<'e> {
 /// literal is a new object, its entries applied in order: a key replaces what is under it, whole, and a spread lays its
 /// source over what is there. A name copies: a leaf's slot, or an object's leaves and unclaimed fields. Anything else
 /// is one leaf. `Err` says why the value cannot bind.
-pub fn writes<'e>(target: &str, value: &'e Expr, syms: &SymbolTable) -> Result<Vec<(Place, Source<'e>)>, String> {
+pub(crate) fn writes<'e>(
+    target: &str,
+    value: &'e Expr,
+    syms: &SymbolTable,
+) -> Result<Vec<(Place, Source<'e>)>, String> {
     let mut out = Vec::new();
     // A literal's object takes the shape of a closed one it is written over.
     let closed = |name: &str| syms.object(name).is_some_and(|o| o.unclaimed.is_none());
@@ -60,7 +64,12 @@ pub fn writes<'e>(target: &str, value: &'e Expr, syms: &SymbolTable) -> Result<V
 
 /// The places `part` lays down at `name`, each with what fills it. An object a literal builds holds no key where
 /// nothing lays any, unless it is written over one `closed` names.
-pub fn flatten<'e>(name: &str, part: Part<'e>, closed: &impl Fn(&str) -> bool, out: &mut Vec<(Place, Source<'e>)>) {
+pub(crate) fn flatten<'e>(
+    name: &str,
+    part: Part<'e>,
+    closed: &impl Fn(&str) -> bool,
+    out: &mut Vec<(Place, Source<'e>)>,
+) {
     match part {
         Part::Leaf(source) => out.push((Place::Leaf(name.to_string()), source)),
         Part::Object(draft) => {
@@ -83,7 +92,7 @@ pub fn flatten<'e>(name: &str, part: Part<'e>, closed: &impl Fn(&str) -> bool, o
 
 /// What unclaimed fields laid in `layers` take: nothing where none were laid, and the lone layer itself where it is a
 /// slot's.
-pub fn layered(mut layers: Vec<Source<'_>>) -> Option<Source<'_>> {
+pub(crate) fn layered(mut layers: Vec<Source<'_>>) -> Option<Source<'_>> {
     match layers.as_slice() {
         [] => None,
         [Source::Slot(_) | Source::Unclaimed(..)] => layers.pop(),
@@ -92,7 +101,7 @@ pub fn layered(mut layers: Vec<Source<'_>>) -> Option<Source<'_>> {
 }
 
 /// What `value` lays down: an object literal's object, a named object's copy, or one leaf. `Err` says why it cannot.
-pub fn part<'e>(value: &'e Expr, syms: &SymbolTable) -> Result<Part<'e>, String> {
+pub(crate) fn part<'e>(value: &'e Expr, syms: &SymbolTable) -> Result<Part<'e>, String> {
     match &value.kind {
         ExprKind::Object(entries) => {
             let mut draft = Draft {
@@ -188,7 +197,7 @@ fn spread<'e>(draft: &mut Draft<'e>, value: &'e Expr, syms: &SymbolTable) -> Res
 }
 
 /// The object `o`, copied: its leaves' slots, and its unclaimed fields' slot, at every depth.
-pub fn copied<'e>(o: &Object) -> Draft<'e> {
+pub(crate) fn copied<'e>(o: &Object) -> Draft<'e> {
     Draft {
         fields: o
             .fields
@@ -343,13 +352,13 @@ fn unmet(key: &str, is: &str, was: &str) -> String {
 }
 
 /// Whether `name` is a path under `prefix`: `prefix`, a dot, and more.
-pub fn is_under(name: &str, prefix: &str) -> bool {
+pub(crate) fn is_under(name: &str, prefix: &str) -> bool {
     name.strip_prefix(prefix)
         .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
 }
 
 /// Whether `name` is `prefix` or a path under it. Every name is under the record, `""`.
-pub fn at_or_under(name: &str, prefix: &str) -> bool {
+pub(crate) fn at_or_under(name: &str, prefix: &str) -> bool {
     prefix.is_empty()
         || name
             .strip_prefix(prefix)

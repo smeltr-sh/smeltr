@@ -16,7 +16,7 @@
 //! refusal is usually on the destination's side, which tells nobody when it is done. Each refusal goes back with its
 //! record, so a reader whose destination sends refusals to a DLQ has what to send.
 
-pub mod pacing;
+pub(crate) mod pacing;
 
 use crate::sync::{Condvar, Mutex};
 use std::borrow::Cow;
@@ -216,7 +216,7 @@ impl QueuePool {
     }
 
     /// Bytes lent now.
-    pub fn lent(&self) -> usize {
+    pub(crate) fn lent(&self) -> usize {
         self.lent.load(Ordering::Relaxed)
     }
 
@@ -571,7 +571,7 @@ impl Egress {
     /// Have each sender the destination spawns past those it started with borrow `bytes` from the pool this queue
     /// borrows from, held for as long as the destination lives. The pacing target is then held to what the pool
     /// lends besides, so the senders and the bytes they carry share one share. Without a pool, nothing is charged.
-    pub fn charging_senders(self, bytes: usize) -> Egress {
+    pub(crate) fn charging_senders(self, bytes: usize) -> Egress {
         let _ = self.queue.sender_bytes.set(bytes);
         self
     }
@@ -608,7 +608,7 @@ impl Egress {
         self.queue.work.notify_all();
     }
 
-    pub fn id(&self) -> DestId {
+    pub(crate) fn id(&self) -> DestId {
         self.id
     }
 }

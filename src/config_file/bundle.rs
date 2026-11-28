@@ -413,7 +413,7 @@ pub fn load_bundle_dir(root: &Path) -> Result<LoadedSystem, BundleError> {
 /// Read and validate one bundle out of `files`. A relative lookup path in it resolves against `at`, which is where
 /// `files` reads from -- a directory, or a commit.
 #[tracing::instrument(level = "trace", target = "deploy", name = "a bundle load", skip_all, fields(at = %at))]
-pub fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
+pub(crate) fn load_bundle_from(files: &mut dyn FileSet, at: &BundleAt) -> Result<LoadedSystem, BundleError> {
     let mut parts = read_parts(files, "")?;
     let Some(manifest) = parts.manifest.take() else {
         return Err(io_err("system.json", std::io::ErrorKind::NotFound.into()));
@@ -427,14 +427,14 @@ pub const GROUPS_DIR: &str = "groups";
 pub const SHARED_DIR: &str = "shared";
 
 /// A bundle's section files: each a JSON array of objects keyed by a unique `id`.
-pub const SECTION_FILES: [&str; 5] = [
+pub(crate) const SECTION_FILES: [&str; 5] = [
     "sources.json",
     "destinations.json",
     "routes.json",
     LOOKUP_TABLES_FILE,
     GROK_PATTERNS_FILE,
 ];
-pub const LOOKUP_TABLES_FILE: &str = "lookup-tables.json";
+pub(crate) const LOOKUP_TABLES_FILE: &str = "lookup-tables.json";
 pub const GROK_PATTERNS_FILE: &str = "grok-patterns.json";
 /// The directories of a bundle's per-file objects, one JSON file per object named by `slugify` of its id.
 pub const PIPELINES_DIR: &str = "pipelines";
@@ -458,7 +458,7 @@ pub fn is_safe_group_id(group_id: &str) -> bool {
 }
 
 /// The message an unsafe id is refused with, written once so every caller says the same thing.
-pub fn unsafe_group_id(group_id: &str) -> String {
+pub(crate) fn unsafe_group_id(group_id: &str) -> String {
     format!(
         "unsafe worker group id {group_id:?}: only letters, digits, '-', '_' and '.' are allowed, \
          it may not start with '.', and it must be 1-100 characters"
@@ -468,7 +468,7 @@ pub fn unsafe_group_id(group_id: &str) -> String {
 /// Whether `name` is usable as a secret's name. A name is written into a bundle, listed in the GUI, and bound into
 /// the sealing of its own value, so it has to be stable and unambiguous across all three: one spelling, no
 /// whitespace to lose, and nothing that reads differently in JSON than on screen.
-pub fn is_safe_secret_name(name: &str) -> bool {
+pub(crate) fn is_safe_secret_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 100
         && name
@@ -477,7 +477,7 @@ pub fn is_safe_secret_name(name: &str) -> bool {
 }
 
 /// The message an unusable secret name is refused with, written once so every caller says the same thing.
-pub fn unsafe_secret_name(name: &str) -> String {
+pub(crate) fn unsafe_secret_name(name: &str) -> String {
     format!(
         "unusable secret name {name:?}: only letters, digits, '-', '_' and '.' are allowed, \
          and it must be 1-100 characters"
@@ -788,10 +788,10 @@ fn read_per_file_lenient<T: DeserializeOwned>(
 /// `FileSet`'s listings as plain functions, so a lenient read can be handed one.
 mod files_under {
     use super::FileSet;
-    pub fn pipelines(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
+    pub(crate) fn pipelines(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
         files.pipeline_paths()
     }
-    pub fn schemas(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
+    pub(crate) fn schemas(files: &mut dyn FileSet) -> std::io::Result<Vec<String>> {
         files.schema_paths()
     }
 }

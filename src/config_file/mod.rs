@@ -49,45 +49,40 @@ use crate::plan::config::{Answer, CompileError, PipelineConfig};
 use crate::plan::topology::{CompiledTopology, DestinationKind, Records, TopologyConfig};
 
 pub use bundle::{
-    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, PIPELINES_DIR,
-    RawBundle, SCHEMAS_DIR, SECTION_FILES, SHARED_DIR, bundle_files, group_subtree, is_safe_group_id,
-    is_safe_group_name, is_safe_secret_name, load_bundle_dir, load_bundle_from, load_group_dir, load_group_from,
-    manifest_bytes, read_raw_from, slugged_pipelines, slugged_schemas, slugify, unsafe_group_id, unsafe_group_name,
-    unsafe_secret_name,
+    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUPS_DIR, PIPELINES_DIR, RawBundle,
+    SCHEMAS_DIR, SHARED_DIR, bundle_files, group_subtree, is_safe_group_id, is_safe_group_name, load_bundle_dir,
+    load_group_dir, load_group_from, manifest_bytes, read_raw_from, slugged_pipelines, slugged_schemas, slugify,
+    unsafe_group_name,
 };
+pub(crate) use bundle::{LOOKUP_TABLES_FILE, is_safe_secret_name, unsafe_secret_name};
 pub use dto::{
-    AnswerDto, AssignmentDto, AzureBlobDestinationDto, AzureBlobListSourceDto, AzureBlobQueueSourceDto, BufferBytes,
-    CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto, DeltaDestinationDto, DestinationDto,
-    DestinationKindDto, ElasticReceiverSourceDto, ElasticsearchDestinationDto, EventHubsDestinationDto,
-    EventHubsSourceDto, FetchBytes, FieldDto, FileConfig, GcsDestinationDto, GcsListSourceDto, GcsPubSubSourceDto,
-    GrokPatternDto, HecReceiverSourceDto, HttpApiSourceDto, HttpDestinationDto, HttpReceiverSourceDto,
-    IcebergDestinationDto, KafkaDestinationDto, KafkaSourceDto, LeaderSecretDto, LogAnalyticsDestinationDto,
-    LogsSourceDto, LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MetricsSourceDto, MultiplicityDto,
-    NoUnknownKeys, OktaLogsSourceDto, OnExceptionDto, OtlpDestinationDto, OtlpReceiverSourceDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, PrometheusDestinationDto, PrometheusReceiverSourceDto, RenamePairDto, Requirement,
-    RouteDto, S2sReceiverSourceDto, S3DestinationDto, S3ListSourceDto, S3SqsSourceDto, SchemaDto, SchemaFieldDto,
-    SecretRefDto, SftpDestinationDto, SftpSourceDto, SocketReceiverSourceDto, SourceDto, SourceKindDto,
-    SplunkHecDestinationDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
+    AnswerDto, AssignmentDto, BufferBytes, DeliverRuleDto, DestinationDto, DestinationKindDto,
+    ElasticsearchDestinationDto, FetchBytes, FileConfig, GrokPatternDto, KafkaDestinationDto, KafkaSourceDto,
+    LeaderSecretDto, LogsSourceDto, LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MetricsSourceDto,
+    NoUnknownKeys, OnExceptionDto, ParserKindDto, PipelineDto, RouteDto, S3ListSourceDto, SchemaDto, SecretRefDto,
+    SourceDto, SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
 };
+pub(crate) use dto::{CompoundTypeDto, DataTypeDto, EventHubsSourceDto, FieldDto, Requirement, SchemaFieldDto};
 pub use export::{Export, export};
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use import::{Credential, Keep, Listed, Objects, Part, PartId, Standing, describe, retain_file};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{
-    BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, ValidationError,
-    check_shared_group_starts, fill_default_group_ids, line_breaker_refusal, load_str, load_str_at, on_loopback,
-    plain_off_this_host, refuse_outside_lookups, sql_connection, to_byte, validation_errors, validation_errors_at,
-    web_url,
+    BundleAt, DeclaredAt, ItemRef, LoadError, ValidationError, check_shared_group_starts, fill_default_group_ids,
+    load_str, load_str_at, refuse_outside_lookups, sql_connection, to_byte, validation_errors, validation_errors_at,
 };
-pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
+pub(crate) use load::{RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, line_breaker_refusal, plain_off_this_host, web_url};
+pub(crate) use merge::{SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
 pub use moving::{MoveRow, Moving};
+pub(crate) use sample::{MAX_SAMPLE_BYTES, put_path};
 pub use sample::{
-    MAX_SAMPLE_BYTES, MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample,
-    refuse_sample_size, sample_bytes, sample_path, sample_table,
+    MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, read_sample, refuse_sample_size,
+    sample_bytes, sample_path, sample_table,
 };
+pub(crate) use test::kept_under;
 pub use test::{
-    Difference, Lock, Locked, Made, Outcome, Retyped, RowsIn, Run, Sent, Shown, TESTS_DIR, TestDto, TestSummary,
-    Verdict, compare, kept, kept_under, list_tests, read_test, test_bytes, test_path,
+    Difference, Lock, Locked, Made, Outcome, RowsIn, Run, Sent, Shown, TESTS_DIR, TestDto, TestSummary, Verdict,
+    compare, kept, list_tests, read_test, test_bytes, test_path,
 };
 
 /// The `"version"` this build writes and reads. A change to the format bumps it and adds a converter from the
@@ -101,7 +96,7 @@ pub fn validate(file: FileConfig) -> Result<LoadedSystem, LoadError> {
 
 /// `validate` for a bundle read from a directory: `declared_at` says where each lookup table was declared, which is
 /// what a relative lookup path resolves against.
-pub fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<LoadedSystem, LoadError> {
+pub(crate) fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<LoadedSystem, LoadError> {
     let mut system = load::from_file_config_at(file, declared_at)?;
     let compiled = system
         .compile_topology()
@@ -133,11 +128,11 @@ pub struct LoadedSystem {
     pub pipelines: Vec<PipelineConfig>,
     /// `PipelineConfig::id` (a compiler-local index) back to the DTO's string id, so a `CompileError::pipeline`
     /// can be reported the way the file that declared it names it.
-    pub pipeline_ids: Vec<String>,
+    pub(crate) pipeline_ids: Vec<String>,
     /// The schemas each pipeline produces, by `PipelineConfig::id`.
-    pub produces: Vec<Vec<Arc<crate::schema::Schema>>>,
+    pub(crate) produces: Vec<Vec<Arc<crate::schema::Schema>>>,
     /// The schemas each destination accepts, for the destinations that name any.
-    pub accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
+    pub(crate) accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
     /// What `validate` compiled; `None` for a system loaded without validating it.
     pub compiled: Option<CompiledTopology>,
 }
@@ -196,7 +191,7 @@ impl LoadedSystem {
 
     /// A `CompileError`'s `pipeline` and `function` are the compiler's indices; this is what a caller reports, keyed
     /// by the ids the file itself uses.
-    pub fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
+    pub(crate) fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
         // A route's error is about its condition, or about one of its rules' `when`.
         let route = e.route.and_then(|i| self.topology.routes.get(i));
         let name = || route.map_or_else(String::new, |r| r.name.clone());
@@ -230,7 +225,7 @@ impl LoadedSystem {
     }
 
     /// `e` as one line for a log or a refusal that carries no fields: a step's error after its pipeline and step.
-    pub fn describe(&self, e: CompileError) -> String {
+    pub(crate) fn describe(&self, e: CompileError) -> String {
         let e = self.to_validation_error(e);
         match (e.pipeline, e.step) {
             (Some(p), Some(s)) => format!("pipeline {p}, step {s}: {}", e.message),
@@ -240,7 +235,7 @@ impl LoadedSystem {
     }
 
     /// Every route's name, in the order they run.
-    pub fn route_names(&self) -> Vec<String> {
+    pub(crate) fn route_names(&self) -> Vec<String> {
         self.topology.routes.iter().map(|r| r.name.clone()).collect()
     }
 
@@ -256,7 +251,7 @@ impl LoadedSystem {
     }
 
     /// `answer` as the file says it, with each destination by its author's id.
-    pub fn answer_by_name(&self, answer: &Answer) -> AnswerDto {
+    pub(crate) fn answer_by_name(&self, answer: &Answer) -> AnswerDto {
         match answer {
             Answer::Ignore => AnswerDto::Ignore,
             Answer::Tag => AnswerDto::Tag,
@@ -272,13 +267,13 @@ impl LoadedSystem {
     }
 
     /// The pipeline the file names `id`.
-    pub fn pipeline(&self, id: &str) -> Option<&PipelineConfig> {
+    pub(crate) fn pipeline(&self, id: &str) -> Option<&PipelineConfig> {
         let index = self.pipeline_ids.iter().position(|p| p == id)?;
         self.pipelines.iter().find(|p| p.id == index)
     }
 
     /// The schemas the pipeline `PipelineConfig::id` names produces.
-    pub fn produced_by(&self, pipeline: usize) -> &[Arc<crate::schema::Schema>] {
+    pub(crate) fn produced_by(&self, pipeline: usize) -> &[Arc<crate::schema::Schema>] {
         self.produces.get(pipeline).map_or(&[], Vec::as_slice)
     }
 
@@ -300,7 +295,7 @@ impl LoadedSystem {
     /// Where a pipeline's rows break the schemas it produces, and where it delivers to a destination that accepts
     /// none of them, over every route `compiled` runs it on; and the recommended fields its rows lack, which break
     /// nothing. A finding never refuses the system.
-    pub fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
+    pub(crate) fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
         self.schema_findings_beyond(compiled, &[])
     }
 
@@ -527,7 +522,7 @@ impl LoadedSystem {
 /// runs from that source to that pipeline too, `n` counting those routes in the order they run. `ends` holds each
 /// route's source and pipeline, in that order. A route's id is minted, so it is never the name. The GUI names routes
 /// the same way (`routeName` in `routeFlow.ts`).
-pub fn route_name<E: PartialEq>(ends: &[E], at: usize, source: &str, pipeline: &str) -> String {
+pub(crate) fn route_name<E: PartialEq>(ends: &[E], at: usize, source: &str, pipeline: &str) -> String {
     let twin = |o: &&E| **o == ends[at];
     match ends.iter().filter(twin).count() {
         1 => format!("{source} \u{2192} {pipeline}"),

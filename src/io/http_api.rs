@@ -12,7 +12,7 @@ use crate::logs::stamp;
 use crate::ops::timeparse::parse_with_format;
 use crate::plan::topology::{ApiRecords, HttpApiConfig, ListStart, Since};
 
-pub struct HttpApi {
+pub(crate) struct HttpApi {
     url: reqwest::Url,
     records: ApiRecords,
     follow_links: bool,
@@ -20,7 +20,7 @@ pub struct HttpApi {
 }
 
 impl HttpApi {
-    pub fn new(config: &HttpApiConfig) -> Result<Self, String> {
+    pub(crate) fn new(config: &HttpApiConfig) -> Result<Self, String> {
         Ok(HttpApi {
             url: reqwest::Url::parse(&config.url).map_err(|e| format!("{:?} is not a URL: {e}", config.url))?,
             records: config.records.clone(),

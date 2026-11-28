@@ -12,10 +12,10 @@ pub struct S2sReceiverDto {
     /// Token name -> the credential holding a token a forwarder may present, its outputs.conf `token`. A
     /// forwarder presenting none, or another, is cut off.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tokens: BTreeMap<String, SecretRefDto>,
+    pub(crate) tokens: BTreeMap<String, SecretRefDto>,
     /// Sourcetype -> where its events end. A sourcetype not named here is an event per line.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub sourcetypes: BTreeMap<String, SourcetypeDto>,
+    pub(crate) sourcetypes: BTreeMap<String, SourcetypeDto>,
 }
 
 impl ReceiverKindDto for S2sReceiverDto {

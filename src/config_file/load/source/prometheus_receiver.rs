@@ -12,10 +12,10 @@ pub struct PrometheusReceiverDto {
     /// Whether a request is answered only once every destination has its records, rather than as soon as it is
     /// received.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub answer_after_delivery: bool,
+    pub(crate) answer_after_delivery: bool,
     /// Token name -> the credential holding a token a sender may present as `Authorization: Bearer`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tokens: BTreeMap<String, SecretRefDto>,
+    pub(crate) tokens: BTreeMap<String, SecretRefDto>,
 }
 
 impl ReceiverKindDto for PrometheusReceiverDto {

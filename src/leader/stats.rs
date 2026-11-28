@@ -73,9 +73,9 @@ pub struct Live<'a> {
 /// One bucket of a [`Spread`]: when it started and what it measured.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SpreadPoint {
-    pub bucket_millis: i64,
-    pub value: f64,
+pub(crate) struct SpreadPoint {
+    pub(crate) bucket_millis: i64,
+    pub(crate) value: f64,
 }
 
 /// How one figure moved across the window's buckets: its least, its most, its mean, and the buckets themselves,
@@ -84,11 +84,11 @@ pub struct SpreadPoint {
 /// mean is over the buckets present.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Spread {
-    pub min: f64,
-    pub max: f64,
-    pub mean: f64,
-    pub buckets: Vec<SpreadPoint>,
+pub(crate) struct Spread {
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) mean: f64,
+    pub(crate) buckets: Vec<SpreadPoint>,
 }
 
 impl Spread {
@@ -110,97 +110,97 @@ impl Spread {
 /// One route out of a source, and how much of that source it took.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RouteShare {
+pub(crate) struct RouteShare {
     /// `RouteConfig::id`: minted, so it is a key rather than something to show.
-    pub route: String,
+    pub(crate) route: String,
     /// The pipeline this route feeds, by its author's id -- what names the share to a reader, since nobody names a
     /// route.
-    pub pipeline: String,
+    pub(crate) pipeline: String,
     /// Routes are unordered and each sees every row, which is why the shares can overlap.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
+    pub(crate) condition: Option<String>,
     /// Rows this route's condition matched over the window. An upper bound on what it delivered (module doc).
-    pub matched: f64,
+    pub(crate) matched: f64,
 }
 
 /// A source's window: everything it read, and where that went.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceStats {
+pub(crate) struct SourceStats {
     /// Rows read from the source over the window -- the denominator of the one exact ratio.
-    pub polled: f64,
+    pub(crate) polled: f64,
     /// Rows that met `Unmatched`: no route took them, or no delivery rule of the route that did.
-    pub unmatched: f64,
+    pub(crate) unmatched: f64,
     /// The answer to `Unmatched` (design doc, Exception taxonomy).
-    pub unmatched_policy: crate::config_file::AnswerDto,
+    pub(crate) unmatched_policy: crate::config_file::AnswerDto,
     /// This source's routes in the order they run, each with its share. A route that matched nothing over the
     /// window is still listed: that it took nothing is the answer to "where did this source's rows go".
-    pub routes: Vec<RouteShare>,
+    pub(crate) routes: Vec<RouteShare>,
     /// Rows read per second, bucket by bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate: Option<Spread>,
+    pub(crate) rate: Option<Spread>,
     /// Payload bytes read per second, bucket by bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bytes_rate: Option<Spread>,
+    pub(crate) bytes_rate: Option<Spread>,
     /// Microseconds inside the source's own read per row read, bucket by bucket. Only buckets that read a row count.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub poll_per_row: Option<Spread>,
+    pub(crate) poll_per_row: Option<Spread>,
     /// Its lag, bucket by bucket: each partition's highest reading in the bucket, summed over its partitions. Absent
     /// for a source that reports no lag.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lag: Option<Spread>,
+    pub(crate) lag: Option<Spread>,
     /// What the source was expected to read per second, bucket by bucket (`throughput::expected_over`). Empty while
     /// it has too little history.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub expected: Vec<ExpectedPoint>,
+    pub(crate) expected: Vec<ExpectedPoint>,
 }
 
 /// One step of a pipeline, and what it did to the rows that reached it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StepShare {
+pub(crate) struct StepShare {
     /// The step's own id, as its author wrote it (`PipelineConfig::step_ids`).
-    pub step: String,
+    pub(crate) step: String,
     /// Rows this step took out of the batch.
-    pub dropped: f64,
+    pub(crate) dropped: f64,
     /// Rows this step marked with an error, across every kind of error -- which kind is not broken out here.
-    pub errored: f64,
+    pub(crate) errored: f64,
     /// Microseconds spent in this step over the window.
-    pub micros: f64,
+    pub(crate) micros: f64,
 }
 
 /// A pipeline's window: what reached it, what left, and where the work went.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PipelineStats {
+pub(crate) struct PipelineStats {
     /// Rows handed to this pipeline: every route naming it, summed. Exact -- a route's matched mask is the batch
     /// the pipeline is run over (`plan::exec::run_scoped`'s `initial_live`).
-    pub rows_in: f64,
+    pub(crate) rows_in: f64,
     /// Rows still live when it finished: `rows_in` less what every step dropped. Exact for the same reason -- a row
     /// leaves a pipeline only through a step that redefines `__live`, which is what a step's `dropped` counts.
-    pub rows_out: f64,
+    pub(crate) rows_out: f64,
     /// Microseconds spent per row over the window, which is what compares between pipelines and between windows. A
     /// total only says how much traffic there was. `None` when no row reached it, where a rate would be a division
     /// by zero dressed as an answer.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub micros_per_row: Option<f64>,
+    pub(crate) micros_per_row: Option<f64>,
     /// Its steps in the order they run, whether or not each did anything.
-    pub steps: Vec<StepShare>,
+    pub(crate) steps: Vec<StepShare>,
     /// Rows handed to it per second, bucket by bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate: Option<Spread>,
+    pub(crate) rate: Option<Spread>,
     /// Microseconds its steps spent per row, bucket by bucket. Only buckets that took a row count.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub per_row: Option<Spread>,
+    pub(crate) per_row: Option<Spread>,
 }
 
 /// Rows one source had refused by this destination. The only count carrying both ends: `smeltr_rows_sent_total` names the
 /// destination alone, so what *arrived* cannot be split by source, and refusals can.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceRefusals {
-    pub source: String,
-    pub rejected: f64,
+pub(crate) struct SourceRefusals {
+    pub(crate) source: String,
+    pub(crate) rejected: f64,
 }
 
 /// One worker's queue for a destination, as of that worker's freshest heartbeat.
@@ -214,55 +214,55 @@ pub struct SourceRefusals {
 /// grows, so a figure from a stalling destination is the least it was holding, not the most.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct QueueFill {
+pub(crate) struct QueueFill {
     /// The worker holding it. A destination has one queue per worker running it, each with its own budget.
-    pub worker: String,
+    pub(crate) worker: String,
     /// Bytes held: queued, plus sent and not yet acknowledged (`egress::Queue::held`).
-    pub bytes: f64,
+    pub(crate) bytes: f64,
     /// What that worker may hold before it refuses an offer (`plan::topology::DestinationKind::queue_bytes`).
-    pub budget: f64,
+    pub(crate) budget: f64,
     /// The worker's last heartbeat is older than [`stale_after_ms`]: this is the last fill it reported, not what it
     /// holds now.
-    pub stale: bool,
+    pub(crate) stale: bool,
 }
 
 /// A destination's window: what it took, what it would not, and what it cost to hand over.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DestinationStats {
+pub(crate) struct DestinationStats {
     /// Rows handed to this destination's buffer. Counted before dispatch and before any acknowledgment -- not
     /// evidence anything actually left this process.
-    pub received: f64,
+    pub(crate) received: f64,
     /// Rows this destination has acknowledged. The only count here that means a row actually arrived.
-    pub delivered: f64,
+    pub(crate) delivered: f64,
     /// Sends that failed for a reason that may pass: retried, not lost.
-    pub send_failed: f64,
+    pub(crate) send_failed: f64,
     /// Rows refused for good, which no retry would change.
-    pub rejected: f64,
+    pub(crate) rejected: f64,
     /// Times the destination stopped taking writes altogether.
-    pub stalls: f64,
+    pub(crate) stalls: f64,
     /// Which sources the refusals came from, worst first. Empty when nothing was refused.
-    pub rejected_by_source: Vec<SourceRefusals>,
+    pub(crate) rejected_by_source: Vec<SourceRefusals>,
     /// What each worker's queue for this destination is holding: fresh workers fullest first, then stale ones. Empty
     /// where no worker running it has ever reported one.
-    pub queues: Vec<QueueFill>,
+    pub(crate) queues: Vec<QueueFill>,
     /// The mean round trip to the brokers, in milliseconds, from the freshest worker reporting one. Bytes in flight
     /// over it are what the buffer reaches. `None` for a destination that does not measure it, or that no worker is
     /// running.
-    pub round_trip_ms: Option<f64>,
+    pub(crate) round_trip_ms: Option<f64>,
     /// Milliseconds the far end held requests back over the window, summed over concurrent requests. Above zero, the
     /// far end is what binds, and a bigger buffer buys nothing.
-    pub throttled_ms: f64,
+    pub(crate) throttled_ms: f64,
     /// Rows acknowledged per second, bucket by bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate: Option<Spread>,
+    pub(crate) rate: Option<Spread>,
     /// Bytes acknowledged per second, bucket by bucket, as the queue measured them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bytes_rate: Option<Spread>,
+    pub(crate) bytes_rate: Option<Spread>,
     /// The round trip in milliseconds, bucket by bucket. A gauge's bucket keeps its highest reading, so each point
     /// is that bucket's peak, and the least of them is the lowest peak, not the lowest sample.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub round_trip: Option<Spread>,
+    pub(crate) round_trip: Option<Spread>,
 }
 
 /// One object's counts. Its envelope is not `ok` for a subject this cannot answer for -- one the group does not
@@ -271,27 +271,27 @@ pub struct DestinationStats {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stats {
-    pub group: String,
-    pub kind: NodeKind,
+    pub(crate) group: String,
+    pub(crate) kind: NodeKind,
     /// The author's own id for the object asked about.
-    pub id: String,
+    pub(crate) id: String,
     /// The window asked for, which every total covers.
-    pub window_millis: i64,
+    pub(crate) window_millis: i64,
     /// How wide each point of the chart over the window these totals were summed for is (`series::chart_point_ms`):
     /// how coarse the answer is, and how close to now its newest point can be.
-    pub bucket_millis: i64,
+    pub(crate) bucket_millis: i64,
     /// The leader's clock when it answered, which is the clock the buckets are on. A spread's grid ends at the
     /// bucket before the one holding this instant; the browser's own clock may sit a bucket off.
-    pub now_millis: i64,
+    pub(crate) now_millis: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceStats>,
+    pub(crate) source: Option<SourceStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pipeline: Option<PipelineStats>,
+    pub(crate) pipeline: Option<PipelineStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination: Option<DestinationStats>,
+    pub(crate) destination: Option<DestinationStats>,
     /// The warnings about a source or destination that held at any time in the window, oldest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<WarningSpan>,
+    pub(crate) warnings: Vec<WarningSpan>,
 }
 
 impl Stats {

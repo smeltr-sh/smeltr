@@ -6,27 +6,27 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct LogAnalyticsDestinationDto {
     /// The rule's logs ingestion endpoint, or the data collection endpoint it is linked to.
-    pub endpoint: String,
+    pub(crate) endpoint: String,
     /// The rule's immutable id, `dcr-` and 32 hex digits.
-    pub rule_id: String,
+    pub(crate) rule_id: String,
     /// The rule's stream the rows go to, such as `Custom-Events_CL`.
-    pub stream: String,
+    pub(crate) stream: String,
     #[serde(flatten)]
-    pub sign_in: EntraSignInDto,
+    pub(crate) sign_in: EntraSignInDto,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    pub(crate) tls: TlsDto,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-    pub max_request_bytes: RequestBytes,
+    pub(crate) max_request_bytes: RequestBytes,
     /// Unset means the default, or one whole request if that is larger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    pub(crate) buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    pub(crate) unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for LogAnalyticsDestinationDto {

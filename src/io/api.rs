@@ -38,7 +38,7 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 const QUOTED: usize = 200;
 
 /// One API's half of a poll: what to ask, and what each answer says.
-pub trait Api: Send {
+pub(crate) trait Api: Send {
     /// What a poll begun at `now` asks first, from `cursor`: the last a page carried, or what an earlier holder
     /// delivered.
     fn first(&mut self, cursor: Option<&str>, now: SystemTime) -> Result<First, String>;
@@ -60,21 +60,21 @@ pub trait Api: Send {
 
 /// The first request of a poll.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct First {
-    pub url: String,
+pub(crate) struct First {
+    pub(crate) url: String,
     /// Where a source resumes before this poll delivers anything: a start a kind fixes before reading, so a source
     /// that fails over before its first page lands asks from the same start. `None` moves nothing.
-    pub cursor: Option<String>,
+    pub(crate) cursor: Option<String>,
     /// Where a source resumes once this whole poll is delivered, whichever page ends it. `None` moves nothing.
-    pub end: Option<String>,
+    pub(crate) end: Option<String>,
 }
 
 /// One answer, whatever its status.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Answer {
+pub(crate) struct Answer {
     pub status: u16,
     /// Every header, its name lowercased, in the answer's order.
-    pub headers: Vec<(String, String)>,
+    pub(crate) headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -100,25 +100,25 @@ impl From<Answer> for super::http::Response {
 
 impl Answer {
     /// The first value of the header `name`, which is lowercase.
-    pub fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
     }
 }
 
 /// What one page holds.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Page {
-    pub records: Records,
+pub(crate) struct Page {
+    pub(crate) records: Records,
     /// Where a source resumes once this page and every page before it are delivered. `None` moves nothing.
-    pub cursor: Option<String>,
+    pub(crate) cursor: Option<String>,
     /// The next page of this poll. `None` ends the poll.
-    pub next: Option<String>,
+    pub(crate) next: Option<String>,
 }
 
 /// An answer's records, cut from it one at a time as they are handed out: an answer of many small records costs
 /// its own bytes and one record at a time, never a copy of each up front.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Records {
+pub(crate) struct Records {
     body: Vec<u8>,
     /// Where the next record starts.
     at: usize,
@@ -138,14 +138,14 @@ enum Cut {
 
 impl Records {
     /// The bytes of the answer it cuts from.
-    pub fn held(&self) -> usize {
+    pub(crate) fn held(&self) -> usize {
         match &self.cut {
             Cut::Array(text) => text.len(),
             _ => self.body.len(),
         }
     }
 
-    pub fn none() -> Records {
+    pub(crate) fn none() -> Records {
         Records {
             body: Vec::new(),
             at: 0,
@@ -154,7 +154,7 @@ impl Records {
     }
 
     /// The whole of `body` as one record, or none when it holds nothing but whitespace.
-    pub fn whole(body: Vec<u8>) -> Records {
+    pub(crate) fn whole(body: Vec<u8>) -> Records {
         match body.trim_ascii().is_empty() {
             true => Records::none(),
             false => Records {
@@ -166,7 +166,7 @@ impl Records {
     }
 
     /// Each line of `body` that holds anything, without its line ending.
-    pub fn lines(body: Vec<u8>) -> Records {
+    pub(crate) fn lines(body: Vec<u8>) -> Records {
         Records {
             body,
             at: 0,
@@ -176,7 +176,7 @@ impl Records {
 
     /// Each event of `body` that holds more than whitespace, broken as an S2S receiver breaks a stream that ends
     /// with it: where `line_breaker` breaks it, or without one at each line end `line_breaker::next_line` finds.
-    pub fn broken(body: Vec<u8>, line_breaker: Option<LineBreaker>) -> Records {
+    pub(crate) fn broken(body: Vec<u8>, line_breaker: Option<LineBreaker>) -> Records {
         Records {
             body,
             at: 0,
@@ -186,7 +186,7 @@ impl Records {
 
     /// Each element of the array whose `[` is at `open` in `body`, as written. `body` must be valid JSON, which
     /// is what lets an element be cut without parsing the rest.
-    pub fn array(body: Vec<u8>, open: usize) -> Records {
+    pub(crate) fn array(body: Vec<u8>, open: usize) -> Records {
         match String::from_utf8(body) {
             Ok(text) => Records {
                 body: Vec::new(),
@@ -198,7 +198,7 @@ impl Records {
     }
 
     /// The next record, or `None` once there are no more.
-    pub fn next_record(&mut self) -> Option<Vec<u8>> {
+    pub(crate) fn next_record(&mut self) -> Option<Vec<u8>> {
         if self.cut == Cut::Whole {
             // The body is the record, so it is handed over rather than copied.
             self.cut = Cut::Done;
@@ -209,7 +209,7 @@ impl Records {
     }
 
     /// Each record in order, handed to `each`.
-    pub fn each(mut self, mut each: impl FnMut(&[u8])) {
+    pub(crate) fn each(mut self, mut each: impl FnMut(&[u8])) {
         while let Some(range) = self.next_range() {
             each(&self.held_bytes()[range]);
         }
@@ -298,12 +298,12 @@ impl Records {
 }
 
 /// Sends one request: a GET of an address, or a POST of the source's body to it.
-pub trait Fetch: Send {
+pub(crate) trait Fetch: Send {
     fn ask(&mut self, url: &str) -> Result<Answer, IoError>;
 }
 
 /// How a source signs its requests in: the headers each carries, and what the API's answers say about them.
-pub trait Authorize: Send {
+pub(crate) trait Authorize: Send {
     /// The headers that authorize a GET of `url`, signing in first over `agent`, bounded by `timeout`, when no token
     /// is held or the one held is about to expire.
     fn authorize(
@@ -322,7 +322,7 @@ pub trait Authorize: Send {
 
 /// The real fetch: blocking requests over one agent, with the source's headers on every request, and a token when
 /// the source signs in as an app.
-pub struct UreqFetch {
+pub(crate) struct UreqFetch {
     agent: ureq::Agent,
     headers: Vec<(String, String)>,
     /// Whether each request is a POST rather than a GET.
@@ -333,7 +333,7 @@ pub struct UreqFetch {
 }
 
 impl UreqFetch {
-    pub fn new(config: &ureq::config::Config, headers: Vec<(String, String)>) -> Self {
+    pub(crate) fn new(config: &ureq::config::Config, headers: Vec<(String, String)>) -> Self {
         UreqFetch {
             agent: crate::io::http::agent(config.clone()),
             headers,
@@ -344,14 +344,14 @@ impl UreqFetch {
     }
 
     /// Sends every request as a POST of `body`, JSON, instead of a GET.
-    pub fn posting(mut self, body: Option<String>) -> Self {
+    pub(crate) fn posting(mut self, body: Option<String>) -> Self {
         self.post = true;
         self.body = body;
         self
     }
 
     /// Signs every request in with `sign_in`'s token.
-    pub fn signed_in(mut self, sign_in: impl Authorize + 'static) -> Self {
+    pub(crate) fn signed_in(mut self, sign_in: impl Authorize + 'static) -> Self {
         self.sign_in = Some(Box::new(sign_in));
         self
     }
@@ -432,7 +432,7 @@ impl UreqFetch {
 }
 
 /// Opens `config` as a live source.
-pub fn open(config: &ApiSourceConfig, secrets: &HeldSecrets) -> Result<Box<dyn Source>, IoError> {
+pub(crate) fn open(config: &ApiSourceConfig, secrets: &HeldSecrets) -> Result<Box<dyn Source>, IoError> {
     use crate::plan::topology::Api as Kind;
     let agent = super::http::agent_config(config.tls.as_ref(), secrets)?;
     match &config.api {
@@ -523,7 +523,7 @@ struct Current {
 }
 
 /// An [`Api`] as a [`Source`].
-pub struct Poller<A, F> {
+pub(crate) struct Poller<A, F> {
     api: A,
     fetch: F,
     interval: Duration,
@@ -548,7 +548,7 @@ pub struct Poller<A, F> {
 }
 
 impl<A: Api, F: Fetch> Poller<A, F> {
-    pub fn new(api: A, fetch: F, interval: Duration) -> Self {
+    pub(crate) fn new(api: A, fetch: F, interval: Duration) -> Self {
         Poller {
             api,
             fetch,
@@ -810,7 +810,7 @@ pub(crate) fn http_date(text: &str) -> Option<SystemTime> {
 }
 
 /// The instant `micros` after the epoch. `None` before it.
-pub fn at_micros(micros: i64) -> Option<SystemTime> {
+pub(crate) fn at_micros(micros: i64) -> Option<SystemTime> {
     Some(SystemTime::UNIX_EPOCH + Duration::from_micros(u64::try_from(micros).ok()?))
 }
 
@@ -827,7 +827,7 @@ fn quoted(body: &[u8]) -> String {
 
 /// The URL of `answer`'s `Link: rel="next"`, resolved against `url`, the address it answered. Refused when it leaves
 /// `url`'s scheme, host and port, since the source's credentials go with every request.
-pub fn next_link(url: &str, answer: &Answer) -> Result<Option<String>, String> {
+pub(crate) fn next_link(url: &str, answer: &Answer) -> Result<Option<String>, String> {
     let Some(next) = answer
         .headers
         .iter()

@@ -17,7 +17,7 @@ use crate::core::ctx::Ctx;
 const REGEXES: &str = include_str!("useragent/regexes.yaml");
 
 /// What `parseUserAgent` returns.
-pub const USER_AGENT: &[(&str, Field)] = &[
+pub(crate) const USER_AGENT: &[(&str, Field)] = &[
     ("name", Field::Leaf(DataType::Str)),
     ("version", Field::Leaf(DataType::Str)),
     ("os", Field::Object(OS)),
@@ -34,17 +34,17 @@ const DEVICE: &[(&str, Field)] = &[("name", Field::Leaf(DataType::Str))];
 
 /// One header, read.
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct UserAgent {
-    pub name: String,
-    pub version: Option<String>,
-    pub os_name: Option<String>,
-    pub os_version: Option<String>,
-    pub device_name: String,
+pub(crate) struct UserAgent {
+    pub(crate) name: String,
+    pub(crate) version: Option<String>,
+    pub(crate) os_name: Option<String>,
+    pub(crate) os_version: Option<String>,
+    pub(crate) device_name: String,
 }
 
 impl UserAgent {
     /// `os.full`: the name, then the version where there is one.
-    pub fn os_full(&self) -> Option<String> {
+    pub(crate) fn os_full(&self) -> Option<String> {
         let name = self.os_name.as_ref()?;
         Some(match &self.os_version {
             Some(version) => format!("{name} {version}"),
@@ -54,7 +54,7 @@ impl UserAgent {
 }
 
 /// `parseUserAgent(text)`. A header met twice in a batch is read once.
-pub fn parse_user_agent(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn parse_user_agent(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let v = ins[0].var().unwrap();
     let rules = rules();
@@ -116,19 +116,19 @@ pub fn parse_user_agent(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// The three lists of rules, compiled once per process, the first time a row needs them: about a second in a release
 /// build.
-pub fn rules() -> &'static Rules {
+pub(crate) fn rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| Rules::parse(REGEXES))
 }
 
-pub struct Rules {
+pub(crate) struct Rules {
     agents: RuleList,
     systems: RuleList,
     devices: RuleList,
 }
 
 impl Rules {
-    pub fn read(&self, text: &str) -> UserAgent {
+    pub(crate) fn read(&self, text: &str) -> UserAgent {
         let agent = self.agents.first(text);
         let system = self.systems.first(text);
         let device = self.devices.first(text);

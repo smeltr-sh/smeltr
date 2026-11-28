@@ -39,7 +39,7 @@ pub struct MoveRow {
     pub listed: Listed,
     pub ticked: bool,
     /// In the least the move takes.
-    pub needed: bool,
+    pub(crate) needed: bool,
 }
 
 /// A move of `asked` out of the area `from`, whose objects are `here`, into the area `to`, which sees `there`.

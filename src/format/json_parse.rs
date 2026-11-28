@@ -67,7 +67,7 @@ impl<'d> Sink<'d> for RowSink<'_, 'd> {
 
 /// A parse of `ParserKind::Json`: a row parses where it is an object. Each key splits at its dots into a path where
 /// the flag says so.
-pub struct Json(pub bool);
+pub(crate) struct Json(pub(crate) bool);
 
 impl Scanner for Json {
     const NAME: &'static str = "json";

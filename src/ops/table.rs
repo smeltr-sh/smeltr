@@ -48,7 +48,7 @@ macro_rules! binops {
         }
 
         #[cfg(test)]
-        pub fn all_rows() -> Vec<(BinOp, DataType, DataType, DataType)> {
+        pub(crate) fn all_rows() -> Vec<(BinOp, DataType, DataType, DataType)> {
             vec![
                 $((BinOp::$op, DataType::$lhs, DataType::$rhs, DataType::$res),)*
             ]
@@ -148,7 +148,7 @@ binops! {
 /// Whether the kernel for `(op, lhs, rhs)` reads a constant operand as one value. The others read rows through an
 /// accessor that refuses a constant, so the dispatcher gives them rows. The set is the kernels that read a constant
 /// as one value: those built on `helpers::side`, and the n-ary kernels.
-pub fn takes_constant(op: BinOp, lhs: &DataType, rhs: &DataType) -> bool {
+pub(crate) fn takes_constant(op: BinOp, lhs: &DataType, rhs: &DataType) -> bool {
     use DataType::*;
     let fixed = |t: &DataType| matches!(t, I64 | F64 | DateTime | Duration);
     match op {

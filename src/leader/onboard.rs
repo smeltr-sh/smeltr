@@ -64,11 +64,11 @@ enum Format {
 #[derive(Clone, Debug, PartialEq)]
 struct Sniffed {
     /// `None` where no format reads [`READ_TO_PROPOSE`] percent of the records.
-    pub format: Option<Format>,
+    pub(crate) format: Option<Format>,
     /// Records `format` reads.
-    pub read: usize,
+    pub(crate) read: usize,
     /// Records with text to read: blank ones are left out.
-    pub of: usize,
+    pub(crate) of: usize,
 }
 
 /// The format of `texts`, one record's text each. Every format is tried on every record, and the one that reads the
@@ -238,17 +238,17 @@ pub struct Proposal {
     /// The steps that parse the records' text, in order. None where they have none, a source whose records arrive as
     /// fields already, or where no format read any of it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub steps: Vec<StepDto>,
+    pub(crate) steps: Vec<StepDto>,
     /// The format `steps` read, as the GUI names it: `json`, `cef`, `keyValue`, `csv`, or one of [`LINES`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<&'static str>,
-    pub read: usize,
-    pub of: usize,
+    pub(crate) format: Option<&'static str>,
+    pub(crate) read: usize,
+    pub(crate) of: usize,
     /// Whether the records came with fields of their own and no text to parse.
-    pub structured: bool,
+    pub(crate) structured: bool,
     /// What a route takes this stream's rows under, where every record was filed under one `STREAM_FIELDS` value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
+    pub(crate) condition: Option<String>,
 }
 
 /// The first steps of a pipeline for `records`, a captured sample, and the condition a route would take them under.

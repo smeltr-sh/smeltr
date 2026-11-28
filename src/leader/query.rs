@@ -22,7 +22,7 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 /// How a counter's points are drawn: as a rate, or as what each bar added up to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Draw {
+pub(crate) enum Draw {
     #[default]
     PerSecond,
     Totals,
@@ -31,24 +31,24 @@ pub enum Draw {
 /// `GET /api/series`'s query.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SeriesQuery {
-    pub metric: String,
+pub(crate) struct SeriesQuery {
+    pub(crate) metric: String,
     /// `label:value` pairs, comma-separated; a series must match every one.
     #[serde(default)]
-    pub filter: String,
+    pub(crate) filter: String,
     /// The labels, comma-separated, whose values become the answer's series; if empty, every subject is added into one series.
     #[serde(default)]
-    pub by: String,
+    pub(crate) by: String,
     #[serde(default = "default_window_minutes")]
-    pub window_minutes: i64,
+    pub(crate) window_minutes: i64,
     #[serde(default)]
-    pub draw: Draw,
+    pub(crate) draw: Draw,
     /// The reader's offset from UTC, east positive: where its hours and days begin.
     #[serde(default)]
-    pub utc_offset_minutes: i64,
+    pub(crate) utc_offset_minutes: i64,
     /// How long before now the window ends: a week, for the line a chart compares itself with.
     #[serde(default)]
-    pub ago_minutes: i64,
+    pub(crate) ago_minutes: i64,
 }
 
 fn default_window_minutes() -> i64 {
@@ -58,27 +58,27 @@ fn default_window_minutes() -> i64 {
 /// What `GET /api/series` answers.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SeriesAnswer {
-    pub metric: String,
-    pub counter: bool,
-    pub draw: Draw,
+pub(crate) struct SeriesAnswer {
+    pub(crate) metric: String,
+    pub(crate) counter: bool,
+    pub(crate) draw: Draw,
     /// How wide each point is, and where the first one starts.
-    pub point_millis: i64,
-    pub from_millis: i64,
-    pub series: Vec<Split>,
+    pub(crate) point_millis: i64,
+    pub(crate) from_millis: i64,
+    pub(crate) series: Vec<Split>,
 }
 
 /// One series of the answer: the subjects whose split labels hold `values`, added together.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Split {
+pub(crate) struct Split {
     /// The split labels' values, joined by ", "; empty when nothing splits the answer.
-    pub name: String,
+    pub(crate) name: String,
     /// Each split label's value, in the order `by` names them.
-    pub values: Vec<String>,
+    pub(crate) values: Vec<String>,
     /// `[start, value]`, oldest first. A point nothing landed in is absent rather than zero: an outage is not a quiet
     /// spell.
-    pub points: Vec<(i64, f64)>,
+    pub(crate) points: Vec<(i64, f64)>,
 }
 
 /// One label of a subject key, or its group.
@@ -127,7 +127,7 @@ fn grid(draw: Draw, window_minutes: i64, offset_ms: i64, end_ms: i64, now_ms: i6
 }
 
 /// The answer to `query` at `now_ms`, from `store`, over the groups `sees` lets in.
-pub fn answer(
+pub(crate) fn answer(
     store: &RegistryStore,
     query: &SeriesQuery,
     sees: impl Fn(&str) -> bool,
@@ -213,14 +213,14 @@ fn add(into: &mut BTreeMap<i64, f64>, points: &SubjectPoints) {
 /// One metric that can be asked of: whether it counts, and each label with the values its series hold.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoredMetric {
-    pub name: String,
-    pub counter: bool,
-    pub labels: BTreeMap<String, BTreeSet<String>>,
+pub(crate) struct StoredMetric {
+    pub(crate) name: String,
+    pub(crate) counter: bool,
+    pub(crate) labels: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Every metric the store holds a series of in the groups `sees` lets in.
-pub fn metrics(store: &RegistryStore, sees: impl Fn(&str) -> bool) -> Result<Vec<StoredMetric>, StoreError> {
+pub(crate) fn metrics(store: &RegistryStore, sees: impl Fn(&str) -> bool) -> Result<Vec<StoredMetric>, StoreError> {
     let mut out: BTreeMap<String, StoredMetric> = BTreeMap::new();
     for (name, subject_key, counter) in store.metric_subjects()? {
         let Some(labels) = labels_of(&subject_key) else {
@@ -243,12 +243,12 @@ pub fn metrics(store: &RegistryStore, sees: impl Fn(&str) -> bool) -> Result<Vec
 
 /// What `GET /api/series/metrics` answers.
 #[derive(serde::Serialize)]
-pub struct MetricList {
-    pub metrics: Vec<StoredMetric>,
+pub(crate) struct MetricList {
+    pub(crate) metrics: Vec<StoredMetric>,
 }
 
 /// `GET /api/series`. The gate lets in anyone viewing somewhere; the answer holds only the caller's groups.
-pub async fn get_series(
+pub(crate) async fn get_series(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
     Query(query): Query<SeriesQuery>,
@@ -265,7 +265,7 @@ pub async fn get_series(
 }
 
 /// `GET /api/series/metrics`.
-pub async fn get_metrics(
+pub(crate) async fn get_metrics(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
 ) -> Result<Envelope<MetricList>, Refusal> {

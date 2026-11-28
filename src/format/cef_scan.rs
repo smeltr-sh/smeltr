@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use crate::format::kv_scan::{Pair, Piece, Seps, next_key_pieces};
 
 /// The header fields, in order, under the names the CEF specification gives them.
-pub const HEADER: [&str; 7] = [
+pub(crate) const HEADER: [&str; 7] = [
     "version",
     "deviceVendor",
     "deviceProduct",

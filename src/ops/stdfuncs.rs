@@ -108,7 +108,7 @@ impl Param {
     }
 
     /// How the parameter reads in a type error: the engine's names.
-    pub fn describe(self) -> &'static str {
+    pub(crate) fn describe(self) -> &'static str {
         match self {
             Param::Any => "any",
             Param::Data => "str/bytes",
@@ -132,7 +132,7 @@ impl Param {
 
 /// How a row's result type is decided from the arguments.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Ret {
+pub(crate) enum Ret {
     Fixed(DataType),
     /// An `Array` of a scalar.
     ArrayOf(DataType),
@@ -157,13 +157,13 @@ pub enum Ret {
 
 /// A field of an object a built-in returns. A table row is a static, and a `DataType::Struct` cannot be one.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Field {
+pub(crate) enum Field {
     Leaf(DataType),
     Object(&'static [(&'static str, Field)]),
 }
 
 impl Field {
-    pub fn data_type(&self) -> DataType {
+    pub(crate) fn data_type(&self) -> DataType {
         match self {
             Field::Leaf(t) => t.clone(),
             Field::Object(fields) => object_type(fields),
@@ -172,7 +172,7 @@ impl Field {
 }
 
 /// The closed object type `fields` describe.
-pub fn object_type(fields: &[(&str, Field)]) -> DataType {
+pub(crate) fn object_type(fields: &[(&str, Field)]) -> DataType {
     DataType::Struct(
         fields.iter().map(|(n, f)| (n.to_string(), f.data_type())).collect(),
         false,
@@ -255,7 +255,7 @@ fn type_name(t: &DataType) -> String {
 
 impl Ret {
     /// How the result type reads in the reference, for a row taking `params`.
-    pub fn describe(&self, params: &[Param]) -> String {
+    pub(crate) fn describe(&self, params: &[Param]) -> String {
         match self {
             Ret::Fixed(t) | Ret::ForElement(t) => type_name(t),
             Ret::ArrayOf(t) => format!("array({})", type_name(t)),
@@ -277,7 +277,7 @@ pub struct Row {
     pub func: StdFunc,
     pub name: &'static str,
     pub params: &'static [Param],
-    pub ret: Ret,
+    pub(crate) ret: Ret,
 }
 
 impl Row {
@@ -288,7 +288,7 @@ impl Row {
     }
 
     /// The same, for a function whose last parameter repeats: `(Array of scalars, element, ...)`.
-    pub fn describe_variadic(&self) -> String {
+    pub(crate) fn describe_variadic(&self) -> String {
         let params: Vec<&str> = self.params.iter().map(|p| p.describe()).collect();
         format!("({}, ...)", params.join(", "))
     }
@@ -359,27 +359,27 @@ macro_rules! stdfuncs {
         impl StdFunc {
             /// Sees only the plain function name: method-call syntax has already been desugared by the parser or
             /// `plan::resolve::resolve_call`.
-            pub fn by_name(name: &str) -> Option<StdFunc> {
+            pub(crate) fn by_name(name: &str) -> Option<StdFunc> {
                 Some(match name {
                     $($name => StdFunc::$func,)*
                     _ => return None,
                 })
             }
 
-            pub fn name(self) -> &'static str {
+            pub(crate) fn name(self) -> &'static str {
                 match self {
                     $(StdFunc::$func => $name,)*
                 }
             }
 
             /// Whether a call whose arguments are all null is itself null.
-            pub fn propagates_null(self) -> bool {
+            pub(crate) fn propagates_null(self) -> bool {
                 !matches!(self, $(StdFunc::$nfunc)|*)
             }
 
             /// Whether the kernel runs on an unbound argument. Every other kernel's result is null when one is, and
             /// `expr::eval` answers that without running it.
-            pub fn reads_unbound(self) -> bool {
+            pub(crate) fn reads_unbound(self) -> bool {
                 matches!(self, $(StdFunc::$ufunc)|*)
             }
 
@@ -390,7 +390,7 @@ macro_rules! stdfuncs {
             }
 
             /// `None` for a function with a `Pattern` parameter, whose arguments do not all travel as columns.
-            pub fn kernel(self) -> Option<OpKernel> {
+            pub(crate) fn kernel(self) -> Option<OpKernel> {
                 match self {
                     $(StdFunc::$func => $kern,)*
                 }
@@ -501,12 +501,12 @@ stdfuncs! {
 
 impl StdFunc {
     /// This function's rows.
-    pub fn rows(self) -> impl Iterator<Item = &'static Row> {
+    pub(crate) fn rows(self) -> impl Iterator<Item = &'static Row> {
         ROWS.iter().filter(move |r| r.func == self)
     }
 
     /// Whether argument `i` is a regex literal rather than a value, in any row.
-    pub fn takes_pattern_at(self, i: usize) -> bool {
+    pub(crate) fn takes_pattern_at(self, i: usize) -> bool {
         self.rows().any(|row| row.params.get(i) == Some(&Param::Pattern))
     }
 
@@ -518,7 +518,7 @@ impl StdFunc {
     }
 
     /// Whether argument `i` is a value, in any row. `split` takes both at `1`.
-    pub fn takes_value_at(self, i: usize) -> bool {
+    pub(crate) fn takes_value_at(self, i: usize) -> bool {
         self.rows()
             .any(|row| matches!(row.params.get(i), Some(p) if *p != Param::Pattern))
     }
@@ -528,7 +528,7 @@ impl StdFunc {
     /// alike, such as `min`, `max`, `clamp` and `concat`, takes any of them as a constant; most others read a needle,
     /// count, index, unit or format beside the value they work on. An array argument is never a constant, so what this
     /// answers at an array's position is never used.
-    pub fn takes_constant_at(self, i: usize) -> bool {
+    pub(crate) fn takes_constant_at(self, i: usize) -> bool {
         use StdFunc::*;
         match self {
             Min | Max | Clamp | Concat | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime | ReadInt
@@ -554,7 +554,7 @@ impl StdFunc {
 
     /// The arities a call may have. For a variadic function this is the minimum -- `call_type_error` renders it as
     /// "2 or more".
-    pub fn arities(self) -> Vec<usize> {
+    pub(crate) fn arities(self) -> Vec<usize> {
         let mut out: Vec<usize> = self.rows().map(|row| row.params.len()).collect();
         out.sort_unstable();
         out.dedup();
@@ -574,7 +574,7 @@ impl StdFunc {
     }
 
     /// Every signature as it reads in a type error: `(Str) or (Str, I64)`.
-    pub fn signatures_text(self) -> String {
+    pub(crate) fn signatures_text(self) -> String {
         let describe = if self.is_variadic() {
             Row::describe_variadic
         } else {
@@ -631,7 +631,7 @@ pub fn length_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// else to `$text`.
 macro_rules! text_or_array {
     ($name:ident, $text:path, $array:path $(, bytes: $bytes:path)?) => {
-        pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+        pub(crate) fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             match ins[0].data_type() {
                 DataType::Array(_) => $array(ctx, ins),
                 $(DataType::Bytes => $bytes(ctx, ins),)?
@@ -642,7 +642,7 @@ macro_rules! text_or_array {
 }
 
 /// `concat` on arrays, or on bytes.
-pub fn concat_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn concat_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     match ins[0].data_type() {
         DataType::Bytes => byteops::concat(ctx, ins),
         _ => arrayops::array_concat(ctx, ins),

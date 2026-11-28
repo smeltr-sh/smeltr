@@ -39,7 +39,7 @@ impl Kind {
         }
     }
 
-    pub fn parse(text: &str) -> Option<Kind> {
+    pub(crate) fn parse(text: &str) -> Option<Kind> {
         match text {
             "cloudflare" => Some(Kind::Cloudflare),
             _ => None,
@@ -78,7 +78,7 @@ pub trait Nameservers: Send + Sync {
 
 /// `_acme-challenge.` under the name, a wildcard's included: `*.example.com` is proved at
 /// `_acme-challenge.example.com`.
-pub fn record_name(name: &str) -> String {
+pub(crate) fn record_name(name: &str) -> String {
     format!("_acme-challenge.{}", name.strip_prefix("*.").unwrap_or(name))
 }
 
@@ -223,7 +223,7 @@ impl Prover for Publishing {
 // -- the zone's nameservers ---------------------------------------------------------------------------------------
 
 /// The nameservers the zone names for itself, found through this host's resolver and each asked directly.
-pub struct ZoneNameservers;
+pub(crate) struct ZoneNameservers;
 
 impl ZoneNameservers {
     /// Each nameserver's addresses, by its name.
@@ -316,7 +316,7 @@ pub async fn answers(at: SocketAddr, record: &Record) -> Result<bool, String> {
 // -- Cloudflare ---------------------------------------------------------------------------------------------------
 
 /// Cloudflare's API.
-pub const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
+pub(crate) const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
 
 /// Cloudflare's codes for a record that is already there, name and content alike: 81058, and 81057 as it answered
 /// before.

@@ -33,7 +33,7 @@ use crate::leader::throughput;
 /// (`leader::warnings_snapshot`), so none of them counts one as trouble.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Severity {
+pub(crate) enum Severity {
     Failed,
     Warning,
     Info,
@@ -45,7 +45,7 @@ pub enum Severity {
 /// kind of warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum SubjectKind {
+pub(crate) enum SubjectKind {
     Source,
     Destination,
     Worker,
@@ -68,31 +68,31 @@ macro_rules! conditions {
         /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
         /// switch on it and a new entry is a compile error rather than a blank label.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
-        pub enum Condition {
+        pub(crate) enum Condition {
             $($(#[$doc])* #[serde(rename = $name)] $variant,)*
         }
 
         impl Condition {
             /// The whole catalog, so the page's copy of it can be checked against this one. The reader that switches on
             /// a condition is in another language, where a missing entry is a blank label rather than a compile error.
-            pub const ALL: &'static [Condition] = &[$(Condition::$variant),*];
+            pub(crate) const ALL: &'static [Condition] = &[$(Condition::$variant),*];
 
             /// What a person reads for it: the page's own label (`conditionLabel`), for what is sent where the page is not.
-            pub fn label(self) -> &'static str {
+            pub(crate) fn label(self) -> &'static str {
                 match self {
                     $(Condition::$variant => $label,)*
                 }
             }
 
             /// What this is called on the wire.
-            pub fn name(self) -> &'static str {
+            pub(crate) fn name(self) -> &'static str {
                 match self {
                     $(Condition::$variant => $name,)*
                 }
             }
 
             /// The section it is listed under.
-            pub fn section(self) -> Section {
+            pub(crate) fn section(self) -> Section {
                 match self {
                     $(Condition::$variant => Section::$section,)*
                 }
@@ -147,7 +147,7 @@ conditions! {
 /// channel takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Section {
+pub(crate) enum Section {
     Workers,
     SourcesAndDestinations,
     Deploys,
@@ -158,7 +158,7 @@ pub enum Section {
 
 impl Section {
     /// Every section, in the order they are listed.
-    pub const ALL: &'static [Section] = &[
+    pub(crate) const ALL: &'static [Section] = &[
         Section::Workers,
         Section::SourcesAndDestinations,
         Section::Deploys,
@@ -188,7 +188,7 @@ const AUTHORITY_LAST_PART: f64 = 0.1;
 
 /// How long before a certificate good from `not_before_millis` to `not_after_millis` runs out it is said to be
 /// running out: the last part of its life. The GUI marks one by the same rule (`time.ts`).
-pub fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
+pub(crate) fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
     ((not_after_millis - not_before_millis) as f64 * AUTHORITY_LAST_PART) as i64
 }
 
@@ -198,54 +198,54 @@ pub fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
 #[serde(rename_all = "camelCase")]
 pub struct Warning {
     /// The catalog entry. Its name is what a reader scans; the message says what to do about it.
-    pub condition: Condition,
-    pub subject_kind: SubjectKind,
+    pub(crate) condition: Condition,
+    pub(crate) subject_kind: SubjectKind,
     /// Unique only within `group` (design doc, Control plane: "a group is the addressing unit") -- a worker's own id
     /// is the
     /// exception, since credentials are issued fleet-wide.
-    pub subject_id: String,
+    pub(crate) subject_id: String,
     /// Which group this is about. `None` when there is none to report: an enrolled worker that has never
     /// heartbeated has never said which group it belongs to.
-    pub group: Option<String>,
-    pub severity: Severity,
+    pub(crate) group: Option<String>,
+    pub(crate) severity: Severity,
     /// Epoch milliseconds since this warning's condition began. `None` when that cannot be known: an enrolled
     /// worker that has never heartbeated may have just enrolled, or have been quiet since before the leader's last
     /// restart -- the registry cannot tell the two apart (design doc, Control plane).
-    pub since_millis: Option<i64>,
+    pub(crate) since_millis: Option<i64>,
     /// Names the object and the fix. Stands alone -- a reader sees this sentence with no other context.
-    pub message: String,
+    pub(crate) message: String,
     /// The class of the log line a [`Condition::WorkerLoggedWarnings`] is about, when the line has one. One worker
     /// raises that condition once per class and type, so condition and subject alone do not name one warning; with
     /// these they do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub class: Option<String>,
+    pub(crate) class: Option<String>,
     /// The type of that log line. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#type: Option<String>,
+    pub(crate) r#type: Option<String>,
     /// The area whose bundle declares the subject: `shared`, or the group. Set only on a pipeline, which the page
     /// links to its editor, and only where the deployed commit says.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub area: Option<String>,
+    pub(crate) area: Option<String>,
     /// When the senders a [`Condition::SendersBelow`] names went below normal together. A source's senders that go
     /// below on a later reading are another warning, so condition and subject alone do not name one; with this they
     /// do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub crossed_millis: Option<i64>,
+    pub(crate) crossed_millis: Option<i64>,
     /// An editor answered this [`Condition::SourceRowsBelow`] was normal (`marks::Marks::answers`), so the level
     /// it reads is being learned, and it ends once it is. False on every other condition.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub said_normal: bool,
+    pub(crate) said_normal: bool,
 }
 
 impl Warning {
     /// This, with [`Warning::said_normal`] as `said`.
-    pub fn said_normal(mut self, said: bool) -> Self {
+    pub(crate) fn said_normal(mut self, said: bool) -> Self {
         self.said_normal = said;
         self
     }
 
     /// A warning with no `area`, `class` or `type`. A condition that has them sets them on what this returns.
-    pub fn new(
+    pub(crate) fn new(
         condition: Condition,
         subject_kind: SubjectKind,
         subject_id: String,
@@ -273,7 +273,7 @@ impl Warning {
     /// Whether `access` may see this warning: viewer in the group it names. One that names no group is about the
     /// leader itself -- its authority, its licence, its remote, a worker not yet placed in a group -- which only an
     /// administrator can act on.
-    pub fn visible_to(&self, access: &Access) -> bool {
+    pub(crate) fn visible_to(&self, access: &Access) -> bool {
         match &self.group {
             Some(group) => access.allows(group, Level::Viewer),
             None => access.is_administrator(),
@@ -284,7 +284,7 @@ impl Warning {
 /// `warnings` in the text format Prometheus scrapes (`metrics::exposition`): for each, `smeltr_warning` at 1, and
 /// `smeltr_warning_start_time_seconds` where its start is known, labeled by its condition, severity and subject. A
 /// warning that clears leaves the scrape, which is what tells an alert manager it resolved.
-pub fn as_metrics(warnings: &[Warning]) -> String {
+pub(crate) fn as_metrics(warnings: &[Warning]) -> String {
     use crate::metrics::{MetricKey, MetricSample, MetricValue};
     /// The name serde gives `value`, as the API names it.
     fn named(value: impl Serialize) -> String {
@@ -338,17 +338,17 @@ const DEPLOY_BREAKS_SCHEMAS: &str = "deploy_breaks_schemas";
 
 /// An issue as its log line names it (`Registry::observe_facts`): the condition by the name `GET /api/warnings`
 /// gives it, and the fact's subject taken apart the way this module packed it.
-pub struct LoggedIssue<'a> {
-    pub issue: &'a str,
-    pub group: Option<&'a str>,
-    pub subject: &'a str,
+pub(crate) struct LoggedIssue<'a> {
+    pub(crate) issue: &'a str,
+    pub(crate) group: Option<&'a str>,
+    pub(crate) subject: &'a str,
     /// The commit a worker is not deploying, for that one issue.
-    pub commit: Option<&'a str>,
+    pub(crate) commit: Option<&'a str>,
 }
 
 /// A fact for each issue in `issues` that no fact in `clocked` already is, keyed by its condition's name: what lets
 /// the one clock (`Registry::observe_facts`) log every issue's start and end, not only those that time themselves.
-pub fn issue_facts(issues: &[Warning], clocked: &HashSet<FactKey>) -> HashSet<FactKey> {
+pub(crate) fn issue_facts(issues: &[Warning], clocked: &HashSet<FactKey>) -> HashSet<FactKey> {
     let timed: HashSet<(&str, Option<&str>, &str)> = clocked
         .iter()
         .map(|k| {
@@ -370,7 +370,7 @@ pub fn issue_facts(issues: &[Warning], clocked: &HashSet<FactKey>) -> HashSet<Fa
 }
 
 /// What an issue's log line says of the fact `entry` about `subject`.
-pub fn logged_issue<'a>(entry: &'a str, subject: &'a str) -> LoggedIssue<'a> {
+pub(crate) fn logged_issue<'a>(entry: &'a str, subject: &'a str) -> LoggedIssue<'a> {
     let issue = issue_of_fact(entry);
     let pair = serde_json::from_str::<(&str, &str)>(subject).ok();
     match (entry, pair) {
@@ -561,7 +561,7 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
 
 /// Which side of a connector's TLS a certificate sits on. The two run out differently, so they are said differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Half {
+pub(crate) enum Half {
     /// The chain this worker presents. Out of date, the connector fails at the handshake.
     Presented,
     /// An authority a far end is verified against. Out of date, a far end chaining only to it cannot be checked;
@@ -575,17 +575,17 @@ pub enum Half {
 /// now: a bundle nobody deploys cannot stop anything working. A group mid-rollout runs more than one commit at
 /// once, and each carries its own answer -- a worker on one never has another commit's roots in its trust store.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeployedCertificate {
-    pub group: String,
+pub(crate) struct DeployedCertificate {
+    pub(crate) group: String,
     /// The commit this certificate was read off. Two commits are never one trust store: a worker still on the
     /// older one has only its own roots to verify against.
-    pub commit: String,
+    pub(crate) commit: String,
     /// The connector whose TLS carries it.
-    pub subject_kind: SubjectKind,
-    pub subject_id: String,
-    pub half: Half,
-    pub not_before_millis: i64,
-    pub not_after_millis: i64,
+    pub(crate) subject_kind: SubjectKind,
+    pub(crate) subject_id: String,
+    pub(crate) half: Half,
+    pub(crate) not_before_millis: i64,
+    pub(crate) not_after_millis: i64,
 }
 
 /// A deployed connector's certificates running out, in time to replace them.
@@ -598,7 +598,7 @@ pub struct DeployedCertificate {
 /// together. A presented chain is only as good as its soonest part. A trust store holds several roots on purpose --
 /// during a far end's own rollover the outgoing one expires sooner and matters to nobody -- so trust runs out when
 /// the last of them does, not the first.
-pub fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
+pub(crate) fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
     // Commit is part of the key: two commits are two separate trust stores, one per worker generation, and merging
     // them would let a fresh root on one hide an exhausted one on the other. Kind is part of it because a source
     // and a destination may share an id.
@@ -736,7 +736,7 @@ pub fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Ve
 /// Where this leader is with replacing its authority, for a warning that has to name a remedy an operator can
 /// carry out.
 #[derive(Debug)]
-pub enum Rotating {
+pub(crate) enum Rotating {
     /// None open. Starting one is the remedy.
     None,
     /// One open and able to finish. The answer is already coming.
@@ -755,7 +755,7 @@ pub enum Rotating {
 /// Silent while a rotation is under way, because the answer is already coming and a warning nobody can clear is
 /// one an operator learns to ignore. A rotation that cannot finish is not an answer coming, so it says so -- and
 /// says what to do about it, since starting another is refused while this one is open.
-pub fn authority_aging(
+pub(crate) fn authority_aging(
     signing: Option<&crate::leader::tls::Described>,
     rotating: &Rotating,
     now_ms: i64,
@@ -803,20 +803,20 @@ pub fn authority_aging(
 }
 
 /// The certificate this leader serves, as its warnings read it.
-pub struct Serving {
-    pub certificate: crate::leader::tls::Described,
-    pub source: crate::leader::acme::Source,
+pub(crate) struct Serving {
+    pub(crate) certificate: crate::leader::tls::Described,
+    pub(crate) source: crate::leader::acme::Source,
     /// The entry in the certificate list it is a copy of, for an uploaded one.
-    pub entry: Option<String>,
+    pub(crate) entry: Option<String>,
     /// What the last order left, for one ACME renews.
-    pub acme: crate::leader::acme::State,
+    pub(crate) acme: crate::leader::acme::State,
 }
 
 /// The certificate this leader serves running out. One ACME renews is said once a renewal is due and the last try
 /// failed, which is two thirds of the way through its life rather than the last tenth: the leader has been trying,
 /// and the operator has most of a third to put it right. Any other is said in its last tenth, by [`notice_millis`],
 /// and so is an ACME one ACME has stopped trying to renew.
-pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
+pub(crate) fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
     let certificate = &serving.certificate;
     let remaining = certificate.not_after_millis - now_ms;
     let expired = remaining <= 0;
@@ -922,7 +922,7 @@ fn one_line(error: &str) -> String {
 /// means and the only state with a remedy. One naming a root already left behind brings nobody in now, and telling an
 /// operator it has until the cutover to spend it would be a window that does not exist; the Enrollment codes page says
 /// that one is replaced, off the same answer.
-pub fn enrollment_code_names_outgoing_authority(
+pub(crate) fn enrollment_code_names_outgoing_authority(
     codes: &[crate::leader::store::UsableEnrollmentCode],
     presenting: &crate::leader::enrollment_codes::Presenting,
 ) -> Vec<Warning> {
@@ -1246,7 +1246,7 @@ fn groups_not_deployed(snapshot: &[ThreadHealth], deployed_groups: &HashSet<Stri
 /// invent a deployment nobody runs. Excluded the same way `worker_silent` excludes a row nothing recent backs: it
 /// stops being fed a fresh `last_seen` the moment its thread drops out of a heartbeat, so it goes stale within a
 /// few intervals like any other worker that stopped reporting -- and a revoked worker's is never current at all.
-pub fn running_deployments(
+pub(crate) fn running_deployments(
     snapshot: &[ThreadHealth],
     credentials: &[WorkerCredentialRecord],
     heartbeat_interval: Duration,
@@ -1270,7 +1270,7 @@ pub fn running_deployments(
 /// ... on every heartbeat"), so a warning's start time reflects when its fact began rather than when it was next
 /// polled. `deployed_groups` is every group the deployed commit holds a subtree for; what is wrong with that
 /// commit adds [`deploy_facts`].
-pub fn currently_active_facts(
+pub(crate) fn currently_active_facts(
     snapshot: &[ThreadHealth],
     now_ms: i64,
     heartbeat_interval: Duration,
@@ -1311,7 +1311,7 @@ pub fn currently_active_facts(
 /// The facts [`deploy_checked`] times, as [`currently_active_facts`] gives the rest. While the deployed commit's tests
 /// are still running, every failing-test fact the clock holds is kept as it is: whether it still holds is not known
 /// yet, and forgetting it would restart its clock once the run lands -- after every deploy and every restart.
-pub fn deploy_facts(checks: &Findings, registry: &crate::leader::registry::Registry) -> Vec<FactKey> {
+pub(crate) fn deploy_facts(checks: &Findings, registry: &crate::leader::registry::Registry) -> Vec<FactKey> {
     let mut out: Vec<FactKey> = checks.not_loading.iter().map(|n| does_not_load_key(&n.group)).collect();
     out.extend(checks.failing.iter().map(|t| fails_tests_key(&t.scope, &t.id)));
     out.extend(
@@ -1371,7 +1371,7 @@ fn not_running_as_found(running: Option<&str>, desired: &str, failure: Option<&s
 /// in general. Keyed by worker alone, a target the worker has since been pointed away from would hand its start
 /// time to the next one, and a replacement commit would be a failure the instant it was found -- with none of the
 /// startup it is entitled to.
-pub fn not_deploying_key(worker_id: &str, desired: &str) -> FactKey {
+pub(crate) fn not_deploying_key(worker_id: &str, desired: &str) -> FactKey {
     FactKey::new(NOT_DEPLOYING, scoped_subject(worker_id, desired))
 }
 
@@ -2006,7 +2006,7 @@ fn outside_key(reading: &throughput::Reading, side: throughput::Outside) -> Fact
 }
 
 /// The facts [`outside_normal_warnings`] times, as [`currently_active_facts`] gives the rest.
-pub fn outside_normal_facts(
+pub(crate) fn outside_normal_facts(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
     heartbeat_interval: Duration,
@@ -2019,7 +2019,7 @@ pub fn outside_normal_facts(
 
 /// Why each below-normal fact [`outside_normal_facts`] gives began, as (entry, subject, reason) for the fact clock to
 /// keep (`RegistryStore::keep_reasons`).
-pub fn below_reasons(
+pub(crate) fn below_reasons(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
     heartbeat_interval: Duration,
@@ -2036,7 +2036,7 @@ pub fn below_reasons(
 
 /// A source reading fewer rows than it normally does at this time of day, or more: it is reading, and how much is
 /// off. Fewer is a warning, or info once an editor answered what it was (`marks`). More is info.
-pub fn outside_normal_warnings(
+pub(crate) fn outside_normal_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
     starts: &HashMap<FactKey, i64>,
@@ -2107,7 +2107,7 @@ fn answered(answer: &Mark) -> String {
 /// warning, and it names how many of the source's senders are below, and which of them came back since. It ends once
 /// every one is back, and it is info once an editor answered what each one still below was. `back` gives the senders of a
 /// source whose warning began at a time and have since ended it.
-pub fn senders_below_warnings(
+pub(crate) fn senders_below_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
     starts: &HashMap<FactKey, i64>,
@@ -2198,7 +2198,7 @@ fn named(senders: &[&Sender]) -> String {
 
 /// The senders of `group`'s `source` whose below-normal warning began at `since_ms` and has ended, from the fact
 /// clock's history.
-pub fn senders_back(store: &RegistryStore, group: &str, source: &str, since_ms: i64) -> Vec<Sender> {
+pub(crate) fn senders_back(store: &RegistryStore, group: &str, source: &str, since_ms: i64) -> Vec<Sender> {
     store
         .facts_started(SENDER_ROWS_BELOW, since_ms)
         .unwrap_or_else(|e| {
@@ -2250,16 +2250,16 @@ fn off_by(judged: &throughput::Judged, side: throughput::Outside) -> String {
 /// When one warning about a source or destination held, for a chart to mark.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WarningSpan {
-    pub condition: Condition,
-    pub severity: Severity,
-    pub started_millis: i64,
+pub(crate) struct WarningSpan {
+    pub(crate) condition: Condition,
+    pub(crate) severity: Severity,
+    pub(crate) started_millis: i64,
     /// `None` while it still holds.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ended_millis: Option<i64>,
+    pub(crate) ended_millis: Option<i64>,
     /// Why a below-normal warning began, where it kept why.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<throughput::Reason>,
+    pub(crate) reason: Option<throughput::Reason>,
 }
 
 /// The warnings a source's chart marks, by the fact each is kept under.
@@ -2284,7 +2284,7 @@ const DESTINATION_SPANS: &[(&str, Condition, Severity)] = &[
 
 /// Every below-normal warning about `group`'s `source`'s `sender` that held at any time since `since_ms`, oldest
 /// first.
-pub fn sender_spans(
+pub(crate) fn sender_spans(
     store: &RegistryStore,
     group: &str,
     source: &str,
@@ -2310,7 +2310,7 @@ fn reason(span: &FactSpan) -> Option<throughput::Reason> {
 }
 
 /// Every warning about `group`'s source or destination `id` that held at any time since `since_ms`, oldest first.
-pub fn spans(
+pub(crate) fn spans(
     store: &RegistryStore,
     kind: SubjectKind,
     group: &str,
@@ -2747,7 +2747,7 @@ match (failure, running) {
 }
 
 /// The catalog entry name [`worker_not_deploying_its_target`] keeps its start time under.
-pub const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
+pub(crate) const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
 
 /// How long a worker may be behind the commit it found before that is a warning. Longer than the startup budget a
 /// worker gives a runtime, so a deployment that is merely slow is never reported as one that failed.
@@ -2758,7 +2758,7 @@ const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 /// with no entry there carries no start time. `series_store` is the durable registry's series half
 /// (`crate::leader::registry::Registry::series`), and `deployed` is every group the deployed commit holds a subtree
 /// for, with what it runs there (`crate::leader::git::ContentId::key`).
-pub fn derive(
+pub(crate) fn derive(
     snapshot: &[ThreadHealth],
     credentials: &[WorkerCredentialRecord],
     starts: &HashMap<FactKey, i64>,
@@ -2800,7 +2800,7 @@ pub fn derive(
 
 /// The fleet held behind `main`'s head by a rollback. Raised for as long as the hold lasts, because a fleet that does
 /// not take what is deployed after it looks, to anyone who did not do the rollback, like a deploy that failed.
-pub fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
+pub(crate) fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
     let short = super::git::short;
     Warning::new(
         Condition::DeployHeld,
@@ -2823,7 +2823,7 @@ pub fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
 
 /// The fleet does not run the head of the remote the leader follows, and why. Raised until a sync succeeds: a remote
 /// commit the fleet does not run is one a person merged on the host and expects to be running.
-pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
+pub(crate) fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
     Warning::new(
         Condition::RemoteNotFollowed,
         SubjectKind::Leader,
@@ -2837,7 +2837,7 @@ pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning 
 
 /// An alert channel that did not take the last send, and why. Raised until one is taken: until then, whoever the
 /// channel reaches is not told of what it takes.
-pub fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Failing) -> Warning {
+pub(crate) fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Failing) -> Warning {
     Warning::new(
         Condition::AlertChannelFailing,
         SubjectKind::Leader,
@@ -2853,7 +2853,7 @@ pub fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Fai
 }
 
 /// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
-pub fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
+pub(crate) fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
     Warning::new(
         Condition::NewerRelease,
         SubjectKind::Leader,
@@ -2866,11 +2866,11 @@ pub fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warnin
 }
 
 /// A certificate this leader issued: its name, how it is issued, and its newest chain described.
-pub type IssuedChain = (String, crate::leader::store::Issued, Vec<crate::leader::tls::Described>);
+pub(crate) type IssuedChain = (String, crate::leader::store::Issued, Vec<crate::leader::tls::Described>);
 
 /// Why a certificate this leader issued is due for its next version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Due {
+pub(crate) enum Due {
     /// Two thirds of the way through its newest version's life, as an ordered one is, since the time it holds.
     Aged(i64),
     /// Ending at a root other than the one the leader signs under, which a rotation's cutover leaves it doing.
@@ -2880,7 +2880,7 @@ pub enum Due {
 }
 
 /// Whether the certificate whose newest chain is `chain`, described, is due for its next version under `signing`.
-pub fn issued_due(chain: &[crate::leader::tls::Described], signing: &str, now_ms: i64) -> Option<Due> {
+pub(crate) fn issued_due(chain: &[crate::leader::tls::Described], signing: &str, now_ms: i64) -> Option<Due> {
     let (Some(leaf), Some(root)) = (chain.first(), chain.last()) else {
         return Some(Due::Unreadable);
     };
@@ -2901,7 +2901,7 @@ const RENEWAL_GRACE_MILLIS: i64 = 24 * 60 * 60 * 1000;
 /// The certificates this leader issued that it should have renewed and has not, by name and newest chain described.
 /// Only the aged ones: after a cutover every one is due at once and is renewed within the hour, and a failure there
 /// is in the log, as one here is.
-pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, now_ms: i64) -> Vec<Warning> {
+pub(crate) fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, now_ms: i64) -> Vec<Warning> {
     let mut out = Vec::new();
     for (name, _, chain) in issued {
         let Some(Due::Aged(since)) = issued_due(chain, signing, now_ms) else {
@@ -2940,7 +2940,7 @@ pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, no
 const KEY_SUBJECT: &str = "secrets encryption key";
 
 /// The facts the secrets encryption key's warnings start from, so each says how long it has held.
-pub fn encryption_key_facts(standing: &KeyStanding, channels: &[Channel]) -> HashSet<FactKey> {
+pub(crate) fn encryption_key_facts(standing: &KeyStanding, channels: &[Channel]) -> HashSet<FactKey> {
     if standing.broken() {
         return HashSet::from([FactKey::new("secretsKeyUnusable", KEY_SUBJECT)]);
     }
@@ -2955,7 +2955,7 @@ pub fn encryption_key_facts(standing: &KeyStanding, channels: &[Channel]) -> Has
 /// it holds again, each value it cannot open is a warning of its own, which clears when that value is entered again.
 /// A warning rather than a failure, because a running worker still holds what it was given.
 /// `issued` names the certificates this leader issued, which are renewed rather than replaced.
-pub fn encryption_key_warnings(
+pub(crate) fn encryption_key_warnings(
     standing: &KeyStanding,
     channels: &[Channel],
     kept: &std::collections::BTreeMap<String, crate::leader::store::Kept>,
@@ -3056,7 +3056,7 @@ pub(crate) fn sealed_setting_place<'a>(key: &'a str, channels: &[Channel]) -> (C
 }
 
 /// What is wrong with the deployed commit, as warnings: [`derive`]'s catalog takes these beside its own.
-pub fn deploy_checked(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
+pub(crate) fn deploy_checked(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
     let mut out = deploy_does_not_load(checks, starts);
     out.extend(deploy_fails_tests(checks, starts));
     out.extend(deploy_breaks_schemas(checks, starts));

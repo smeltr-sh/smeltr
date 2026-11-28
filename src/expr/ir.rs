@@ -16,8 +16,8 @@ pub struct Ir {
     /// and the runtime allocates a variant column for it.
     ///
     /// A numeric node yields exactly this type at runtime: an `I64` that overflows fails its row and stays `I64`.
-    pub ty: DataType,
-    pub span: Span,
+    pub(crate) ty: DataType,
+    pub(crate) span: Span,
     pub kind: IrKind,
 }
 
@@ -102,14 +102,14 @@ pub enum Layer {
 }
 
 impl Layer {
-    pub fn value(&self) -> &Ir {
+    pub(crate) fn value(&self) -> &Ir {
         match self {
             Layer::Spread(v) | Layer::Key(_, v) => v,
         }
     }
 
     /// A key's name, where it is written in the code.
-    pub fn name(&self) -> Option<&str> {
+    pub(crate) fn name(&self) -> Option<&str> {
         match self {
             Layer::Key(
                 Ir {
@@ -123,7 +123,7 @@ impl Layer {
     }
 
     /// The key, where it is one, then the value.
-    pub fn children(&self) -> impl Iterator<Item = &Ir> {
+    pub(crate) fn children(&self) -> impl Iterator<Item = &Ir> {
         let key = match self {
             Layer::Key(k, _) => Some(k),
             Layer::Spread(_) => None,
@@ -140,7 +140,7 @@ impl Layer {
 }
 
 /// `kind` with `f` applied to each direct child.
-pub fn map_children(kind: IrKind, f: &mut impl FnMut(Ir) -> Ir) -> IrKind {
+pub(crate) fn map_children(kind: IrKind, f: &mut impl FnMut(Ir) -> Ir) -> IrKind {
     let mut b = |x: Box<Ir>| Box::new(f(*x));
     match kind {
         IrKind::Literal(_) | IrKind::Field(_) | IrKind::Regex(_) => kind,

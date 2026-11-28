@@ -96,7 +96,7 @@ pub enum Scalar {
 }
 
 impl Scalar {
-    pub fn data_type(&self) -> DataType {
+    pub(crate) fn data_type(&self) -> DataType {
         match self {
             Scalar::Bool(_) => DataType::Bool,
             Scalar::I64(_) => DataType::I64,
@@ -156,7 +156,7 @@ pub struct BitsMut<'a> {
 #[derive(Debug)]
 pub struct VarLen<'a> {
     pub offsets: &'a [u32],
-    pub data: &'a [u8],
+    pub(crate) data: &'a [u8],
     pub validity: &'a Validity,
     pub ascii: bool,
 }
@@ -170,13 +170,13 @@ impl<'a> VarLen<'a> {
     }
 
     #[inline]
-    pub fn row_len(&self, row: usize) -> usize {
+    pub(crate) fn row_len(&self, row: usize) -> usize {
         (self.offsets[row + 1] - self.offsets[row]) as usize
     }
 
     /// Total bytes across all rows, from the offsets alone.
     #[inline]
-    pub fn total_bytes(&self) -> usize {
+    pub(crate) fn total_bytes(&self) -> usize {
         let n = self.offsets.len();
         if n == 0 {
             0
@@ -193,7 +193,7 @@ pub(crate) struct StrRows<'a>(VarLen<'a>);
 
 impl<'a> StrRows<'a> {
     #[inline]
-    pub fn get(&self, row: usize) -> &'a str {
+    pub(crate) fn get(&self, row: usize) -> &'a str {
         // SAFETY: only a sealed `Str` column makes a `StrRows`. Sealing one checked that its whole buffer is UTF-8 and
         // that each row starts on a character boundary, so each row is UTF-8 too.
         unsafe { std::str::from_utf8_unchecked(self.0.get(row)) }
@@ -201,7 +201,7 @@ impl<'a> StrRows<'a> {
 
     /// The rows as bytes, with their validity.
     #[inline]
-    pub fn rows(&self) -> &VarLen<'a> {
+    pub(crate) fn rows(&self) -> &VarLen<'a> {
         &self.0
     }
 }
@@ -229,7 +229,7 @@ impl<'a> VariantRows<'a> {
 #[derive(Debug)]
 pub(crate) struct SealedRows<'a> {
     var_type: VarType,
-    pub rows: VarLen<'a>,
+    pub(crate) rows: VarLen<'a>,
 }
 
 #[derive(Debug)]
@@ -268,7 +268,7 @@ impl Column {
     }
 
     /// `len` rows of `value` as buffers: what a constant column becomes when a kernel asks for rows.
-    pub fn filled(pool: &mut BufferPool, value: &Scalar, len: usize) -> Column {
+    pub(crate) fn filled(pool: &mut BufferPool, value: &Scalar, len: usize) -> Column {
         match value {
             Scalar::I64(x) => {
                 let mut c = Column::alloc(pool, &DataType::I64, len);
@@ -334,7 +334,7 @@ impl Column {
     /// Every accessor refuses an unexpanded constant, the way it refuses an `Empty`: a reader either uses
     /// `constant_value` or calls this first. That is what keeps the rows pooled. Built from a pool of its own they
     /// would be a fresh allocation, zeroed, where `take` hands back a recycled buffer for nothing.
-    pub fn expand(&mut self, pool: &mut BufferPool) {
+    pub(crate) fn expand(&mut self, pool: &mut BufferPool) {
         let Storage::Constant(value) = &self.storage else {
             return;
         };
@@ -466,7 +466,7 @@ impl Column {
 
     /// `None` for a column that carries no bitmap: `Empty` (every row null), `Struct` (each field carries its own),
     /// and an unexpanded `Constant` (every row valid). `has_nulls` and `is_valid` answer for all three without one.
-    pub fn validity(&self) -> Option<&Validity> {
+    pub(crate) fn validity(&self) -> Option<&Validity> {
         match &self.storage {
             Storage::Empty(_) | Storage::Struct(..) | Storage::Constant(_) => None,
             Storage::Fixed { validity, .. }
@@ -645,7 +645,7 @@ impl Column {
 
     /// Adds what each row holds to its entry of `sizes`, one per row: a variable-length value its bytes, an array its
     /// items', an object its fields' and its unclaimed fields', any other value eight.
-    pub fn add_row_sizes(&self, sizes: &mut [u32]) {
+    pub(crate) fn add_row_sizes(&self, sizes: &mut [u32]) {
         fn spans(offsets: &Buffer, len: usize) -> std::slice::Windows<'_, u32> {
             offsets.as_slice::<u32>()[..len + 1].windows(2)
         }
@@ -686,7 +686,7 @@ impl Column {
     }
 
     /// The rows of any variable-length column, whatever its bytes mean. For code that moves rows and reads none.
-    pub fn varlen(&self) -> Result<VarLen<'_>, TypeError> {
+    pub(crate) fn varlen(&self) -> Result<VarLen<'_>, TypeError> {
         match &self.storage {
             Storage::VarLen {
                 offsets,
@@ -731,7 +731,7 @@ impl Column {
 
     /// A struct's unclaimed fields: the keys a declared object met that it does not name, a variant object per row.
     /// `None` where there are none, and for any other column.
-    pub fn unclaimed_fields(&self) -> Option<&Column> {
+    pub(crate) fn unclaimed_fields(&self) -> Option<&Column> {
         match &self.storage {
             Storage::Struct(_, unclaimed_fields) => unclaimed_fields.as_deref(),
             _ => None,
@@ -739,7 +739,7 @@ impl Column {
     }
 
     /// Build a struct column from its field columns and its unclaimed fields, each `len` rows.
-    pub fn struct_with_unclaimed_fields(
+    pub(crate) fn struct_with_unclaimed_fields(
         fields: Vec<(String, Column)>,
         unclaimed_fields: Option<Column>,
         len: usize,
@@ -822,7 +822,7 @@ impl Drop for Column {
 impl Column {
     /// Deep copy into pool-backed buffers. What `x = y` needs: an owned column to `put` where the evaluator only has a
     /// borrow.
-    pub fn deep_copy(&self, pool: &mut BufferPool) -> Column {
+    pub(crate) fn deep_copy(&self, pool: &mut BufferPool) -> Column {
         match &self.storage {
             Storage::Empty(t) => Column::empty(t.clone(), self.len),
             Storage::Constant(value) => Column::constant(value.clone(), self.len),
@@ -909,7 +909,7 @@ impl Column {
 
     /// Row selection: a new column of `indices.len()` rows, row `i` copied from row `indices[i]`. Every index must be
     /// in bounds. The building block of `Batch::gather`, and handles every storage variant.
-    pub fn gather(&self, pool: &mut BufferPool, indices: &[u32]) -> Column {
+    pub(crate) fn gather(&self, pool: &mut BufferPool, indices: &[u32]) -> Column {
         let n = indices.len();
         match &self.storage {
             Storage::Empty(t) => Column::empty(t.clone(), n),

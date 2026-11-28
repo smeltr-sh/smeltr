@@ -23,7 +23,7 @@ const DEFAULT_LIFETIME_HOURS: i64 = 24;
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MintRequest {
+pub(crate) struct MintRequest {
     /// The group the command will name. Pre-fills it and binds nothing: a worker names its own group.
     #[serde(default)]
     group_id: String,
@@ -38,7 +38,7 @@ pub struct MintRequest {
 }
 
 #[derive(Default, serde::Serialize)]
-pub struct Minted {
+pub(crate) struct Minted {
     code: Option<MintedEnrollmentCode>,
 }
 
@@ -61,7 +61,7 @@ struct MintedEnrollmentCode {
 /// `actor` is what the gate attached. It is optional because the router this handler sits in is composed without a
 /// gate by tests and by anything embedding the leader; in a served process the gate always ran, and there is no
 /// route to here that skips it.
-pub async fn mint(
+pub(crate) async fn mint(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<MintRequest>,
@@ -236,7 +236,7 @@ pub enum Presenting {
 
 /// What an enrollment code is worth against what this leader presents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Standing {
+pub(crate) enum Standing {
     /// Brings a worker in, now and after any open rotation.
     Good,
     /// Brings a worker in until the cutover, which retires the root it names.
@@ -278,7 +278,7 @@ impl Presenting {
     }
 
     /// What `fingerprint`, as this leader wrote it down when it minted the enrollment code, is worth now.
-    pub fn standing_of(&self, fingerprint: &str) -> Standing {
+    pub(crate) fn standing_of(&self, fingerprint: &str) -> Standing {
         let Some(may) = self.may_have_named() else {
             // Not the enrollment code's fault, and not something to send an operator to replace an enrollment code
             // over.
@@ -306,7 +306,7 @@ impl Presenting {
     /// `None` where this leader cannot say. That is a refusal for the caller to make, not permission: an enrollment
     /// code let in against no check at all is the whole hole this closes, and a worker at a first boot racing a leader
     /// still coming up asks again in a moment and gets a real answer.
-    pub fn may_have_named(&self) -> Option<Vec<&str>> {
+    pub(crate) fn may_have_named(&self) -> Option<Vec<&str>> {
         match self {
             // The root being moved to as well: ordinary minting is refused while a rotation is open, so nothing names
             // it -- except the enrollment code this leader mints for the worker inside its own process, which has to
@@ -350,12 +350,12 @@ impl Presenting {
     /// Whether this leader may withdraw an enrollment code on its own account. Only where the root it measures against
     /// is one it presents itself: between certificates, or holding an operator's, it may be mid-migration, and a
     /// withdrawal is not something an operator can undo.
-    pub fn may_withdraw(&self) -> bool {
+    pub(crate) fn may_withdraw(&self) -> bool {
         matches!(self, Presenting::Own { .. })
     }
 
     /// Whether a rotation is open, which is the only time an enrollment code can be [`Standing::UntilCutover`].
-    pub fn rotating(&self) -> bool {
+    pub(crate) fn rotating(&self) -> bool {
         matches!(self, Presenting::Own { signing, coming } if signing != coming)
     }
 }
@@ -398,7 +398,7 @@ fn authority_of(state: &AppState) -> Result<(Authority, Option<i64>), String> {
 /// window to spend.
 #[derive(Debug, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum NamesAuthority {
+pub(crate) enum NamesAuthority {
     /// The one this leader serves under, and will still serve under when any open rotation finishes.
     Served,
     /// The one it is rotating away from. This enrollment code brings a worker in until the cutover, which withdraws it.
@@ -409,7 +409,7 @@ pub enum NamesAuthority {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EnrollmentCodeDto {
+pub(crate) struct EnrollmentCodeDto {
     id: String,
     group_id: String,
     /// Who minted it, by the name they sign in with. An account id names nobody to the person reading the page.
@@ -431,12 +431,12 @@ pub struct EnrollmentCodeDto {
 /// that cannot read its enrollment code table are different answers, and a page handed a bare array cannot tell them
 /// apart.
 #[derive(Default, serde::Serialize)]
-pub struct EnrollmentCodes {
+pub(crate) struct EnrollmentCodes {
     codes: Vec<EnrollmentCodeDto>,
 }
 
 /// `GET /api/enrollment-codes`: what is outstanding, and what brought a worker in.
-pub async fn list(State(state): State<AppState>) -> Envelope<EnrollmentCodes> {
+pub(crate) async fn list(State(state): State<AppState>) -> Envelope<EnrollmentCodes> {
     let presenting = Presenting::read(&tls::dir_of(&state.data_dir));
     let now_ms = warnings::now_millis();
     let listed = match run_store(state.store, move |s| {
@@ -568,7 +568,7 @@ pub async fn withdraw_off_authority(state: &AppState, actor: &Actor) {
 }
 
 /// `DELETE /api/enrollment-codes/:id`: stop it bringing in anybody else.
-pub async fn withdraw(
+pub(crate) async fn withdraw(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path(id): Path<String>,

@@ -25,11 +25,11 @@ use crate::plan::topology::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Part {
     /// What the warning calls it, naming its owner.
-    pub name: String,
+    pub(crate) name: String,
     /// What it is, the same for every owner: the `part` label of `smeltr_memory_part_bytes`.
-    pub part: &'static str,
-    pub owner: Owner,
-    pub bytes: u64,
+    pub(crate) part: &'static str,
+    pub(crate) owner: Owner,
+    pub(crate) bytes: u64,
 }
 
 /// Whose a part is.
@@ -228,14 +228,14 @@ pub const COLUMNAR_BYTES_PER_THREAD: usize = 128 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Fit {
     /// The columnar budget.
-    pub columnar: usize,
+    pub(crate) columnar: usize,
     /// What the destination queues the bundle leaves unset may borrow above their reserves, together
     /// (`egress::QueuePool`). 0 when there are none.
-    pub pool: usize,
+    pub(crate) pool: usize,
     /// The most raw bytes one batch holds. A lane holds its batches, and a destination queue left unset reserves one.
-    pub batch_bytes: usize,
+    pub(crate) batch_bytes: usize,
     /// What the receivers may hold above their reserves, together (`io::receiver::Holdings`). 0 when there are none.
-    pub receivers: usize,
+    pub(crate) receivers: usize,
 }
 
 /// The least a batch may be cut to when memory is short: below it the work per batch outweighs the batch.

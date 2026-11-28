@@ -29,7 +29,7 @@ const MAX_HELD_BYTES: usize = 16 * 1024 * 1024;
 
 /// A table's `_delta_log` in its store. Every call is bounded by `stall_after`, so a store that goes quiet is an error.
 #[derive(Clone, Debug)]
-pub struct Log {
+pub(crate) struct Log {
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
     stall_after: Duration,
@@ -41,17 +41,17 @@ pub struct Log {
 
 /// One entry of the log as a listing gives it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Entry {
+pub(crate) struct Entry {
     /// Its name under `_delta_log/`.
     pub name: String,
-    pub size: u64,
+    pub(crate) size: u64,
     /// Milliseconds since the epoch.
-    pub modified: i64,
+    pub(crate) modified: i64,
 }
 
 impl Log {
     /// The log of the table whose root is `table`, a key in `store`: empty for the bucket's root.
-    pub fn new(
+    pub(crate) fn new(
         store: Arc<dyn ObjectStore>,
         runtime: Arc<tokio::runtime::Runtime>,
         stall_after: Duration,
@@ -72,18 +72,18 @@ impl Log {
     }
 
     /// Name the destination as its author did in the log's lines.
-    pub fn named(mut self, subject: &str) -> Log {
+    pub(crate) fn named(mut self, subject: &str) -> Log {
         self.subject = subject.to_string();
         self
     }
 
     /// The destination as its author named it.
-    pub fn subject(&self) -> &str {
+    pub(crate) fn subject(&self) -> &str {
         &self.subject
     }
 
     /// How long a call may take.
-    pub fn stall_after(&self) -> Duration {
+    pub(crate) fn stall_after(&self) -> Duration {
         self.stall_after
     }
 
@@ -92,7 +92,7 @@ impl Log {
     }
 
     /// The object `name`, whole; None when there is none. Err when it is larger than a JSON object of the log may be.
-    pub fn get(&self, name: &str) -> Result<Option<Bytes>, String> {
+    pub(crate) fn get(&self, name: &str) -> Result<Option<Bytes>, String> {
         let path = self.path(name)?;
         let store = self.store.clone();
         let got = wait(&self.runtime, self.stall_after, async move {
@@ -118,7 +118,7 @@ impl Log {
 
     /// Calls `each` on every line of `name`, read as it streams in, so a commit of any size is read in the memory of
     /// its longest line. Ok(false) when there is no such object.
-    pub fn lines(&self, name: &str, mut each: impl FnMut(&str) -> Result<(), String>) -> Result<bool, String> {
+    pub(crate) fn lines(&self, name: &str, mut each: impl FnMut(&str) -> Result<(), String>) -> Result<bool, String> {
         let path = self.path(name)?;
         let store = self.store.clone();
         let reading = |e: String| format!("reading _delta_log/{name}: {e}");
@@ -162,14 +162,14 @@ impl Log {
     }
 
     /// Bytes `range` of `name`.
-    pub fn range(&self, name: &str, range: std::ops::Range<u64>) -> Result<Bytes, String> {
+    pub(crate) fn range(&self, name: &str, range: std::ops::Range<u64>) -> Result<Bytes, String> {
         let path = self.path(name)?;
         wait(&self.runtime, self.stall_after, self.store.get_range(&path, range))
             .map_err(|e| format!("reading _delta_log/{name}: {e}"))
     }
 
     /// Byte ranges of `name`, fetched together.
-    pub fn ranges(&self, name: &str, ranges: &[std::ops::Range<u64>]) -> Result<Vec<Bytes>, String> {
+    pub(crate) fn ranges(&self, name: &str, ranges: &[std::ops::Range<u64>]) -> Result<Vec<Bytes>, String> {
         let path = self.path(name)?;
         wait(&self.runtime, self.stall_after, self.store.get_ranges(&path, ranges))
             .map_err(|e| format!("reading _delta_log/{name}: {e}"))
@@ -177,7 +177,7 @@ impl Log {
 
     /// Writes `name` only where there is none. Ok(false) when there is one; Err when the answer is lost and it may or
     /// may not have been written.
-    pub fn create(&self, name: &str, bytes: Vec<u8>) -> Result<bool, String> {
+    pub(crate) fn create(&self, name: &str, bytes: Vec<u8>) -> Result<bool, String> {
         let path = self.path(name)?;
         let put = self
             .store
@@ -195,7 +195,7 @@ impl Log {
     }
 
     /// Writes `name`, replacing what is there.
-    pub fn put(&self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
+    pub(crate) fn put(&self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
         let path = self.path(name)?;
         wait(
             &self.runtime,
@@ -221,7 +221,7 @@ impl Log {
         )
     }
 
-    pub fn delete(&self, name: &str) -> Result<(), String> {
+    pub(crate) fn delete(&self, name: &str) -> Result<(), String> {
         let path = self.path(name)?;
         wait(&self.runtime, self.stall_after, async {
             match self.store.delete(&path).await {
@@ -233,7 +233,7 @@ impl Log {
     }
 
     /// The log's entries whose names sort after `after`, in name order, until `more` says to stop.
-    pub fn list(&self, after: Option<&str>, mut more: impl FnMut(Entry) -> bool) -> Result<(), String> {
+    pub(crate) fn list(&self, after: Option<&str>, mut more: impl FnMut(Entry) -> bool) -> Result<(), String> {
         let base = self.dir.clone();
         let prefix = Path::parse(&base).map_err(|e| format!("{base} is no path: {e}"))?;
         let mut stream = match after {
@@ -280,13 +280,13 @@ impl Log {
 }
 
 /// The name of commit `version`.
-pub fn commit_name(version: i64) -> String {
+pub(crate) fn commit_name(version: i64) -> String {
     format!("{version:020}.json")
 }
 
 /// What a name under `_delta_log/` is.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Name {
+pub(crate) enum Name {
     Commit(i64),
     /// A checkpoint in one file: `n.checkpoint.parquet`, or V2's `n.checkpoint.<uuid>.json|parquet`.
     Checkpoint(i64),
@@ -297,7 +297,7 @@ pub enum Name {
 }
 
 impl Name {
-    pub fn of(name: &str) -> Name {
+    pub(crate) fn of(name: &str) -> Name {
         let Some((digits, rest)) = name.split_once('.') else {
             return Name::Other;
         };
@@ -316,7 +316,7 @@ impl Name {
         }
     }
 
-    pub fn version(&self) -> Option<i64> {
+    pub(crate) fn version(&self) -> Option<i64> {
         match self {
             Name::Commit(v) | Name::Checkpoint(v) | Name::Part(v) => Some(*v),
             Name::Other => None,
@@ -327,43 +327,43 @@ impl Name {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Protocol {
-    pub min_reader_version: i32,
-    pub min_writer_version: i32,
+    pub(crate) min_reader_version: i32,
+    pub(crate) min_writer_version: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reader_features: Option<Vec<String>>,
+    pub(crate) reader_features: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub writer_features: Option<Vec<String>>,
+    pub(crate) writer_features: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Metadata {
-    pub id: String,
+    pub(crate) id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub(crate) name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub format: Format,
-    pub schema_string: String,
+    pub(crate) description: Option<String>,
+    pub(crate) format: Format,
+    pub(crate) schema_string: String,
     #[serde(default)]
-    pub partition_columns: Vec<String>,
+    pub(crate) partition_columns: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_time: Option<i64>,
+    pub(crate) created_time: Option<i64>,
     #[serde(default)]
-    pub configuration: BTreeMap<String, String>,
+    pub(crate) configuration: BTreeMap<String, String>,
     /// Fields this writer does not know, carried as they are.
     #[serde(flatten)]
-    pub rest: Map<String, Value>,
+    pub(crate) rest: Map<String, Value>,
 }
 
 impl Metadata {
     /// The table property `key`.
-    pub fn property(&self, key: &str) -> Option<&str> {
+    pub(crate) fn property(&self, key: &str) -> Option<&str> {
         self.configuration.get(key).map(String::as_str)
     }
 
     /// The true-or-false table property `key`; None when it is unset or neither.
-    pub fn flag(&self, key: &str) -> Option<bool> {
+    pub(crate) fn flag(&self, key: &str) -> Option<bool> {
         let value = self.property(key)?.trim();
         (value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false"))
             .then(|| value.eq_ignore_ascii_case("true"))
@@ -371,56 +371,56 @@ impl Metadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Format {
-    pub provider: String,
+pub(crate) struct Format {
+    pub(crate) provider: String,
     #[serde(default)]
-    pub options: BTreeMap<String, String>,
+    pub(crate) options: BTreeMap<String, String>,
 }
 
 /// An application's last transaction: what this writer counts its commits with.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Txn {
-    pub app_id: String,
-    pub version: i64,
+    pub(crate) app_id: String,
+    pub(crate) version: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_updated: Option<i64>,
+    pub(crate) last_updated: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DomainMetadata {
-    pub domain: String,
-    pub configuration: String,
-    pub removed: bool,
+    pub(crate) domain: String,
+    pub(crate) configuration: String,
+    pub(crate) removed: bool,
 }
 
 /// A checkpoint's file of file actions, named under `_delta_log/_sidecars/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sidecar {
-    pub path: String,
-    pub size_in_bytes: i64,
-    pub modification_time: i64,
+    pub(crate) path: String,
+    pub(crate) size_in_bytes: i64,
+    pub(crate) modification_time: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tags: Option<BTreeMap<String, String>>,
+    pub(crate) tags: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointMetadata {
-    pub version: i64,
+    pub(crate) version: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tags: Option<BTreeMap<String, String>>,
+    pub(crate) tags: Option<BTreeMap<String, String>>,
 }
 
 /// An `add` or a `remove`, as the log has it.
 #[derive(Clone, Debug)]
 pub struct FileAction {
-    pub add: bool,
+    pub(crate) add: bool,
     /// What makes it the same file as another: its path and its deletion vector's id.
-    pub key: String,
+    pub(crate) key: String,
     /// When a remove's file was removed, in milliseconds since the epoch.
-    pub deleted: Option<i64>,
-    pub json: Box<RawValue>,
+    pub(crate) deleted: Option<i64>,
+    pub(crate) json: Box<RawValue>,
 }
 
 impl FileAction {
@@ -447,15 +447,15 @@ impl FileAction {
 /// A file action's deletion vector, as far as its id.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeletionVector {
-    pub storage_type: String,
-    pub path_or_inline_dv: String,
+pub(crate) struct DeletionVector {
+    pub(crate) storage_type: String,
+    pub(crate) path_or_inline_dv: String,
     #[serde(default)]
-    pub offset: Option<i32>,
+    pub(crate) offset: Option<i32>,
 }
 
 /// What a file action names: two actions of one key are of one file, and the later wins.
-pub fn file_key(path: &str, dv: Option<&DeletionVector>) -> String {
+pub(crate) fn file_key(path: &str, dv: Option<&DeletionVector>) -> String {
     match dv {
         None => path.to_string(),
         Some(dv) => match dv.offset {
@@ -484,11 +484,11 @@ pub enum Action {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitInfo {
-    pub in_commit_timestamp: Option<i64>,
+    pub(crate) in_commit_timestamp: Option<i64>,
 }
 
 impl Action {
-    pub fn parse(line: &str) -> Result<Action, String> {
+    pub(crate) fn parse(line: &str) -> Result<Action, String> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Line {
@@ -528,7 +528,7 @@ impl Action {
 }
 
 /// `value` as one line of the log: `{"<key>": value}`.
-pub fn line(key: &str, value: &impl Serialize) -> String {
+pub(crate) fn line(key: &str, value: &impl Serialize) -> String {
     let mut object = Map::new();
     object.insert(
         key.to_string(),
@@ -539,27 +539,27 @@ pub fn line(key: &str, value: &impl Serialize) -> String {
 
 /// The table's last checkpoint.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Checkpoint {
-    pub version: i64,
+pub(crate) struct Checkpoint {
+    pub(crate) version: i64,
     /// Its files under `_delta_log/`: the one, or a multi-part checkpoint's parts in order.
-    pub files: Vec<Entry>,
+    pub(crate) files: Vec<Entry>,
     /// A V2 checkpoint's sidecars, which hold its file actions.
-    pub sidecars: Vec<Sidecar>,
+    pub(crate) sidecars: Vec<Sidecar>,
 }
 
 /// The file actions of the commits since the last checkpoint, in commit order.
 #[derive(Clone, Debug, Default)]
-pub struct Since {
+pub(crate) struct Since {
     /// Every action, unless `spilled`.
-    pub actions: Vec<FileAction>,
+    pub(crate) actions: Vec<FileAction>,
     held_bytes: usize,
     /// They were too many to hold, and the next checkpoint reads them from the commits again.
-    pub spilled: bool,
+    pub(crate) spilled: bool,
     /// How many there are.
-    pub count: usize,
+    pub(crate) count: usize,
     /// For each key a commit not this writer's acted on, the place in order of its last action. Every earlier action
     /// on the key, here or in a checkpoint, has lost to that one.
-    pub touched: HashMap<String, usize>,
+    pub(crate) touched: HashMap<String, usize>,
 }
 
 impl Since {
@@ -587,27 +587,27 @@ impl Since {
 
 /// The table at one version, but for its file list.
 #[derive(Clone, Debug)]
-pub struct Snapshot {
-    pub version: i64,
-    pub protocol: Protocol,
-    pub metadata: Metadata,
+pub(crate) struct Snapshot {
+    pub(crate) version: i64,
+    pub(crate) protocol: Protocol,
+    pub(crate) metadata: Metadata,
     /// By application.
-    pub txns: BTreeMap<String, Txn>,
+    pub(crate) txns: BTreeMap<String, Txn>,
     /// By domain, removed ones left out.
-    pub domains: BTreeMap<String, DomainMetadata>,
-    pub checkpoint: Option<Checkpoint>,
-    pub since: Since,
+    pub(crate) domains: BTreeMap<String, DomainMetadata>,
+    pub(crate) checkpoint: Option<Checkpoint>,
+    pub(crate) since: Since,
     /// The application this writer's commits carry.
-    pub app_id: String,
+    pub(crate) app_id: String,
     /// The `inCommitTimestamp` of the commit at `version`; None when it has none, or when the snapshot was read
     /// from a checkpoint at `version` of a table that keeps none.
-    pub in_commit_timestamp: Option<i64>,
+    pub(crate) in_commit_timestamp: Option<i64>,
 }
 
 impl Snapshot {
     /// The configuration of the domain `name`; None when the table has no such domain. Err when it does not read as
     /// a `T`.
-    pub fn domain<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
+    pub(crate) fn domain<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
         let Some(domain) = self.domains.get(name) else {
             return Ok(None);
         };
@@ -618,7 +618,7 @@ impl Snapshot {
 
     /// The table as the log has it now, its commits read from the last checkpoint on; None when it has no commit.
     /// Commits carrying `app_id`'s transaction are taken as this writer's.
-    pub fn load(log: &Log, app_id: &str) -> Result<Option<Snapshot>, String> {
+    pub(crate) fn load(log: &Log, app_id: &str) -> Result<Option<Snapshot>, String> {
         let hint = last_checkpoint(log);
         let mut found = latest(log, hint)?;
         if hint.is_some() && found.as_ref().is_none_or(|f| f.checkpoint.is_none()) {
@@ -685,7 +685,7 @@ impl Snapshot {
     }
 
     /// Reads the commits after this version until there are none. Gives how many there were.
-    pub fn advance(&mut self, log: &Log) -> Result<usize, String> {
+    pub(crate) fn advance(&mut self, log: &Log) -> Result<usize, String> {
         let mut read = 0;
         while self.read_next(log)? {
             read += 1;
@@ -726,7 +726,7 @@ impl Snapshot {
     }
 
     /// Takes this writer's own commit of `actions` as the table's next version.
-    pub fn committed(&mut self, actions: Vec<Action>) {
+    pub(crate) fn committed(&mut self, actions: Vec<Action>) {
         let mut files = Vec::new();
         self.in_commit_timestamp = None;
         for action in actions {
@@ -752,13 +752,13 @@ impl Snapshot {
     }
 
     /// Whether each commit carries an `inCommitTimestamp`.
-    pub fn in_commit_timestamps(&self) -> bool {
+    pub(crate) fn in_commit_timestamps(&self) -> bool {
         self.metadata.flag("delta.enableInCommitTimestamps") == Some(true)
     }
 
     /// The `commitInfo` of the commit after this version, attempted at `now`. Where the table keeps in-commit
     /// timestamps it carries one, later than this commit's; it is the commit's first action.
-    pub fn commit_info(&self, now: i64, operation: &str) -> Value {
+    pub(crate) fn commit_info(&self, now: i64, operation: &str) -> Value {
         let mut info = json!({"timestamp": now, "operation": operation, "engineInfo": "smeltr"});
         if self.in_commit_timestamps() {
             let after = self.in_commit_timestamp.map_or(i64::MIN, |t| t.saturating_add(1));
@@ -768,12 +768,12 @@ impl Snapshot {
     }
 
     /// This writer's last transaction the table holds.
-    pub fn our_version(&self) -> Option<i64> {
+    pub(crate) fn our_version(&self) -> Option<i64> {
         self.txns.get(&self.app_id).map(|t| t.version)
     }
 
     /// Takes `checkpoint`, written at this version, as the last.
-    pub fn checkpointed(&mut self, checkpoint: Checkpoint) {
+    pub(crate) fn checkpointed(&mut self, checkpoint: Checkpoint) {
         self.checkpoint = Some(checkpoint);
         self.since = Since::default();
     }
@@ -781,7 +781,7 @@ impl Snapshot {
     /// Reads the table again from the newest checkpoint in the log before this version, when another writer wrote
     /// one after the last this snapshot holds, so the next checkpoint is written from it and not from an older one.
     /// Gives whether this version is still to be checkpointed: false when the log has a checkpoint at it or after.
-    pub fn rebase(&mut self, log: &Log) -> Result<bool, String> {
+    pub(crate) fn rebase(&mut self, log: &Log) -> Result<bool, String> {
         let after = self.checkpoint.as_ref().map(|c| c.version);
         let Some((version, files)) = newest(checkpoints(log, after, self.version)?) else {
             return Ok(true);
@@ -806,7 +806,7 @@ impl Snapshot {
 }
 
 /// The log's checkpoints after version `after`, through the first after `through`, in version order.
-pub fn checkpoints(log: &Log, after: Option<i64>, through: i64) -> Result<Vec<(Name, Entry)>, String> {
+pub(crate) fn checkpoints(log: &Log, after: Option<i64>, through: i64) -> Result<Vec<(Name, Entry)>, String> {
     let mut found = Vec::new();
     // The offset is exclusive, and `n` sorts before every name of version n.
     let offset = after.map(|v| format!("{v:020}"));
@@ -894,7 +894,7 @@ impl State {
 }
 
 /// The version `_last_checkpoint` names, if it can be read. It is a hint: the listing is the truth.
-pub fn last_checkpoint(log: &Log) -> Option<i64> {
+pub(crate) fn last_checkpoint(log: &Log) -> Option<i64> {
     #[derive(Deserialize)]
     struct Last {
         version: i64,
@@ -1013,12 +1013,12 @@ fn read_checkpoint(log: &Log, version: i64, files: Vec<Entry>, state: &mut State
 }
 
 /// Milliseconds since the epoch.
-pub fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, millis)
 }
 
 /// A random UUID, version 4, as text.
-pub fn uuid() -> String {
+pub(crate) fn uuid() -> String {
     let mut b = crate::crypto::random_bytes(16);
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;

@@ -160,7 +160,7 @@ fn is_stale_commit(e: &KafkaError) -> bool {
 
 /// The pattern `topic` names, when it names one: a topic that starts with `^` reads every topic of the cluster whose
 /// whole name matches it, as the `regex` crate reads it.
-pub fn topic_pattern(topic: &str) -> Option<Result<regex::Regex, regex::Error>> {
+pub(crate) fn topic_pattern(topic: &str) -> Option<Result<regex::Regex, regex::Error>> {
     let pattern = topic.strip_prefix('^')?;
     Some(regex::Regex::new(&format!("^(?:{pattern})$")))
 }
@@ -206,7 +206,7 @@ pub fn total_partitions(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Op
 /// `credentials` is not checked here: its values are not knowable at save time, and probing with a placeholder
 /// would refuse numeric and enum properties whose real value is fine. A typo there surfaces when the client is built
 /// (`apply_props`).
-pub fn validate_literal_props(props: &KafkaProps, what: &str, errors: &mut Vec<String>) {
+pub(crate) fn validate_literal_props(props: &KafkaProps, what: &str, errors: &mut Vec<String>) {
     for (key, value) in &props.literal {
         let mut probe = ClientConfig::new();
         probe.set(key, value);
@@ -229,7 +229,7 @@ pub fn validate_literal_props(props: &KafkaProps, what: &str, errors: &mut Vec<S
 
 /// The SASL mechanisms this build can select, in the order a form offers them. Every librdkafka build carries the
 /// first four; GSSAPI needs a provider linked at build time (`supports_gssapi`).
-pub fn available_sasl_mechanisms() -> Vec<&'static str> {
+pub(crate) fn available_sasl_mechanisms() -> Vec<&'static str> {
     let mut mechanisms = vec!["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "OAUTHBEARER"];
     if supports_gssapi() {
         mechanisms.push("GSSAPI");

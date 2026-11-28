@@ -7,44 +7,44 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "camelCase")]
 pub struct HttpDestinationDto {
     /// The whole address each request is POSTed to.
-    pub url: String,
+    pub(crate) url: String,
     /// Zone -> the address a worker in that zone sends to instead of `url`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub zone_urls: BTreeMap<String, String>,
+    pub(crate) zone_urls: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "RequestBodyDto::is_default")]
-    pub body: RequestBodyDto,
+    pub(crate) body: RequestBodyDto,
     /// `"json"` (default), `"text"` or `"bytes"`; bytes are not a JSON array's element.
     #[serde(default, skip_serializing_if = "FormatDto::is_default")]
-    pub format: FormatDto,
+    pub(crate) format: FormatDto,
     /// The field `"text"` or `"bytes"` writes. Absent is `_raw` for `"text"`, `__source.bytes` for `"bytes"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
+    pub(crate) field: Option<String>,
     /// `"none"` (default) or `"gzip"`.
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-    pub compression: CompressionDto,
+    pub(crate) compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    pub(crate) compression_level: Option<u8>,
     /// Header name -> its value, committed to the config repository.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers: BTreeMap<String, String>,
+    pub(crate) headers: BTreeMap<String, String>,
     /// Header name -> the credential holding its value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub credentials: BTreeMap<String, SecretRefDto>,
+    pub(crate) credentials: BTreeMap<String, SecretRefDto>,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    pub(crate) tls: TlsDto,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "HttpRequestBytes::is_default")]
-    pub max_request_bytes: HttpRequestBytes,
+    pub(crate) max_request_bytes: HttpRequestBytes,
     /// Unset means the default, or one whole request if that is larger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    pub(crate) buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    pub(crate) unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for HttpDestinationDto {

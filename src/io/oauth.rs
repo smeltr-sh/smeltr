@@ -32,7 +32,7 @@ const ASSERTION_LIFE: u64 = 300;
 pub(crate) const JWT_BEARER: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 
 /// The private key an app proves itself with.
-pub struct AppKey {
+pub(crate) struct AppKey {
     key: RsaKeyPair,
     /// Which of the app's keys this is, when the service holds several.
     kid: Option<String>,
@@ -40,7 +40,7 @@ pub struct AppKey {
 
 impl AppKey {
     /// An RSA key written as PEM PKCS#8, `-----BEGIN PRIVATE KEY-----`, as Okta and `openssl genpkey` write one.
-    pub fn from_pem(pem: &str, kid: Option<String>) -> Result<AppKey, String> {
+    pub(crate) fn from_pem(pem: &str, kid: Option<String>) -> Result<AppKey, String> {
         use rustls::pki_types::PrivateKeyDer;
         use rustls::pki_types::pem::PemObject;
         let key = match PrivateKeyDer::from_pem_slice(pem.trim().as_bytes()) {
@@ -60,7 +60,7 @@ impl AppKey {
 }
 
 /// An app's sign-in at one token endpoint, and the token it holds.
-pub struct SignIn {
+pub(crate) struct SignIn {
     token_url: String,
     client_id: String,
     scope: Option<String>,
@@ -90,7 +90,7 @@ impl SignIn {
     /// Signs in at `token_url` as `client_id`, proven by `key`. `scope` is sent only when given. No DPoP proof is
     /// offered until [`SignIn::offering_dpop`].
     /// A sign-in that could not be made gives its key back, so a caller can try again on its next poll.
-    pub fn new(
+    pub(crate) fn new(
         token_url: String,
         client_id: String,
         scope: Option<String>,
@@ -125,7 +125,7 @@ impl SignIn {
     /// Offers a DPoP proof with every sign-in. A service that binds tokens then binds this source's to its key, and
     /// one that does not answers a Bearer token. A service that binds every token it is offered a proof for leaves
     /// an API that takes only Bearer tokens unable to take this source's.
-    pub fn offering_dpop(mut self) -> SignIn {
+    pub(crate) fn offering_dpop(mut self) -> SignIn {
         self.offer_dpop = true;
         self
     }
@@ -315,7 +315,7 @@ impl Authorize for SignIn {
 }
 
 /// Headers to send, by name.
-pub type Headers = Vec<(String, String)>;
+pub(crate) type Headers = Vec<(String, String)>;
 
 /// A JWS's header and claims, encoded and joined: what its signature signs.
 fn signing_input(header: &serde_json::Value, claims: &serde_json::Value) -> String {

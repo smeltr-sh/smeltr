@@ -124,7 +124,7 @@ fn winners(ins: &[&Column], len: usize) -> Vec<Vec<u64>> {
 
 /// Set the bits of `out` for the rows `c` holds a value in; the rest keep what they were. A constant holds one in
 /// every row. A struct holds one where any leaf or its unclaimed fields do. An unbound column holds none.
-pub fn rows_with_a_value(c: &Column, len: usize, out: &mut [u64]) {
+pub(crate) fn rows_with_a_value(c: &Column, len: usize, out: &mut [u64]) {
     match (c.constant_value(), c.validity()) {
         (Some(_), _) => bits::fill_valid(out, len),
         (None, Some(v)) => {

@@ -31,7 +31,7 @@ impl std::error::Error for KeyError {}
 /// A sealed value, as stored. `key_id` names the key that sealed it: a row carrying any other is unusable, which is
 /// the same fact as a missing one and travels the same path.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Sealed {
+pub(crate) struct Sealed {
     key_id: String,
     nonce: [u8; NONCE_LEN],
     ciphertext: Vec<u8>,
@@ -40,7 +40,7 @@ pub struct Sealed {
 impl Sealed {
     /// One read back from storage, or `None` when the nonce is not the length a sealed value carries -- the only
     /// way the three columns can disagree with each other.
-    pub fn from_parts(key_id: String, nonce: &[u8], ciphertext: Vec<u8>) -> Option<Sealed> {
+    pub(crate) fn from_parts(key_id: String, nonce: &[u8], ciphertext: Vec<u8>) -> Option<Sealed> {
         Some(Sealed {
             key_id,
             nonce: nonce.try_into().ok()?,
@@ -49,20 +49,20 @@ impl Sealed {
     }
 
     /// Which key sealed it. Comparing this to the leader's own is how a row is called unusable without opening it.
-    pub fn key_id(&self) -> &str {
+    pub(crate) fn key_id(&self) -> &str {
         &self.key_id
     }
 
-    pub fn nonce(&self) -> &[u8] {
+    pub(crate) fn nonce(&self) -> &[u8] {
         &self.nonce
     }
 
-    pub fn ciphertext(&self) -> &[u8] {
+    pub(crate) fn ciphertext(&self) -> &[u8] {
         &self.ciphertext
     }
 
     /// One text line, for a value kept where only text goes: a leader setting.
-    pub fn to_text(&self) -> String {
+    pub(crate) fn to_text(&self) -> String {
         format!(
             "{}:{}:{}",
             self.key_id,
@@ -72,7 +72,7 @@ impl Sealed {
     }
 
     /// [`Sealed::to_text`] read back, or `None` when `text` is not one.
-    pub fn from_text(text: &str) -> Option<Sealed> {
+    pub(crate) fn from_text(text: &str) -> Option<Sealed> {
         let mut parts = text.split(':');
         let (key_id, nonce, ciphertext) = (parts.next()?, parts.next()?, parts.next()?);
         Sealed::from_parts(key_id.to_string(), &hex_decode(nonce)?, hex_decode(ciphertext)?)
@@ -86,12 +86,12 @@ pub struct EncryptionKey {
 
 impl EncryptionKey {
     /// Names the key without exposing it: a digest of the material, truncated. Stored beside every sealed value.
-    pub fn key_id(&self) -> &str {
+    pub(crate) fn key_id(&self) -> &str {
         &self.key_id
     }
 
     /// `value` sealed under this key, bound to `name`.
-    pub fn seal(&self, name: &str, value: &[u8]) -> Sealed {
+    pub(crate) fn seal(&self, name: &str, value: &[u8]) -> Sealed {
         let mut nonce = [0u8; NONCE_LEN];
         aws_lc_rs::rand::SystemRandom::new()
             .fill(&mut nonce)
@@ -112,7 +112,7 @@ impl EncryptionKey {
     }
 
     /// The value back, or `None` when `sealed` was not sealed by this key under this name.
-    pub fn open(&self, name: &str, sealed: &Sealed) -> Option<Vec<u8>> {
+    pub(crate) fn open(&self, name: &str, sealed: &Sealed) -> Option<Vec<u8>> {
         if sealed.key_id != self.key_id {
             return None;
         }
@@ -130,7 +130,7 @@ impl EncryptionKey {
 
     /// Whether `candidate` is the sealed value. The answer an admin gets about a secret; the value itself never
     /// leaves this process.
-    pub fn verify(&self, name: &str, sealed: &Sealed, candidate: &str) -> bool {
+    pub(crate) fn verify(&self, name: &str, sealed: &Sealed, candidate: &str) -> bool {
         let Some(value) = self.open(name, sealed) else {
             return false;
         };

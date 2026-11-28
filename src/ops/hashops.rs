@@ -9,23 +9,23 @@ use md5::Digest;
 use crate::core::column::{Column, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 
-pub fn md5(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn md5(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     hex_digest(ctx, ins, |text, hex| to_hex(&md5::Md5::digest(text), hex))
 }
 
-pub fn sha1(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn sha1(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     hex_digest(ctx, ins, |text, hex| {
         to_hex(digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, text).as_ref(), hex)
     })
 }
 
-pub fn sha256(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn sha256(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     hex_digest(ctx, ins, |text, hex| {
         to_hex(digest::digest(&digest::SHA256, text).as_ref(), hex)
     })
 }
 
-pub fn sha512(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn sha512(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     hex_digest(ctx, ins, |text, hex| {
         to_hex(digest::digest(&digest::SHA512, text).as_ref(), hex)
     })

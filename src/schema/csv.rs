@@ -14,14 +14,14 @@ use crate::format::csv_scan;
 /// Which column holds what, each by its index from 0.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Columns {
-    pub field: Option<usize>,
+pub(crate) struct Columns {
+    pub(crate) field: Option<usize>,
     #[serde(rename = "type")]
-    pub ty: Option<usize>,
-    pub requirement: Option<usize>,
-    pub description: Option<usize>,
-    pub example: Option<usize>,
-    pub elasticsearch: Option<usize>,
+    pub(crate) ty: Option<usize>,
+    pub(crate) requirement: Option<usize>,
+    pub(crate) description: Option<usize>,
+    pub(crate) example: Option<usize>,
+    pub(crate) elasticsearch: Option<usize>,
 }
 
 impl Columns {
@@ -42,26 +42,26 @@ impl Columns {
 /// What a file holds before its columns are chosen: its header, its rows to show, the columns its header names, and
 /// each value of the type column.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
-pub struct Preview {
-    pub header: Vec<String>,
+pub(crate) struct Preview {
+    pub(crate) header: Vec<String>,
     /// The first rows, and after them the first row of each type value they do not hold, so every value shows in one.
     pub rows: Vec<Vec<String>>,
     /// How many of `rows` are the file's first; those after are added for their type values.
-    pub first: usize,
-    pub columns: Columns,
+    pub(crate) first: usize,
+    pub(crate) columns: Columns,
     /// In the order the file first holds them.
-    pub types: Vec<TypeValue>,
+    pub(crate) types: Vec<TypeValue>,
 }
 
 /// One value of a CSV's type column.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TypeValue {
-    pub value: String,
+pub(crate) struct TypeValue {
+    pub(crate) value: String,
     /// The type it reads as, `None` where it is no type the reader knows.
-    pub reads_as: Option<String>,
+    pub(crate) reads_as: Option<String>,
     /// How many rows hold it.
-    pub fields: usize,
+    pub(crate) fields: usize,
 }
 
 /// How many rows a preview shows before those it adds for type values.
@@ -69,7 +69,7 @@ const SHOWN: usize = 5;
 
 /// `text`'s header and rows to show, the columns `columns` says or its header names, and the values its type column
 /// holds.
-pub fn preview(text: &str, columns: Option<&Columns>) -> Result<Preview, String> {
+pub(crate) fn preview(text: &str, columns: Option<&Columns>) -> Result<Preview, String> {
     let mut rows = rows(text)?.into_iter();
     let (_, header) = rows.next().ok_or("the file is empty")?;
     let columns = columns.cloned().unwrap_or_else(|| Columns::named(&header));
@@ -111,7 +111,7 @@ pub fn preview(text: &str, columns: Option<&Columns>) -> Result<Preview, String>
 
 /// The fields `text` declares, its rows in order, from the columns `columns` says or its header names. `types` gives
 /// the type of a value the reader does not know. `Err` names the row at fault, counting the header as row 1.
-pub fn read(
+pub(crate) fn read(
     text: &str,
     columns: Option<&Columns>,
     types: &BTreeMap<String, String>,

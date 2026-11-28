@@ -78,12 +78,12 @@ pub struct Shown {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Outcome {
-    pub row: usize,
+    pub(crate) row: usize,
     /// Each of the test's fields the document holds, by name. `None` is a row that made no document.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub values: Option<Map<String, Value>>,
+    pub(crate) values: Option<Map<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sent: Option<Sent>,
+    pub(crate) sent: Option<Sent>,
 }
 
 /// Where a document went: the pipeline that made it, the route that carried it and the destinations it reached, by
@@ -91,18 +91,18 @@ pub struct Outcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Sent {
-    pub pipeline: String,
-    pub route: String,
-    pub destinations: Vec<String>,
+    pub(crate) pipeline: String,
+    pub(crate) route: String,
+    pub(crate) destinations: Vec<String>,
 }
 
 /// One document a run made, whole, before a test cuts it down.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Made {
-    pub row: usize,
+    pub(crate) row: usize,
     /// `None` is a row that made no document.
-    pub document: Option<Value>,
-    pub sent: Option<Sent>,
+    pub(crate) document: Option<Value>,
+    pub(crate) sent: Option<Sent>,
 }
 
 /// What a run made, as a preview shows it: every document, and the type of each field, by the name the records grid
@@ -110,12 +110,12 @@ pub struct Made {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Run {
     pub made: Vec<Made>,
-    pub types: BTreeMap<String, String>,
+    pub(crate) types: BTreeMap<String, String>,
 }
 
 impl Made {
     /// What `fields` checks of it. A field the document lacks, or holds null, is absent.
-    pub fn cut(&self, fields: &[String]) -> Outcome {
+    pub(crate) fn cut(&self, fields: &[String]) -> Outcome {
         let values = self.document.as_ref().map(|document| {
             let mut leaves = Map::new();
             leaves_of(document, &mut String::new(), &mut leaves);
@@ -143,7 +143,7 @@ pub fn kept(document: &Value, fields: &[String]) -> Map<String, Value> {
 
 /// `value`, the field named `path`, holding only those of `fields` it holds, as [`kept`] cuts a document; `None` when
 /// it holds none.
-pub fn kept_under(value: &Value, path: &str, fields: &[String]) -> Option<Value> {
+pub(crate) fn kept_under(value: &Value, path: &str, fields: &[String]) -> Option<Value> {
     fn keep(value: &Value, path: &mut String, fields: &[String]) -> Option<Value> {
         match value {
             Value::Object(object) if !object.is_empty() => {
@@ -205,9 +205,9 @@ pub struct Lock {
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Locked {
-    pub rows_in: usize,
-    pub table: CaptureBatch,
-    pub shown: Vec<Shown>,
+    pub(crate) rows_in: usize,
+    pub(crate) table: CaptureBatch,
+    pub(crate) shown: Vec<Shown>,
 }
 
 impl Lock {
@@ -310,12 +310,12 @@ pub struct TestSummary {
 
 impl TestDto {
     /// The fields it checks, in the table's order.
-    pub fn fields(&self) -> Vec<String> {
+    pub(crate) fn fields(&self) -> Vec<String> {
         self.table.columns.iter().map(|c| c.name.clone()).collect()
     }
 
     /// Each row it checks, as a run's [`Made::cut`] holds it: the fields its row holds, a null being one it lacks.
-    pub fn outcomes(&self) -> Vec<Outcome> {
+    pub(crate) fn outcomes(&self) -> Vec<Outcome> {
         (self.table.rows.iter().zip(&self.shown))
             .map(|(row, shown)| Outcome {
                 row: shown.row,
@@ -331,12 +331,12 @@ impl TestDto {
     }
 
     /// The rows it checks, each once, in order.
-    pub fn rows_checked(&self) -> Vec<usize> {
+    pub(crate) fn rows_checked(&self) -> Vec<usize> {
         first_seen(self.shown.iter().map(|s| s.row))
     }
 
     /// Every pipeline this test exercises, in the order first seen.
-    pub fn pipelines_covered(&self) -> Vec<String> {
+    pub(crate) fn pipelines_covered(&self) -> Vec<String> {
         match &self.pipeline {
             Some(name) => vec![name.clone()],
             None => self.sent_names(|s| &s.pipeline),
@@ -345,7 +345,7 @@ impl TestDto {
 
     /// Every route this test's outcomes carry a document through, in the order first seen. Empty for a pipeline
     /// test.
-    pub fn routes_covered(&self) -> Vec<String> {
+    pub(crate) fn routes_covered(&self) -> Vec<String> {
         self.sent_names(|s| &s.route)
     }
 
@@ -377,27 +377,27 @@ impl TestDto {
 pub struct Difference {
     pub row: usize,
     /// Which of the row's documents, counted from 0 in the order they were made, or locked where the run made fewer.
-    pub document: usize,
+    pub(crate) document: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected: Option<Outcome>,
+    pub(crate) expected: Option<Outcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actual: Option<Outcome>,
+    pub(crate) actual: Option<Outcome>,
     /// The values that differ, where both sides made a document.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<FieldDifference>,
+    pub(crate) fields: Vec<FieldDifference>,
 }
 
 /// A value that differs from what a test locked, by its path in the document. An array is followed into its elements,
 /// and an element's own members, so a long array names only the elements that differ.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct FieldDifference {
-    pub path: String,
+pub(crate) struct FieldDifference {
+    pub(crate) path: String,
     /// What the test locked there; absent where it locked no value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub locked: Option<Value>,
+    pub(crate) locked: Option<Value>,
     /// Whether the run made a value there.
-    pub made: bool,
+    pub(crate) made: bool,
 }
 
 /// A field the run types otherwise than the test locked it.

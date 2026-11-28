@@ -50,7 +50,7 @@ pub const KEEP_DAYS_KEY: &str = "agents.keep_days";
 pub const CONTEXT_KEY: &str = "agents.context_tokens";
 
 /// How many days a conversation nobody adds to is kept, unless an administrator sets otherwise.
-pub const DEFAULT_KEEP_DAYS: u32 = 90;
+pub(crate) const DEFAULT_KEEP_DAYS: u32 = 90;
 
 /// How long one answer may take. A model writing a long answer whole, not streamed, takes minutes.
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -69,7 +69,7 @@ const ANTHROPIC_COMPACTION: &str = "compact-2026-01-12";
 
 /// The tokens a model's context holds, unless an administrator sets otherwise or Anthropic says: what every
 /// current model holds at least.
-pub const DEFAULT_CONTEXT: u64 = 200_000;
+pub(crate) const DEFAULT_CONTEXT: u64 = 200_000;
 
 /// The fewest and most tokens a context may be set to.
 pub const CONTEXT_RANGE: std::ops::RangeInclusive<u64> = 4_096..=10_000_000;
@@ -108,7 +108,7 @@ impl Provider {
         }
     }
 
-    pub fn parse(text: &str) -> Option<Provider> {
+    pub(crate) fn parse(text: &str) -> Option<Provider> {
         [Provider::Anthropic, Provider::OpenAi, Provider::OpenAiCompatible]
             .into_iter()
             .find(|p| p.as_str() == text)
@@ -210,11 +210,11 @@ impl std::fmt::Debug for Endpoint {
 
 /// A tool the model may call.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Tool {
-    pub name: String,
-    pub description: String,
+pub(crate) struct Tool {
+    pub(crate) name: String,
+    pub(crate) description: String,
     /// JSON Schema for the tool's input object.
-    pub input_schema: Value,
+    pub(crate) input_schema: Value,
 }
 
 /// A tool call the model made.
@@ -222,7 +222,7 @@ pub struct Tool {
 pub struct Call {
     /// What the result is sent back under.
     pub id: String,
-    pub name: String,
+    pub(crate) name: String,
     pub input: Value,
 }
 
@@ -287,7 +287,7 @@ fn readable(turns: &[Turn]) -> std::borrow::Cow<'_, [Turn]> {
 
 /// Why the model stopped.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Stop {
+pub(crate) enum Stop {
     /// It said what it had to say.
     Done,
     /// It waits on the results of its calls.
@@ -322,9 +322,9 @@ pub enum Effort {
 }
 
 impl Effort {
-    pub const ALL: [Effort; 5] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
+    pub(crate) const ALL: [Effort; 5] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Effort::Low => "low",
             Effort::Medium => "medium",
@@ -340,7 +340,7 @@ impl Effort {
 pub struct Reply {
     pub text: String,
     pub calls: Vec<Call>,
-    pub stop: Stop,
+    pub(crate) stop: Stop,
     pub usage: Usage,
     /// The answer as the provider wrote it, sent back unchanged in a later [`Turn::Answered`].
     native: Value,
@@ -371,28 +371,28 @@ impl Reply {
 /// What the model is asked.
 #[derive(Clone, Copy, Debug)]
 pub struct Request<'a> {
-    pub system: &'a str,
-    pub turns: &'a [Turn],
-    pub tools: &'a [Tool],
+    pub(crate) system: &'a str,
+    pub(crate) turns: &'a [Turn],
+    pub(crate) tools: &'a [Tool],
     /// The most the answer may spend, thinking included.
-    pub max_tokens: u32,
+    pub(crate) max_tokens: u32,
     /// Whether the model may think before it answers, where the provider lets it be asked.
-    pub think: bool,
+    pub(crate) think: bool,
     /// Whether the older turns may be summarized once a request passes three quarters of the model's context. A
     /// model that refuses to is asked again without.
-    pub compact: bool,
-    pub effort: Option<Effort>,
+    pub(crate) compact: bool,
+    pub(crate) effort: Option<Effort>,
     /// What OpenAI keeps one conversation's requests together in its cache by: the conversation's id.
-    pub cache_key: Option<&'a str>,
+    pub(crate) cache_key: Option<&'a str>,
     /// Who is asking, as a hash OpenAI tells people apart by for abuse without learning who they are.
-    pub person: Option<&'a str>,
+    pub(crate) person: Option<&'a str>,
     /// Where the answer's text goes as the model writes it. The provider is asked for a stream when there is one.
-    pub heard: Option<Heard<'a>>,
+    pub(crate) heard: Option<Heard<'a>>,
 }
 
 /// What hears an answer's text as it is written, a piece at a time.
 #[derive(Clone, Copy)]
-pub struct Heard<'a>(pub &'a (dyn Fn(&str) + Send + Sync));
+pub(crate) struct Heard<'a>(pub(crate) &'a (dyn Fn(&str) + Send + Sync));
 
 impl std::fmt::Debug for Heard<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -483,7 +483,7 @@ impl Model for Client {
 
 /// The ask for a summary of the conversation, to carry on from in place of it. The last answer and what followed
 /// it are still read after the summary ([`readable`]).
-pub const SUMMARIZE: &str = "Summarize the conversation so far for yourself, to carry on from in place of it. You \
+pub(crate) const SUMMARIZE: &str = "Summarize the conversation so far for yourself, to carry on from in place of it. You \
     will still read your last answer and what followed it. Write these sections, each under its name as a \
     heading:\n\
     1. Request: what the person asked for, and why.\n\
@@ -496,7 +496,7 @@ pub const SUMMARIZE: &str = "Summarize the conversation so far for yourself, to 
     Write the summary only, and call no tool.";
 
 /// The most a summary may spend.
-pub const SUMMARY_TOKENS: u32 = 8_000;
+pub(crate) const SUMMARY_TOKENS: u32 = 8_000;
 
 impl Client {
     /// `reply`, saying what made it.
@@ -898,11 +898,11 @@ pub async fn context_of(endpoint: &Endpoint) -> Option<u64> {
 #[serde(rename_all = "camelCase")]
 pub struct Listed {
     pub id: String,
-    pub name: String,
+    pub(crate) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_tokens: Option<u64>,
+    pub(crate) context_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub efforts: Option<Vec<Effort>>,
+    pub(crate) efforts: Option<Vec<Effort>>,
 }
 
 /// The most pages of Anthropic's model list read: far more models than it has.

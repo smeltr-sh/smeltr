@@ -20,13 +20,13 @@ use crate::ops::pieces::{Piece, build_from_pieces};
 use crate::ops::{BinOp, OpKernel, UnOp, convert, table};
 
 /// A borrow of a batch column or an owned intermediate.
-pub enum Val<'a> {
+pub(crate) enum Val<'a> {
     Ref(&'a Column),
     Owned(Column),
 }
 
 impl<'a> Val<'a> {
-    pub fn as_col(&self) -> &Column {
+    pub(crate) fn as_col(&self) -> &Column {
         match self {
             Val::Ref(c) => c,
             Val::Owned(c) => c,
@@ -34,7 +34,7 @@ impl<'a> Val<'a> {
     }
 
     /// Return an owned intermediate to the pool; a borrow belongs to the batch.
-    pub fn release(self, ctx: &mut Ctx) {
+    pub(crate) fn release(self, ctx: &mut Ctx) {
         if let Val::Owned(c) = self {
             c.reclaim(ctx.pool);
         }

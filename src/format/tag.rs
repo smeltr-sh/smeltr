@@ -38,7 +38,7 @@ pub enum Tag<'d> {
 }
 
 /// An object's keys and values, in the order the record had them.
-pub type Fields<'d> = Vec<(Cow<'d, str>, Tag<'d>)>;
+pub(crate) type Fields<'d> = Vec<(Cow<'d, str>, Tag<'d>)>;
 
 /// A value written piece by piece as a walk reads it: into its encoding (`Bytes`), or into a declared column
 /// (`typed::Slot`). A container's members arrive between its begin and its end, each through the
@@ -65,7 +65,7 @@ pub trait Emit {
 
 /// The encoding (`core::variant`) of a value, appended to `out`: a buffer, or a borrow of one.
 pub struct Bytes<B> {
-    pub out: B,
+    pub(crate) out: B,
     /// Where the container being written began.
     open: variant::Open,
     /// Where its field opened last began.
@@ -138,7 +138,7 @@ impl<B: BorrowMut<Vec<u8>>> Emit for Bytes<B> {
 }
 
 /// Write the value `b` encodes (`core::variant`) into `out`. A null writes nothing.
-pub fn emit(v: Encoded, out: &mut impl Emit) {
+pub(crate) fn emit(v: Encoded, out: &mut impl Emit) {
     match variant::read(v) {
         Value::Null => {}
         Value::Array(items) => {
@@ -166,7 +166,7 @@ pub fn emit(v: Encoded, out: &mut impl Emit) {
 }
 
 /// A variant column of `values`, null where a row holds none.
-pub fn encode_column(values: &[Option<Tag<'_>>], pool: &mut BufferPool) -> Column {
+pub(crate) fn encode_column(values: &[Option<Tag<'_>>], pool: &mut BufferPool) -> Column {
     let mut b = StrBuilder::new(pool, VarType::Variant, values.len());
     let mut buf = Vec::new();
     for v in values {
@@ -185,7 +185,7 @@ pub fn encode_column(values: &[Option<Tag<'_>>], pool: &mut BufferPool) -> Colum
 /// Append `tag`'s encoding (`core::variant`). An object's repeated key keeps its last value, in the first one's
 /// place.
 #[inline]
-pub fn encode(tag: &Tag<'_>, out: &mut Vec<u8>) {
+pub(crate) fn encode(tag: &Tag<'_>, out: &mut Vec<u8>) {
     match tag {
         Tag::Bool(v) => variant::put_bool(out, *v),
         Tag::I64(v) => variant::put_i64(out, *v),
@@ -264,7 +264,7 @@ pub fn decode(v: Encoded<'_>) -> Option<Tag<'_>> {
 
 /// A variant column decoded to `ty` by the declared-type table (`typed::TypedBuilder`): each row that does not fit is
 /// null and returned. A time read with no year takes it from `now`.
-pub fn decode_column(col: &Column, ty: &DataType, now: i64, pool: &mut BufferPool) -> (Column, Vec<Failed>) {
+pub(crate) fn decode_column(col: &Column, ty: &DataType, now: i64, pool: &mut BufferPool) -> (Column, Vec<Failed>) {
     use crate::core::column::Scalar;
     use crate::format::typed::Cell;
     let rows = col.len();
@@ -293,7 +293,7 @@ pub fn to_variant(col: &Column, pool: &mut BufferPool) -> Column {
 }
 
 /// Row `row` of `col` as a tag. `None` for a null.
-pub fn row_tag(col: &Column, row: usize) -> Option<Tag<'_>> {
+pub(crate) fn row_tag(col: &Column, row: usize) -> Option<Tag<'_>> {
     use crate::core::column::Scalar;
     if col.is_unbound() {
         return None;
@@ -355,7 +355,11 @@ fn lay_beneath<'d>(object: &mut Fields<'d>, unclaimed_fields: Fields<'d>) {
 
 /// The keys of `col`, a struct, that `names` does not name, its own unclaimed fields among them: a variant object per
 /// row. `None` where no row has any.
-pub fn unclaimed_fields_beyond(col: &Column, names: &[(String, DataType)], pool: &mut BufferPool) -> Option<Column> {
+pub(crate) fn unclaimed_fields_beyond(
+    col: &Column,
+    names: &[(String, DataType)],
+    pool: &mut BufferPool,
+) -> Option<Column> {
     let DataType::Struct(fields, _) = col.data_type() else {
         return None;
     };
@@ -419,7 +423,7 @@ pub(crate) fn json_text(v: Encoded) -> String {
 /// beside floats are `f64`, an array proposes its elements' own suggestion, and any other mix is `str`. A suggestion
 /// narrows nothing: an undeclared key stays in the unclaimed fields as it arrived.
 #[derive(Default)]
-pub struct Suggestion {
+pub(crate) struct Suggestion {
     counts: TagCounts,
     elements: Option<Box<Suggestion>>,
     /// The time shape the last value read as, tried first on the next.
@@ -427,7 +431,7 @@ pub struct Suggestion {
 }
 
 impl Suggestion {
-    pub fn saw(&mut self, tag: &Tag<'_>) {
+    pub(crate) fn saw(&mut self, tag: &Tag<'_>) {
         let c = &mut self.counts;
         c.present += 1;
         match tag {
@@ -463,11 +467,11 @@ impl Suggestion {
         }
     }
 
-    pub fn counts(&self) -> TagCounts {
+    pub(crate) fn counts(&self) -> TagCounts {
         self.counts
     }
 
-    pub fn suggest(&self) -> DataType {
+    pub(crate) fn suggest(&self) -> DataType {
         let c = &self.counts;
         match c.kinds() {
             0 => DataType::Null,
@@ -487,7 +491,7 @@ impl Suggestion {
 
 /// Each of `writes` laid over `fields` in turn: its key goes from where it was, and a value lands at the end, where
 /// nothing takes the key away. The same as one write at a time, in time linear in their number.
-pub fn write_each<'d>(fields: &mut Vec<(Cow<'d, str>, Tag<'d>)>, writes: Vec<(Cow<'d, str>, Option<Tag<'d>>)>) {
+pub(crate) fn write_each<'d>(fields: &mut Vec<(Cow<'d, str>, Tag<'d>)>, writes: Vec<(Cow<'d, str>, Option<Tag<'d>>)>) {
     let mut last = Keys::default();
     for (key, value) in writes {
         if let Some(i) = last.find(&key) {

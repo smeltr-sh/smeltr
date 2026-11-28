@@ -18,31 +18,31 @@ use crate::heartbeat::{CaptureBatch, CaptureEnd, CaptureInvitation, CaptureRepor
 /// What bounds a capture, and what a caller may ask for. A request past a ceiling is clamped rather than refused.
 /// The total is at most what a sample holds ([`crate::config_file::MAX_SAMPLE_RECORDS`]), since a capture ends as
 /// one; the byte and deadline ceilings protect the leader's memory and a worker's time.
-pub const MAX_BYTES_CEILING: usize = 64 * 1024 * 1024;
-pub const MAX_DEADLINE_SECS: u64 = 300;
+pub(crate) const MAX_BYTES_CEILING: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_DEADLINE_SECS: u64 = 300;
 
 /// What one capture may hold in bytes, however many workers answer it: a fleet's records sit in the leader, which
 /// also serves the GUI and every heartbeat.
-pub const SESSION_BYTES_CEILING: usize = MAX_BYTES_CEILING;
+pub(crate) const SESSION_BYTES_CEILING: usize = MAX_BYTES_CEILING;
 
 /// What every capture the leader holds may weigh together. A capture still running is charged all it may grow to,
 /// a finished one what it holds; a new one drops the oldest until it fits ([`Captures::open`]).
-pub const HELD_BYTES_CEILING: usize = 8 * SESSION_BYTES_CEILING;
+pub(crate) const HELD_BYTES_CEILING: usize = 8 * SESSION_BYTES_CEILING;
 
 /// How long a finished capture is held once nobody reads it: its status, its records or a preview over them.
-pub const HELD_IDLE: Duration = Duration::from_secs(20 * 60);
+pub(crate) const HELD_IDLE: Duration = Duration::from_secs(20 * 60);
 
 /// How long any capture is held from when it opened, however much it is read.
-pub const HELD_AT_MOST: Duration = Duration::from_secs(12 * 60 * 60);
+pub(crate) const HELD_AT_MOST: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// What one worker's report may weigh encoded, on the leader's endpoint and on the runtime pipe alike: the raw
 /// ceiling with JSON escaping at its worst of six bytes per one, and room for what a record carries beside its
 /// raw text.
-pub const REPORT_BODY_LIMIT: usize = 6 * MAX_BYTES_CEILING + 8 * 1024 * 1024;
+pub(crate) const REPORT_BODY_LIMIT: usize = 6 * MAX_BYTES_CEILING + 8 * 1024 * 1024;
 
-pub const DEFAULT_MAX_MATCHES: usize = 100;
-pub const DEFAULT_MAX_BYTES: usize = 8 * 1024 * 1024;
-pub const DEFAULT_DEADLINE_SECS: u64 = 30;
+pub(crate) const DEFAULT_MAX_MATCHES: usize = 100;
+pub(crate) const DEFAULT_MAX_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const DEFAULT_DEADLINE_SECS: u64 = 30;
 
 /// What a caller asked for, before clamping. Exactly one of `source` and `destination` is set.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -81,10 +81,10 @@ pub struct CaptureRequest {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureStatus {
-    pub session: String,
+    pub(crate) session: String,
     /// The destination a capture there reads, by name. Absent on a capture of a source.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination: Option<String>,
+    pub(crate) destination: Option<String>,
     /// The source this capture was taken from, by name: what a sample saved from the capture stands for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -92,56 +92,56 @@ pub struct CaptureStatus {
     /// Ended by whoever was watching, before its deadline or its total. What it holds is what it will ever hold.
     pub stopped: bool,
     /// How many records the capture asked for in all.
-    pub max_matches: usize,
+    pub(crate) max_matches: usize,
     /// Every worker the capture knows of -- expected when it opened, or handed the invitation since -- in name
     /// order. No worker leaves the list for the capture's life.
-    pub workers: Vec<CaptureWorker>,
+    pub(crate) workers: Vec<CaptureWorker>,
     /// What every worker sent, folded: one batch per distinct column list, each row naming its worker. Left out of
     /// the status a caller polls, which counts them in `records`: they are read on their own (`capture_records`).
     #[serde(skip)]
     pub batches: Vec<CaptureBatch>,
     /// How many records the capture holds, across its batches.
-    pub records: usize,
+    pub(crate) records: usize,
     /// Moves each time what the capture holds changes, which is when its records are worth reading again. The count
     /// alone can stay put while they change: a worker's newest report replaces its last whole, and may hold as many
     /// records, but not the same ones.
-    pub revision: u64,
+    pub(crate) revision: u64,
     /// Why each worker stopped, so a short sample says which bound it hit.
-    pub ended: Vec<(String, CaptureEnd)>,
-    pub seconds_left: u64,
+    pub(crate) ended: Vec<(String, CaptureEnd)>,
+    pub(crate) seconds_left: u64,
     /// Workers that were expected to answer and have not yet. Empty on a finished capture that heard from everyone.
     /// Once a capture is over, only a worker named here that had stopped before it ended may still say why; the
     /// rest never answer.
     pub waiting_on: Vec<String>,
     /// Whether the byte ceiling dropped records a worker sent. A sample saved from it holds only what the ceiling
     /// kept, and the sample file carries no mark of the loss.
-    pub truncated: bool,
+    pub(crate) truncated: bool,
     /// Records a person pasted rather than captured: kept as one column that holds the whole record; a preview or a
     /// save reads them back as the records written, with no columns of their own and no `__capture` fields.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pasted: bool,
     /// What Run found out about an SQL source's query: its columns, and what the database plans for a poll.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sql: Option<crate::heartbeat::SqlRun>,
+    pub(crate) sql: Option<crate::heartbeat::SqlRun>,
     /// The fields the newest Avro writer's schema a worker read declares, in its order. Empty from a source that
     /// reads no Avro.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub avro: Vec<crate::heartbeat::AvroField>,
+    pub(crate) avro: Vec<crate::heartbeat::AvroField>,
 }
 
 /// One worker in a capture, and where it stands.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CaptureWorker {
-    pub worker: String,
-    pub state: WorkerState,
+pub(crate) struct CaptureWorker {
+    pub(crate) worker: String,
+    pub(crate) state: WorkerState,
 }
 
 /// `Waiting` has sent no report the capture folded in. `Filling` has, and has not yet said why it stopped; the
 /// capture may hold none of its records. `Answered` has said why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkerState {
+pub(crate) enum WorkerState {
     Waiting,
     Filling,
     Answered,
@@ -421,7 +421,7 @@ fn rows_in(batches: &[CaptureBatch]) -> usize {
 /// How a pipeline's output was made, as the `__capture` fields a sample saved from it carries on every record in place of
 /// its input's: the instant it ran at, the pipeline by id, and the sample it ran over by id. A field with nothing to say
 /// is left out.
-pub fn output_fields(
+pub(crate) fn output_fields(
     at: DateTime,
     pipeline: &str,
     sample: Option<&str>,
@@ -613,7 +613,7 @@ impl Captures {
     ///
     /// A single-worker source is captured by one worker: the one `holder` names as holding it in the group, whose
     /// deployment reads it, or the first to ask where none does.
-    pub fn invitations_for(
+    pub(crate) fn invitations_for(
         &self,
         worker_id: &str,
         group: &str,
@@ -648,7 +648,7 @@ impl Captures {
     /// A worker that was never invited is refused. It learns a session id only by being handed one, so a report
     /// from anyone else is not a late answer -- it is records the leader never asked for, from a credential that
     /// has no part in this capture.
-    pub fn record(&self, report: CaptureReport) {
+    pub(crate) fn record(&self, report: CaptureReport) {
         // Late reports come in runs as a capture ends, so one is said at debug every RELOG_EVERY and the rest at trace.
         static DROPPED: crate::sync::Mutex<crate::logs::Repeat> = crate::sync::Mutex::new(crate::logs::Repeat::new());
         let dropped = |why: &str| {
@@ -795,7 +795,7 @@ impl Captures {
     /// Drop every finished session nobody has read for `idle`, and every session opened more than `at_most` ago. A
     /// capture nobody collected must not hold its records forever; with [`HELD_BYTES_CEILING`], this is what bounds
     /// the leader's memory across sessions.
-    pub fn sweep(&self, idle: Duration, at_most: Duration) {
+    pub(crate) fn sweep(&self, idle: Duration, at_most: Duration) {
         let _pass =
             tracing::trace_span!(target: "captures", "a background pass", task = "drop finished captures").entered();
         let mut sessions = self.0.lock();

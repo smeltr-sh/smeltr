@@ -27,8 +27,8 @@ pub fn value_at<'v>(object: &'v RecordObject, path: &str) -> Option<&'v serde_js
 /// One row of a capture's table, under the table's columns.
 #[derive(Clone, Copy)]
 pub struct Cells<'a> {
-    pub columns: &'a [CaptureColumn],
-    pub row: &'a CapturedRow,
+    pub(crate) columns: &'a [CaptureColumn],
+    pub(crate) row: &'a CapturedRow,
 }
 
 /// `held`, the object at keys `at`, without the keys an entry of `fields` claims under it.
@@ -46,7 +46,7 @@ fn unclaimed(held: &RecordObject, at: &[String], fields: &[(Entry, DataType)]) -
 }
 
 /// Where a table's rows hold one entry of a record: found once for the table, then read from each row.
-pub struct Place<'f> {
+pub(crate) struct Place<'f> {
     entry: &'f Entry,
     fields: &'f [(Entry, DataType)],
     keys: Vec<String>,
@@ -60,7 +60,7 @@ pub struct Place<'f> {
 impl<'f> Place<'f> {
     /// The place of `entry` of `fields` under `columns`. Its own column is nearest. After it come the columns above it,
     /// each an object's own column or the column of its unclaimed fields, the deepest object first and the root's last.
-    pub fn of(columns: &[CaptureColumn], entry: &'f Entry, fields: &'f [(Entry, DataType)]) -> Place<'f> {
+    pub(crate) fn of(columns: &[CaptureColumn], entry: &'f Entry, fields: &'f [(Entry, DataType)]) -> Place<'f> {
         let keys = entry.keys();
         let (mut held, mut below) = (Vec::new(), Vec::new());
         for (c, column) in columns.iter().enumerate() {
@@ -119,7 +119,10 @@ impl<'f> Place<'f> {
     /// entry's place inside the next. A field's object also takes what the row holds in each column below the field. A
     /// row holds nothing in a column its batch did not have (`config_file::sample_table`). `None` where the row holds
     /// nothing in any. `Err` is the text of a cell that failed its type, or of a value on the way that holds no field.
-    pub fn read<'a>(&self, row: &'a CapturedRow) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
+    pub(crate) fn read<'a>(
+        &self,
+        row: &'a CapturedRow,
+    ) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
         use serde_json::Value;
         'column: for (nearest, &(depth, c)) in self.held.iter().enumerate() {
             let mut value = row.values.get(c).unwrap_or(&Value::Null);
@@ -161,7 +164,7 @@ impl<'f> Place<'f> {
 
 impl<'a> Cells<'a> {
     /// What this row holds for `entry` of `fields` (`Place::read`).
-    pub fn of(
+    pub(crate) fn of(
         &self,
         entry: &Entry,
         fields: &[(Entry, DataType)],
@@ -170,7 +173,7 @@ impl<'a> Cells<'a> {
     }
 
     /// The fields this row holds under `object`, a root key: what its place above holds, then each column below it.
-    pub fn under(&self, object: &'static str) -> RecordObject {
+    pub(crate) fn under(&self, object: &'static str) -> RecordObject {
         match self.of(&Entry::Field(object.into()), &[]) {
             Ok(Some(value)) => value.as_object().cloned().unwrap_or_default(),
             _ => RecordObject::new(),
@@ -198,7 +201,7 @@ pub fn raw_object(text: impl Into<String>) -> RecordObject {
 impl SourceRecord {
     /// Row `row` of `chunk`, read at what `fields`, a record's `__source` object, says. A coordinate `fields` lacks is
     /// zero or empty, as a pasted record's are.
-    pub fn read(chunk: Arc<RecordChunk>, row: u32, fields: &SourceFields) -> SourceRecord {
+    pub(crate) fn read(chunk: Arc<RecordChunk>, row: u32, fields: &SourceFields) -> SourceRecord {
         let int = |key: &str| fields.get(key).and_then(serde_json::Value::as_i64).unwrap_or(0);
         let headers = match fields.get("headers") {
             Some(serde_json::Value::Object(h)) => Some(

@@ -8,40 +8,40 @@ use serde::{Deserialize, Serialize};
 pub struct DeltaDestinationDto {
     /// The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub location: Option<String>,
+    pub(crate) location: Option<String>,
     /// A Unity Catalog external table, whose root and storage credentials the catalog gives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unity_catalog: Option<UnityCatalogDto>,
+    pub(crate) unity_catalog: Option<UnityCatalogDto>,
     /// The columns a created table is partitioned by, each a top-level column of the record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub partition_by: Vec<String>,
+    pub(crate) partition_by: Vec<String>,
     /// How the bucket is reached and signed for. None of its fields set takes the host's.
     #[serde(flatten)]
-    pub access: S3AccessDto,
+    pub(crate) access: S3AccessDto,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    pub(crate) tls: TlsDto,
     /// Absent is zstd.
     #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
-    pub compression: CompressionDto,
+    pub(crate) compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    pub(crate) compression_level: Option<u8>,
     /// Parts of one file uploading at once.
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "ObjectBytes::is_default")]
-    pub max_object_bytes: ObjectBytes,
+    pub(crate) max_object_bytes: ObjectBytes,
     /// Memory for records not yet committed. Unset is `BufferBytes::OBJECT_DEFAULT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    pub(crate) buffer_bytes: Option<BufferBytes>,
     /// Seconds one store call, or one commit, may take before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     /// Seconds files stay open before they are committed and their batches acknowledged.
     #[serde(default, skip_serializing_if = "FileInterval::is_default")]
-    pub file_interval_secs: FileInterval,
+    pub(crate) file_interval_secs: FileInterval,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    pub(crate) unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for DeltaDestinationDto {

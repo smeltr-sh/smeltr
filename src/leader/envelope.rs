@@ -48,7 +48,7 @@ impl<T> Envelope<T> {
     }
 
     /// Why the route did not do what it was asked, its errors' messages joined; `None` when it did.
-    pub fn why_failed(&self) -> Option<String> {
+    pub(crate) fn why_failed(&self) -> Option<String> {
         let messages = || self.errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>();
         (!self.succeeded()).then(|| messages().join("; "))
     }
@@ -300,16 +300,16 @@ impl From<&config_file::ValidationError> for Refusal {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiError {
-    pub pipeline: Option<String>,
-    pub function: Option<crate::core::id::FunctionId>,
+    pub(crate) pipeline: Option<String>,
+    pub(crate) function: Option<crate::core::id::FunctionId>,
     pub step: Option<String>,
-    pub assignment_index: Option<u32>,
+    pub(crate) assignment_index: Option<u32>,
     /// The source, destination or identity this is about. Boxed, as an error rides in a `Result` on every read.
-    pub item: Option<Box<config_file::ItemRef>>,
+    pub(crate) item: Option<Box<config_file::ItemRef>>,
     /// The setting this is about, by its name in the file. See `config_file::ValidationError::field`.
-    pub field: Option<&'static str>,
+    pub(crate) field: Option<&'static str>,
     /// The route's delivery rule, by its position, when `field` is one of its settings. See `CompileError::rule`.
-    pub rule: Option<u32>,
+    pub(crate) rule: Option<u32>,
     pub message: String,
 }
 
@@ -344,7 +344,7 @@ impl ApiError {
 
     /// From a compiled pipeline's own `CompileError`, keeping which step it named the same way `from_validation`
     /// does, plus the assignment within it where the compiler tracked one.
-    pub fn from_compile(e: &plan::config::CompileError, step: Option<String>) -> Self {
+    pub(crate) fn from_compile(e: &plan::config::CompileError, step: Option<String>) -> Self {
         ApiError {
             pipeline: None,
             function: e.function,
@@ -387,7 +387,7 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    pub fn status(self) -> StatusCode {
+    pub(crate) fn status(self) -> StatusCode {
         match self {
             ErrorKind::Failed => StatusCode::INTERNAL_SERVER_ERROR,
             ErrorKind::Conflict => StatusCode::CONFLICT,

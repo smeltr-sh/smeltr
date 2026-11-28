@@ -12,15 +12,15 @@ pub struct HecReceiverDto {
     /// Whether a request is answered only once every destination has its records, rather than as soon as it is
     /// received.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub answer_after_delivery: bool,
+    pub(crate) answer_after_delivery: bool,
     /// Token name -> a token a sender may present as `Authorization: Splunk`, and whether its senders use
     /// indexer acknowledgement.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tokens: BTreeMap<String, HecTokenDto>,
+    pub(crate) tokens: BTreeMap<String, HecTokenDto>,
     /// Sourcetype -> where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
     /// here is an event per line.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub sourcetypes: BTreeMap<String, SourcetypeDto>,
+    pub(crate) sourcetypes: BTreeMap<String, SourcetypeDto>,
 }
 
 impl ReceiverKindDto for HecReceiverDto {

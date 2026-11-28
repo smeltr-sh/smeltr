@@ -29,7 +29,7 @@ const MAX_TOKEN_ANSWER: u64 = 64 * 1024;
 
 /// How the client secret is sent to the token endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenAuth {
+pub(crate) enum TokenAuth {
     /// `client_secret_basic`: in the Authorization header.
     Basic,
     /// `client_secret_post`: in the form.
@@ -38,14 +38,14 @@ pub enum TokenAuth {
 
 /// `client_secret_basic`: id and secret are each form-encoded before they are joined (RFC 6749 2.3.1), so a colon in
 /// either cannot move where one ends.
-pub fn basic(client_id: &str, client_secret: &str) -> String {
+pub(crate) fn basic(client_id: &str, client_secret: &str) -> String {
     let pair = format!("{}:{}", percent_encode(client_id), percent_encode(client_secret));
     format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(pair))
 }
 
 /// An app's client credentials, and the token they were last traded for. Every sign-in is blocking, on the caller's
 /// agent, and bounded by one timeout.
-pub struct ClientCredentials {
+pub(crate) struct ClientCredentials {
     token_url: String,
     client_id: String,
     client_secret: String,
@@ -60,14 +60,14 @@ pub struct ClientCredentials {
 
 /// A token a token endpoint gave, signed in for by a secret here or by a key (`io::oauth`).
 pub(crate) struct Token {
-    pub value: String,
+    pub(crate) value: String,
     /// `None` when the endpoint named no lifetime: kept until a call is refused.
-    pub renew_at: Option<Instant>,
+    pub(crate) renew_at: Option<Instant>,
 }
 
 impl Token {
     /// Whether it is about to expire, so the next call signs in first.
-    pub fn due(&self) -> bool {
+    pub(crate) fn due(&self) -> bool {
         self.renew_at.is_some_and(|at| Instant::now() >= at)
     }
 }
@@ -75,7 +75,7 @@ impl Token {
 /// The longest one sign-in may take. Fixed rather than taken from what asked for the token: a token outlives the
 /// request that asked for it, and a Kafka client's sign-in runs on the thread polling it, which reads nothing while
 /// it waits.
-pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The `Authorization` value a sign-in last sent, and whether it was new then. A new token refused is a refusal to
 /// show; one used before may have been revoked or expired early, and is worth replacing.
@@ -95,7 +95,7 @@ impl Default for LastSent {
 
 impl LastSent {
     /// Takes `bearer` as sent: new, unless it is the one last sent.
-    pub fn sent(&mut self, bearer: &str) {
+    pub(crate) fn sent(&mut self, bearer: &str) {
         if self.bearer.as_deref() != Some(bearer) {
             self.fresh = true;
             self.bearer = Some(bearer.to_string());
@@ -103,12 +103,12 @@ impl LastSent {
     }
 
     /// The service let the last sent through.
-    pub fn used(&mut self) {
+    pub(crate) fn used(&mut self) {
         self.fresh = false;
     }
 
     /// Whether a refusal of the last sent is worth signing in again for.
-    pub fn worth_replacing(&self) -> bool {
+    pub(crate) fn worth_replacing(&self) -> bool {
         !self.fresh
     }
 }
@@ -160,7 +160,7 @@ pub(crate) fn granted(url: &str, answer: &Value) -> Result<Token, IoError> {
 impl ClientCredentials {
     /// Signs in at `token_url`, sending the secret in the form. `scope` is sent only when given. `timeout` bounds each
     /// sign-in. Nothing is asked until the first [`ClientCredentials::bearer`].
-    pub fn new(
+    pub(crate) fn new(
         token_url: String,
         client_id: String,
         client_secret: String,
@@ -182,26 +182,26 @@ impl ClientCredentials {
     }
 
     /// Sends the secret as `auth` says.
-    pub fn sending_secret(mut self, auth: TokenAuth) -> ClientCredentials {
+    pub(crate) fn sending_secret(mut self, auth: TokenAuth) -> ClientCredentials {
         self.auth = auth;
         self
     }
 
     /// Proves the client with the assertion in `path` in place of its secret (RFC 7523 2.2): a workload's token from
     /// its platform. The file is read at every sign-in, because the platform replaces it before it expires.
-    pub fn proven_by_assertion_file(mut self, path: PathBuf) -> ClientCredentials {
+    pub(crate) fn proven_by_assertion_file(mut self, path: PathBuf) -> ClientCredentials {
         self.assertion_file = Some(path);
         self
     }
 
     /// Signs in at `token_url` from now on. The token held is kept until it is due for renewal or refused.
-    pub fn sign_in_at(&mut self, token_url: String) {
+    pub(crate) fn sign_in_at(&mut self, token_url: String) {
         self.token_url = token_url;
     }
 
     /// The `Authorization` header's value, `Bearer {token}`, signing in first when no token is held or the one held is
     /// about to expire. An error never holds the secret.
-    pub fn bearer(&mut self) -> Result<String, IoError> {
+    pub(crate) fn bearer(&mut self) -> Result<String, IoError> {
         Ok(format!("Bearer {}", self.token()?.value))
     }
 
@@ -214,7 +214,7 @@ impl ClientCredentials {
     }
 
     /// Drops the token held, for one a call was refused with: the next [`ClientCredentials::bearer`] signs in again.
-    pub fn forget(&mut self) {
+    pub(crate) fn forget(&mut self) {
         self.token = None;
     }
 
@@ -305,14 +305,14 @@ pub(crate) mod tests {
     /// One request a test server read.
     pub(crate) struct Asked {
         /// The request line's target, such as `/token?a=b`.
-        pub target: String,
+        pub(crate) target: String,
         /// Each header, its name lowercased.
-        pub headers: Vec<(String, String)>,
-        pub body: String,
+        pub(crate) headers: Vec<(String, String)>,
+        pub(crate) body: String,
     }
 
     impl Asked {
-        pub fn header(&self, name: &str) -> Option<&str> {
+        pub(crate) fn header(&self, name: &str) -> Option<&str> {
             self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
         }
     }

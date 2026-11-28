@@ -29,17 +29,17 @@ use crate::core::column::{Column, StrBuilder, VarType};
 use std::collections::HashMap;
 
 /// The tag bytes.
-pub const NULL: u8 = 0;
-pub const FALSE: u8 = 1;
-pub const TRUE: u8 = 2;
-pub const I64: u8 = 3;
-pub const F64: u8 = 4;
-pub const STR: u8 = 5;
-pub const ARRAY: u8 = 6;
-pub const OBJECT: u8 = 7;
-pub const DATETIME: u8 = 8;
-pub const DURATION: u8 = 9;
-pub const BYTES: u8 = 10;
+pub(crate) const NULL: u8 = 0;
+pub(crate) const FALSE: u8 = 1;
+pub(crate) const TRUE: u8 = 2;
+pub(crate) const I64: u8 = 3;
+pub(crate) const F64: u8 = 4;
+pub(crate) const STR: u8 = 5;
+pub(crate) const ARRAY: u8 = 6;
+pub(crate) const OBJECT: u8 = 7;
+pub(crate) const DATETIME: u8 = 8;
+pub(crate) const DURATION: u8 = 9;
+pub(crate) const BYTES: u8 = 10;
 
 /// One encoded value whose strings and keys are UTF-8, so reading one needs no check of its own. A sealed variant
 /// column's rows are these (`Column::variant`); `Encoded::check` makes one of bytes from anywhere else.
@@ -191,7 +191,7 @@ pub fn read(v: Encoded<'_>) -> Value<'_> {
 
 /// How many bytes the value `b` starts with takes.
 #[inline]
-pub fn len_of(b: &[u8]) -> usize {
+pub(crate) fn len_of(b: &[u8]) -> usize {
     debug_assert!(b[0] <= BYTES, "not a variant tag: {}", b[0]);
     match b[0] {
         NULL | FALSE | TRUE => 1,
@@ -202,18 +202,18 @@ pub fn len_of(b: &[u8]) -> usize {
 }
 
 /// Whether `v` holds an object.
-pub fn is_object(v: Encoded) -> bool {
+pub(crate) fn is_object(v: Encoded) -> bool {
     v.0.first() == Some(&OBJECT)
 }
 
 /// The value at `key` inside the object `v`. `None` where `v` is no object or has no such key.
-pub fn member<'a>(v: Encoded<'a>, key: &str) -> Option<Encoded<'a>> {
+pub(crate) fn member<'a>(v: Encoded<'a>, key: &str) -> Option<Encoded<'a>> {
     at(v, Key::Member(key.as_bytes()))
 }
 
 /// What a variant is read at: an object's member by name, or an array's element by position.
 #[derive(Clone, Copy)]
-pub enum Key<'k> {
+pub(crate) enum Key<'k> {
     Member(&'k [u8]),
     /// Counts from the end when negative, as `at` does.
     Element(i64),
@@ -222,7 +222,7 @@ pub enum Key<'k> {
 /// The value at `key` inside `v`. `None` where:
 /// - `v` holds no value at `key`, or null there;
 /// - `key` is a member and `v` is no object, or `key` is an element and `v` is no array.
-pub fn at<'a>(v: Encoded<'a>, key: Key) -> Option<Encoded<'a>> {
+pub(crate) fn at<'a>(v: Encoded<'a>, key: Key) -> Option<Encoded<'a>> {
     match (read(v), key) {
         (Value::Object(entries), Key::Member(key)) => {
             entries.into_iter().find(|(k, _)| k.as_bytes() == key).map(|(_, v)| v)
@@ -237,7 +237,7 @@ pub fn at<'a>(v: Encoded<'a>, key: Key) -> Option<Encoded<'a>> {
 }
 
 impl<'a> Items<'a> {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.left as usize
     }
 
@@ -264,7 +264,7 @@ impl<'a> Iterator for Items<'a> {
 }
 
 impl<'a> Entries<'a> {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.left as usize
     }
 
@@ -297,13 +297,13 @@ impl<'a> Iterator for Entries<'a> {
 
 /// The value at `key` of each row's object in the variant column `col`, as a variant column: null where a row holds
 /// no object or the object has no such key.
-pub fn member_column(col: &Column, key: &str, pool: &mut BufferPool) -> Column {
+pub(crate) fn member_column(col: &Column, key: &str, pool: &mut BufferPool) -> Column {
     at_column(col, |_| Some(Key::Member(key.as_bytes())), pool)
 }
 
 /// The value at the key `key_of` gives each row of the variant column `col`, as a variant column: null where the row
 /// has no key or its value holds nothing at it.
-pub fn at_column<'k>(col: &Column, key_of: impl Fn(usize) -> Option<Key<'k>>, pool: &mut BufferPool) -> Column {
+pub(crate) fn at_column<'k>(col: &Column, key_of: impl Fn(usize) -> Option<Key<'k>>, pool: &mut BufferPool) -> Column {
     let mut b = StrBuilder::new(pool, VarType::Variant, col.len());
     match col.variant() {
         Ok(v) => {
@@ -324,22 +324,22 @@ pub fn at_column<'k>(col: &Column, key_of: impl Fn(usize) -> Option<Key<'k>>, po
 
 /// Append a null.
 #[inline]
-pub fn put_null(out: &mut Vec<u8>) {
+pub(crate) fn put_null(out: &mut Vec<u8>) {
     out.push(NULL);
 }
 
 #[inline]
-pub fn put_bool(out: &mut Vec<u8>, v: bool) {
+pub(crate) fn put_bool(out: &mut Vec<u8>, v: bool) {
     out.push(if v { TRUE } else { FALSE });
 }
 
 #[inline]
-pub fn put_i64(out: &mut Vec<u8>, v: i64) {
+pub(crate) fn put_i64(out: &mut Vec<u8>, v: i64) {
     put_word(out, I64, v.to_le_bytes());
 }
 
 #[inline]
-pub fn put_f64(out: &mut Vec<u8>, v: f64) {
+pub(crate) fn put_f64(out: &mut Vec<u8>, v: f64) {
     put_word(out, F64, v.to_le_bytes());
 }
 
@@ -352,13 +352,13 @@ pub fn put_str(out: &mut Vec<u8>, s: &str) {
 
 /// Append a time, in microseconds since the epoch.
 #[inline]
-pub fn put_datetime(out: &mut Vec<u8>, micros: i64) {
+pub(crate) fn put_datetime(out: &mut Vec<u8>, micros: i64) {
     put_word(out, DATETIME, micros.to_le_bytes());
 }
 
 /// Append a span, in microseconds.
 #[inline]
-pub fn put_duration(out: &mut Vec<u8>, micros: i64) {
+pub(crate) fn put_duration(out: &mut Vec<u8>, micros: i64) {
     put_word(out, DURATION, micros.to_le_bytes());
 }
 
@@ -370,7 +370,7 @@ fn put_word(out: &mut Vec<u8>, tag: u8, word: [u8; 8]) {
     out.extend_from_slice(&b);
 }
 
-pub fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
+pub(crate) fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
     out.push(BYTES);
     put_len(out, b.len());
     out.extend_from_slice(b);
@@ -392,7 +392,7 @@ fn put_len(out: &mut Vec<u8>, n: usize) {
 #[derive(Clone, Copy, Default)]
 pub struct Open(usize);
 
-pub fn begin_array(out: &mut Vec<u8>) -> Open {
+pub(crate) fn begin_array(out: &mut Vec<u8>) -> Open {
     begin(out, ARRAY)
 }
 
@@ -409,7 +409,7 @@ fn begin(out: &mut Vec<u8>, tag: u8) -> Open {
 
 /// Keep one entry per key of the object `open` began in `out`, whose entries are all written: a repeated key keeps
 /// its last value, in its first place. Returns how many entries are left. Time is linear in the entries.
-pub fn dedupe(out: &mut Vec<u8>, open: Open) -> usize {
+pub(crate) fn dedupe(out: &mut Vec<u8>, open: Open) -> usize {
     let start = open.0 + 8;
     // Each entry's start, its value's start, and its end.
     let mut entries = Vec::new();

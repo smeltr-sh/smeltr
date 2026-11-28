@@ -14,28 +14,28 @@ use super::bundle::{GROUPS_DIR, LOOKUP_TABLES_FILE, SECTION_FILES, SHARED_DIR};
 /// One side of a merge: `main`, or the branch being brought current with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Side {
+pub(crate) enum Side {
     Main,
     Work,
 }
 
 /// An object both sides changed, each to something different. A version is `None` on a side that does not have it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ObjectConflict {
-    pub id: String,
-    pub base: Option<String>,
-    pub main: Option<String>,
-    pub work: Option<String>,
+pub(crate) struct ObjectConflict {
+    pub(crate) id: String,
+    pub(crate) base: Option<String>,
+    pub(crate) main: Option<String>,
+    pub(crate) work: Option<String>,
     /// The bundle-relative file `main`'s version names: a lookup table's content. The chosen side's file comes with
     /// it, so a table never points at the other side's content.
-    pub main_names: Option<String>,
+    pub(crate) main_names: Option<String>,
     /// The same for the branch's version.
-    pub work_names: Option<String>,
+    pub(crate) work_names: Option<String>,
 }
 
 impl ObjectConflict {
     /// The file `side`'s version names, if any.
-    pub fn names(&self, side: Side) -> Option<&str> {
+    pub(crate) fn names(&self, side: Side) -> Option<&str> {
         match side {
             Side::Main => self.main_names.as_deref(),
             Side::Work => self.work_names.as_deref(),
@@ -43,7 +43,7 @@ impl ObjectConflict {
     }
 }
 
-pub enum SectionMerge {
+pub(crate) enum SectionMerge {
     /// Merged by object. `merged` is the file once every conflict has a choice, and `None` until then.
     Objects {
         conflicts: Vec<ObjectConflict>,
@@ -55,7 +55,7 @@ pub enum SectionMerge {
 }
 
 /// Whether `path`, relative to the repository, is a section file directly under a group's or `shared/`'s bundle.
-pub fn is_section_file(path: &str) -> bool {
+pub(crate) fn is_section_file(path: &str) -> bool {
     let (bundle, file) = match path.rsplit_once('/') {
         Some(split) => split,
         None => return false,
@@ -70,7 +70,7 @@ pub fn is_section_file(path: &str) -> bool {
 
 /// Three-way merge of one section file. `file` is its name in the bundle (`sources.json`); `choice` answers for an
 /// object both sides changed, by id. A file both sides added merges against an empty base.
-pub fn merge_section(
+pub(crate) fn merge_section(
     file: &str,
     base: Option<&[u8]>,
     main: Option<&[u8]>,
@@ -148,7 +148,7 @@ pub fn merge_section(
 /// side changed is that side's version, and an object both changed holds, in each top-level field, what the side that
 /// changed the field made of it. A line merge can do otherwise and call it clean -- an edit lined up with a copy of
 /// the lines it changed lands in another object -- so a text merge that does not keep this is not taken.
-pub fn text_merge_keeps_each_side(base: &[u8], main: &[u8], work: &[u8], merged: &[u8]) -> bool {
+pub(crate) fn text_merge_keeps_each_side(base: &[u8], main: &[u8], work: &[u8], merged: &[u8]) -> bool {
     let (Some(base), Some(main), Some(work), Some(merged)) = (
         objects(Some(base)),
         objects(Some(main)),

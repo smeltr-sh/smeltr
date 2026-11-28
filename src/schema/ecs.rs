@@ -15,7 +15,7 @@ use crate::io::elastic_mapping::{IGNORE_ABOVE, types_for};
 const REQUIRED: [&str; 2] = ["@timestamp", "ecs.version"];
 
 /// The fields `text` declares, ECS's CSV or its YAML, told apart by the CSV's header.
-pub fn read(text: &str) -> Result<Vec<SchemaFieldDto>, String> {
+pub(crate) fn read(text: &str) -> Result<Vec<SchemaFieldDto>, String> {
     let fields = match text.trim_start_matches('\u{feff}').starts_with("ECS_Version,") {
         true => from_csv(text)?,
         false => from_yaml(text)?,
@@ -114,7 +114,7 @@ fn from_yaml(text: &str) -> Result<Vec<Ecs>, String> {
 /// Whose requirements an ECS schema's fields take.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum Requirements {
+pub(crate) enum Requirements {
     /// ECS's own: what it requires, and its core fields recommended.
     #[default]
     Ecs,
@@ -125,7 +125,7 @@ pub enum Requirements {
 
 /// `fields` with the requirements `whose` gives them. A field Elastic Security names that the ECS read has not is
 /// passed over: its reference can name a field another release of ECS lacks.
-pub fn with_requirements(mut fields: Vec<SchemaFieldDto>, whose: Requirements) -> Vec<SchemaFieldDto> {
+pub(crate) fn with_requirements(mut fields: Vec<SchemaFieldDto>, whose: Requirements) -> Vec<SchemaFieldDto> {
     if whose == Requirements::ElasticSecurity {
         let asks: std::collections::HashMap<&str, Requirement> = super::standard::ELASTIC_SECURITY
             .lines()

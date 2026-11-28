@@ -816,7 +816,7 @@ fn hold_running(repo_dir: &Path, commit: &str) {
 // -- running the deployed bundle ---------------------------------------------
 
 /// How long one poll blocks before the thread checks `stop`.
-pub const TICK_TIMEOUT: Duration = Duration::from_millis(500);
+pub(crate) const TICK_TIMEOUT: Duration = Duration::from_millis(500);
 /// Rows in one batch, whichever of this and [`TICK_MAX_BYTES`] is reached first. A source hands over what is ready
 /// rather than wait to fill a batch (one whose records wait in memory waits a moment for [`LEAST_BATCH_BYTES`]), so
 /// this binds only under load.

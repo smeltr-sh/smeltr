@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 
 /// The most hits one search answers.
-pub const MAX_HITS: usize = 20;
+pub(crate) const MAX_HITS: usize = 20;
 
 /// About how much of a section a hit quotes, either side of the first word it matched.
 const SNIPPET: usize = 120;
@@ -30,17 +30,17 @@ pub struct Section {
     pub level: u8,
     pub heading: String,
     /// Markdown, from the heading on; the opening also holds what stands before the title.
-    pub text: String,
+    pub(crate) text: String,
 }
 
 /// A section a search matched.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Hit {
-    pub path: String,
-    pub title: String,
-    pub section: String,
-    pub heading: String,
-    pub snippet: String,
+    pub(crate) path: String,
+    pub(crate) title: String,
+    pub(crate) section: String,
+    pub(crate) heading: String,
+    pub(crate) snippet: String,
 }
 
 /// The pages, by path.

@@ -33,20 +33,20 @@ const VARIANT: &str = "variant";
 
 /// Spark's JSON struct: the table's schema, or a struct column's type.
 #[derive(Clone, Debug, PartialEq)]
-pub struct StructType {
+pub(crate) struct StructType {
     pub fields: Vec<StructField>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct StructField {
-    pub name: String,
-    pub data_type: Type,
-    pub nullable: bool,
-    pub metadata: Map<String, Value>,
+pub(crate) struct StructField {
+    pub(crate) name: String,
+    pub(crate) data_type: Type,
+    pub(crate) nullable: bool,
+    pub(crate) metadata: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Type {
+pub(crate) enum Type {
     /// A primitive type's name as the log spells it: `long`, `decimal(10,2)`.
     Primitive(String),
     Struct(StructType),
@@ -63,7 +63,7 @@ pub enum Type {
 
 impl StructType {
     /// The schema in a `metaData` action's `schemaString`.
-    pub fn parse(schema_string: &str) -> Result<StructType, String> {
+    pub(crate) fn parse(schema_string: &str) -> Result<StructType, String> {
         let value: Value = serde_json::from_str(schema_string).map_err(|e| format!("the table's schema: {e}"))?;
         match parse_type(&value)? {
             Type::Struct(s) => Ok(s),
@@ -72,7 +72,7 @@ impl StructType {
     }
 
     /// The schema as a `metaData` action's `schemaString` carries it.
-    pub fn to_json(&self) -> String {
+    pub(crate) fn to_json(&self) -> String {
         self.value().to_string()
     }
 
@@ -95,7 +95,7 @@ impl StructType {
 
 impl StructField {
     /// The name the column has in the data files: its physical name under column mapping, else its name.
-    pub fn physical_name(&self) -> &str {
+    pub(crate) fn physical_name(&self) -> &str {
         self.metadata
             .get(PHYSICAL_NAME)
             .and_then(Value::as_str)
@@ -103,7 +103,7 @@ impl StructField {
     }
 
     /// The column's id under column mapping, which the data files carry as the Parquet field id.
-    pub fn column_id(&self) -> Option<i64> {
+    pub(crate) fn column_id(&self) -> Option<i64> {
         self.metadata.get(COLUMN_ID).and_then(Value::as_i64)
     }
 }
@@ -216,7 +216,7 @@ fn parse_field(value: &Value) -> Result<StructField, String> {
 /// The table's column mapping: `delta.columnMapping.mode` absent or `none`, or `name` or `id` with
 /// `delta.columnMapping.maxColumnId`. A writer writes `name` and `id` alike.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mapping {
+pub(crate) enum Mapping {
     None,
     /// `iceberg` when the table is IcebergCompatV2: each new array's element, and map's key and value, takes an id
     /// under `delta.columnMapping.nested.ids` too, and a column widens only as Iceberg lets it.
@@ -228,14 +228,14 @@ pub enum Mapping {
 
 #[cfg(test)]
 impl Mapping {
-    pub fn name(max_column_id: i64) -> Mapping {
+    pub(crate) fn name(max_column_id: i64) -> Mapping {
         Mapping::Name {
             max_column_id,
             iceberg: false,
         }
     }
 
-    pub fn iceberg(max_column_id: i64) -> Mapping {
+    pub(crate) fn iceberg(max_column_id: i64) -> Mapping {
         Mapping::Name {
             max_column_id,
             iceberg: true,
@@ -245,21 +245,21 @@ impl Mapping {
 
 /// The table's schema for a record, and whether it differs from the table's current one.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Evolution {
-    pub schema: StructType,
+pub(crate) struct Evolution {
+    pub(crate) schema: StructType,
     /// The table's mapping with the schema's new columns counted: under `Name`, the highest column id assigned.
-    pub mapping: Mapping,
+    pub(crate) mapping: Mapping,
     /// Whether `schema` is new to the table: the table is created, a column added or one widened. A commit then sets
     /// it.
-    pub changed: bool,
+    pub(crate) changed: bool,
     /// Whether a column was widened.
-    pub widened: bool,
+    pub(crate) widened: bool,
 }
 
 /// How a new column of a variant is written: as a `string` of its JSON text, or as Delta's `variant`, which only a
 /// table with the `variantType` feature holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Variants {
+pub(crate) enum Variants {
     Json,
     Native,
 }
@@ -274,7 +274,7 @@ pub enum Variants {
 ///
 /// Err names the field when the record is no struct, a column holds a type other than the record's, a column is not
 /// nullable, or a new column's name differs only in case from another's.
-pub fn table_schema(
+pub(crate) fn table_schema(
     record: &DataType,
     current: Option<&StructType>,
     mapping: Mapping,
@@ -310,7 +310,7 @@ pub fn table_schema(
 /// The arrow schema the Parquet files are written with: `arrow` with every field `schema` names, at any depth and
 /// through a list's element, renamed to its physical name and carrying its column id under `PARQUET:field_id`.
 /// Fields are matched by name; one `schema` does not name is kept as it is.
-pub fn physical(arrow: &ArrowSchema, schema: &StructType) -> Arc<ArrowSchema> {
+pub(crate) fn physical(arrow: &ArrowSchema, schema: &StructType) -> Arc<ArrowSchema> {
     let fields: Fields = arrow.fields().iter().map(|f| mapped(f, &schema.fields)).collect();
     Arc::new(ArrowSchema::new_with_metadata(fields, arrow.metadata().clone()))
 }
@@ -357,14 +357,14 @@ fn with_id(field: Field, id: Option<i64>) -> Field {
 
 /// A top-level column the record does not write, which takes its default in every row of the files.
 #[derive(Clone, Debug)]
-pub struct Defaulted {
+pub(crate) struct Defaulted {
     /// The column's name in the table.
-    pub name: String,
+    pub(crate) name: String,
     /// The column as the files carry it.
-    pub field: Field,
-    pub kind: Kind,
+    pub(crate) field: Field,
+    pub(crate) kind: Kind,
     /// One row of `field`'s type.
-    pub value: ArrayRef,
+    pub(crate) value: ArrayRef,
 }
 
 impl PartialEq for Defaulted {
@@ -376,7 +376,7 @@ impl PartialEq for Defaulted {
 
 /// Each of `schema`'s top-level columns `arrow` does not hold that has a default this writer reads, in the table's
 /// order.
-pub fn defaulted(arrow: &ArrowSchema, schema: &StructType) -> Vec<Defaulted> {
+pub(crate) fn defaulted(arrow: &ArrowSchema, schema: &StructType) -> Vec<Defaulted> {
     (schema.fields.iter())
         .filter(|f| arrow.field_with_name(&f.name).is_err())
         .filter_map(|f| {
@@ -405,12 +405,12 @@ fn default_of(field: &StructField) -> Option<(Kind, ArrayRef)> {
 
 /// The Parquet type a column of the primitive the log names `p` is written as, where it is narrower than any record
 /// type.
-pub fn narrow(p: &str) -> Option<Arrow> {
+pub(crate) fn narrow(p: &str) -> Option<Arrow> {
     kind(p).as_ref().and_then(Kind::narrowed)
 }
 
 /// The kind of the primitive type the log names `primitive`, when it is one this writer reads a value of.
-pub fn kind(primitive: &str) -> Option<Kind> {
+pub(crate) fn kind(primitive: &str) -> Option<Kind> {
     match primitive {
         "boolean" => Some(Kind::Boolean),
         "byte" => Some(Kind::Byte),
@@ -431,7 +431,7 @@ pub fn kind(primitive: &str) -> Option<Kind> {
 /// The top-level column `name` a table is partitioned by: its physical name and its kind.
 ///
 /// Err when the table has no such column, or holds it as a type no partition value of this writer's takes.
-pub fn partition_column(schema: &StructType, name: &str) -> Result<(String, Kind), String> {
+pub(crate) fn partition_column(schema: &StructType, name: &str) -> Result<(String, Kind), String> {
     let field = schema
         .fields
         .iter()
@@ -453,7 +453,7 @@ pub fn partition_column(schema: &StructType, name: &str) -> Result<(String, Kind
 /// Whether `new` is `old` with only some of its types widened, as another writer widens a table: each of `old`'s
 /// fields still in it, the type of each the same or one the protocol lets it widen to, and each widened field's type
 /// changes its earlier ones and more. Files of `old`'s types may still be added to such a table.
-pub fn only_widened(old: &StructType, new: &StructType) -> bool {
+pub(crate) fn only_widened(old: &StructType, new: &StructType) -> bool {
     old.fields.iter().all(|old| {
         let Some(new) = new.fields.iter().find(|f| f.name == old.name) else {
             return false;
@@ -543,7 +543,7 @@ fn struct_fields<'a>(fields: &'a [StructField], out: &mut Vec<&'a StructField>) 
 }
 
 /// The largest id `delta.columnMapping.nested.ids` gives in `schema`; 0 when it gives none.
-pub fn max_nested_id(schema: &StructType) -> i64 {
+pub(crate) fn max_nested_id(schema: &StructType) -> i64 {
     let mut fields = Vec::new();
     struct_fields(&schema.fields, &mut fields);
     (fields.iter())
@@ -555,7 +555,7 @@ pub fn max_nested_id(schema: &StructType) -> i64 {
 
 /// What keeps `schema` from an IcebergCompatV2 table this writer writes: an array's element, or a map's key or value,
 /// without its id, or a type change Iceberg does not make. The message names the column.
-pub fn not_iceberg(schema: &StructType) -> Option<String> {
+pub(crate) fn not_iceberg(schema: &StructType) -> Option<String> {
     let mut fields = Vec::new();
     struct_fields(&schema.fields, &mut fields);
     fields.into_iter().find_map(|f| {
@@ -603,7 +603,7 @@ fn iceberg_widens(from: &str, to: &str) -> bool {
 /// value or a default other than a literal of a top-level column's type, check an invariant, or generate an identity
 /// below the top level. The message names the column
 /// and what it carries.
-pub fn refused_column(schema: &StructType) -> Option<String> {
+pub(crate) fn refused_column(schema: &StructType) -> Option<String> {
     if all_void(&schema.fields) {
         return Some("every column of the table is void, which no data file can hold".to_string());
     }

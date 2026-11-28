@@ -137,7 +137,7 @@ cmp_var!(ge_var_var, |x: &[u8], y: &[u8]| x >= y);
 
 /// Each row of `a op b` that `out` leaves null, settled: `==` is true where both operands are null, `!=` is its
 /// negation, and an ordering is false. `out` is what the kernel gave, or all null where no kernel takes the two types.
-pub fn settle_nulls(ctx: &mut Ctx, op: BinOp, a: &Column, b: &Column, out: Column) -> Column {
+pub(crate) fn settle_nulls(ctx: &mut Ctx, op: BinOp, a: &Column, b: &Column, out: Column) -> Column {
     let len = out.len();
     if !out.has_nulls() {
         return out;

@@ -30,7 +30,7 @@ use aws_lc_rs::signature::{self, RsaPublicKeyComponents, UnparsedPublicKey, Veri
 use base64::Engine as _;
 
 use super::outbound::read;
-pub use crate::io::client_credentials::TokenAuth;
+pub(crate) use crate::io::client_credentials::TokenAuth;
 use crate::io::client_credentials::basic;
 pub use crate::io::discovery::check_issuer;
 use crate::io::discovery::{self, MAX_DISCOVERY, check_url, said};
@@ -85,11 +85,11 @@ pub fn client(issuer: &str) -> Result<reqwest::Client, String> {
 /// What discovery found out about a provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provider {
-    pub issuer: String,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
+    pub(crate) issuer: String,
+    pub(crate) authorization_endpoint: String,
+    pub(crate) token_endpoint: String,
     pub jwks_uri: String,
-    pub token_auth: TokenAuth,
+    pub(crate) token_auth: TokenAuth,
 }
 
 /// Reads `issuer`'s discovery document. Refused unless it names the same issuer exactly, every endpoint passes the
@@ -168,7 +168,7 @@ pub async fn fetch_jwks(client: &reqwest::Client, uri: &str) -> Result<Jwks, Str
 impl Jwks {
     /// A key set as JSON. RSA and EC P-256 and P-384 keys meant for signatures are kept; any other key is skipped, so
     /// a set that also holds encryption keys still works. A set with no key kept is refused.
-    pub fn parse(json: &[u8]) -> Result<Jwks, String> {
+    pub(crate) fn parse(json: &[u8]) -> Result<Jwks, String> {
         let set: serde_json::Value =
             serde_json::from_slice(json).map_err(|e| format!("the key set is not JSON: {e}"))?;
         let listed = set

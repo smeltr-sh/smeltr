@@ -13,16 +13,16 @@ use crate::config_file::{Requirement, SchemaFieldDto};
 /// How much of a class becomes the schema.
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Cut {
+pub(crate) struct Cut {
     /// How many keys deep fields are taken: 1 is the class's own attributes.
     #[serde(default = "default_depth")]
-    pub depth: usize,
+    pub(crate) depth: usize,
     /// Which requirements are taken, as OCSF names them: `required`, `recommended`, `optional`.
     #[serde(default = "default_levels")]
-    pub levels: Vec<String>,
+    pub(crate) levels: Vec<String>,
     /// The profiles whose attributes are taken, by name. OCSF applies none unless a record says so.
     #[serde(default)]
-    pub profiles: Vec<String>,
+    pub(crate) profiles: Vec<String>,
 }
 
 impl Default for Cut {
@@ -47,14 +47,14 @@ fn default_levels() -> Vec<String> {
 const LISTED: [&str; 2] = ["metadata", "metadata.profiles"];
 
 /// The deepest `Cut::depth`. OCSF's objects name each other, so a cut has to stop somewhere.
-pub const DEEPEST: usize = 8;
+pub(crate) const DEEPEST: usize = 8;
 
 /// The most fields a cut may make. OCSF's objects hold each other, so a deep cut that takes optional attributes makes
 /// tens of thousands, more than a schema anyone reads.
-pub const MOST: usize = 10_000;
+pub(crate) const MOST: usize = 10_000;
 
 /// The fields of the class `class` in `doc`, cut as `cut` says.
-pub fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, String> {
+pub(crate) fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, String> {
     if !(1..=DEEPEST).contains(&cut.depth) {
         return Err(format!("a depth is 1 to {DEEPEST}"));
     }
@@ -96,7 +96,7 @@ pub fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, 
 
 /// How a schema read from `class` of `doc` with `cut` was read, for its description, so it can be read again the same
 /// way: the release, the class, the cut and the profiles, by OCSF's captions.
-pub fn described(doc: &Value, class: &str, cut: &Cut) -> String {
+pub(crate) fn described(doc: &Value, class: &str, cut: &Cut) -> String {
     let caption = |of: &Value, name: &str| of["caption"].as_str().unwrap_or(name).to_string();
     let profiles: Vec<String> = (cut.profiles.iter()).map(|p| caption(&doc["profiles"][p], p)).collect();
     format!(

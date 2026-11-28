@@ -79,7 +79,7 @@ pub fn partition_name(transform: &Transform, path: &[String]) -> String {
 }
 
 /// The type `transform` makes of a `source` value. Err when the spec does not define the pair.
-pub fn result_type(transform: &Transform, source: &Primitive) -> Result<Primitive, String> {
+pub(crate) fn result_type(transform: &Transform, source: &Primitive) -> Result<Primitive, String> {
     use Primitive as P;
     let supported = match transform {
         Transform::Identity => !matches!(source, P::Other(_)),
@@ -164,7 +164,7 @@ fn days_of(value: &Literal) -> Option<i64> {
 }
 
 /// MurmurHash3, x86 32-bit, seed 0: the hash the spec buckets by.
-pub fn murmur3_x86_32(data: &[u8]) -> i32 {
+pub(crate) fn murmur3_x86_32(data: &[u8]) -> i32 {
     const C1: u32 = 0xcc9e_2d51;
     const C2: u32 = 0x1b87_3593;
     let mix = |k: u32| k.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
@@ -191,7 +191,7 @@ pub fn murmur3_x86_32(data: &[u8]) -> i32 {
 /// URLEncoder escapes it, as Iceberg's own writer does: `2026-10-10` for a day, `2026-10-10-13` for an hour, `null`
 /// for null. A string or a binary's Base64 that reads `null` escapes its first letter, so that `literal_of` can tell
 /// it from null.
-pub fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transform) -> String {
+pub(crate) fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transform) -> String {
     let Some(value) = value else {
         return NULL.to_string();
     };
@@ -238,7 +238,7 @@ pub fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transf
 const NULL: &str = "null";
 
 /// The value `path_text` wrote as `text`, of the `result` type `transform` makes. None for null.
-pub fn literal_of(result: &Primitive, transform: &Transform, text: &str) -> Result<Option<Literal>, String> {
+pub(crate) fn literal_of(result: &Primitive, transform: &Transform, text: &str) -> Result<Option<Literal>, String> {
     if text == NULL {
         return Ok(None);
     }
@@ -338,7 +338,7 @@ fn url_decode(s: &str) -> Option<String> {
 }
 
 /// Partitions rows by a table's spec: one path segment per spec field, in the spec's order.
-pub struct TablePartitioner {
+pub(crate) struct TablePartitioner {
     fields: Vec<SpecField>,
 }
 
@@ -356,7 +356,7 @@ struct SpecField {
 impl TablePartitioner {
     /// Err when a spec field's source is not a primitive column of `schema` outside any list, or its transform cannot
     /// be applied to it.
-    pub fn new(spec: &PartitionSpec, schema: &Schema) -> Result<TablePartitioner, String> {
+    pub(crate) fn new(spec: &PartitionSpec, schema: &Schema) -> Result<TablePartitioner, String> {
         let fields = spec
             .fields
             .iter()

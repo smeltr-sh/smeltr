@@ -139,39 +139,39 @@ impl From<&crate::plan::topology::DestinationKind> for System {
 pub struct MapNode {
     /// Which group this instance runs in. An author id is unique only within one group plus `shared/`, never across
     /// the fleet, so this is part of the node's identity, not a label on top of it.
-    pub group: String,
-    pub author_id: String,
-    pub name: String,
-    pub kind: NodeKind,
+    pub(crate) group: String,
+    pub(crate) author_id: String,
+    pub(crate) name: String,
+    pub(crate) kind: NodeKind,
     /// The system behind a source or destination; `None` for a pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<System>,
+    pub(crate) system: Option<System>,
     /// A source's or destination's type, as the Sources and Destinations pages name it: the `type` its config names,
     /// or `syslogReceiver` for a socket receiver that frames syslog. `None` for a pipeline. Its card is labeled by it.
     /// Several types share one `system`, so `system` alone cannot label it.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub config_type: Option<String>,
+    pub(crate) config_type: Option<String>,
     /// Declared in `shared/` rather than in this group's own subtree -- still one running thing per group that
     /// merges it in, just not authored here.
-    pub shared: bool,
+    pub(crate) shared: bool,
     /// The warning catalog names this object in this group. Always `false` for a pipeline: no catalog entry has
     /// one as its subject.
-    pub warning: bool,
+    pub(crate) warning: bool,
 }
 
 /// A source→pipeline edge: one `RouteConfig`, inside one group.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteEdge {
-    pub group: String,
+    pub(crate) group: String,
     /// `RouteConfig::id`.
-    pub route: String,
+    pub(crate) route: String,
     /// `RouteConfig::name`.
-    pub name: String,
+    pub(crate) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
-    pub source: String,
-    pub pipeline: String,
+    pub(crate) condition: Option<String>,
+    pub(crate) source: String,
+    pub(crate) pipeline: String,
 }
 
 /// A pipeline→destination edge: one destination out of one `DeliverRule` on one route, inside one group. A rule
@@ -180,13 +180,13 @@ pub struct RouteEdge {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliverEdge {
-    pub group: String,
+    pub(crate) group: String,
     /// The route this rule belongs to -- a rule has no id of its own.
-    pub route: String,
+    pub(crate) route: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub when: Option<String>,
-    pub pipeline: String,
-    pub destination: String,
+    pub(crate) when: Option<String>,
+    pub(crate) pipeline: String,
+    pub(crate) destination: String,
 }
 
 /// A source→destination edge: one of the deployment's unmatched destinations, for a source a row can fall through
@@ -197,9 +197,9 @@ pub struct DeliverEdge {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnmatchedEdge {
-    pub group: String,
-    pub source: String,
-    pub destination: String,
+    pub(crate) group: String,
+    pub(crate) source: String,
+    pub(crate) destination: String,
 }
 
 /// A node→destination edge: an exception answer delivering there. From a pipeline, for the kinds its route answers
@@ -209,16 +209,16 @@ pub struct UnmatchedEdge {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExceptionEdge {
-    pub group: String,
+    pub(crate) group: String,
     /// `pipeline` or `destination`: what kind of node the edge leaves.
-    pub from_kind: &'static str,
-    pub from: String,
+    pub(crate) from_kind: &'static str,
+    pub(crate) from: String,
     /// The route whose answer this is; absent for a destination's.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub route: Option<String>,
-    pub destination: String,
+    pub(crate) route: Option<String>,
+    pub(crate) destination: String,
     /// The kinds answered with deliver to `destination`, in `ExceptionKind::KINDS` order.
-    pub kinds: Vec<&'static str>,
+    pub(crate) kinds: Vec<&'static str>,
 }
 
 /// A source→destination edge: a batch nothing could process, and a destination the deployment's `unprocessable`
@@ -231,12 +231,12 @@ pub struct ExceptionEdge {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PoisonEdge {
-    pub group: String,
-    pub source: String,
-    pub destination: String,
+    pub(crate) group: String,
+    pub(crate) source: String,
+    pub(crate) destination: String,
     /// Batches, not rows: nothing processed a poisoned batch, so it has none to count. Always present -- a reading
     /// is what draws this edge.
-    pub throughput: f64,
+    pub(crate) throughput: f64,
 }
 
 /// Why one group has no graph: it names the group and every problem `validate_at` or an unreadable file raised for
@@ -244,8 +244,8 @@ pub struct PoisonEdge {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupError {
-    pub group: String,
-    pub errors: Vec<String>,
+    pub(crate) group: String,
+    pub(crate) errors: Vec<String>,
 }
 
 /// The fleet's map. Its envelope is not `ok` only for a problem that stopped every group from being read at all --

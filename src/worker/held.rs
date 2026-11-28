@@ -33,14 +33,14 @@ use crate::io::{CommitMap, IoError, PartitionLag, Progress, Source, SourceRecord
 /// ledger it fetched for it. With no file, the source is only kept reading where it already is, never granted:
 /// granted without its ledger, it would read everything again.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Holding {
-    pub hold: Hold,
-    pub ledger_file: Option<std::path::PathBuf>,
+pub(crate) struct Holding {
+    pub(crate) hold: Hold,
+    pub(crate) ledger_file: Option<std::path::PathBuf>,
 }
 
 impl Holding {
     /// Remove this hold's ledger file, if it has one, for a hold that will not be granted from it.
-    pub fn discard_ledger(&self) {
+    pub(crate) fn discard_ledger(&self) {
         if let Some(file) = &self.ledger_file {
             let _ = std::fs::remove_file(file);
         }
@@ -50,7 +50,7 @@ impl Holding {
 /// Whether one source is held now, shared between the frame thread that hears it and the reader thread that acts
 /// on it. Each grant and each revoke is a new generation, so a reader that missed both still sees the change.
 #[derive(Default)]
-pub struct Slot {
+pub(crate) struct Slot {
     grant: Mutex<Grant>,
     changed: Condvar,
 }
@@ -99,7 +99,7 @@ pub struct Held {
 
 impl Held {
     /// A source of this deployment read through a hold: `open` builds it each time it is granted.
-    pub fn source(&self, key: SourceKey, open: Opener) -> HeldSource {
+    pub(crate) fn source(&self, key: SourceKey, open: Opener) -> HeldSource {
         let slot = self.slots.lock().entry(key.clone()).or_default().clone();
         HeldSource {
             key,
@@ -118,7 +118,7 @@ impl Held {
     }
 
     /// Every single-worker source deployed here, for the leader to know which workers may hold it.
-    pub fn keys(&self) -> Vec<SourceKey> {
+    pub(crate) fn keys(&self) -> Vec<SourceKey> {
         let mut keys: Vec<SourceKey> = self.slots.lock().keys().cloned().collect();
         keys.sort();
         keys
@@ -126,7 +126,7 @@ impl Held {
 
     /// Every single-worker source this runtime holds now. A source the supervisor named and this leaves out is
     /// one whose grant failed, once [`Held::applied`] has reached the frame that named it.
-    pub fn holding(&self) -> Vec<SourceKey> {
+    pub(crate) fn holding(&self) -> Vec<SourceKey> {
         let mut keys: Vec<SourceKey> = self
             .slots
             .lock()
@@ -139,7 +139,7 @@ impl Held {
     }
 
     /// The sequence number of the last holds frame applied.
-    pub fn applied(&self) -> u64 {
+    pub(crate) fn applied(&self) -> u64 {
         self.applied.load(Ordering::Relaxed)
     }
 
@@ -150,7 +150,7 @@ impl Held {
     /// A ledger file is read and removed. A grant comes with its ledger file; one without it, or whose file cannot
     /// be read, is not made: the source stays unheld rather than reading everything again.
     /// The supervisor sees it missing from [`Held::holding`] and offers it again, with the ledger fetched afresh.
-    pub fn apply(&self, seq: u64, holdings: Vec<Holding>) {
+    pub(crate) fn apply(&self, seq: u64, holdings: Vec<Holding>) {
         let slots = self.slots.lock();
         let named: BTreeSet<&SourceKey> = holdings.iter().map(|h| &h.hold.key).collect();
         for (key, slot) in slots.iter() {
@@ -186,12 +186,12 @@ impl Held {
 
     /// What commits have yielded, oldest first, up to `entries` ledger entries and about `bytes` of JSON. See
     /// [`take_ledger`].
-    pub fn take_progress(&self, entries: usize, bytes: usize) -> Vec<SourceProgress> {
+    pub(crate) fn take_progress(&self, entries: usize, bytes: usize) -> Vec<SourceProgress> {
         take_ledger(&mut self.outbox.pending.lock(), entries, bytes)
     }
 
     /// Progress a report could not carry, ahead of whatever commits have yielded since.
-    pub fn untake_progress(&self, unsent: Vec<SourceProgress>) {
+    pub(crate) fn untake_progress(&self, unsent: Vec<SourceProgress>) {
         if unsent.is_empty() {
             return;
         }
@@ -203,7 +203,7 @@ impl Held {
 
     /// Whether the supervisor's own backlog for the leader is past its bound. Held sources read nothing new while
     /// it is, as while this runtime's is.
-    pub fn set_upstream_backlogged(&self, backlogged: bool) {
+    pub(crate) fn set_upstream_backlogged(&self, backlogged: bool) {
         self.outbox.upstream.store(backlogged, Ordering::Relaxed);
     }
 
@@ -217,15 +217,15 @@ impl Held {
 /// beats' worth. A leader briefly away, or a burst past one beat, costs nothing, and a long outage holds the
 /// worker to about 90 MB of ledger at its longest entries, here and in the supervisor each, rather than all it
 /// can read.
-pub const BACKLOG_FULL: usize = 8 * crate::heartbeat::LEDGER_PER_HEARTBEAT;
+pub(crate) const BACKLOG_FULL: usize = 8 * crate::heartbeat::LEDGER_PER_HEARTBEAT;
 
 /// Where a full backlog has drained far enough for reading to resume: half the bound, so a backlog hovering at the
 /// bound does not stop and start the read on every report.
-pub const BACKLOG_EASED: usize = BACKLOG_FULL / 2;
+pub(crate) const BACKLOG_EASED: usize = BACKLOG_FULL / 2;
 
 /// How much `pending` weighs against [`BACKLOG_FULL`]: its ledger entries, and one for each progress, so a source
 /// that yields only cursors is bounded too.
-pub fn backlog(pending: &[SourceProgress]) -> usize {
+pub(crate) fn backlog(pending: &[SourceProgress]) -> usize {
     pending
         .iter()
         .map(|p| 1 + p.progress.added.len() + p.progress.removed.len())
@@ -234,7 +234,7 @@ pub fn backlog(pending: &[SourceProgress]) -> usize {
 
 /// Whether a backlog of `weight` is full, given whether it `was`: full from [`BACKLOG_FULL`], until it eases to
 /// [`BACKLOG_EASED`].
-pub fn backlogged(was: bool, weight: usize) -> bool {
+pub(crate) fn backlogged(was: bool, weight: usize) -> bool {
     if was {
         weight > BACKLOG_EASED
     } else {
@@ -316,7 +316,7 @@ fn read_ledger(file: &std::path::Path, into: &mut Vec<LedgerEntry>) -> std::io::
 /// JSON. A progress that does not fit whole is split, and its cursor rides the remainder, since a cursor says
 /// everything before it was delivered. A cursor counts toward the bytes and not the entries. The first entry is
 /// always taken, whatever it weighs, so nothing in `pending` can hold back what is behind it.
-pub fn take_ledger(pending: &mut Vec<SourceProgress>, entries: usize, bytes: usize) -> Vec<SourceProgress> {
+pub(crate) fn take_ledger(pending: &mut Vec<SourceProgress>, entries: usize, bytes: usize) -> Vec<SourceProgress> {
     let mut entries_left = entries;
     let mut bytes_left = bytes;
     let mut whole = 0;
@@ -408,11 +408,11 @@ fn admitted(key: &SourceKey, mut progress: Progress) -> Progress {
 }
 
 /// Builds the source a hold reads, each time it is granted.
-pub type Opener = Box<dyn FnMut() -> Result<Box<dyn Source>, IoError> + Send>;
+pub(crate) type Opener = Box<dyn FnMut() -> Result<Box<dyn Source>, IoError> + Send>;
 
 /// A single-worker source, read only while its [`Slot`] says it is held. Unheld, a poll waits out its timeout and
 /// returns nothing, and a commit is ignored.
-pub struct HeldSource {
+pub(crate) struct HeldSource {
     key: SourceKey,
     slot: Arc<Slot>,
     open: Opener,

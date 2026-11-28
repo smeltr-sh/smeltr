@@ -10,7 +10,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A client for the service at `url`, called `what` in what it says: HTTPS only unless `url` is plain HTTP on this
 /// host. `timeout` bounds each request, its answer included.
-pub fn client(
+pub(crate) fn client(
     url: &str,
     what: &str,
     timeout: Duration,
@@ -35,7 +35,7 @@ pub fn client(
 
 /// The body, read a chunk at a time so a service that sends more than `limit` is cut off at it, whatever it says
 /// its length is.
-pub async fn read(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
+pub(crate) async fn read(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()

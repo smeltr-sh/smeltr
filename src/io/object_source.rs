@@ -282,7 +282,7 @@ pub fn open(config: &ObjectSourceConfig, secrets: &HeldSecrets) -> Result<Box<dy
 }
 
 /// The store a bucket is read from, built on its first object.
-pub type Stores = Box<dyn FnMut(&str) -> Result<Arc<dyn ObjectStore>, IoError> + Send>;
+pub(crate) type Stores = Box<dyn FnMut(&str) -> Result<Arc<dyn ObjectStore>, IoError> + Send>;
 
 /// A message received and not yet deleted.
 struct Held {
