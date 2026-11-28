@@ -1,0 +1,147 @@
+# tests/reference/suricata.rs's mapping to ECS, and its enrichment.
+e = .
+# An object of no known shape: VRL refuses a nested write into a literal `{}`.
+. = object!(parse_json!("{}"))
+kind = e.event_type
+alert = kind == "alert"
+."@timestamp" = parse_timestamp!(e.timestamp, "%Y-%m-%dT%H:%M:%S%.f%z")
+.event.module = "suricata"
+.event.dataset = "suricata.eve"
+.event.kind = if alert { "alert" } else { "event" }
+.event.category = if alert { "intrusion_detection" } else { "network" }
+.source.ip = e.src_ip
+.source.port = e.src_port
+.destination.ip = e.dest_ip
+.destination.port = e.dest_port
+.network.transport = downcase!(e.proto)
+if e.app_proto != "failed" { .network.protocol = e.app_proto }
+.network.community_id = e.community_id
+.observer.ingress.interface.name = e.in_iface
+.observer.hostname = e.host
+# The name the far end goes by, whichever protocol said it.
+domain = e.http.hostname
+if domain == null { domain = e.tls.sni }
+if domain == null { domain = e.dns.rrname }
+.destination.domain = domain
+
+if alert || kind == "flow" {
+  .source.packets = e.flow.pkts_toserver
+  .source.bytes = e.flow.bytes_toserver
+  .destination.packets = e.flow.pkts_toclient
+  .destination.bytes = e.flow.bytes_toclient
+  if is_integer(e.flow.pkts_toserver) && is_integer(e.flow.pkts_toclient) {
+    .network.packets = int!(e.flow.pkts_toserver) + int!(e.flow.pkts_toclient)
+  }
+  if is_integer(e.flow.bytes_toserver) && is_integer(e.flow.bytes_toclient) {
+    .network.bytes = int!(e.flow.bytes_toserver) + int!(e.flow.bytes_toclient)
+  }
+}
+if kind == "http" || kind == "fileinfo" {
+  .url.domain = e.http.hostname
+  .url.original = e.http.url
+  if is_string(e.http.url) { .url.path = split!(e.http.url, "?")[0] }
+  .http.request.method = e.http.http_method
+  .http.response.status_code = e.http.status
+  .http.response.body.bytes = e.http.length
+  .user_agent.original = e.http.http_user_agent
+}
+if alert {
+  .rule.id = e.alert.signature_id
+  .rule.name = e.alert.signature
+  .rule.category = e.alert.category
+  .event.severity = e.alert.severity
+  .event.action = e.alert.action
+  if e.alert.action != null {
+    .event.outcome = if e.alert.action == "blocked" { "failure" } else { "success" }
+  }
+} else if kind == "flow" {
+  if e.flow.start != null { .event.start = parse_timestamp!(e.flow.start, "%Y-%m-%dT%H:%M:%S%.f%z") }
+  if e.flow.end != null { .event.end = parse_timestamp!(e.flow.end, "%Y-%m-%dT%H:%M:%S%.f%z") }
+} else if kind == "dns" {
+  .dns.type = e.dns.type
+  .dns.id = e.dns.id
+  .dns.question.name = e.dns.rrname
+  .dns.question.type = e.dns.rrtype
+  .dns.response_code = e.dns.rcode
+} else if kind == "tls" {
+  .tls.client.server_name = e.tls.sni
+  .tls.version_protocol = "tls"
+  if is_string(e.tls.version) { .tls.version = split!(e.tls.version, " ")[1] }
+  .tls.server.subject = e.tls.subject
+  .tls.server.issuer = e.tls.issuerdn
+  .tls.client.ja3 = e.tls.ja3.hash
+} else if kind == "fileinfo" {
+  if is_string(e.fileinfo.filename) { .file.name = split!(e.fileinfo.filename, "/")[2] }
+  .file.size = e.fileinfo.size
+  .file.hash.md5 = e.fileinfo.md5
+  .file.hash.sha1 = e.fileinfo.sha1
+  .file.hash.sha256 = e.fileinfo.sha256
+} else if kind == "smtp" {
+  # SMTP's `<address>`, without the brackets.
+  if is_string(e.smtp.mail_from) { .email.from.address = slice!(e.smtp.mail_from, 1, -1) }
+  .email.subject = e.email.subject
+  .source.domain = e.smtp.helo
+}
+
+# Both ends: GeoIP, and the company's network.
+geo, err = get_enrichment_table_record("geoip", {"ip": .source.ip})
+if err == null {
+  .source.geo.country_iso_code = geo.country_code
+  .source.geo.city_name = geo.city_name
+  .source.geo.location.lat = geo.latitude
+  .source.geo.location.lon = geo.longitude
+}
+geo, err = get_enrichment_table_record("geoip", {"ip": .destination.ip})
+if err == null {
+  .destination.geo.country_iso_code = geo.country_code
+  .destination.geo.city_name = geo.city_name
+  .destination.geo.location.lat = geo.latitude
+  .destination.geo.location.lon = geo.longitude
+}
+net, err = get_enrichment_table_record("networks", {"ip": .source.ip})
+if err == null {
+  .source.site = net.site
+  .source.network_tier = net.tier
+  .source.business_unit = net.business_unit
+}
+net, err = get_enrichment_table_record("networks", {"ip": .destination.ip})
+if err == null {
+  .destination.site = net.site
+  .destination.network_tier = net.tier
+  .destination.business_unit = net.business_unit
+}
+if is_string(domain) {
+  listed, err = get_enrichment_table_record("domains", {"domain": domain})
+  if err == null {
+    .destination.domain_category = listed.category
+    .destination.domain_owner = listed.owner
+  }
+  # The regex list, first match wins. VRL compiles only the regexes written here, so the list is.
+  d = string!(domain)
+  if match(d, r'\.acme\.internal$') {
+    .destination.domain_verdict = "internal"
+    .destination.domain_reason = "company domain"
+  } else if match(d, r'^[a-z0-9]{12,}\.(top|xyz|click)$') {
+    .destination.domain_verdict = "suspicious"
+    .destination.domain_reason = "generated name"
+  } else if match(d, r'(^|\.)(cloudbox|paste\.anon)\.example$') {
+    .destination.domain_verdict = "data-exfil-risk"
+    .destination.domain_reason = "file sharing"
+  } else if match(d, r'(^|\.)(osvendor|langrepo)\.example$') {
+    .destination.domain_verdict = "trusted"
+    .destination.domain_reason = "software update"
+  } else if match(d, r'\.example$') {
+    .destination.domain_verdict = "external"
+    .destination.domain_reason = "internet"
+  }
+}
+# A field the event did not have is left out, as it is from every other engine's document.
+. = compact(., string: false, object: false, array: false)
+
+# What Suricata sent, under `suricata.eve`; what the mapping reads from the top is left out.
+.suricata.eve = filter(object!(e)) -> |key, _value| {
+  includes(["alert", "flow", "tcp", "dns", "http", "tls", "fileinfo", "smtp", "email", "vlan", "tx_id", "direction",
+    "payload", "payload_printable", "stream", "host"], key)
+}
+.suricata.eve.event_type = e.event_type
+.suricata.eve.flow_id = e.flow_id

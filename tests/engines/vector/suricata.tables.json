@@ -1,0 +1,5 @@
+{
+  "geoip": {"type": "geoip", "path": "/etc/engine/lookups/city.mmdb"},
+  "networks": {"type": "mmdb", "path": "/etc/engine/lookups/networks.mmdb"},
+  "domains": {"type": "file", "file": {"path": "/etc/engine/lookups/domains.csv", "encoding": {"type": "csv"}}}
+}

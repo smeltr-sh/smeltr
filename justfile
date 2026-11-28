@@ -772,6 +772,17 @@ bench-log:
 connector-speed: live-up
     cargo test --profile optimized --test connector-speed -- --ignored --exact speed --nocapture
 
+# Smeltr beside Logstash, Vector and NiFi: each engine in a container on the same cores and memory, fed the same
+# records over HTTP and from Kafka, its output checked before it is timed. `ENGINES`, `ENGINE_PIPELINES` and
+# `ENGINE_TRANSPORTS` (http, kafka) pick by name,
+# `ENGINE_THREADS=2,4,8` sets the hardware threads each row gives the engine, in whole cores (one core's, then two's, when unset), `ENGINE_ROWS` (2,000,000) the
+# records each row times, `ENGINE_ROUNDS` (3) how often each row runs, and `ENGINE_MEMORY_GB` (4) the container's
+# memory.
+[doc("Smeltr, Logstash, Vector and NiFi timed on the same cores, memory and records.")]
+[group("dev")]
+engine-speed:
+    cargo test --profile optimized --test connector-speed -- --ignored --exact engines::speed --nocapture
+
 # Build the benchmarks: they are `test = false` targets, which no check builds.
 [doc("Build every benchmark.")]
 build-benches: need-rust (need "jq" "Install jq: it lists the benchmarks.")
