@@ -63,7 +63,7 @@ use crate::plan::topology::{
 
 /// Where a receiver answers whether it takes requests: 200 while it does, 503 while it is busy, blocked or stopping.
 /// What a balancer's health check or a Kubernetes readiness probe asks.
-pub const HEALTH_PATH: &str = "/health";
+pub(crate) const HEALTH_PATH: &str = "/health";
 
 /// What a receiver holds that its reader has not taken. One request may be as large as this
 /// (`MaxRequestBytes::MAX`), so a receiver with room takes any request it may be sent.
@@ -76,11 +76,11 @@ const BODY_READ_SECS: u64 = 30;
 const RETRY_AFTER_SECS: &str = "1";
 
 /// The environment a supervisor names the sockets it hands a runtime in: `address=fd` pairs, comma-separated.
-pub const SOCKETS_ENV: &str = "SMELTR_RECEIVER_SOCKETS";
+pub(crate) const SOCKETS_ENV: &str = "SMELTR_RECEIVER_SOCKETS";
 
 /// What a receiver started from `config` keeps for its turn: the most one request holds, decoded where its protocol
 /// decodes it, and for a receiver that streams, one request and the room a connection takes before it reads on.
-pub fn reserve(config: &ReceiverConfig) -> usize {
+pub(crate) fn reserve(config: &ReceiverConfig) -> usize {
     match config.receiver {
         Receiver::Otlp(_) | Receiver::Prometheus | Receiver::Elastic => INBOX_BYTES,
         Receiver::S2s(_) | Receiver::Socket(_) => config.max_request_bytes + STREAM_STEP,
@@ -94,7 +94,7 @@ pub(super) const STREAM_STEP: usize = 256 * 1024;
 
 /// Opens a receiver: takes its socket, from this process's supervisor when it handed one over, and serves it. With
 /// `pool`, it holds one request of its own and borrows above that from `pool`, which the deployment's receivers share.
-pub fn open(
+pub(crate) fn open(
     config: &ReceiverConfig,
     secrets: &HeldSecrets,
     pool: Option<&Arc<QueuePool>>,
@@ -599,7 +599,7 @@ where
 
 /// The runtime every receiver of this process serves on, sized by cores, so a worker's receiver threads stay the same
 /// however many receivers it runs. The worker's metrics endpoint serves on it too.
-pub(crate) fn receiver_runtime() -> Result<&'static tokio::runtime::Runtime, IoError> {
+fn receiver_runtime() -> Result<&'static tokio::runtime::Runtime, IoError> {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     if let Some(runtime) = RUNTIME.get() {
         return Ok(runtime);
@@ -768,7 +768,7 @@ impl Drop for Joined {
 }
 
 /// A receiver's half on the reader's thread: the inbox it drains, and the answers its commits release.
-pub struct ReceiverSource {
+struct ReceiverSource {
     shared: Arc<Shared>,
     /// Dropped with the source, which ends the server and every connection it holds.
     serving: Option<Serving>,
@@ -1346,7 +1346,7 @@ impl Default for Holdings {
 impl Holdings {
     /// Holdings with `reserve` bytes for its turn and shared bytes from `pool`, as far as the pool lends. Without a
     /// pool, `INBOX_BYTES` shared.
-    pub fn reserving(reserve: usize, pool: Option<Arc<QueuePool>>) -> Holdings {
+    fn reserving(reserve: usize, pool: Option<Arc<QueuePool>>) -> Holdings {
         Holdings {
             account: Mutex::new(Account::default()),
             reserve,
@@ -3294,7 +3294,7 @@ fn unnamed(name: &str) -> Option<Listen> {
 /// Take the sockets this process's supervisor handed it ([`SOCKETS_ENV`]). A runtime calls this first, before it
 /// starts any process of its own, which would otherwise inherit them too. A pair that does not name a listening
 /// socket on its address is left alone, and that receiver binds its own.
-pub fn adopt_inherited() {
+pub(crate) fn adopt_inherited() {
     #[cfg(unix)]
     {
         use std::os::fd::FromRawFd;
@@ -3428,14 +3428,14 @@ fn no_ipv6(e: &std::io::Error) -> bool {
 /// in [`SOCKETS_ENV`]. On Windows `std` offers no way to hand a child process a socket, so there each runtime binds
 /// its own, and a sender that connects while one runtime is replaced is refused and sends again.
 #[derive(Default)]
-pub struct Sockets {
+pub(crate) struct Sockets {
     held: HashMap<Listen, socket2::Socket>,
 }
 
 impl Sockets {
     /// Bind everything in `wanted` not already held. One that will not bind is left to the runtime, whose own bind
     /// says why.
-    pub fn hold(&mut self, wanted: &[Listen]) {
+    pub(crate) fn hold(&mut self, wanted: &[Listen]) {
         if !cfg!(unix) {
             return;
         }
@@ -3458,13 +3458,13 @@ impl Sockets {
     }
 
     /// Close every socket `wanted` no longer names.
-    pub fn keep_only(&mut self, wanted: &[Listen]) {
+    pub(crate) fn keep_only(&mut self, wanted: &[Listen]) {
         self.held.retain(|listen, _| wanted.contains(listen));
     }
 
     /// Each held socket, as [`SOCKETS_ENV`] names it, and its descriptor, for a runtime about to be started.
     #[cfg(unix)]
-    pub fn handed(&self, listens: &[Listen]) -> (String, Vec<i32>) {
+    pub(crate) fn handed(&self, listens: &[Listen]) -> (String, Vec<i32>) {
         use std::os::fd::AsRawFd;
         let pairs: Vec<(Listen, i32)> = (self.held.iter())
             .filter(|(l, _)| listens.contains(l))

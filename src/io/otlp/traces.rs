@@ -206,6 +206,7 @@ impl Traces {
         Ok(Traces::new(request))
     }
 
+    #[cfg(test)]
     pub(super) fn encoded(&self) -> Vec<u8> {
         self.request.encode_to_vec()
     }

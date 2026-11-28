@@ -33,7 +33,7 @@ pub(crate) const MAX_NESTING: usize = 64;
 impl RecordView<'_> {
     /// The text of the value at `name`, a dotted name, on `row`, as `scalar_text` gives it: a field's, or a key of
     /// the unclaimed fields of the deepest object on the way to it. For a field used as an identity.
-    pub fn text(&self, name: &str, row: usize) -> Option<String> {
+    pub(crate) fn text(&self, name: &str, row: usize) -> Option<String> {
         match self.at(name, row)? {
             At::Leaf(col) => scalar_text(col, row),
             At::Unclaimed(value) => variant_text(value),
@@ -41,14 +41,14 @@ impl RecordView<'_> {
     }
 
     /// Write `row`'s JSON document into `out`, clearing it first.
-    pub fn write_row(&self, row: usize, out: &mut Vec<u8>) {
+    pub(crate) fn write_row(&self, row: usize, out: &mut Vec<u8>) {
         out.clear();
         if !write_object(&self.root, None, &self.leaves, row, 1, out) {
             out.extend_from_slice(b"{}");
         }
     }
 
-    pub fn row(&self, row: usize) -> Vec<u8> {
+    pub(crate) fn row(&self, row: usize) -> Vec<u8> {
         let mut out = Vec::new();
         self.write_row(row, &mut out);
         out

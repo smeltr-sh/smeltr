@@ -13,7 +13,7 @@ const LEAST_SLICE_BYTES: usize = 256 * 1024;
 
 /// Raw bytes a transform thread runs through its pipelines at once: half the L2 one hardware thread of this machine
 /// can count on, since what a record decodes to is several times its raw bytes. Read once per process.
-pub fn slice_bytes() -> usize {
+pub(crate) fn slice_bytes() -> usize {
     static SLICE: OnceLock<usize> = OnceLock::new();
     *SLICE.get_or_init(|| slice_for(platform::l2_per_thread()))
 }
@@ -30,7 +30,7 @@ mod platform {
 
     /// The least L2 any hardware thread has to itself: each L2's size over the threads sharing it, the least over
     /// every CPU, since a transform thread may run on any of them and a hybrid CPU's cores differ.
-    pub fn l2_per_thread() -> Option<usize> {
+    pub(crate) fn l2_per_thread() -> Option<usize> {
         l2_per_thread_in(Path::new("/sys/devices/system/cpu"))
     }
 
@@ -106,7 +106,7 @@ mod platform {
     };
 
     /// The least L2 any hardware thread has to itself: each L2's size over the threads its mask names.
-    pub fn l2_per_thread() -> Option<usize> {
+    fn l2_per_thread() -> Option<usize> {
         let mut len = 0u32;
         // Asked once with no buffer for the length it needs.
         // SAFETY: a null buffer with a length of zero is how the call is asked for the length, and it writes only `len`.

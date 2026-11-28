@@ -21,7 +21,7 @@ use super::hand_off;
 /// at its own level, with how long it was open. Every span of ours lends its class, kept or not, since a library's
 /// line inside it has no other. A library's spans are neither: what it names in them is its own business, and
 /// it opens far too many to say.
-pub struct LogLayer;
+pub(crate) struct LogLayer;
 
 /// What a span of ours knew, kept on it for the lines raised inside it and for its own closing line.
 struct Known {
@@ -169,7 +169,7 @@ where
 
 /// A line `library` said for a part of smeltr of `class`, where no span of ours is around it to lend one.
 /// librdkafka calls back on its own threads, for a source's client or a destination's.
-pub fn library_said(
+pub(crate) fn library_said(
     class: &'static str,
     library: &'static str,
     level: Level,
@@ -241,7 +241,7 @@ fn is_library(target: &str) -> bool {
 /// `level` as a line from `target` is kept: a library's info is debug here and its debug is trace, since what a
 /// library says at those levels Smeltr says better itself. Its warn and error are what they say. A library's
 /// target is a module path; `tracing-log` relays the `log` facade from a callsite whose target is `log`.
-pub(crate) fn as_said_here(target: &str, level: Level) -> Level {
+fn as_said_here(target: &str, level: Level) -> Level {
     if !is_library(target) {
         return level;
     }

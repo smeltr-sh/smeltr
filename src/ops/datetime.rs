@@ -14,13 +14,13 @@ use crate::core::error::ExceptionKind;
 
 /// A span as the writer and `toString` render it: its count of microseconds, the unit it is held in, so every span
 /// is written exactly and `parse_duration_text` reads it back.
-pub fn write_duration_micros_bare(micros: i64, out: &mut Vec<u8>) {
+pub(crate) fn write_duration_micros_bare(micros: i64, out: &mut Vec<u8>) {
     write!(out, "{micros}").unwrap();
 }
 
 /// A span from its text: the count of microseconds `write_duration_micros_bare` writes, whole or as a finite decimal
 /// rounded to the microsecond. Surrounding whitespace is ignored. `None` for anything else.
-pub fn parse_duration_text(text: &str) -> Option<i64> {
+pub(crate) fn parse_duration_text(text: &str) -> Option<i64> {
     let s = text.trim();
     if let Ok(n) = s.parse::<i64>() {
         return Some(n);
@@ -87,7 +87,7 @@ pub fn dt_day_of_week(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 }
 
 /// `now()`: the instant of the records being run, broadcast to every row. There is no input column, so the row count comes from `Ctx`.
-pub fn now(ctx: &mut Ctx, _ins: &[&Column]) -> Column {
+pub(crate) fn now(ctx: &mut Ctx, _ins: &[&Column]) -> Column {
     let mut out = Column::alloc(ctx.pool, &DataType::DateTime, ctx.rows);
     out.datetime_mut().unwrap().values.fill(ctx.now.as_micros());
     out
@@ -119,13 +119,13 @@ pub fn from_epoch_millis(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// `epochSeconds(t)`: whole seconds since the epoch, flooring so a time before it counts backward rather than
 /// toward zero.
-pub fn dt_epoch_seconds(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn dt_epoch_seconds(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     extract(ctx, ins, |us| us.div_euclid(1_000_000))
 }
 
 /// `fromEpochSeconds(n)`: Temporal's `Instant.fromEpochSeconds`. A second reaches the end of the range a thousand
 /// times sooner than a millisecond does.
-pub fn from_epoch_seconds(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn from_epoch_seconds(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     from_epoch(ctx, ins, 1_000_000)
 }
 
@@ -155,7 +155,7 @@ fn unit_scale(unit: &str) -> Option<(i64, i64)> {
 
 /// Whether `unit` names a span this table can convert. `plan::resolve` asks before the pipeline runs, so a unit
 /// written as a literal that will never convert is a compile error rather than a column of nulls.
-pub fn is_known_unit(unit: &str) -> bool {
+pub(crate) fn is_known_unit(unit: &str) -> bool {
     unit_scale(unit).is_some()
 }
 
@@ -198,7 +198,7 @@ pub fn duration_count_in(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 
 /// `formatTime(t, format)`: `t` as text in `format`, UTC (`timeparse::format_into`). Null, and `CoercionRefused`,
 /// where the format opens a specifier `parseTime` does not read.
-pub fn format_time(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+pub(crate) fn format_time(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let (Some(t), Some(formats)) = (side::datetime(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Str, len);

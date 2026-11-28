@@ -18,7 +18,7 @@ pub struct DataDirLock {
 }
 
 /// An advisory lock on one file, held until dropped.
-pub struct Held {
+pub(crate) struct Held {
     _file: std::fs::File,
 }
 
@@ -27,7 +27,7 @@ pub struct Held {
 /// For a caller that owns a different invariant from this module's and says so in its own words. What both get
 /// from the operating system is the same: a lock released when the holding process exits, crash included, which
 /// is what a file holding a pid cannot manage.
-pub fn hold(path: &Path) -> std::io::Result<Option<Held>> {
+pub(crate) fn hold(path: &Path) -> std::io::Result<Option<Held>> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)

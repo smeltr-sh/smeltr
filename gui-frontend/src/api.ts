@@ -566,6 +566,7 @@ type HttpRequestsDto = TlsDto & {
   headers?: Record<string, string>;
   /** Header name to where its value lives. */
   credentials?: Record<string, SecretRef>;
+  inFlight?: number;
   maxRequestBytes?: ByteCount;
   bufferBytes?: ByteCount;
   stallAfterSecs?: number;
@@ -685,7 +686,6 @@ export type DestinationDto = {
       /** Absent is `none`. */
       compression?: HttpCompression;
       compressionLevel?: number;
-      inFlight?: number;
     })
   | (HttpRequestsDto & {
       type: 'prometheus';
@@ -704,7 +704,6 @@ export type DestinationDto = {
       /** Absent is `none`. */
       compression?: HttpCompression;
       compressionLevel?: number;
-      inFlight?: number;
     })
   | (TlsDto &
       EntraSignIn & {

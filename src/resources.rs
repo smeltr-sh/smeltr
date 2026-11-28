@@ -27,40 +27,40 @@ use std::time::{Duration, Instant};
 
 /// One sample.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct ResourceUsage {
+pub(crate) struct ResourceUsage {
     /// CPU time used since the previous sample over the wall time between the two, as a percent
     /// of `cpu_limit_cores`. 100 means every allowed core was busy.
     ///
     /// `None` on the first sample of a process's life: a rate needs a previous reading, and
     /// reporting zero would say "idle" about a worker that has simply just started.
-    pub cpu_percent: Option<f64>,
+    pub(crate) cpu_percent: Option<f64>,
     /// How many cores `cpu_percent` is a percentage of: a container's own quota where one was
     /// found, every core the host has otherwise. Fractional under a quota, which is what a k8s
     /// `cpu: 500m` limit is.
-    pub cpu_limit_cores: f64,
+    pub(crate) cpu_limit_cores: f64,
     /// Whether `cpu_percent` is measured against a real container CPU quota. `false` means it is
     /// measured against every core the host has, which is what "100%" means on a shared or
     /// unlimited machine.
-    pub cpu_limited: bool,
-    pub memory_used_bytes: u64,
+    pub(crate) cpu_limited: bool,
+    pub(crate) memory_used_bytes: u64,
     /// What `memory_used_bytes` is measured against: a container memory limit where one was found,
     /// the host's own total otherwise. `None` only when neither could be read -- rare, and the one
     /// case a percentage cannot be shown at all.
-    pub memory_limit_bytes: Option<u64>,
+    pub(crate) memory_limit_bytes: Option<u64>,
     /// Whether `memory_limit_bytes` is a real container memory limit rather than the host's own
     /// total.
-    pub memory_limited: bool,
+    pub(crate) memory_limited: bool,
     /// Free and total bytes of the filesystem holding the worker's state directory. `None` when
     /// the filesystem would not answer. Free is what an unprivileged writer may still use, which
     /// is smaller than total minus used on a filesystem holding blocks back for root.
-    pub disk_free_bytes: Option<u64>,
-    pub disk_total_bytes: Option<u64>,
+    pub(crate) disk_free_bytes: Option<u64>,
+    pub(crate) disk_total_bytes: Option<u64>,
 }
 
 /// What a CPU rate needs between calls: the previous cumulative reading, which counter it came
 /// from, and the moment it was taken. One belongs to a worker process for its whole life, and so
 /// does the state directory whose filesystem it reports on.
-pub struct Sampler {
+pub(crate) struct Sampler {
     previous: Option<(Duration, CpuSource, Instant)>,
     carried: platform::Carried,
     /// The worker's own durable directory. A worker owns exactly one, so its filesystem is the
@@ -69,7 +69,7 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn new(state_dir: PathBuf) -> Sampler {
+    pub(crate) fn new(state_dir: PathBuf) -> Sampler {
         Sampler {
             previous: None,
             carried: Default::default(),
@@ -77,7 +77,7 @@ impl Sampler {
         }
     }
 
-    pub fn sample(&mut self) -> ResourceUsage {
+    pub(crate) fn sample(&mut self) -> ResourceUsage {
         let (cpu, memory) = platform::sample(&mut self.carried);
         let mut usage = self.record(cpu, memory);
         // Not part of `record`: a free-space reading is instantaneous, so unlike a CPU total it
@@ -143,18 +143,18 @@ impl Sampler {
 /// What this process's memory is measured against: its container's limit where one was found, the host's total
 /// otherwise. `None` when neither could be read. The same reading [`Sampler::sample`] reports, for a caller that
 /// wants the ceiling and keeps no sampler.
-pub fn memory_limit_bytes() -> Option<u64> {
+pub(crate) fn memory_limit_bytes() -> Option<u64> {
     platform::sample(&mut Default::default()).1.limit_bytes
 }
 
 /// What this process alone holds in memory, counted as [`Sampler::sample`] counts each process of the worker's tree.
-pub fn own_memory_bytes() -> u64 {
+pub(crate) fn own_memory_bytes() -> u64 {
     platform::tree_memory(&[std::process::id()])
 }
 
 /// CPU time this process has used, its reaped children's included, as [`Sampler::sample`] counts each process of the
 /// worker's tree.
-pub fn own_cpu_time() -> Option<Duration> {
+pub(crate) fn own_cpu_time() -> Option<Duration> {
     platform::tree_cpu_time(&[std::process::id()], &mut Default::default())
 }
 
@@ -254,9 +254,9 @@ mod platform {
     /// What a tree's CPU total carries between samples: nothing, since a reaped child's time
     /// moves to its parent's cutime and the tree's own counters carry it.
     #[derive(Default)]
-    pub struct Carried;
+    pub(crate) struct Carried;
 
-    pub fn sample(carried: &mut Carried) -> (CpuReading, MemoryReading) {
+    pub(crate) fn sample(carried: &mut Carried) -> (CpuReading, MemoryReading) {
         let own_cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
         let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
         let root = Path::new(cgroup::ROOT);
@@ -442,7 +442,7 @@ mod platform {
         use std::path::{Path, PathBuf};
         use std::time::Duration;
 
-        pub const ROOT: &str = "/sys/fs/cgroup";
+        pub(crate) const ROOT: &str = "/sys/fs/cgroup";
 
         /// `(used_bytes, limit_bytes, dir)`. `None` overall when no recognizable cgroup memory
         /// interface answers; `limit_bytes` alone is `None` when neither the cgroup nor any
@@ -451,7 +451,7 @@ mod platform {
         /// is this worker's alone. `own_cgroup` and `mountinfo` are this process's own
         /// `/proc/self/cgroup` and `/proc/self/mountinfo` -- read once by the caller and passed
         /// in, rather than read here, so they are one fact instead of two that could disagree.
-        pub fn memory(root: &Path, own_cgroup: &str, mountinfo: &str) -> Option<(u64, Option<u64>, PathBuf)> {
+        pub(crate) fn memory(root: &Path, own_cgroup: &str, mountinfo: &str) -> Option<(u64, Option<u64>, PathBuf)> {
             let (used, limit, dir) = if root.join("cgroup.controllers").exists() {
                 v2_memory(root, own_cgroup, mountinfo)
             } else {
@@ -474,7 +474,7 @@ mod platform {
         }
 
         /// `(cumulative CPU time, limit in cores, dir)`, on the same terms [`memory`] is.
-        pub fn cpu(root: &Path, own_cgroup: &str, mountinfo: &str) -> Option<(Duration, Option<f64>, PathBuf)> {
+        pub(crate) fn cpu(root: &Path, own_cgroup: &str, mountinfo: &str) -> Option<(Duration, Option<f64>, PathBuf)> {
             if root.join("cgroup.controllers").exists() {
                 v2_cpu(root, own_cgroup, mountinfo)
             } else {
@@ -499,7 +499,7 @@ mod platform {
         /// children at once -- except the root, which the kernel exempts from that rule -- so a
         /// worker placed there directly, sharing it with other cgroups' processes, is exactly the
         /// case this check exists to catch; v1 allows the same split at any level.
-        pub fn is_exclusive(dir: &Path, mine: &HashSet<u32>) -> bool {
+        pub(crate) fn is_exclusive(dir: &Path, mine: &HashSet<u32>) -> bool {
             let mut named_any = false;
             subtree_names_only(dir, mine, &mut named_any) && named_any
         }
@@ -1460,7 +1460,7 @@ mod platform {
     /// Job-object CPU and memory limits -- what a Windows container's own limits are -- are not
     /// read yet. This measures this process's tree against the whole host, the same as any
     /// unlimited machine.
-    pub fn sample(carried: &mut Carried) -> (CpuReading, MemoryReading) {
+    fn sample(carried: &mut Carried) -> (CpuReading, MemoryReading) {
         let tree = own_process_tree();
         let cpu = CpuReading {
             time: tree_cpu_time(&tree, carried),
@@ -1569,7 +1569,7 @@ mod platform {
             .collect()
     }
 
-    pub use super::Carried;
+    use super::Carried;
 
     /// Every process in `tree`'s CPU time, and what `carried` holds of those that have left it.
     /// `None` when any process could not be read, which leaves `carried` as it was.
@@ -1606,7 +1606,7 @@ mod platform {
 /// another's leaving. Only the leaver's time since the last sample is lost.
 #[cfg(any(windows, test))]
 #[derive(Default)]
-pub struct Carried {
+struct Carried {
     /// Each process's CPU time at the last sample, by pid and creation time, since a pid is reused.
     last: std::collections::HashMap<(u32, u64), u64>,
     departed: u64,

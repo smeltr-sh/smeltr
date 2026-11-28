@@ -9,7 +9,7 @@ use crate::core::column::DataType;
 use crate::plan::topology::{Signal, SourceMeta};
 
 /// The fields of `signal`'s records.
-pub fn read(signal: Signal) -> Vec<SchemaFieldDto> {
+pub(crate) fn read(signal: Signal) -> Vec<SchemaFieldDto> {
     let required: &[&str] = match signal {
         Signal::Logs => &[],
         Signal::Metrics => &["type"],

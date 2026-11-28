@@ -32,7 +32,7 @@ const STRING: u8 = 16;
 const SHORT_STRING_MAX: usize = 63;
 
 /// The variant `b` as its metadata and its value.
-pub fn encode(b: Encoded) -> (Vec<u8>, Vec<u8>) {
+pub(crate) fn encode(b: Encoded) -> (Vec<u8>, Vec<u8>) {
     let mut keys = BTreeMap::new();
     collect_keys(b, &mut keys);
     // Sorted, so the metadata says so and a reader may search it.

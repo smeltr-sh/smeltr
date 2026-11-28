@@ -17,6 +17,6 @@
 pub mod catalog;
 pub mod manifest;
 pub mod metadata;
-pub mod schema;
-pub mod table;
+pub(crate) mod schema;
+pub(crate) mod table;
 pub mod transform;

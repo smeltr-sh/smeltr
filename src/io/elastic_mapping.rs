@@ -10,7 +10,7 @@ use crate::core::column::DataType;
 
 /// How long a text's keyword is indexed up to: a longer value is kept but not indexed. ECS sets the same on every
 /// keyword, and anything up to 8191 keeps Elasticsearch from refusing a document past 32766 bytes.
-pub const IGNORE_ABOVE: u64 = 1024;
+pub(crate) const IGNORE_ABOVE: u64 = 1024;
 
 /// What a field says of its own mapping, by its keys from the record's root.
 pub type Mapped<'a> = HashMap<Vec<String>, &'a Map<String, Value>>;
@@ -24,7 +24,7 @@ pub fn mapping(record: &DataType, mapped: &Mapped) -> Value {
 }
 
 /// The Elasticsearch types a field of type `ty` may map to: first the one it maps to of itself, where it has one.
-pub fn types_for(ty: &DataType) -> &'static [&'static str] {
+pub(crate) fn types_for(ty: &DataType) -> &'static [&'static str] {
     match ty {
         DataType::Str => &[
             "keyword",
@@ -74,7 +74,7 @@ pub fn types_for(ty: &DataType) -> &'static [&'static str] {
 
 /// Why a field of type `ty` cannot map as `said` says, where it cannot: a mapping names its `type`, one a value of
 /// `ty` can be indexed as. Its other parameters are Elasticsearch's to check.
-pub fn refusal(ty: &DataType, said: &Map<String, Value>) -> Option<String> {
+pub(crate) fn refusal(ty: &DataType, said: &Map<String, Value>) -> Option<String> {
     let allowed = types_for(ty);
     match said.get("type").and_then(Value::as_str) {
         None => Some("an Elasticsearch mapping names its `type`".to_string()),

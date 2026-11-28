@@ -55,7 +55,7 @@ pub enum Version {
 
 /// The version of remote_write a request of `content_type` is sent in, or why it is none this receiver reads. A sender
 /// of 1.0 that predates content negotiation names no `proto`.
-pub fn readable(content_type: Option<&str>) -> Result<Version, String> {
+pub(crate) fn readable(content_type: Option<&str>) -> Result<Version, String> {
     let refused = || {
         format!(
             "a remote_write request is sent as {CONTENT_TYPE} with proto={V1_PROTO} or proto={V2_PROTO}, not as {}",
@@ -82,7 +82,7 @@ pub fn readable(content_type: Option<&str>) -> Result<Version, String> {
 }
 
 /// Whether `content_encoding` is snappy, the one compression remote_write sends.
-pub fn is_snappy(content_encoding: Option<&str>) -> bool {
+pub(crate) fn is_snappy(content_encoding: Option<&str>) -> bool {
     content_encoding.is_some_and(|e| e.trim().eq_ignore_ascii_case("snappy"))
 }
 
@@ -303,31 +303,31 @@ const TIMESERIES_V2_FIELD: u64 = 5;
 
 /// Where each field of a Prometheus receiver's record sits in a [`Row`], in `SourceMeta::prometheus_receiver`'s order.
 mod field {
-    pub const TIME: usize = 0;
-    pub const NAME: usize = 1;
-    pub const VALUE: usize = 2;
-    pub const ATTRIBUTES: usize = 3;
-    pub const TYPE: usize = 4;
-    pub const AGGREGATION_TEMPORALITY: usize = 5;
-    pub const COUNT: usize = 6;
-    pub const SUM: usize = 7;
-    pub const BUCKET_COUNTS: usize = 8;
-    pub const EXPLICIT_BOUNDS: usize = 9;
-    pub const SCALE: usize = 10;
-    pub const ZERO_COUNT: usize = 11;
-    pub const ZERO_THRESHOLD: usize = 12;
-    pub const POSITIVE_OFFSET: usize = 13;
-    pub const POSITIVE_BUCKET_COUNTS: usize = 14;
-    pub const NEGATIVE_OFFSET: usize = 15;
-    pub const NEGATIVE_BUCKET_COUNTS: usize = 16;
-    pub const RESET_HINT: usize = 17;
-    pub const EXEMPLARS: usize = 18;
-    pub const DESCRIPTION: usize = 19;
-    pub const UNIT: usize = 20;
-    pub const IS_MONOTONIC: usize = 21;
-    pub const START_TIME: usize = 22;
+    pub(crate) const TIME: usize = 0;
+    pub(crate) const NAME: usize = 1;
+    pub(crate) const VALUE: usize = 2;
+    pub(crate) const ATTRIBUTES: usize = 3;
+    pub(crate) const TYPE: usize = 4;
+    pub(crate) const AGGREGATION_TEMPORALITY: usize = 5;
+    pub(crate) const COUNT: usize = 6;
+    pub(crate) const SUM: usize = 7;
+    pub(crate) const BUCKET_COUNTS: usize = 8;
+    pub(crate) const EXPLICIT_BOUNDS: usize = 9;
+    pub(crate) const SCALE: usize = 10;
+    pub(crate) const ZERO_COUNT: usize = 11;
+    pub(crate) const ZERO_THRESHOLD: usize = 12;
+    pub(crate) const POSITIVE_OFFSET: usize = 13;
+    pub(crate) const POSITIVE_BUCKET_COUNTS: usize = 14;
+    pub(crate) const NEGATIVE_OFFSET: usize = 15;
+    pub(crate) const NEGATIVE_BUCKET_COUNTS: usize = 16;
+    pub(crate) const RESET_HINT: usize = 17;
+    pub(crate) const EXEMPLARS: usize = 18;
+    pub(crate) const DESCRIPTION: usize = 19;
+    pub(crate) const UNIT: usize = 20;
+    pub(crate) const IS_MONOTONIC: usize = 21;
+    pub(crate) const START_TIME: usize = 22;
     /// How many fields a row holds.
-    pub const ALL: usize = 23;
+    pub(crate) const ALL: usize = 23;
 }
 
 /// OTLP's `AGGREGATION_TEMPORALITY_CUMULATIVE`: a counter histogram counts from its series' start.

@@ -25,7 +25,7 @@ const BASE64_READ: base64::engine::GeneralPurpose = base64::engine::GeneralPurpo
 
 impl BytesForm {
     /// `"base64"`, `"hex"` or `"binary"`, in any case. `None` for any other name.
-    pub fn for_label(label: &[u8]) -> Option<BytesForm> {
+    pub(crate) fn for_label(label: &[u8]) -> Option<BytesForm> {
         [
             ("base64", BytesForm::Base64),
             ("hex", BytesForm::Hex),
@@ -37,7 +37,7 @@ impl BytesForm {
     }
 
     /// How many bytes of text `n` bytes take in this form.
-    pub fn text_len(self, n: usize) -> usize {
+    pub(crate) fn text_len(self, n: usize) -> usize {
         match self {
             BytesForm::Base64 => base64::encoded_len(n, true).expect("a value in memory has a base64 length that fits"),
             BytesForm::Hex => 2 * n,
@@ -46,14 +46,14 @@ impl BytesForm {
     }
 
     /// Append `bytes` in this form.
-    pub fn write(self, bytes: &[u8], out: &mut Vec<u8>) {
+    pub(crate) fn write(self, bytes: &[u8], out: &mut Vec<u8>) {
         let start = out.len();
         out.resize(start + self.text_len(bytes.len()), 0);
         self.write_to(bytes, &mut out[start..]);
     }
 
     /// Write `bytes` in this form over `out`, which is [`text_len`](Self::text_len) long.
-    pub fn write_to(self, bytes: &[u8], out: &mut [u8]) {
+    pub(crate) fn write_to(self, bytes: &[u8], out: &mut [u8]) {
         debug_assert_eq!(out.len(), self.text_len(bytes.len()));
         match self {
             BytesForm::Base64 => {
@@ -86,7 +86,7 @@ impl BytesForm {
     }
 
     /// Append the bytes `text` spells in this form. False, with `out` as it was, where `text` is not this form.
-    pub fn read(self, text: &[u8], out: &mut Vec<u8>) -> bool {
+    pub(crate) fn read(self, text: &[u8], out: &mut Vec<u8>) -> bool {
         let start = out.len();
         let ok = match self {
             BytesForm::Base64 => BASE64_READ.decode_vec(text, out).is_ok(),

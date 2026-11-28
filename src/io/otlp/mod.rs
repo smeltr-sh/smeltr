@@ -31,10 +31,10 @@ mod traces;
 /// The keys of [`Filed`] this module fills, each by the `__source` field it is read as, and each left out when empty.
 /// `resource` is the resource's attributes, and `scope.attributes` the scope's, each an object in `core::variant`'s
 /// encoding; `scope.name` and `scope.version` are text.
-pub const RESOURCE: &str = "resource";
-pub const SCOPE_NAME: &str = "scope.name";
-pub const SCOPE_VERSION: &str = "scope.version";
-pub const SCOPE_ATTRIBUTES: &str = "scope.attributes";
+pub(crate) const RESOURCE: &str = "resource";
+pub(crate) const SCOPE_NAME: &str = "scope.name";
+pub(crate) const SCOPE_VERSION: &str = "scope.version";
+pub(crate) const SCOPE_ATTRIBUTES: &str = "scope.attributes";
 
 /// Where an OTLP/HTTP exporter sends `signal`.
 pub fn http_path(signal: Signal) -> &'static str {
@@ -55,11 +55,11 @@ pub fn grpc_path(signal: Signal) -> &'static str {
 }
 
 /// The `Content-Type` of a gRPC request and its answer.
-pub const GRPC_CONTENT_TYPE: &str = "application/grpc";
+pub(crate) const GRPC_CONTENT_TYPE: &str = "application/grpc";
 
 /// Whether a request's `Content-Type` is gRPC's: `application/grpc`, or that with a `+` naming its message encoding,
 /// which for OTLP is `+proto`.
-pub fn is_grpc(content_type: Option<&str>) -> bool {
+pub(crate) fn is_grpc(content_type: Option<&str>) -> bool {
     content_type.is_some_and(|named| {
         let named = named.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
         named == GRPC_CONTENT_TYPE || named == "application/grpc+proto"
@@ -67,10 +67,10 @@ pub fn is_grpc(content_type: Option<&str>) -> bool {
 }
 
 /// The bytes before each gRPC message: whether it is compressed, then its length, big-endian.
-pub const GRPC_PREFIX: usize = 5;
+pub(crate) const GRPC_PREFIX: usize = 5;
 
 /// `message` as gRPC sends it, uncompressed.
-pub fn grpc_framed(message: &[u8]) -> Vec<u8> {
+pub(crate) fn grpc_framed(message: &[u8]) -> Vec<u8> {
     let length = u32::try_from(message.len()).expect("an answer is far below 4 GiB");
     let mut framed = Vec::with_capacity(GRPC_PREFIX + message.len());
     framed.push(0);
@@ -90,7 +90,7 @@ pub enum Encoding {
 impl Encoding {
     /// What a request's `Content-Type` names: `application/x-protobuf` or `application/json`, in any case and with any
     /// parameters. `None` for anything else, or none given.
-    pub fn of(content_type: Option<&str>) -> Option<Encoding> {
+    pub(crate) fn of(content_type: Option<&str>) -> Option<Encoding> {
         let named = content_type?.split(';').next()?.trim();
         [Encoding::Protobuf, Encoding::Json]
             .into_iter()
@@ -107,7 +107,7 @@ impl Encoding {
 
 /// The body of a 200: an `Export*ServiceResponse` with no `partialSuccess`, which OTLP leaves unset for a request it
 /// took whole. In protobuf, a message with nothing set is no bytes, whatever the signal.
-pub fn delivered(encoding: Encoding) -> Vec<u8> {
+pub(crate) fn delivered(encoding: Encoding) -> Vec<u8> {
     match encoding {
         Encoding::Protobuf => Vec::new(),
         Encoding::Json => b"{}".to_vec(),
@@ -130,7 +130,7 @@ pub fn code(http: u16) -> i32 {
 
 /// The body of a refusal answered with HTTP status `http`: a `google.rpc.Status` with `message` and the gRPC code
 /// nearest `http`, as OTLP/HTTP answers a failure.
-pub fn status(http: u16, message: &str, encoding: Encoding) -> Vec<u8> {
+pub(crate) fn status(http: u16, message: &str, encoding: Encoding) -> Vec<u8> {
     let code = code(http);
     match encoding {
         Encoding::Protobuf => Status {
@@ -163,7 +163,7 @@ pub enum Cell {
 pub struct Row(pub Vec<Option<Cell>>);
 
 /// `rows`, typed rows of a record of `fields`, as its columns.
-pub fn columns(rows: &[Row], fields: &[(Entry, DataType)], pool: &mut BufferPool) -> Vec<Column> {
+pub(crate) fn columns(rows: &[Row], fields: &[(Entry, DataType)], pool: &mut BufferPool) -> Vec<Column> {
     use crate::core::column::{StrBuilder, VarType};
 
     let mismatch = |name: &Entry, ty: &DataType| -> ! { unreachable!("{name} is a {ty}, and a row gave it otherwise") };
@@ -259,7 +259,7 @@ pub fn columns(rows: &[Row], fields: &[(Entry, DataType)], pool: &mut BufferPool
 /// or why it is not one. A message in a repeated field costs its struct twice over, for the room a vector grows into,
 /// and the first in each field four times, the least room a vector takes; one in a singular field is inside its
 /// parent's; and each string or bytes value costs its length.
-pub fn decoded_size(signal: Signal, body: &[u8]) -> Result<usize, String> {
+pub(crate) fn decoded_size(signal: Signal, body: &[u8]) -> Result<usize, String> {
     let mut size = body.len();
     let walked = match signal {
         Signal::Logs => walk(body, Kind::Signal(logs::Kind::Request), 0, &mut size),
@@ -276,7 +276,7 @@ pub fn decoded_size(signal: Signal, body: &[u8]) -> Result<usize, String> {
 /// takes room for 2n + 2 at most, the least it takes being four, so each element takes twice its struct and each
 /// vector, which opens at a `[`, twice its largest struct again. A repeated number is eight bytes, and follows a `[`
 /// or a `,`.
-pub fn json_peak(signal: Signal, body: &[u8]) -> usize {
+pub(crate) fn json_peak(signal: Signal, body: &[u8]) -> usize {
     let largest = match signal {
         Signal::Logs => largest::<logs::Kind>(),
         Signal::Metrics => largest::<metrics::Kind>(),
@@ -340,7 +340,7 @@ impl Export {
 
     /// The same request in OTLP's JSON encoding, or why it does not read. Fields are read by their camelCase name or
     /// their protobuf name, and fields this module does not know are skipped, as OTLP asks of a receiver.
-    pub fn json(signal: Signal, body: &[u8]) -> Result<Export, String> {
+    pub(crate) fn json(signal: Signal, body: &[u8]) -> Result<Export, String> {
         json::request(body, |r| {
             Ok(match signal {
                 Signal::Logs => Export::Logs(logs::Logs::json(r)?),
@@ -369,7 +369,8 @@ impl Export {
     }
 
     /// What this request holds decoded, as [`decoded_size`] reads it from its wire form.
-    pub fn decoded_size(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn decoded_size(&self) -> usize {
         let (signal, body) = match self {
             Export::Logs(logs) => (Signal::Logs, logs.encoded()),
             Export::Metrics(metrics) => (Signal::Metrics, metrics.encoded()),
@@ -765,7 +766,7 @@ mod testing {
 
     /// A variant as JSON that keeps its type: an i64 an integer, an f64 a float, bytes `"bytes:<hex>"` and a datetime
     /// `"datetime:<micros>"`.
-    pub fn shown(encoded: &[u8]) -> Value {
+    pub(crate) fn shown(encoded: &[u8]) -> Value {
         shown_value(variant::Encoded::check(encoded))
     }
 
@@ -790,7 +791,7 @@ mod testing {
 
     /// A row as JSON, each field under its name's keys, leaving out its nulls: a time an integer of microseconds, and a
     /// variant as [`shown`].
-    pub fn row_json(signal: Signal, row: &Row) -> Value {
+    pub(crate) fn row_json(signal: Signal, row: &Row) -> Value {
         let meta = crate::plan::topology::SourceMeta::otlp(signal);
         assert_eq!(
             row.0.len(),
@@ -816,12 +817,12 @@ mod testing {
         Value::Object(fields)
     }
 
-    pub fn filed_as(filed: &Filed, key: &str) -> Option<Value> {
+    pub(crate) fn filed_as(filed: &Filed, key: &str) -> Option<Value> {
         filed.iter().find(|(k, _)| k == key).map(|(_, v)| shown(v))
     }
 
     /// The scope a record is filed under, as one object of what it names.
-    pub fn scope_of(filed: &Filed) -> Option<Value> {
+    pub(crate) fn scope_of(filed: &Filed) -> Option<Value> {
         let mut scope = Map::new();
         for (key, value) in filed {
             match key.as_str() {
@@ -836,19 +837,19 @@ mod testing {
         (!scope.is_empty()).then_some(Value::Object(scope))
     }
 
-    pub fn kv(key: &str, value: Any) -> KeyValue {
+    pub(crate) fn kv(key: &str, value: Any) -> KeyValue {
         KeyValue {
             key: key.to_string(),
             value: Some(AnyValue { value: Some(value) }),
         }
     }
 
-    pub fn text(s: &str) -> Any {
+    pub(crate) fn text(s: &str) -> Any {
         Any::String(s.to_string())
     }
 
     /// Every record of `export`.
-    pub fn all(mut export: Export) -> Vec<(Row, Arc<Filed>)> {
+    pub(crate) fn all(mut export: Export) -> Vec<(Row, Arc<Filed>)> {
         std::iter::from_fn(|| export.next_record()).collect()
     }
 }

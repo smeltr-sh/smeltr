@@ -59,12 +59,12 @@ impl ObjectOp {
     }
 
     /// The call `name` is, where it is one of these.
-    pub fn by_name(name: &str) -> Option<ObjectOp> {
+    pub(crate) fn by_name(name: &str) -> Option<ObjectOp> {
         ObjectOp::NAMED.into_iter().find(|op| op.name() == Some(name))
     }
 
     /// What its first argument must be, as a type error spells it.
-    pub const fn takes(self) -> &'static str {
+    pub(crate) const fn takes(self) -> &'static str {
         match self {
             ObjectOp::FromEntries => "array",
             _ => "object",
@@ -73,7 +73,7 @@ impl ObjectOp {
 
     /// Whether its first argument may be of type `ty`: an object, an open one for `undeclared`, or for `fromEntries` an
     /// array of `{key, value}` objects whose keys are strings. Null is a `fromEntries` of nothing.
-    pub fn accepts(self, ty: &DataType) -> bool {
+    pub(crate) fn accepts(self, ty: &DataType) -> bool {
         let entry = |e: &DataType| match e {
             DataType::Null => true,
             DataType::Struct(fields, _) => {
@@ -99,13 +99,13 @@ impl ObjectOp {
 
 /// `keys(o)` over `object`, a struct column: an `array<str>` per row, its unclaimed fields' keys among them where
 /// the column holds any.
-pub fn keys(ctx: &mut Ctx, object: &Column) -> Column {
+pub(crate) fn keys(ctx: &mut Ctx, object: &Column) -> Column {
     entry_list(ctx, object, |_, keys, _| keys)
 }
 
 /// `entries(o)` over `object`, a struct column: an `array<{key: str, value: T}>` per row, `value_ty` being `T`. The
 /// compiler met every value's type as `T` (`DataType::unify`), so each fits it.
-pub fn entries(ctx: &mut Ctx, object: &Column, value_ty: &DataType) -> Column {
+pub(crate) fn entries(ctx: &mut Ctx, object: &Column, value_ty: &DataType) -> Column {
     entry_list(ctx, object, |ctx, keys, values| {
         let total = keys.len();
         let value_col = column_of(ctx, &values, value_ty);
@@ -146,7 +146,7 @@ fn entry_list<'a>(
 
 /// `fromEntries(pairs)` over `pairs`, an array of `{key: str, value: T}`: a struct column with no fields and the
 /// pairs as its unclaimed fields.
-pub fn from_entries(ctx: &mut Ctx, pairs: &Column) -> Column {
+pub(crate) fn from_entries(ctx: &mut Ctx, pairs: &Column) -> Column {
     let rows = pairs.len();
     let objects: Vec<Option<Tag<'_>>> = match pairs.list() {
         Ok(list) => {
@@ -175,7 +175,7 @@ pub fn from_entries(ctx: &mut Ctx, pairs: &Column) -> Column {
 }
 
 /// The value at `key` in `objects`, unclaimed fields, on every row: a variant column.
-pub fn get(ctx: &mut Ctx, objects: &Column, key: &Column) -> Column {
+pub(crate) fn get(ctx: &mut Ctx, objects: &Column, key: &Column) -> Column {
     let rows = objects.len();
     let mut b = StrBuilder::new(ctx.pool, VarType::Variant, rows);
     // A variant's member is read in place, with no copy of its object.

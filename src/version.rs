@@ -14,19 +14,19 @@ pub const RELEASE: Option<&str> = match env!("SMELTR_RELEASE").as_bytes() {
 };
 
 /// The commit a version was built from: what names the code, where the date only names the day it was compiled.
-pub fn commit_of(version: &str) -> &str {
+pub(crate) fn commit_of(version: &str) -> &str {
     version.rsplit('.').next().unwrap_or(version)
 }
 
 /// This build's commit.
-pub fn commit() -> &'static str {
+pub(crate) fn commit() -> &'static str {
     commit_of(VERSION)
 }
 
 /// Whether a worker of one build takes deployments from a leader of the other. Two releases are when they share a
 /// major: within one, a newer release reads what an older one wrote, and an older one refuses what it does not
 /// know. Any other pair is only when it is one commit, since nothing promises what an unreleased build reads.
-pub fn compatible(commit: &str, release: Option<&str>, other_commit: &str, other_release: Option<&str>) -> bool {
+pub(crate) fn compatible(commit: &str, release: Option<&str>, other_commit: &str, other_release: Option<&str>) -> bool {
     match (release.and_then(line), other_release.and_then(line)) {
         (Some(major), Some(other_major)) => major == other_major,
         _ => commit == other_commit,

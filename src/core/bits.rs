@@ -3,12 +3,12 @@
 //! **Invariant: bits past `len` are always 0.** Every function that writes a whole word re-masks the tail; a hot
 //! trailing bit makes `popcount` over-count and shows up much later as a wrong null count.
 
-pub const fn words_for(rows: usize) -> usize {
+pub(crate) const fn words_for(rows: usize) -> usize {
     rows.div_ceil(u64::BITS as usize)
 }
 
 /// Bytes needed to store `rows` bits, rounded up to whole 64-bit words.
-pub const fn bytes_for(rows: usize) -> usize {
+pub(crate) const fn bytes_for(rows: usize) -> usize {
     words_for(rows) * size_of::<u64>()
 }
 
@@ -21,7 +21,7 @@ const fn tail_mask(len: usize) -> u64 {
 
 /// Zero every bit at or past `len` in the final word. The single point where the trailing-zero invariant is restored.
 #[inline]
-pub fn mask_tail(bits: &mut [u64], len: usize) {
+pub(crate) fn mask_tail(bits: &mut [u64], len: usize) {
     let words = words_for(len);
     if words == 0 {
         return;
@@ -35,7 +35,7 @@ pub fn fill_valid(bits: &mut [u64], len: usize) {
     mask_tail(&mut bits[..words], len);
 }
 
-pub fn fill_invalid(bits: &mut [u64]) {
+pub(crate) fn fill_invalid(bits: &mut [u64]) {
     bits.fill(0u64);
 }
 
@@ -64,7 +64,7 @@ pub fn set_row(bits: &mut [u64], row: usize, value: bool) -> bool {
 // -- binary ops: `dst` cannot alias `a` or `b` (borrow rules) ---------------
 
 #[inline]
-pub fn and_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
+pub(crate) fn and_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = a[i] & b[i];
@@ -74,7 +74,7 @@ pub fn and_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 
 #[cfg(test)]
 #[inline]
-pub fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
+fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = a[i] | b[i];
@@ -84,7 +84,7 @@ pub fn or_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 
 #[cfg(test)]
 #[inline]
-pub fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
+fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = a[i] ^ b[i];
@@ -95,7 +95,7 @@ pub fn xor_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 /// `dst = a & !b`.
 #[cfg(test)]
 #[inline]
-pub fn and_not_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
+fn and_not_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = a[i] & !b[i];
@@ -105,7 +105,7 @@ pub fn and_not_into(dst: &mut [u64], a: &[u64], b: &[u64], len: usize) {
 
 /// `dst = !a`. NOT turns the zero tail hot, so it must re-mask.
 #[inline]
-pub fn not_into(dst: &mut [u64], a: &[u64], len: usize) {
+pub(crate) fn not_into(dst: &mut [u64], a: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] = !a[i];
@@ -117,7 +117,7 @@ pub fn not_into(dst: &mut [u64], a: &[u64], len: usize) {
 
 #[cfg(test)]
 #[inline]
-pub fn and_assign(dst: &mut [u64], src: &[u64], len: usize) {
+fn and_assign(dst: &mut [u64], src: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] &= src[i];
@@ -125,7 +125,7 @@ pub fn and_assign(dst: &mut [u64], src: &[u64], len: usize) {
 }
 
 #[inline]
-pub fn or_assign(dst: &mut [u64], src: &[u64], len: usize) {
+pub(crate) fn or_assign(dst: &mut [u64], src: &[u64], len: usize) {
     let w = words_for(len);
     for i in 0..w {
         dst[i] |= src[i];
@@ -135,7 +135,7 @@ pub fn or_assign(dst: &mut [u64], src: &[u64], len: usize) {
 
 /// True when every bit in [0, len) is set. Bits past `len` are ignored.
 #[inline]
-pub fn all_set(bits: &[u64], len: usize) -> bool {
+pub(crate) fn all_set(bits: &[u64], len: usize) -> bool {
     let w = words_for(len);
     if w == 0 {
         return true;
@@ -148,12 +148,12 @@ pub fn all_set(bits: &[u64], len: usize) -> bool {
 }
 
 #[inline]
-pub fn any_set(bits: &[u64], len: usize) -> bool {
+pub(crate) fn any_set(bits: &[u64], len: usize) -> bool {
     bits[..words_for(len)].iter().any(|&w| w != 0)
 }
 
 /// Visit the indices of set bits, ascending. O(popcount), not O(len).
-pub fn for_each_set<F: FnMut(usize)>(bits: &[u64], len: usize, mut f: F) {
+pub(crate) fn for_each_set<F: FnMut(usize)>(bits: &[u64], len: usize, mut f: F) {
     for (wi, &word) in bits[..words_for(len)].iter().enumerate() {
         let mut w = word;
         while w != 0 {
@@ -166,7 +166,7 @@ pub fn for_each_set<F: FnMut(usize)>(bits: &[u64], len: usize, mut f: F) {
 
 /// For each row, the index of the mask in `masks` whose bit it is, or `None`. The masks are disjoint. One pass over
 /// the set bits, not one probe per row per mask.
-pub fn index_of_set(masks: &[&[u64]], len: usize) -> Vec<Option<u32>> {
+pub(crate) fn index_of_set(masks: &[&[u64]], len: usize) -> Vec<Option<u32>> {
     let mut out = vec![None; len];
     for (k, m) in masks.iter().enumerate() {
         for_each_set(m, len, |i| out[i] = Some(k as u32));
@@ -176,7 +176,7 @@ pub fn index_of_set(masks: &[&[u64]], len: usize) -> Vec<Option<u32>> {
 
 /// Collect set-bit indices into a gather list: how a selection becomes the `indices` argument to `Batch::gather`.
 #[cfg(test)]
-pub fn to_indices(bits: &[u64], len: usize, out: &mut Vec<u32>) {
+fn to_indices(bits: &[u64], len: usize, out: &mut Vec<u32>) {
     out.clear();
     out.reserve(popcount(&bits[..words_for(len)]));
     for_each_set(bits, len, |i| out.push(i as u32));

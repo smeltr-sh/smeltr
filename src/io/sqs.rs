@@ -33,7 +33,7 @@ fn denied(status: http::StatusCode, kind: &str) -> bool {
 }
 
 /// One SQS queue, reached at its URL.
-pub struct Sqs {
+pub(crate) struct Sqs {
     queue_url: String,
     /// Where calls go: the queue URL's scheme and host.
     endpoint: String,
@@ -42,7 +42,7 @@ pub struct Sqs {
 
 impl Sqs {
     /// The queue at `queue_url`, signed with `aws`'s credentials, its calls run on `runtime`.
-    pub fn new(queue_url: &str, aws: Aws, runtime: Arc<tokio::runtime::Runtime>) -> Result<Sqs, IoError> {
+    pub(crate) fn new(queue_url: &str, aws: Aws, runtime: Arc<tokio::runtime::Runtime>) -> Result<Sqs, IoError> {
         let host_end = queue_url
             .find("://")
             .map(|at| at + 3)
@@ -254,7 +254,7 @@ fn object_ref(bucket: &Value, object: &Value, version: &Value, start: &str) -> R
 
 /// The region an AWS queue URL names in its host: `sqs.<region>.amazonaws.com[.cn]`, or the legacy
 /// `<region>.queue.amazonaws.com[.cn]`. None for any other host.
-pub fn region(queue_url: &str) -> Option<&str> {
+pub(crate) fn region(queue_url: &str) -> Option<&str> {
     let host = queue_url.split_once("://")?.1.split(['/', ':']).next()?;
     let name = host
         .strip_suffix(".amazonaws.com")

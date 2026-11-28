@@ -21,7 +21,7 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
 /// The protocol a validator asks for, and nothing else offers.
-pub const ACME_TLS: &[u8] = b"acme-tls/1";
+const ACME_TLS: &[u8] = b"acme-tls/1";
 
 pub struct Resolver {
     served: RwLock<Arc<CertifiedKey>>,
@@ -48,14 +48,14 @@ impl Resolver {
 
     /// Answers a validator asking for `name` with a certificate carrying `digest`, the SHA-256 of the challenge's
     /// key authorization, until [`done`](Self::done).
-    pub fn prove(&self, name: &str, digest: &[u8]) -> Result<(), String> {
+    pub(crate) fn prove(&self, name: &str, digest: &[u8]) -> Result<(), String> {
         let proof = proof(name, digest)?;
         self.proofs.lock().insert(asked_as(name), Arc::new(proof));
         Ok(())
     }
 
     /// Withdraws every proof. An order is over, however it ended.
-    pub fn done(&self) {
+    pub(crate) fn done(&self) {
         self.proofs.lock().clear();
     }
 
