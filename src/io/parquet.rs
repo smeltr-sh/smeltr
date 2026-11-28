@@ -37,10 +37,10 @@ use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema, TimeUnit};
 use parquet::arrow::arrow_writer::ArrowWriterOptions;
 use parquet::arrow::{ArrowSchemaConverter, ArrowWriter};
-use parquet::basic::LogicalType;
+use parquet::basic::{Compression as Codec, LogicalType};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::properties::WriterProperties;
-use parquet::schema::types::{SchemaDescriptor, Type as ParquetType, TypePtr};
+use parquet::schema::types::{ColumnPath, SchemaDescriptor, Type as ParquetType, TypePtr};
 
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
@@ -754,6 +754,8 @@ pub struct FileWriter {
     file: Arc<ArrowSchema>,
     /// The record's columns this file holds null: those of a partition value that is empty.
     nulled: Vec<usize>,
+    /// What its columns' codecs hold while a row group is in progress; each row group's codecs are its own.
+    codec_bytes: usize,
 }
 
 /// `node` with each node whose field id `annotations` names taking its logical type, and with `variants` each variant
@@ -866,8 +868,7 @@ impl From<Compression> for WriteOptions {
 
 impl WriteOptions {
     fn properties(&self) -> WriterProperties {
-        use parquet::basic::{Compression as Codec, GzipLevel, ZstdLevel};
-        use parquet::schema::types::ColumnPath;
+        use parquet::basic::{GzipLevel, ZstdLevel};
         let compression = match self.codec {
             Compression::None => Codec::UNCOMPRESSED,
             Compression::Gzip(level) => Codec::GZIP(
@@ -944,10 +945,18 @@ impl FileWriter {
         let props = options.properties();
         let sink = Sink::default();
         let mut writer_options = ArrowWriterOptions::new();
+        let converted = (ArrowSchemaConverter::new().with_coerce_types(props.coerce_types()))
+            .convert(&schema)
+            .expect("a writable schema");
+        // Each column compresses its pages with a codec of its own, and zstd's keeps its context between pages.
+        let codec_bytes = match props.compression(&ColumnPath::new(Vec::new())) {
+            Codec::ZSTD(level) => {
+                converted.num_columns()
+                    * crate::io::files::zstd_bytes(level.compression_level(), Some(props.data_page_size_limit()))
+            }
+            _ => 0,
+        };
         if !annotations.is_empty() || variants {
-            let converted = (ArrowSchemaConverter::new().with_coerce_types(props.coerce_types()))
-                .convert(&schema)
-                .expect("a writable schema");
             let root = annotate(&converted.root_schema_ptr(), annotations, variants);
             writer_options = writer_options.with_parquet_schema(SchemaDescriptor::new(root));
         }
@@ -964,6 +973,7 @@ impl FileWriter {
             computed: Vec::new(),
             file: schema,
             nulled: Vec::new(),
+            codec_bytes,
         }
     }
 
@@ -1013,6 +1023,14 @@ impl FileWriter {
     /// Bytes of the row group in progress, uncompressed, as Arrow holds them.
     pub fn in_progress_bytes(&self) -> usize {
         self.writer.in_progress_size()
+    }
+
+    /// What its columns' codecs hold, besides the bytes they have encoded, until the row group in progress is taken.
+    pub fn codec_bytes(&self) -> usize {
+        match self.writer.in_progress_rows() {
+            0 => 0,
+            _ => self.codec_bytes,
+        }
     }
 
     /// Ends the row group in progress and hands back every byte written so far and not yet taken. Empty if nothing is
@@ -1602,6 +1620,23 @@ mod tests {
         let mut plain = FileWriter::open(&schema, &Compression::Gzip(6).into());
         plain.write(&rows(&schema, &["a", "b"]));
         assert_eq!(plain.finish().1.row_group(0).column(0).bloom_filter_offset(), None);
+    }
+
+    /// A zstd file's columns each keep a context while a row group is in progress, and give it up when it is taken.
+    #[test]
+    fn a_row_groups_zstd_contexts_count_until_it_is_taken() {
+        let schema = raw_schema();
+        let mut w = FileWriter::open(&schema, &Compression::Zstd(19).into());
+        assert_eq!(w.codec_bytes(), 0, "no row group in progress");
+        w.write(&rows(&schema, &["a", "b"]));
+        let page = WriterProperties::default().data_page_size_limit();
+        let columns = ArrowSchemaConverter::new().convert(&w.file).unwrap().num_columns();
+        assert_eq!(w.codec_bytes(), columns * crate::io::files::zstd_bytes(19, Some(page)));
+        w.take_row_group();
+        assert_eq!(w.codec_bytes(), 0);
+        let mut gzip = FileWriter::open(&schema, &Compression::Gzip(6).into());
+        gzip.write(&rows(&schema, &["a"]));
+        assert_eq!(gzip.codec_bytes(), 0, "gzip keeps nothing between pages");
     }
 
     #[test]

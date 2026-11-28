@@ -203,8 +203,8 @@ pub(super) fn destination_parts(destination: &DestinationConfig) -> Vec<Part> {
         _ => None,
     };
     if let Some(in_flight) = in_flight {
-        // An open file and its upload hold rows its buffer holds until they commit, so all of them hold no more than
-        // the buffer.
+        // An open file's take, codec and upload are held within its buffer, except the codec of the file each
+        // encoder is writing (`io::files`).
         parts.push(Part::destination(
             destination,
             "open files",

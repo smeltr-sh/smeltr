@@ -299,6 +299,8 @@ pub struct AvroFormat {
     codec: Codec,
     /// The destination's level for `codec`, where it takes one.
     level: u8,
+    /// What `codec` holds while it compresses a block (`files::stream_codec_bytes`).
+    codec_bytes: usize,
 }
 
 impl AvroFormat {
@@ -312,6 +314,8 @@ impl AvroFormat {
             schemas,
             codec: Codec::of(compression)?,
             level: compression.level().unwrap_or_default(),
+            // A block is a whole take, so its codec holds what it would for a stream.
+            codec_bytes: crate::io::files::stream_codec_bytes(compression),
         })
     }
 }
@@ -331,6 +335,7 @@ impl FileFormat for AvroFormat {
             schema,
             codec: self.codec,
             level: self.level,
+            codec_bytes: self.codec_bytes,
             sync,
             header: Some(header),
             values: Vec::new(),
@@ -346,6 +351,8 @@ struct AvroEncoder {
     schema: Arc<(String, Schema)>,
     codec: Codec,
     level: u8,
+    /// See `AvroFormat::codec_bytes`.
+    codec_bytes: usize,
     sync: [u8; 16],
     header: Option<Vec<u8>>,
     values: Vec<u8>,
@@ -374,6 +381,10 @@ impl FileEncoder for AvroEncoder {
 
     fn in_progress_bytes(&self) -> usize {
         self.values.len()
+    }
+
+    fn codec_bytes(&self) -> usize {
+        if self.values.is_empty() { 0 } else { self.codec_bytes }
     }
 
     fn take(&mut self) -> Vec<u8> {

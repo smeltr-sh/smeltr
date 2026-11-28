@@ -69,6 +69,8 @@ struct LineEncoder {
     plain_since_take: usize,
     /// What the rows written since the last `take` hold, by `FileRow::bytes`.
     row_bytes_since_take: usize,
+    /// What its codec holds while the file is open (`files::stream_codec_bytes`).
+    codec_bytes: usize,
 }
 
 impl LineEncoder {
@@ -80,6 +82,7 @@ impl LineEncoder {
             taken: 0,
             plain_since_take: 0,
             row_bytes_since_take: 0,
+            codec_bytes: super::files::stream_codec_bytes(compression),
         }
     }
 
@@ -109,6 +112,10 @@ impl FileEncoder for LineEncoder {
 
     fn in_progress_bytes(&self) -> usize {
         self.row_bytes_since_take
+    }
+
+    fn codec_bytes(&self) -> usize {
+        self.codec_bytes
     }
 
     fn take(&mut self) -> Vec<u8> {
@@ -277,6 +284,48 @@ mod tests {
         Compression::Lz4(0),
         Compression::Zstd(3),
     ];
+
+    /// Each codec's state as `codec_bytes` says, against what the allocator counts it holding besides its output once
+    /// it has compressed a few mebibytes. zstd's context is outside Rust's allocator, so zstd is asked instead.
+    #[test]
+    fn codec_bytes_hold_what_each_codec_holds() {
+        let line: Vec<u8> = (0..4096u32)
+            .map(|i| b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8)
+            .collect();
+        for codec in [
+            Compression::Gzip(1),
+            Compression::Gzip(9),
+            Compression::Snappy,
+            Compression::Lz4(0),
+        ] {
+            let before = crate::core::buffer::allocated_bytes();
+            let mut encoder = LineEncoder::open(false, codec);
+            for _ in 0..1024 {
+                encoder.put(&line);
+            }
+            let output = match &encoder.stream {
+                Stream::Gzip(out) => out.get_ref().capacity(),
+                Stream::Snappy(out) => out.get_ref().capacity(),
+                Stream::Lz4(out) => out.get_ref().capacity(),
+                Stream::None(_) | Stream::Zstd(_) => unreachable!("not measured"),
+            };
+            let held = crate::core::buffer::allocated_bytes() - before - output;
+            let said = encoder.codec_bytes();
+            assert!(
+                (said / 2..=said).contains(&held),
+                "{codec:?} holds {held} bytes, said {said}"
+            );
+        }
+        assert_eq!(LineEncoder::open(false, Compression::None).codec_bytes(), 0);
+        let zstd = |level| LineEncoder::open(false, Compression::Zstd(level)).codec_bytes();
+        assert_eq!(zstd(3), crate::io::files::zstd_bytes(3, None));
+        assert!(
+            zstd(3) > 1 << 20 && zstd(19) > 16 * zstd(3),
+            "{} and {}",
+            zstd(3),
+            zstd(19)
+        );
+    }
 
     fn partition() -> Partition {
         Partition {

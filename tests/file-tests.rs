@@ -897,13 +897,31 @@ struct SlowLines;
 
 const SLOW_WRITE: Duration = Duration::from_millis(200);
 
+/// `Lines`, each file's codec holding this many bytes while it is open.
+struct HeavyCodecLines(usize);
+
 #[derive(Default)]
 struct LineEncoder {
     /// How long each write takes.
     pause: Duration,
+    /// What its codec holds.
+    codec: usize,
     buffered: Vec<u8>,
     taken: usize,
     rows: u64,
+}
+
+impl FileFormat for HeavyCodecLines {
+    fn admit(&self, row: &OwnedRecord, partition: &Partition) -> Result<FileRow, String> {
+        Lines.admit(row, partition)
+    }
+
+    fn open(&self, _partition: &Partition) -> Box<dyn FileEncoder> {
+        Box::new(LineEncoder {
+            codec: self.0,
+            ..LineEncoder::default()
+        })
+    }
 }
 
 impl FileFormat for Lines {
@@ -944,6 +962,10 @@ impl FileEncoder for LineEncoder {
 
     fn in_progress_bytes(&self) -> usize {
         self.buffered.len()
+    }
+
+    fn codec_bytes(&self) -> usize {
+        self.codec
     }
 
     fn take(&mut self) -> Vec<u8> {
@@ -990,6 +1012,27 @@ fn a_format_other_than_parquet_writes_its_own_bytes() {
         .unwrap();
     assert_eq!(&bytes[..], b"one\ntwo\nthree\n");
     assert_eq!(file.size_bytes, bytes.len() as u64);
+}
+
+/// Codecs count against the buffer as takes do: a file whose codec fills it is closed when another partition's opens,
+/// so writing to `a`, `b` and `a` again makes three files.
+#[test]
+fn an_open_files_codec_filling_the_buffer_closes_it_before_another_partition_is_written() {
+    let schema = raw_schema();
+    let mut c = config(&schema, Arc::new(ByFirstChar));
+    c.format = Arc::new(HeavyCodecLines(c.buffer_bytes));
+    c.commit_interval = LONG;
+    let mut t = table(c, &[]);
+    for (batch, text) in [(1, "a-one"), (2, "b-one"), (3, "a-two")] {
+        assert!(t.deliver(batch, &partitioned_rows(&schema, &[text])).is_empty());
+    }
+    t.d.flush().unwrap();
+    assert_eq!(t.completed(3), vec![1, 2, 3]);
+    let commits = t.commits();
+    assert_eq!(commits.len(), 1, "one commit: {} commits", commits.len());
+    let mut partitions: Vec<String> = commits[0].iter().map(|f| f.partition.path.join("/")).collect();
+    partitions.sort();
+    assert_eq!(partitions, ["k=a", "k=a", "k=b"]);
 }
 
 /// A file past one part goes up in parts and reads back whole. Every smaller file in this module is a single put.
