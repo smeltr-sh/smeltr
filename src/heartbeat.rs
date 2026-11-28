@@ -1819,12 +1819,14 @@ mod client {
         /// The bytes of the lookup file `oid` names in the leader's store, as they arrive. The caller checks them
         /// against the pointer it asked by.
         pub(crate) fn lookup_file(&self, oid: &str) -> Result<impl std::io::Read + use<>, HeartbeatError> {
-            self.lookup_agent
+            let response = self
+                .lookup_agent
                 .get(format!("{}/{oid}", self.lookup_url))
                 .header("Authorization", &format!("Bearer {}", self.token))
+                .header("Accept-Encoding", "zstd")
                 .call()
-                .map(|response| response.into_body().into_reader())
-                .map_err(|e| HeartbeatError::other(e.to_string()))
+                .map_err(|e| HeartbeatError::other(e.to_string()))?;
+            inflated(response).map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// The ledger the leader keeps for a source it holds for this worker, as it arrives: one
@@ -1833,14 +1835,16 @@ mod client {
             &self,
             key: &super::SourceKey,
         ) -> Result<impl std::io::Read + use<>, HeartbeatError> {
-            self.lookup_agent
+            let response = self
+                .lookup_agent
                 .get(&self.ledger_url)
                 .query("source", &key.source)
                 .query("place", &key.place)
                 .header("Authorization", &format!("Bearer {}", self.token))
+                .header("Accept-Encoding", "zstd")
                 .call()
-                .map(|response| response.into_body().into_reader())
-                .map_err(|e| HeartbeatError::other(e.to_string()))
+                .map_err(|e| HeartbeatError::other(e.to_string()))?;
+            inflated(response).map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// Hand one finished capture to the leader.
@@ -1849,12 +1853,12 @@ mod client {
         /// the leader keeps the first answer from each worker and ignores the rest, so a report arriving twice
         /// cannot double a sample.
         pub fn report_capture(&self, report: &super::CaptureReport) -> Result<(), HeartbeatError> {
-            let body = super::gzipped_json(report).map_err(|e| HeartbeatError::other(e.to_string()))?;
+            let body = super::zstd_json(report).map_err(|e| HeartbeatError::other(e.to_string()))?;
             self.capture_agent
                 .post(&self.capture_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .header("Content-Type", "application/json")
-                .header("Content-Encoding", "gzip")
+                .header("Content-Encoding", "zstd")
                 .send(&body[..])
                 .map(|_| ())
                 .map_err(|e| HeartbeatError::other(e.to_string()))
@@ -1876,16 +1880,17 @@ mod client {
         }
 
         fn send_once(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, SendFailure> {
-            let body = super::gzipped_json(req).map_err(|e| SendFailure {
+            let body = super::zstd_json(req).map_err(|e| SendFailure {
                 retryable: false,
                 error: HeartbeatError::other(e.to_string()),
             })?;
-            let mut response = self
+            let response = self
                 .agent
                 .post(&self.heartbeat_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .header("Content-Type", "application/json")
-                .header("Content-Encoding", "gzip")
+                .header("Content-Encoding", "zstd")
+                .header("Accept-Encoding", "zstd")
                 .send(&body[..])
                 .map_err(|e| SendFailure {
                     // The exchange did not complete, as opposed to the leader having answered.
@@ -1901,24 +1906,53 @@ mod client {
                         (None, _) => HeartbeatError::other(e.to_string()),
                     },
                 })?;
-            response
-                .body_mut()
-                .read_json::<HeartbeatResponse>()
-                .map_err(|e| SendFailure {
-                    // Served; re-sending would be a second heartbeat.
-                    retryable: false,
-                    error: HeartbeatError::other(e.to_string()),
-                })
+            // Served; re-sending would be a second heartbeat.
+            let served = |e: std::io::Error| SendFailure {
+                retryable: false,
+                error: HeartbeatError::other(e.to_string()),
+            };
+            let mut answer = Vec::new();
+            std::io::Read::read_to_end(
+                &mut std::io::Read::take(inflated(response).map_err(served)?, ANSWER_LIMIT + 1),
+                &mut answer,
+            )
+            .map_err(served)?;
+            if answer.len() as u64 > ANSWER_LIMIT {
+                return Err(served(std::io::Error::other(format!(
+                    "an answer of more than {ANSWER_LIMIT} bytes"
+                ))));
+            }
+            serde_json::from_slice(&answer).map_err(|e| served(e.into()))
         }
+    }
+
+    /// The most a heartbeat's answer may inflate to: what `ureq` holds a JSON answer to.
+    const ANSWER_LIMIT: u64 = 10 * 1024 * 1024;
+
+    /// `response`'s body as the leader sent it, inflated from zstd. A worker asks for zstd, and the leader leaves
+    /// a body too small to shrink as it is.
+    fn inflated(
+        response: ureq::http::Response<ureq::Body>,
+    ) -> std::io::Result<Box<dyn std::io::Read + Send + 'static>> {
+        let zstd = response
+            .headers()
+            .get(ureq::http::header::CONTENT_ENCODING)
+            .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"zstd"));
+        let body = response.into_body().into_reader();
+        Ok(if zstd {
+            Box::new(zstd::stream::read::Decoder::new(body)?)
+        } else {
+            Box::new(body)
+        })
     }
 }
 
-/// `value` as JSON, gzipped, as a worker sends every body to its leader. A heartbeat is the same metric names and
-/// labels beat after beat, which gzip takes to a fraction.
-fn gzipped_json(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
-    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    serde_json::to_writer(&mut gz, value)?;
-    gz.finish()
+/// `value` as JSON in zstd, as a worker sends every body to its leader. A heartbeat is the same metric names and
+/// labels beat after beat, which zstd takes to a fraction.
+fn zstd_json(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
+    let mut out = zstd::stream::write::Encoder::new(Vec::new(), zstd::DEFAULT_COMPRESSION_LEVEL)?;
+    serde_json::to_writer(&mut out, value)?;
+    out.finish()
 }
 
 pub use client::{HeartbeatClient, agent_trusting};

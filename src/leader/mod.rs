@@ -3924,16 +3924,16 @@ pub fn compose(state: AppState, admin: Router<AppState>) -> Router {
 /// [`compose`] with no operator gate, for the integration tests. Every request is an administrator's, since the
 /// handlers that answer per area read the caller's access the gate would otherwise have set.
 pub fn router(state: AppState) -> Router {
-    gzipped(compose(
+    compressed(compose(
         state.clone(),
         admin_router().layer(axum::Extension(access::Access::Administrator)),
     ))
 }
 
-/// `app` answering gzipped to a client that takes it, by tower-http's defaults, and taking a gzipped request on every
-/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one. A zip
-/// is already compressed, so it is sent as it is.
-pub fn gzipped(app: Router) -> Router {
+/// `app` answering in zstd or gzip to a client that takes either, zstd where it takes both, and taking a request in
+/// zstd, as a worker sends one, or gzip, as the GUI does, on every route. A route's body limit holds the body as inflated, so a small body
+/// cannot become a large one. A zip is already compressed, so it is sent as it is.
+pub fn compressed(app: Router) -> Router {
     use tower_http::compression::{DefaultPredicate, Predicate, predicate::NotForContentType};
     let zipped = NotForContentType::const_new("application/zip");
     app.layer(tower_http::compression::CompressionLayer::new().compress_when(DefaultPredicate::new().and(zipped)))
@@ -3941,20 +3941,20 @@ pub fn gzipped(app: Router) -> Router {
 }
 
 #[cfg(test)]
-mod gzipped_tests {
+mod compressed_tests {
     use axum::{body::Body, http::Request, routing::get};
     use tower_service::Service;
 
     use super::*;
 
-    async fn encoding(content_type: &'static str) -> Option<String> {
+    async fn encoding(content_type: &'static str, accept: &str) -> Option<String> {
         let body = "x".repeat(1000);
-        let mut app = gzipped(Router::new().route(
+        let mut app = compressed(Router::new().route(
             "/",
             get(move || async move { ([("content-type", content_type)], body) }),
         ));
         let req = Request::get("/")
-            .header("accept-encoding", "gzip")
+            .header("accept-encoding", accept)
             .body(Body::empty())
             .unwrap();
         let res = app.call(req).await.unwrap();
@@ -3962,9 +3962,12 @@ mod gzipped_tests {
     }
 
     #[tokio::test]
-    async fn a_zip_is_sent_as_it_is_and_the_rest_gzipped() {
-        assert_eq!(encoding("application/json").await.as_deref(), Some("gzip"));
-        assert_eq!(encoding("application/zip").await, None);
+    async fn a_zip_is_sent_as_it_is_and_the_rest_in_zstd_where_the_client_takes_it() {
+        // What a current browser offers.
+        let browser = "gzip, deflate, br, zstd";
+        assert_eq!(encoding("application/json", browser).await.as_deref(), Some("zstd"));
+        assert_eq!(encoding("application/json", "gzip").await.as_deref(), Some("gzip"));
+        assert_eq!(encoding("application/zip", browser).await, None);
     }
 }
 

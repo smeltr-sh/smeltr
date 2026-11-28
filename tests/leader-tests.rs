@@ -802,25 +802,25 @@ fn heartbeat_with_a_garbage_token_is_rejected() {
     assert!(matches!(status, ureq::Error::StatusCode(401)));
 }
 
-/// A worker gzips its heartbeat, and the leader holds the body to `HEARTBEAT_BODY_LIMIT` as inflated, so a few
-/// kilobytes on the wire cannot become more than the limit in the leader's memory.
+/// A worker sends its heartbeat in zstd, and the leader holds the body to `HEARTBEAT_BODY_LIMIT` as inflated, so a
+/// few kilobytes on the wire cannot become more than the limit in the leader's memory.
 #[test]
-fn a_gzipped_heartbeat_is_held_to_the_limit_as_inflated() {
+fn a_zstd_heartbeat_is_held_to_the_limit_as_inflated() {
     use std::io::Write;
 
     let base = start_leader();
     let token = enroll_worker(&base, "w1");
     let send = |inflated: usize| {
         let beat = br#"{"workerId":"w1","threads":[]}"#;
-        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        gz.write_all(beat).unwrap();
+        let mut zstd = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
+        zstd.write_all(beat).unwrap();
         // Whitespace, so the JSON is valid at any length and only its size can refuse it.
-        gz.write_all(&vec![b' '; inflated - beat.len()]).unwrap();
-        let body = gz.finish().unwrap();
+        zstd.write_all(&vec![b' '; inflated - beat.len()]).unwrap();
+        let body = zstd.finish().unwrap();
         match ureq::post(format!("{base}/api/worker/heartbeat"))
             .header("Authorization", &format!("Bearer {token}"))
             .header("Content-Type", "application/json")
-            .header("Content-Encoding", "gzip")
+            .header("Content-Encoding", "zstd")
             .send(&body[..])
         {
             Ok(r) => r.status().as_u16(),
@@ -829,14 +829,14 @@ fn a_gzipped_heartbeat_is_held_to_the_limit_as_inflated() {
         }
     };
     let limit = smeltr::heartbeat::HEARTBEAT_BODY_LIMIT;
-    assert_eq!(send(limit), 200, "a gzipped heartbeat at the limit was refused");
-    assert_eq!(send(limit + 1), 413, "a gzipped heartbeat past the limit was taken");
+    assert_eq!(send(limit), 200, "a zstd heartbeat at the limit was refused");
+    assert_eq!(send(limit + 1), 413, "a zstd heartbeat past the limit was taken");
 }
 
-/// The leader answers gzipped to a client that takes it, and as it is to one that does not. Read off the socket:
-/// `ureq` inflates an answer and drops the header that said it was gzipped.
+/// The leader answers in zstd to a client that takes it, gzipped to one that takes only gzip, and as it is to one
+/// that takes neither. Read off the socket: `ureq` inflates an answer and drops the header that said how.
 #[test]
-fn an_answer_is_gzipped_for_a_client_that_takes_it() {
+fn an_answer_is_compressed_as_the_client_takes_it() {
     use std::io::{Read, Write};
 
     let base = start_leader();
@@ -858,6 +858,7 @@ fn an_answer_is_gzipped_for_a_client_that_takes_it() {
             .find_map(|l| l.strip_prefix("content-encoding: "))
             .map(str::to_string)
     };
+    assert_eq!(encoding("gzip, zstd").as_deref(), Some("zstd"));
     assert_eq!(encoding("gzip").as_deref(), Some("gzip"));
     assert_eq!(encoding("identity"), None);
 }

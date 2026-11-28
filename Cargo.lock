@@ -798,6 +798,8 @@ dependencies = [
  "compression-core",
  "flate2",
  "memchr",
+ "zstd 0.14.3",
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
