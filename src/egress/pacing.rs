@@ -759,7 +759,7 @@ impl Pacing {
     fn update_min_rtt(&mut self, rtt: Duration, now: Instant) {
         self.min_rtt_expired = now.saturating_duration_since(self.min_rtt_stamp) > MIN_RTT_FILTER_LEN;
         if self.min_rtt_expired {
-            self.probe_rtt_cwnd = self.bdp_multiple(PROBE_RTT_CWND_GAIN);
+            self.probe_rtt_cwnd = self.bdp_multiple(self.bw, PROBE_RTT_CWND_GAIN);
         }
         if self.min_rtt.is_none_or(|m| rtt < m) || self.min_rtt_expired {
             self.min_rtt = Some(rtt);
@@ -771,11 +771,10 @@ impl Pacing {
         self.min_rtt.map_or(0.0, |rtt| self.bw * rtt.as_secs_f64())
     }
 
-    fn bdp_multiple(&self, gain: f64) -> f64 {
-        if self.min_rtt.is_none() {
-            return INITIAL_CWND * self.smss;
-        }
-        gain * self.bdp()
+    /// BDPMultiple(gain), at `bw`: the draft takes BBR.bw, but for IsTimeToCruise, BBR.max_bw.
+    fn bdp_multiple(&self, bw: f64, gain: f64) -> f64 {
+        self.min_rtt
+            .map_or(INITIAL_CWND * self.smss, |rtt| gain * bw * rtt.as_secs_f64())
     }
 
     fn quantization_budget(&self, cap: f64) -> f64 {
@@ -788,13 +787,13 @@ impl Pacing {
         cap
     }
 
-    /// Inflight(gain).
-    fn inflight(&self, gain: f64) -> f64 {
-        self.quantization_budget(self.bdp_multiple(gain))
+    /// Inflight(bw, gain).
+    fn inflight(&self, bw: f64, gain: f64) -> f64 {
+        self.quantization_budget(self.bdp_multiple(bw, gain))
     }
 
     fn update_max_inflight(&mut self) {
-        let cap = self.bdp_multiple(self.cwnd_gain) + self.extra_acked;
+        let cap = self.bdp_multiple(self.bw, self.cwnd_gain) + self.extra_acked;
         self.max_inflight = self.quantization_budget(cap);
     }
 
@@ -859,7 +858,7 @@ impl Pacing {
 
     fn check_drain_done(&mut self, now: Instant) {
         if self.state == State::Drain
-            && ((self.inflight as f64) <= self.inflight(1.0) || self.round_count > self.drain_start_round + 3)
+            && ((self.inflight as f64) <= self.inflight(self.bw, 1.0) || self.round_count > self.drain_start_round + 3)
         {
             self.cwnd_gain = DEFAULT_CWND_GAIN;
             self.start_probe_bw_down(now);
@@ -943,7 +942,7 @@ impl Pacing {
 
     fn is_time_to_cruise(&self) -> bool {
         let inflight = self.inflight as f64;
-        inflight <= self.inflight_with_headroom() && inflight <= self.inflight(1.0)
+        inflight <= self.inflight_with_headroom() && inflight <= self.inflight(self.max_bw, 1.0)
     }
 
     fn is_time_to_go_down(&mut self, rs: &RateSample) -> bool {
@@ -1106,7 +1105,7 @@ impl Pacing {
     }
 
     fn probe_rtt_cwnd(&self) -> f64 {
-        self.bdp_multiple(PROBE_RTT_CWND_GAIN)
+        self.bdp_multiple(self.bw, PROBE_RTT_CWND_GAIN)
             .min(self.probe_rtt_cwnd)
             .max(MIN_PIPE_CWND * self.smss)
     }
