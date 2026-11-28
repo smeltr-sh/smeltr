@@ -23,7 +23,7 @@ use crate::plan::topology::{HeldSecrets, Tls};
 /// Total time one `flush` may spend, retries included.
 const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(30);
 
-/// How large a request may get before `deliver` posts it and starts the next.
+/// How large a request may get before `send` posts it and starts the next.
 const DEFAULT_MAX_REQUEST_BYTES: usize = 5 * 1024 * 1024;
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(200);
@@ -48,8 +48,8 @@ impl Outcome {
     }
 }
 
-/// What a store took and said it did not store as sent: counted in `smeltr_destination_unwritten_total` by the store's own
-/// unit, and warned of at most once each [`crate::logs::RELOG_EVERY`], since a store may say it of every document.
+/// What a store took and said it did not store as sent: counted in `smeltr_destination_unwritten_total` by the store's
+/// own unit, and warned of at most once each [`crate::logs::RELOG_EVERY`], since a store may say it of every record.
 /// Clones share the warning's clock, so a destination's senders warn once between them.
 #[derive(Clone)]
 pub struct Unwritten {
@@ -108,7 +108,7 @@ impl Unwritten {
 
 /// The most of an answer a transport holds. An answer is held whole until the protocol has read it, and a sender
 /// holds one at a time, so this times the senders is what a service can make a destination hold. Past it the answer
-/// is [`IoError::oversized`], and `deliver` halves the request, since half the request draws about half the answer.
+/// is [`IoError::oversized`], and `send` halves the request, since half the request draws about half the answer.
 ///
 /// Sized for the one answer that grows with the request: a bulk index answers a few hundred bytes per document, so
 /// this holds the answer to any bulk an operator is likely to set, and only a misbehaving service draws it in full.
@@ -144,7 +144,8 @@ impl Response {
     }
 }
 
-/// Writes `s` as a JSON string. A value that can come from a pipeline expression (`__destination.topic`) is escaped as data.
+/// Writes `s` as a JSON string. A value that can come from a pipeline expression (`__destination.topic`) is escaped as
+/// data.
 pub fn push_json_string(out: &mut Vec<u8>, s: &str) {
     crate::format::json::write_json_string(s.as_bytes(), out);
 }
@@ -233,10 +234,11 @@ pub struct HttpDestination<P: Protocol, T: Transport> {
     transport: T,
     max_request_bytes: usize,
     stall_after: Duration,
-    /// Present once the destination has senders; without it `deliver` posts each batch and waits.
+    /// Present once the destination has senders; without it `send` posts each batch and waits.
     pool: Option<Pool<HttpSender<P, T>>>,
     throttle: Option<Throttle>,
-    /// The destination as its author named it, for its lines. The service's name until [`HttpDestination::with_subject`].
+    /// The destination as its author named it, for its lines. The service's name until
+    /// [`HttpDestination::with_subject`].
     subject: Arc<str>,
     said: Arc<Said>,
 }
@@ -669,11 +671,7 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
 impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
     /// Rows are grouped by route and cut into requests within `max_request_bytes`. Every request goes to the pool, each
     /// to a sender of its own, and the batch completes when the last is answered; without a pool, each is posted here.
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut refused = Vec::new();
         let order = self.protocol.order();
         let mut groups: Vec<Group<P::Item>> = Vec::new();

@@ -122,8 +122,8 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$OTEL_TOKEN"`;
     <dd>
       OTLP over HTTP: the body is an <code>Export*ServiceRequest</code> of its signal, protobuf with
       <code>Content-Type: application/x-protobuf</code>, or OTLP's JSON with
-      <code>Content-Type: application/json</code>. The receiver answers in the encoding the export
-      was sent in, and inflates a body sent with <code>Content-Encoding: gzip</code>.
+      <code>Content-Type: application/json</code>. The receiver answers in the format the export was
+      sent in, and inflates a body sent with <code>Content-Encoding: gzip</code>.
     </dd>
     <dt>
       <strong>POST</strong> <code>/opentelemetry.proto.collector.logs.v1.LogsService/Export</code>,

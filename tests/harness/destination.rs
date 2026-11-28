@@ -288,7 +288,7 @@ impl Pki {
 
 /// Hands `batches` to `d` one after another, flushes, waits for every one, and answers what each refused, by batch.
 /// Rows the destination was asked to send less of go again after the wait it was asked for, as egress sends them; a
-/// batch some of whose rows did not land otherwise is an error.
+/// batch some of whose rows were not delivered otherwise is an error.
 pub fn write(
     d: &mut dyn Destination,
     batches: &[Vec<OwnedRecord>],
@@ -349,7 +349,7 @@ fn hand_over(
 ) -> Result<(), String> {
     let owned: Vec<OwnedRecord> = rows.iter().map(|&i| batches[batch][i].clone()).collect();
     let (dispatched, now) = d
-        .deliver(id, Cow::Owned(owned))
+        .send(id, Cow::Owned(owned))
         .map_err(|e| format!("batch {batch} not delivered: {e}"))?;
     refused[batch].extend(now.into_iter().map(|r| Rejection { doc: rows[r.doc], ..r }));
     if dispatched == Dispatched::InFlight {

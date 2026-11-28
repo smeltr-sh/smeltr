@@ -19,9 +19,9 @@ The shape every pipeline has:
 can be copied into the document; a key the document compares, computes
 with or puts in a template is declared, which types it. A declared key is
 a field, so it is not in `undeclared($)`, the undeclared keys as one object. A parse that cannot
-read a row is an exception on it; an exception no `catch` took goes to the
+read a record is an exception on it; an exception no `catch` took goes to the
 `exceptions` answer (ignore, tag, drop, deliver or block) at the end of
-the row, so a bad row is answered without a line here.
+the record, so a bad record is answered without a line here.
 
 ## 1. JSON application log
 
@@ -93,9 +93,9 @@ Out:
 {"@timestamp": "2026-10-01T00:12:04.000000Z", "message": "goroutine 12 [running]:", "stream": "stderr", "orchestrator": {"namespace": "shop", "pod": "checkout-7d9f", "container": "api"}}
 ```
 
-The second row's `json(log)` is an exception inside the `try`; the `catch`
-clears it and keeps the text as the message, so the row carries no exception. `app` is null
-there, so `log` and `trace` hold only nulls, and the serializer leaves an
+The second record's `json(log)` is an exception inside the `try`; the `catch`
+clears it and keeps the text as the message, so the record carries no exception. `app` is null
+there, so `log` and `trace` hold only nulls, and the encoder leaves an
 object with nothing in it out.
 
 ## 3. Key-value syslog (FortiGate)
@@ -251,7 +251,7 @@ output in `fields` names a path in the database's tree, and the declaration on
 
 ## 6. An array of events (AWS CloudTrail)
 
-One record carries many events. `unroll` makes one row per element.
+One record carries many events. `unroll` makes one record per element.
 
 In:
 
@@ -336,8 +336,8 @@ Out:
 {"@timestamp": "2026-10-01T00:12:04.000000Z", "event": {"code": "106023", "severity": 4, "action": "denied", "outcome": "failure"}, "source": {"ip": "10.1.1.9", "port": 40001}, "destination": {"ip": "203.0.113.5", "port": 22}, "network": {"transport": "tcp"}, "rule": {"name": "inside_in"}, "observer": {"name": "fw1"}}
 ```
 
-A capture the matched pattern lacks is null (`acl` on the first row,
-`src_xlated_ip` on the second), and the serializer leaves out an object
+A capture the matched pattern lacks is null (`acl` on the first record,
+`src_xlated_ip` on the second), and the encoder leaves out an object
 with nothing in it, so `rule` and `source.nat` appear only where the
 pattern captured them.
 
@@ -346,7 +346,7 @@ pattern captured them.
 Starlink's telemetry stream answers a POST with rows of values, and with the
 column names of each device type in the same answer. The source is an
 `httpApi` with `method` `POST` and the body `{"batchSize": 1000,
-"maxLingerMs": 15000}`, and the answer is one record. `unroll` makes one row
+"maxLingerMs": 15000}`, and the answer is one record. `unroll` makes one record
 per row of values, and a local carries the column names past it.
 
 In:

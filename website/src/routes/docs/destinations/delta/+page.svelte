@@ -325,7 +325,7 @@
   <p>
     The destination commits its files as the table's next version when
     <code>fileIntervalSecs</code> passes, or sooner when the records it holds near
-    <code>bufferBytes</code>. A batch is acknowledged once the commit holding its records lands.
+    <code>bufferBytes</code>. A batch is acknowledged once the commit holding its records succeeds.
     Other writers may write the same table. A failed write is tried again until
     <code>stallAfterSecs</code>, and then the batches are written again. When storage's answer to a
     commit is lost past that point, its rows may be in the table twice. Where the table sets

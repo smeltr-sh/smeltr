@@ -29,10 +29,10 @@
 //! - Each batch is acknowledged on its own, as with selective acknowledgments, so C.has_selective_acks holds and
 //!   each lost batch is one loss event.
 //! - Loss is the bytes the destination was asked to send less for (a 429, a 503, a bulk item refused for a full
-//!   queue). Those that go back to be sent again are lost; those that landed all the same are delivered and lost both,
+//!   queue). Those that go back to be sent again are lost; those delivered all the same are delivered and lost both,
 //!   as an ECN CE mark is congestion on data that arrived ("MUST treat any CE marks as congestion"). Any other failure,
-//!   a reset or an error, says nothing of how full the path is: its bytes leave flight and signal nothing. What landed
-//!   of a batch that failed in part is acknowledged. A loss recovery lasts until a batch sent after the loss is
+//!   a reset or an error, says nothing of how full the path is: its bytes leave flight and signal nothing. What was
+//!   delivered of a batch that failed in part is acknowledged. A loss recovery lasts until a batch sent after the loss is
 //!   acknowledged. Nothing here tells a loss to be spurious, so the draft's undo has no counterpart.
 //! - The destination's share of the worker's memory pool, or the buffer it states, bounds what it may hold as a
 //!   receiver's window does: the sender holds to the lesser of it and cwnd, and a link the share holds back reads as
@@ -501,15 +501,15 @@ impl Pacing {
         }
     }
 
-    /// A batch handed over failed but for `landed` of its bytes, and what failed goes back to be sent again. What
-    /// landed is acknowledged. What failed is lost only when the destination was asked to send less (`c.throttled`):
+    /// A batch handed over failed but for `delivered` of its bytes, and what failed goes back to be sent again. What
+    /// was delivered is acknowledged. What failed is lost only when the destination was asked to send less (`c.throttled`):
     /// any other failure, a reset or an error, says nothing of how full the path is, so it is in flight no longer and
     /// signals nothing.
-    pub fn abandoned(&mut self, c: Completion, landed: usize, now: Instant) {
+    pub fn abandoned(&mut self, c: Completion, delivered: usize, now: Instant) {
         let bytes = c.bytes as u64;
-        let landed = (landed as u64).min(bytes);
-        let lost = if c.throttled { bytes - landed } else { 0 };
-        self.answered(c.sent, bytes, landed, lost, now);
+        let delivered = (delivered as u64).min(bytes);
+        let lost = if c.throttled { bytes - delivered } else { 0 };
+        self.answered(c.sent, bytes, delivered, lost, now);
     }
 
     /// A batch came back acknowledged whole. One the destination was asked to send less for while delivering it is
@@ -519,15 +519,15 @@ impl Pacing {
         self.answered(c.sent, bytes, bytes, if c.throttled { bytes } else { 0 }, now);
     }
 
-    /// The answer for a batch of `size` bytes sent as `p`: `landed` of them acknowledged, and `lost` marked lost.
-    /// The transport's loss marking, then UpdateOnACK for what landed.
-    fn answered(&mut self, p: Sent, size: u64, landed: u64, lost: u64, now: Instant) {
+    /// The answer for a batch of `size` bytes sent as `p`: `acked` of them acknowledged, and `lost` marked lost.
+    /// The transport's loss marking, then UpdateOnACK for what was acknowledged.
+    fn answered(&mut self, p: Sent, size: u64, acked: u64, lost: u64, now: Instant) {
         self.inflight = self.inflight.saturating_sub(size);
         // Delivered before marked, as a transport counts what an ACK acknowledges before the losses it implies, so
         // the loss round that the marking starts begins after this answer.
-        self.delivered += landed;
+        self.delivered += acked;
         self.lost_packet(&p, size, lost, now);
-        if landed == 0 {
+        if acked == 0 {
             return;
         }
         if self.recovery.is_some_and(|at| p.sent_before >= at) {
@@ -555,7 +555,7 @@ impl Pacing {
             is_app_limited: p.is_app_limited,
             delivered: self.delivered - p.delivered,
             prior_delivered: p.delivered,
-            newly_acked: landed,
+            newly_acked: acked,
             tx_in_flight: p.tx_in_flight,
             lost: self.lost - p.lost,
         };
@@ -1218,10 +1218,10 @@ impl Pacer {
         }
     }
 
-    /// Tell the model a batch failed but for `landed` of its bytes, and goes back to be sent again: throttled, if
+    /// Tell the model a batch failed but for `delivered` of its bytes, and goes back to be sent again: throttled, if
     /// `c.throttled`. Carries its window to the queue as [`Pacer::completed`] does.
-    pub(super) fn abandoned(&mut self, queue: &Queue, c: Completion, landed: usize) {
-        self.answered(queue, |model, now| model.abandoned(c, landed, now));
+    pub(super) fn abandoned(&mut self, queue: &Queue, c: Completion, delivered: usize) {
+        self.answered(queue, |model, now| model.abandoned(c, delivered, now));
     }
 
     /// Tell the model a batch came back, and carry its window to the queue and the metrics when it moves. The ceiling
@@ -1294,7 +1294,7 @@ mod tests {
     const BATCH: usize = 4 * MIB;
 
     /// A path, and the source feeding it: a bottleneck that carries `capacity` bytes a second, a round trip of `rtt`
-    /// besides, and each acknowledgment seen up to `late` after it lands (cycling through that span), as an egress
+    /// besides, and each acknowledgment seen up to `late` after it arrives (cycling through that span), as an egress
     /// thread that polls between pops sees it. The source has a batch whenever asked, or offers `offered` bytes a
     /// second. A destination with a `limit` asks to be sent less for each batch sent while more than that was out.
     /// Handing a batch over takes `handoff`, which the egress thread spends before it can send the next. A wait for
@@ -1738,7 +1738,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_batch_leaves_flight_signalling_nothing_and_what_landed_is_acknowledged() {
+    fn a_failed_batch_leaves_flight_signalling_nothing_and_what_was_delivered_is_acknowledged() {
         let now = Instant::now();
         let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
         let sent = p.dispatched(BATCH, now, now);
@@ -1750,17 +1750,17 @@ mod tests {
         };
         p.abandoned(c, BATCH / 4, now + Duration::from_millis(10));
         assert_eq!(p.inflight, 0, "nothing in flight");
-        assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter landed");
+        assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter was delivered");
         assert_eq!(p.lost, 0, "a failure is no congestion");
         assert!(p.recovery.is_none(), "and starts no recovery");
         assert!(
             p.min_rtt.is_some(),
-            "what landed was acknowledged: a round trip was sampled"
+            "what was delivered was acknowledged: a round trip was sampled"
         );
     }
 
     #[test]
-    fn a_throttled_batch_is_lost_for_what_goes_again_and_acknowledged_for_what_landed() {
+    fn a_throttled_batch_is_lost_for_what_goes_again_and_acknowledged_for_what_was_delivered() {
         let now = Instant::now();
         let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
         let sent = p.dispatched(BATCH, now, now);
@@ -1770,13 +1770,13 @@ mod tests {
             throttled: true,
         };
         p.abandoned(c, BATCH / 4, now + Duration::from_millis(10));
-        assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter landed");
+        assert_eq!(p.delivered, (BATCH / 4) as u64, "a quarter was delivered");
         assert_eq!(p.lost, (BATCH - BATCH / 4) as u64, "the rest was asked for less: lost");
         assert!(p.recovery.is_some(), "a loss starts recovery");
     }
 
     #[test]
-    fn a_batch_that_landed_throttled_is_delivered_then_marked() {
+    fn a_batch_delivered_throttled_is_acknowledged_then_marked() {
         let now = Instant::now();
         let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
         let sent = p.dispatched(BATCH, now, now);
@@ -1788,7 +1788,7 @@ mod tests {
             },
             now + Duration::from_millis(10),
         );
-        assert_eq!(p.delivered, BATCH as u64, "it landed");
+        assert_eq!(p.delivered, BATCH as u64, "it was delivered");
         assert_eq!(p.lost, BATCH as u64, "and marks congestion");
         assert_eq!(
             p.loss_round_delivered, BATCH as u64,

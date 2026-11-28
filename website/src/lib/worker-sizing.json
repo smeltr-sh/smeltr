@@ -71,7 +71,7 @@
       "kinds": ["httpApi", "oktaLogs"],
       "least": "512 MiB",
       "each": "source",
-      "what": "Twice the largest answer it takes: a whole answer is held while it is cut into records."
+      "what": "Twice the largest answer it takes: a whole answer is held while it is framed into payloads."
     },
     {
       "id": "sqlResult",

@@ -306,7 +306,7 @@ fn table(config: FileConfig, answers: &[Answer]) -> Table {
 impl Table {
     /// Hands `rows` over as `batch`, which the destination takes in flight.
     fn deliver(&mut self, batch: u64, rows: &[OwnedRecord]) -> Vec<Rejection> {
-        let (dispatched, refused) = self.d.deliver(batch, Cow::Borrowed(rows)).unwrap();
+        let (dispatched, refused) = self.d.send(batch, Cow::Borrowed(rows)).unwrap();
         assert_eq!(dispatched, Dispatched::InFlight);
         refused
     }

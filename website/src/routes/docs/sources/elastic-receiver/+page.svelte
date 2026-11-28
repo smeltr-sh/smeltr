@@ -88,7 +88,7 @@ setup.ilm.enabled: false`;
   <h1>Elasticsearch receiver</h1>
   <p class="lede">
     Takes what Elasticsearch clients send to Elasticsearch's Bulk API at its port. It answers each
-    request once every destination has its documents.
+    request once every destination has its records.
   </p>
   <p>
     Filebeat and the other Beats, Fluent Bit and other clients of the Bulk API send to it. Every
@@ -165,8 +165,7 @@ setup.ilm.enabled: false`;
   <pre><code>{bulk}</code></pre>
   <p>
     The receiver takes no <code>update</code> or <code>delete</code>. Each is answered
-    <code>400</code> in its own item, and the request's other actions are taken all the same. So is a
-    document that is not a JSON object.
+    <code>400</code> in its own item, and the request's other actions are taken all the same.
   </p>
 
   <h2 id="fields-it-gives">Fields it gives</h2>
@@ -214,14 +213,14 @@ setup.ilm.enabled: false`;
 
   <h2 id="answers">What it answers</h2>
   <p>
-    The receiver answers success only once every destination has the request's documents, so a
-    sender that retries an unanswered request loses nothing. Each refusal's body holds an error that
-    says why in the reason field.
+    The receiver answers success only once every destination has the request's records, so a sender
+    that retries an unanswered request loses nothing. Each refusal's body holds an error that says
+    why in the reason field.
   </p>
   <dl>
     <dt><strong>200</strong></dt>
     <dd>
-      Every destination has the request's documents. The body holds an item per action, in the order
+      Every destination has the request's records. The body holds an item per action, in the order
       sent: <code>201</code> for each document taken, with the <code>_id</code> its action named or
       one the receiver made up, and <code>400</code> for each action not taken.
       <pre><code>{answer}</code></pre>
@@ -328,7 +327,7 @@ setup.ilm.enabled: false`;
       Check the source's status. A blocked receiver takes nothing until its destinations take
       records again. A full one takes more with more workers.
     </dd>
-    <dt><strong>The same documents arrive twice</strong></dt>
+    <dt><strong>The same records arrive twice</strong></dt>
     <dd>
       A sender that hears no answer may send the request again. With <code>answerAfterDelivery</code
       > on, give the sender a timeout longer than its destinations take to deliver.

@@ -645,7 +645,7 @@ fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool
             })
             .collect();
         let in_flight = harness::wait_for(&format!("batch {} to find room", batch.id), REACH_DESTINATION, || {
-            let (dispatched, refused) = d.deliver(batch.id, Cow::Borrowed(&rows)).expect("delivered");
+            let (dispatched, refused) = d.send(batch.id, Cow::Borrowed(&rows)).expect("delivered");
             assert!(refused.is_empty(), "{refused:?}");
             match dispatched {
                 Dispatched::InFlight => Some(true),

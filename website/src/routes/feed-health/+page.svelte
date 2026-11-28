@@ -162,7 +162,7 @@
     <div class="actions">
       <a class="btn large primary" href="/get">Get smeltr</a><a
         class="btn large"
-        href="/docs/getting-started">Set up a deployment</a
+        href="/docs/getting-started">Set up Smeltr</a
       >
     </div>
   </section>

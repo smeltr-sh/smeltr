@@ -34,7 +34,7 @@ Empty(T)                   all null, no buffers
 Constant(T)                one value, every row; no buffers
 ```
 
-A constant column is one value and a row count. The serializer reads the
+A constant column is one value and a row count. The encoder reads the
 value. So does a comparison, or arithmetic on numbers, dates and durations,
 given one as an operand; a chain of `+` on text, `&&`, `||` or `??`; and a
 function given one as an argument its kernel reads as one value: a needle,
@@ -43,7 +43,7 @@ replacement of `replaceAll`. `status == 200`, `"user:" + name` and
 `includes(path, "/api")` each read one column, not two. Every other reader
 is given rows, built from the batch's own pool, so it pays what a literal
 broadcast to every row has always cost. A literal assigned to a field stays
-one value for the batch exactly where the serializer is its only reader, and
+one value for the batch exactly where the encoder is its only reader, and
 there it is never broadcast. So does a `__source` field every record of a
 batch shares: an OTLP export's resource and scope, which its receiver's polls
 end where they change. Egress reads the delivery's topic and identity
@@ -69,13 +69,13 @@ and such a name may repeat. Two rows for one name are a compile error.
 A key goes to the deepest object the tree holds at its name, and the rest of
 its name is its key there: after `http.x = 1`, a parse that finds
 `http.method` lays `method` into `http`'s unclaimed fields. A value at an
-object's own name that is no object is dropped, and the row carries a
+object's own name that is no object is dropped, and the record carries a
 warning. A parse lays its keys over the object's unclaimed fields from before
 it: where both hold a key, the later value replaces it, and where both hold an
 object there, the two are one object. A parse that declares an object
 replaces it, unclaimed fields included.
 
-The serializer walks the name tree. At each object it writes the fields,
+The encoder walks the name tree. At each object it writes the fields,
 then the unclaimed fields' keys that no field claims, as they arrived. So a
 name a step writes claims the record's key of that name on every row, and the
 key stays claimed after a rename takes the name away. A key a step reads is a
@@ -89,7 +89,7 @@ Three rules bound what a step may be:
   cardinality produces a new batch by selecting indices out of the old one,
   and that one primitive serves both compaction and fan-out.
 - A column's buffer is reusable only once nothing live can read it, the
-  serializer at exit included. Violating this serializes the wrong bytes
+  encoder at exit included. Violating this encodes the wrong bytes
   rather than crashing.
 - A construct whose steps are ordered and dependent within a row is a **row
   barrier**, declared by the function and listed in the compiled plan, never
@@ -107,10 +107,10 @@ many rows there are, and a row the guard does not take would have no element
 for the field it unrolls, so an unroll under a guard is a compile error. Row
 barriers already run row at a time. So does a parser that walks rows itself,
 which may leave a masked row untouched: the blend that follows never reads
-the parsed value on a masked row. A row answers only for the value it took:
+the parsed value on a masked row. A record answers only for the value it took:
 an exception from the branch it did not take, or from the operand of `&&`,
-`||` or `??` that JavaScript would not have read on that row, is not the
-row's.
+`||` or `??` that JavaScript would not have read on that record, is not the
+record's.
 
 ## Regions
 
@@ -148,7 +148,7 @@ flowchart LR
   bytes -->|"decode with the source's encoding"| raw["_raw: str"]
   bytes -->|"encoding none"| alone["no _raw: the payload alone"]
   chunk -->|"typed source: a column per field"| gather["gather"] --> fields["declared fields"]
-  chunk -->|"rows parked past their batch"| own["a chunk of their own rows"]
+  chunk -->|"records parked past their batch"| own["a chunk of their own rows"]
 ```
 
 A byte source is one whose client hands over payloads. Its record is one field,
@@ -159,7 +159,7 @@ when it does not. `_raw` is that column decoded before routing, with the
 encoding the source declares, so `str` is text from there on and no string
 function revalidates. A source whose `encoding` is `none` decodes nothing: its
 record has no field, and its payload is `__source.bytes` alone. A destination
-writing bytes writes one `bytes` field of each source record, `__source.bytes`
+writing bytes writes one `bytes` field of each record, `__source.bytes`
 unless it names another.
 
 A `str` column holds valid UTF-8 and a `bytes` column holds any bytes, in the
@@ -171,7 +171,7 @@ A source whose data arrives already in typed columns, as a query's rows do,
 declares a field per column, and its chunk has those columns. It has no
 `__source.bytes`. Transform copies each
 field's rows out of the chunk, with nothing parsed. A value that is not its
-field's type is null, and its row carries the exception naming the field.
+field's type is null, and its record carries the exception naming the field.
 
 A record kept past its batch, for a retry or a full destination, holds only its
 own rows: parking copies the parked rows into a chunk of their own, unless they
@@ -197,12 +197,12 @@ Destinations that write Arrow (Parquet, Delta, Iceberg) cut their columns from
 the batch at egress, once per batch, and that copy is all Arrow would save. A
 table that holds a column narrower than the record types it, an `int` where the
 record has an `i64`, takes each value converted as its file is written, and
-refuses a row whose value the column cannot hold. A partition over such a
+refuses a record whose value the column cannot hold. A partition over such a
 column takes its value in the column's type, under the same refusal.
 
 ## Seams
 
 The [compiler](compiler.md) resolves every name to a column slot. The
 [runtime stages](runtime-stages.md) hand batches between them whole. The
-serializer walks the compiler's name tree, and is the only place a leaf is
+encoder walks the compiler's name tree, and is the only place a leaf is
 nested into its object.

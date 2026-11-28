@@ -19,8 +19,8 @@
       <tr><td>Is dropped by a step, or picked by no deliver rule</td><td>With its batch.</td></tr>
       <tr
         ><td>Reaches a destination that does not answer</td><td
-          >Only once it lands. Egress retries, and a destination that stays down pauses the sources
-          feeding it.</td
+          >Only once it is delivered. Egress retries, and a destination that stays down pauses the
+          sources feeding it.</td
         ></tr
       >
       <tr

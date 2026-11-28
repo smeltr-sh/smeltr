@@ -161,7 +161,7 @@ own ingest: copy up to N raw records for session S, POST them to the
 leader, outbound only. The invitation rides in the heartbeat response,
 as the design doc's Control plane describes. The leader compiles the branch and runs the *transform*
 over those records in process, with capture destinations, and the GUI
-shows output rows, which route matched and where each row would have
+shows output records, which route matched and where each record would have
 gone, and per-function metrics from the leader's own registry. A
 reviewer runs the same preview on a change.
 

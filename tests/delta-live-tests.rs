@@ -41,7 +41,7 @@ fn stored(name: &str) -> SecretRef {
 
 /// Hands `rows` over as batch `batch`, commits, and waits until the commit lands.
 fn deliver(d: &mut dyn Destination, batch: u64, rows: Vec<OwnedRecord>) {
-    let (dispatched, refused) = d.deliver(batch, Cow::Owned(rows)).expect("delivered");
+    let (dispatched, refused) = d.send(batch, Cow::Owned(rows)).expect("delivered");
     assert!(refused.is_empty(), "{refused:?}");
     if dispatched == Dispatched::Complete {
         return;

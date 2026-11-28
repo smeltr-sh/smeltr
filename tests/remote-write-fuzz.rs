@@ -441,7 +441,7 @@ fn deliver<T: Transport>(
     d: &mut HttpDestination<RemoteWrite, T>,
     rows: Vec<OwnedRecord>,
 ) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
+    let (dispatched, refused) = d.send(0, Cow::Owned(rows))?;
     assert_eq!(
         dispatched,
         Dispatched::Complete,

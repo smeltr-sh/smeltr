@@ -1235,8 +1235,8 @@ pub(super) fn check_encoding(encoding: &EncodingLabel, id: &str, errors: &mut It
     if Encoding::for_label(&encoding.0).is_none() {
         errors.at("encoding").push(format!(
             "source {id:?} declares encoding {:?}, which is not a name smeltr knows. Use \
-             {:?} to detect per record, \"none\" for bytes that are not text, or an encoding label from the \
-             WHATWG list (\"utf-8\", \"utf-16le\", \"windows-1252\", \"shift_jis\")",
+             {:?} to detect per record, \"none\" for bytes that are not text, or a text \
+             encoding's name (\"utf-8\", \"utf-16le\", \"windows-1252\", \"shift_jis\")",
             encoding.0,
             EncodingLabel::DEFAULT
         ));
