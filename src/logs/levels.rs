@@ -156,11 +156,6 @@ pub(crate) fn keeps(level: Level, class: Option<&str>, kind: &str, service: Opti
     level <= super::max_level() && level <= kept_at(class, kind, service)
 }
 
-/// The levels kept at now.
-pub fn current() -> Levels {
-    LEVELS.read().clone()
-}
-
 /// Keep lines at `levels` from now on. Every call site is asked again, so one that was off costs nothing until an
 /// override that names it is turned up, and one turned down costs nothing again at once.
 pub(crate) fn set(levels: Levels) {

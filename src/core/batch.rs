@@ -67,7 +67,8 @@ impl Batch {
         self.partition
     }
 
-    pub fn slot_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn slot_count(&self) -> usize {
         self.slots.len()
     }
 

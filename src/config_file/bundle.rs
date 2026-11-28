@@ -411,7 +411,7 @@ fn assemble_at(
         grok_patterns: parts.grok_patterns,
         schemas: parts.schemas,
     };
-    let loaded = super::validate_at(file, declared_at).map_err(BundleError::Load);
+    let loaded = super::validate(file, declared_at).map_err(BundleError::Load);
     match &loaded {
         Ok(system) => tracing::trace!(
             name: "loaded", target: "deploy",

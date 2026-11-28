@@ -1115,9 +1115,6 @@ pub struct AtDestination {
     pub room: usize,
 }
 
-/// The column an open record's unclaimed keys go in, as one object.
-pub use crate::plan::tree::UNCLAIMED;
-
 /// The fields a pipeline writes (`plan::dictionary::record_type`), as a source's record declares its own: each leaf,
 /// and each open object's unclaimed fields. None for a record that is not a struct: its rows are shown by their own
 /// keys.
@@ -1740,6 +1737,7 @@ pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan:
 mod tests {
     use super::*;
     use crate::heartbeat::pasted_from;
+    use crate::plan::tree::UNCLAIMED;
 
     /// A deployment reading `sources`.
     fn deployed(sources: &[&str]) -> Arc<crate::metrics::Subjects> {

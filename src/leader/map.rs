@@ -239,7 +239,7 @@ pub struct PoisonEdge {
     throughput: f64,
 }
 
-/// Why one group has no graph: it names the group and every problem `validate_at` or an unreadable file raised for
+/// Why one group has no graph: it names the group and every problem `validate` or an unreadable file raised for
 /// it, the same wording an all-in-one-scope bundle would have raised on its own (`config_file` load errors).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -333,7 +333,7 @@ pub fn build(
         let types = ConfigTypes::of(&file);
         let declared_at = merged_declared_at(&shared, shared_at, &group.raw, &group.at);
 
-        match config_file::validate_at(file, &declared_at) {
+        match config_file::validate(file, &declared_at) {
             Ok(system) if errors.is_empty() => build_group_graph(&system, &group.id, &shared.file, &types, &mut graph),
             Ok(_) => group_errors.push(GroupError {
                 group: group.id,

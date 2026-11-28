@@ -86,7 +86,8 @@ impl Parsed {
     }
 
     /// The schema itself, without what it references.
-    pub fn schema(&self) -> &Schema {
+    #[cfg(test)]
+    pub(crate) fn schema(&self) -> &Schema {
         &self.schema
     }
 

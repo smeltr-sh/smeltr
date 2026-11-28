@@ -208,7 +208,8 @@ impl Held {
     }
 
     /// Whether held sources are reading nothing new for the backlog.
-    pub fn paused(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn paused(&self) -> bool {
         self.outbox.paused()
     }
 }

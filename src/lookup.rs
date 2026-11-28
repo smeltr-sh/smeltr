@@ -430,7 +430,8 @@ impl RowTable {
         (0..self.layout.rows).map(move |r| std::str::from_utf8(cells.get(r, col)).unwrap_or("\u{fffd}"))
     }
 
-    pub fn row_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn row_count(&self) -> usize {
         self.layout.rows
     }
 

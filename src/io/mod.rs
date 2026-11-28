@@ -320,7 +320,8 @@ impl RecordChunkBuilder {
     }
 
     /// Take back the record last pushed: its bytes, and its offset, partition, topic and headers.
-    pub fn pop(&mut self) -> Option<(Vec<u8>, ReadAt)> {
+    #[cfg(test)]
+    pub(crate) fn pop(&mut self) -> Option<(Vec<u8>, ReadAt)> {
         let at = self.at.pop()?;
         self.time.pop();
         let raw = self.raw.last().to_vec();
@@ -512,10 +513,6 @@ impl RecordChunk {
     /// The rows the chunk holds.
     fn len(&self) -> usize {
         self.columns.first().map_or(0, crate::core::column::Column::len)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// A one-row chunk of `raw`, as a byte source's poll of one record makes.
