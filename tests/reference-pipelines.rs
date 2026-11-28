@@ -86,6 +86,10 @@ fn suricata_maps() {
 /// script parses, on a line of its own: the harness's `test log_run ...`
 /// leaves the cursor mid-line. Unset, it prints the names instead, so the script runs
 /// each in a process of its own and `perf stat` counts one pipeline.
+///
+/// `BENCH_THREADS` workers (1 unset) run it at once, each on a thread of its own with its own bundle, as a worker
+/// process runs one per thread. Each loads its bundle on its own thread, since the lookup files sit in a directory
+/// per thread, and all start together, so `secs` is the slowest one's wall time over every worker's documents.
 #[test]
 #[ignore = "a measurement, not an assertion: `just bench-log`"]
 fn log_run() {
@@ -95,14 +99,31 @@ fn log_run() {
         return;
     };
     let p = ALL.iter().find(|p| p.name == name).expect("a pipeline of that name");
-    let r = reference::run(&(p.bundle)(), p.line, 400_000, 5_000, 0).0;
+    let threads: usize = std::env::var("BENCH_THREADS").map_or(1, |n| n.parse().expect("BENCH_THREADS is a count"));
+    let start = std::sync::Barrier::new(threads);
+    let runs: Vec<reference::Run> = std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(|| {
+                    let bundle = (p.bundle)();
+                    start.wait();
+                    reference::run(&bundle, p.line, 400_000, 5_000, 0).0
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|w| w.join().expect("a worker panicked"))
+            .collect()
+    });
+    let sum = |f: fn(&reference::Run) -> u64| runs.iter().map(f).sum::<u64>();
+    let secs = runs.iter().map(|r| r.wall.as_secs_f64()).fold(0.0, f64::max);
     println!(
-        "\nBENCH rows={} docs={} bytes_in={} bytes_out={} secs={:.6}",
-        r.rows,
-        r.docs,
-        r.bytes_in,
-        r.bytes_out,
-        r.wall.as_secs_f64()
+        "\nBENCH rows={} docs={} bytes_in={} bytes_out={} secs={secs:.6}",
+        sum(|r| r.rows),
+        sum(|r| r.docs),
+        sum(|r| r.bytes_in),
+        sum(|r| r.bytes_out),
     );
 }
 
