@@ -272,7 +272,7 @@ fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<Cl
         // records, and stop the next fetch, never one in flight (`consumer_ceiling`).
         .set(
             "queued.max.messages.kbytes",
-            (queue_payload_bytes(config.fetch_bytes) / 1024).max(1).to_string(),
+            (queue_payload_bytes(config.fetch_bytes) / 1024).to_string(),
         )
         .set("queued.min.messages", queue_records(config.fetch_bytes).to_string())
         // librdkafka's default waits a second to fetch again once that queue is full, which idles a source whose
