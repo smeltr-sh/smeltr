@@ -52,7 +52,7 @@ use super::{BatchCompletion, BatchId, Destination, Dispatched, IoError, OwnedRec
 
 /// Files open per destination, across its encoders. An encoder that has files open and would open one more closes its
 /// least recently written first; one with none opens one whatever the others hold.
-pub const MAX_OPEN_FILES: usize = 64;
+pub(crate) const MAX_OPEN_FILES: usize = 64;
 
 /// An encoder is behind when this many bytes of rows wait for it: a poll's worth.
 const BEHIND_BYTES: usize = crate::worker::TICK_MAX_BYTES;
@@ -66,14 +66,14 @@ pub const TAKE_BYTES: usize = 32 * 1024 * 1024;
 const TAKE_POOL_BYTES: usize = MAX_OPEN_FILES * TAKE_BYTES;
 
 /// Commits retried at once after a `Conflict` before the destination fails.
-pub const MAX_CONFLICT_RETRIES: usize = 8;
+pub(crate) const MAX_CONFLICT_RETRIES: usize = 8;
 
 /// Bytes of one multipart part. A file that ends within one goes up as a single put.
 const PART_BYTES: usize = 8 * 1024 * 1024;
 
 /// What one open file may hold: the take its encoder buffers, the part its upload is filling, and `parts_in_flight`
 /// parts on their way.
-pub fn open_file_bytes(parts_in_flight: usize) -> usize {
+pub(crate) fn open_file_bytes(parts_in_flight: usize) -> usize {
     TAKE_BYTES + (parts_in_flight + 1) * PART_BYTES
 }
 
@@ -158,20 +158,20 @@ pub enum CommitError {
 /// Commits of one set of files whose answers were lost. Any of them may still land, so each commit of those files
 /// first looks for one in the table. `Id` is what the table records of a commit: Delta's transaction version,
 /// Iceberg's snapshot id.
-pub struct Lost<Id> {
+pub(crate) struct Lost<Id> {
     /// The files' paths, in the order they were committed, and each lost commit's id.
     held: Option<(Vec<String>, Vec<Id>)>,
 }
 
 impl<Id> Lost<Id> {
     /// Nothing lost yet.
-    pub fn none() -> Lost<Id> {
+    pub(crate) fn none() -> Lost<Id> {
         Lost { held: None }
     }
 
     /// Whether lost commits of `paths` are held. Held commits of other files are forgotten first: those failed the
     /// destination, and their batches come again in files of their own.
-    pub fn same_files(&mut self, paths: &[&str]) -> bool {
+    pub(crate) fn same_files(&mut self, paths: &[&str]) -> bool {
         if self.held.as_ref().is_some_and(|(held, _)| held != paths) {
             self.held = None;
         }
@@ -179,7 +179,7 @@ impl<Id> Lost<Id> {
     }
 
     /// Holds the commit `id` of `paths`, whose answer was lost.
-    pub fn note(&mut self, paths: &[&str], id: Id) {
+    pub(crate) fn note(&mut self, paths: &[&str], id: Id) {
         let (_, ids) = self
             .held
             .get_or_insert_with(|| (paths.iter().map(|p| p.to_string()).collect(), Vec::new()));
@@ -188,7 +188,7 @@ impl<Id> Lost<Id> {
 
     /// Whether a lost commit is in the table as last read, by `found`; forgets them all when one is, since their
     /// files are then in it.
-    pub fn landed(&mut self, found: impl Fn(&Id) -> bool) -> bool {
+    pub(crate) fn landed(&mut self, found: impl Fn(&Id) -> bool) -> bool {
         let landed = self.held.as_ref().is_some_and(|(_, ids)| ids.iter().any(found));
         if landed {
             self.held = None;
@@ -197,7 +197,7 @@ impl<Id> Lost<Id> {
     }
 
     /// Forgets the lost commits: a commit of their files landed in plain sight.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.held = None;
     }
 }
@@ -224,7 +224,7 @@ pub enum FileRow {
 
 impl FileRow {
     /// What the row holds in memory; bounds a slice against the encoder's take size and the file's limit.
-    pub fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         match self {
             FileRow::Columns(c) => c.chunk.row_bytes(c.row),
             FileRow::Line(line) => line.len() + 1,
@@ -270,7 +270,7 @@ impl ParquetFormat {
 }
 
 /// `row` as a file of one record per part takes it: its columns, cut to `schemas[partition.part]`.
-pub fn admit_columns(schemas: &[Schema], row: &OwnedRecord, partition: &Partition) -> Result<FileRow, String> {
+pub(crate) fn admit_columns(schemas: &[Schema], row: &OwnedRecord, partition: &Partition) -> Result<FileRow, String> {
     let Some(columns) = &row.columns else {
         return Err("the row has no columns".into());
     };
@@ -1341,7 +1341,7 @@ impl Upload {
     }
 
     /// Bytes written and not yet in the store.
-    pub(crate) fn pending(&self) -> usize {
+    fn pending(&self) -> usize {
         self.pending.load(Ordering::Relaxed)
     }
 

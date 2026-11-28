@@ -8,36 +8,36 @@ use std::collections::BTreeMap;
 pub struct OtlpDestinationDto {
     /// The endpoint, which each request goes to with its signal's path, `/v1/logs`, `/v1/metrics` or
     /// `/v1/traces`, after it.
-    pub url: String,
+    url: String,
     /// The signal it sends. Absent is logs.
     #[serde(default, skip_serializing_if = "is_logs")]
-    pub signal: Signal,
+    signal: Signal,
     /// `"none"` (default) or `"gzip"`.
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
-    pub compression: CompressionDto,
+    pub(crate) compression: CompressionDto,
     /// When absent, the codec's default level is used (`CompressionDto::levels`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_level: Option<u8>,
+    compression_level: Option<u8>,
     /// Header name -> its value, committed to the config repository.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers: BTreeMap<String, String>,
+    headers: BTreeMap<String, String>,
     /// Header name -> the credential holding its value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub credentials: BTreeMap<String, SecretRefDto>,
+    credentials: BTreeMap<String, SecretRefDto>,
     #[serde(flatten)]
-    pub tls: TlsDto,
+    tls: TlsDto,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
-    pub in_flight: InFlight,
+    pub(crate) in_flight: InFlight,
     #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-    pub max_request_bytes: RequestBytes,
+    pub(crate) max_request_bytes: RequestBytes,
     /// Unset means the default, or one whole request if that is larger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub buffer_bytes: Option<BufferBytes>,
+    buffer_bytes: Option<BufferBytes>,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
-    pub stall_after_secs: StallAfter,
+    pub(crate) stall_after_secs: StallAfter,
     #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
+    unknown: NoUnknownKeys,
 }
 
 impl DestinationSpec for OtlpDestinationDto {

@@ -61,7 +61,7 @@ pub struct Scratch<'d> {
     /// The keys of the object being copied at each depth.
     keys: Vec<Keys<Cow<'d, str>, ()>>,
     /// What the last document's read lost.
-    pub lost: Lost,
+    pub(crate) lost: Lost,
 }
 
 /// Parse `bytes` as one JSON document.
@@ -651,7 +651,7 @@ fn number_text<'d>(s: &mut Scanner<'d>) -> Result<(&'d str, bool), ()> {
 /// the caller's own, such as an OTLP export or a HEC envelope, where `parse_object` hands a document's fields to a
 /// sink. It reads what `parse_object` reads, a trailing comma, raw control bytes and `\xHH` in a string among it, but
 /// a bare `NaN` or `Infinity` is no number here.
-pub struct Reader<'d> {
+pub(crate) struct Reader<'d> {
     s: Scanner<'d>,
     depth: u32,
     /// The container just opened has had no member yet, so its first takes no comma.
@@ -660,7 +660,7 @@ pub struct Reader<'d> {
 
 /// The document is no JSON, or nests past the bound.
 #[derive(Debug, PartialEq)]
-pub struct Malformed;
+pub(crate) struct Malformed;
 
 impl From<Malformed> for String {
     fn from(_: Malformed) -> String {
@@ -670,7 +670,7 @@ impl From<Malformed> for String {
 
 /// The value a reader is at. A container's opening is read: [`Reader::key`] or [`Reader::item`] reads on into it.
 #[derive(Debug, PartialEq)]
-pub enum Next<'d> {
+pub(crate) enum Next<'d> {
     Null,
     Bool(bool),
     /// A number as the document writes it, for the caller to read at the width it needs.
@@ -683,7 +683,7 @@ pub enum Next<'d> {
 impl<'d> Reader<'d> {
     /// `bytes`, at their first value. `Malformed` where they are not UTF-8: one check of the whole document, as
     /// `parse_object` makes.
-    pub fn new(bytes: &'d [u8]) -> Result<Reader<'d>, Malformed> {
+    pub(crate) fn new(bytes: &'d [u8]) -> Result<Reader<'d>, Malformed> {
         Ok(Reader::of_str(
             simdutf8::basic::from_utf8(bytes).map_err(|_| Malformed)?,
         ))
@@ -691,7 +691,7 @@ impl<'d> Reader<'d> {
 
     /// `text`, at its first value: for a document read in parts, each part from where the last one ended, without
     /// checking the whole again.
-    pub fn of_str(text: &'d str) -> Reader<'d> {
+    pub(crate) fn of_str(text: &'d str) -> Reader<'d> {
         let s = Scanner {
             b: text.as_bytes(),
             t: text,
@@ -706,18 +706,18 @@ impl<'d> Reader<'d> {
     }
 
     /// The bytes read so far.
-    pub fn at(&self) -> usize {
+    pub(crate) fn at(&self) -> usize {
         self.s.i
     }
 
     /// Whether nothing but whitespace is left.
-    pub fn end(&mut self) -> bool {
+    pub(crate) fn end(&mut self) -> bool {
         self.s.skip_ws();
         self.s.i == self.s.b.len()
     }
 
     /// The value the reader is at.
-    pub fn value(&mut self) -> Result<Next<'d>, Malformed> {
+    pub(crate) fn value(&mut self) -> Result<Next<'d>, Malformed> {
         self.s.skip_ws();
         let s = &mut self.s;
         let read = match s.peek() {
@@ -741,7 +741,7 @@ impl<'d> Reader<'d> {
     }
 
     /// The next key of the object open, with its `:` read, or `None` at the object's end.
-    pub fn key(&mut self) -> Result<Option<Cow<'d, str>>, Malformed> {
+    pub(crate) fn key(&mut self) -> Result<Option<Cow<'d, str>>, Malformed> {
         if !self.more(b'}')? {
             return Ok(None);
         }
@@ -756,7 +756,7 @@ impl<'d> Reader<'d> {
     }
 
     /// Whether the array open has another element, which [`Reader::value`] reads. `false` at the array's end.
-    pub fn item(&mut self) -> Result<bool, Malformed> {
+    pub(crate) fn item(&mut self) -> Result<bool, Malformed> {
         self.more(b']')
     }
 
@@ -783,7 +783,7 @@ impl<'d> Reader<'d> {
     }
 
     /// Whether the value the reader is at is `null`, read past it if so.
-    pub fn null(&mut self) -> Result<bool, Malformed> {
+    pub(crate) fn null(&mut self) -> Result<bool, Malformed> {
         self.s.skip_ws();
         if self.s.peek() != Some(b'n') {
             return Ok(false);
@@ -793,7 +793,7 @@ impl<'d> Reader<'d> {
     }
 
     /// Past the value the reader is at, whatever it holds.
-    pub fn skip(&mut self) -> Result<(), Malformed> {
+    pub(crate) fn skip(&mut self) -> Result<(), Malformed> {
         match self.value()? {
             Next::Object => {
                 while self.key()?.is_some() {
@@ -814,7 +814,7 @@ impl<'d> Reader<'d> {
     /// `null` member of an object is no entry, and of a key given twice the last value stands, in the first one's
     /// place. A `null` is a variant null. A number no f64 holds, `NaN`, `Infinity` or text that names no character
     /// refuses the value, which would otherwise lose it.
-    pub fn variant(&mut self, out: &mut Vec<u8>) -> Result<(), Malformed> {
+    pub(crate) fn variant(&mut self, out: &mut Vec<u8>) -> Result<(), Malformed> {
         self.s.skip_ws();
         (self.s.lost.non_finite, self.s.lost.replaced) = (false, false);
         let mut keys = Vec::new();
@@ -831,7 +831,7 @@ impl<'d> Reader<'d> {
     }
 
     /// The string the reader is at, read past it. `None`, with nothing read, where it is at another value.
-    pub fn string(&mut self) -> Result<Option<Cow<'d, str>>, Malformed> {
+    pub(crate) fn string(&mut self) -> Result<Option<Cow<'d, str>>, Malformed> {
         self.s.skip_ws();
         if self.s.peek() != Some(b'"') {
             return Ok(None);
@@ -840,7 +840,7 @@ impl<'d> Reader<'d> {
     }
 
     /// The value the reader is at, skipped, as the bytes the document writes it in.
-    pub fn raw(&mut self) -> Result<&'d [u8], Malformed> {
+    pub(crate) fn raw(&mut self) -> Result<&'d [u8], Malformed> {
         self.s.skip_ws();
         let start = self.s.i;
         self.skip()?;

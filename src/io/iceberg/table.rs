@@ -65,7 +65,7 @@ const UNDATED_LIFE: Duration = Duration::from_secs(15 * 60);
 /// The destination `config` names. Its table is loaded, or created from the record when missing, and the record's
 /// new columns are added to it before any file is written. Err is transient: the catalog cannot be reached, or the
 /// table cannot take the record, which a restart asks again.
-pub fn destination(
+pub(crate) fn destination(
     config: &IcebergDestinationConfig,
     subject: &str,
     records: Option<&Records>,

@@ -33,24 +33,24 @@ const SCOPE: &str = "unity-catalog";
 
 /// A table as Unity Catalog places it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Table {
-    pub id: String,
+pub(crate) struct Table {
+    pub(crate) id: String,
     /// The table's root, `s3://bucket/path`.
-    pub location: String,
+    pub(crate) location: String,
 }
 
 /// Credentials for a table's storage, as Unity Catalog vends them.
 #[derive(Clone, Debug)]
-pub struct Grant {
-    pub credential: Arc<AwsCredential>,
-    pub expires: SystemTime,
+pub(crate) struct Grant {
+    pub(crate) credential: Arc<AwsCredential>,
+    pub(crate) expires: SystemTime,
     /// The ARN of the S3 access point the credentials are for, when the table's external location is reached
     /// through one.
-    pub access_point: Option<String>,
+    pub(crate) access_point: Option<String>,
 }
 
 /// A blocking client of one workspace's Unity Catalog, signed in to as a service principal.
-pub struct UnityCatalog {
+pub(crate) struct UnityCatalog {
     workspace: String,
     sign_in: ClientCredentials,
     agent: ureq::Agent,
@@ -59,7 +59,7 @@ pub struct UnityCatalog {
 
 impl UnityCatalog {
     /// `workspace` is the workspace's URL, as `https://dbc-1234.cloud.databricks.com`.
-    pub fn new(
+    pub(crate) fn new(
         workspace: &str,
         client_id: String,
         client_secret: String,
@@ -87,7 +87,7 @@ impl UnityCatalog {
 
     /// The external Delta table `name`, three-part. Err for any other table: a managed table's storage is vended
     /// read-only, and its commits go through the catalog.
-    pub fn table(&mut self, name: &str) -> Result<Table, IoError> {
+    pub(crate) fn table(&mut self, name: &str) -> Result<Table, IoError> {
         #[derive(Deserialize)]
         struct Answer {
             table_id: Option<String>,
@@ -127,7 +127,7 @@ impl UnityCatalog {
     }
 
     /// Credentials to read and write the storage of the table `id`, and when they expire.
-    pub fn credentials(&mut self, id: &str) -> Result<Grant, IoError> {
+    pub(crate) fn credentials(&mut self, id: &str) -> Result<Grant, IoError> {
         #[derive(Deserialize)]
         struct Aws {
             access_key_id: String,

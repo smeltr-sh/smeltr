@@ -59,7 +59,7 @@ pub enum BlockCause {
 
 impl BlockCause {
     /// What a heartbeat calls it, as the `cause` label of `smeltr_source_blocked_reason`.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             BlockCause::Held => "held",
             BlockCause::Refused => "refused",
@@ -68,7 +68,7 @@ impl BlockCause {
     }
 
     /// The cause a heartbeat calls `name`, if this build knows it.
-    pub fn named(name: &str) -> Option<BlockCause> {
+    pub(crate) fn named(name: &str) -> Option<BlockCause> {
         [BlockCause::Held, BlockCause::Refused, BlockCause::Waiting]
             .into_iter()
             .find(|c| c.name() == name)
@@ -85,7 +85,7 @@ struct State {
 /// tracked batch nobody holds blocks every commit behind it forever.
 #[derive(Debug)]
 pub struct Unsent {
-    pub batch: Handed,
+    pub(crate) batch: Handed,
     pub error: IoError,
 }
 
@@ -104,13 +104,13 @@ impl Ready {
     }
 
     /// Say a batch is available. Wakes one waiter: one batch is one thread's work.
-    pub fn signal(&self) {
+    pub(crate) fn signal(&self) {
         *self.tick.lock() += 1;
         self.arrived.notify_one();
     }
 
     /// Wakes every waiter, for a change they all have to see -- a close.
-    pub fn signal_all(&self) {
+    pub(crate) fn signal_all(&self) {
         *self.tick.lock() += 1;
         self.arrived.notify_all();
     }
@@ -178,7 +178,7 @@ impl Handoff {
     }
 
     /// What this queue's arrivals are announced on.
-    pub fn ready(&self) -> &Arc<Ready> {
+    pub(crate) fn ready(&self) -> &Arc<Ready> {
         &self.ready
     }
 
@@ -251,7 +251,7 @@ impl Handoff {
     }
 
     /// Bytes of raw records it holds now, as its capacity counts them.
-    pub fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.state.lock().bytes
     }
 }
@@ -270,7 +270,7 @@ pub fn reports() -> (Reports, Acks) {
 
 impl Reports {
     /// Never blocks. A reader that has gone away is not an error: its uncommitted batches are redelivered.
-    pub fn send(&self, r: Report) {
+    pub(crate) fn send(&self, r: Report) {
         let _ = self.0.send(r);
     }
 }
@@ -288,7 +288,7 @@ impl Acks {
     }
 
     /// Wait up to `timeout` for a report, then everything behind it.
-    pub fn wait(&self, timeout: Duration) -> Vec<Report> {
+    pub(crate) fn wait(&self, timeout: Duration) -> Vec<Report> {
         match self.0.recv_timeout(timeout) {
             Ok(first) => {
                 let mut out = vec![first];

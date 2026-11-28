@@ -31,12 +31,12 @@ use crate::io::table::{Kind, parse_date, parse_timestamp, unhex};
 
 /// The table's schema for a record, and whether it differs from the table's current one.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Evolution {
-    pub schema: Schema,
+pub(crate) struct Evolution {
+    pub(crate) schema: Schema,
     /// The highest column id the table has assigned, the schema's new columns' included.
-    pub last_column_id: i32,
+    pub(crate) last_column_id: i32,
     /// Whether `schema` is new to the table: the table is created, or a column added. A commit then sets it.
-    pub changed: bool,
+    pub(crate) changed: bool,
 }
 
 /// The schema a table of format `version` must have for `record` to be written to it. With no `current` schema the
@@ -45,7 +45,7 @@ pub struct Evolution {
 ///
 /// Err names the field when the record is no struct, a column holds a type other than the record's, or a required
 /// column is one the record does not write.
-pub fn table_schema(
+pub(crate) fn table_schema(
     record: &DataType,
     current: Option<&Schema>,
     last_column_id: i32,
@@ -102,7 +102,10 @@ pub fn table_schema(
 ///
 /// Err names a column the record lacks of a type this writer has no Parquet type for, or whose write default is not
 /// of its type.
-pub fn with_field_ids(arrow: &ArrowSchema, schema: &Schema) -> Result<(Arc<ArrowSchema>, Vec<WriteDefault>), String> {
+pub(crate) fn with_field_ids(
+    arrow: &ArrowSchema,
+    schema: &Schema,
+) -> Result<(Arc<ArrowSchema>, Vec<WriteDefault>), String> {
     let (fields, defaults) = labelled(arrow.fields(), &schema.fields, "")?;
     let written = ArrowSchema::new_with_metadata(fields, arrow.metadata().clone());
     Ok((Arc::new(written), defaults))
@@ -161,7 +164,7 @@ fn with_id(field: &Field, id: i32, ty: &Type, path: &str) -> Result<(Field, Writ
 /// `write-default`, or null without one. A struct's default is null or `{}`, whose fields each take their own.
 ///
 /// Err names the field when the default is not a value of its type, or a struct's required field has none.
-pub fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
+pub(crate) fn write_default(field: &NestedField, arrow: &Arrow, path: &str) -> Result<ArrayRef, String> {
     single_value(field.other.get("write-default"), &field.field_type, arrow, path)
 }
 
@@ -346,7 +349,7 @@ fn column(name: &str, ty: &Type, nullable: bool, id: i32, path: &str) -> Result<
 
 /// The Parquet logical type of each column of `schema`, at any depth, that its Arrow type does not carry: a geometry's,
 /// a geography's or a variant's, by field id (`parquet::Schema::with_annotations`).
-pub fn parquet_annotations(schema: &Schema) -> Vec<(i32, LogicalType)> {
+pub(crate) fn parquet_annotations(schema: &Schema) -> Vec<(i32, LogicalType)> {
     let mut out = Vec::new();
     annotations(&schema.fields, &mut out);
     out

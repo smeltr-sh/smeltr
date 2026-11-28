@@ -33,28 +33,28 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LIST: usize = 8 * 1024 * 1024;
 
 /// Whether the leader checks; absent is on.
-pub const CHECK_KEY: &str = "updates.check";
+const CHECK_KEY: &str = "updates.check";
 
 /// A published release newer than this leader's.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Newer {
-    pub release: String,
+pub(crate) struct Newer {
+    pub(crate) release: String,
     /// Its page on smeltr.sh, which says what it changed.
-    pub url: String,
+    pub(crate) url: String,
     /// When this leader first saw it, unix millis.
     #[serde(skip)]
-    pub since: i64,
+    pub(crate) since: i64,
 }
 
 /// What the last check found.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Checked {
+pub(crate) struct Checked {
     /// Unix millis.
-    pub checked_at: i64,
+    checked_at: i64,
     /// Why the list was not read, logged when it was recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure: Option<crate::logs::Noted>,
+    pub(crate) failure: Option<crate::logs::Noted>,
 }
 
 /// The leader's checks: what the last found, and what wakes the timer.
@@ -62,7 +62,7 @@ pub struct Checked {
 pub struct Updates {
     state: crate::sync::Mutex<(Option<Newer>, Option<Checked>)>,
     /// Wakes the timer to check at once: the setting turned on, or an administrator asked.
-    pub wake: tokio::sync::Notify,
+    wake: tokio::sync::Notify,
     /// Told each time a check is recorded.
     checked: tokio::sync::Notify,
 }
@@ -73,12 +73,12 @@ impl Updates {
     }
 
     /// The newer release, if the last check that reached GitHub found one.
-    pub fn newer(&self) -> Option<Newer> {
+    pub(crate) fn newer(&self) -> Option<Newer> {
         self.held().0.clone()
     }
 
     /// When the last check was, and why it failed if it did.
-    pub fn last_check(&self) -> Option<Checked> {
+    pub(crate) fn last_check(&self) -> Option<Checked> {
         self.held().1.clone()
     }
 
@@ -243,12 +243,12 @@ fn newer(release: Core, (own, pre): (Core, Option<&str>)) -> bool {
 
 /// What Admin -> System -> General reads and saves.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct UpdateSettingsDto {
+pub(crate) struct UpdateSettingsDto {
     check: bool,
 }
 
 #[derive(Default, serde::Serialize)]
-pub struct UpdateSettings {
+pub(crate) struct UpdateSettings {
     settings: Option<UpdateSettingsDto>,
 }
 
@@ -264,13 +264,13 @@ impl UpdateSettings {
 }
 
 /// `GET /api/settings/updates`.
-pub async fn get_settings(State(state): State<AppState>) -> Envelope<UpdateSettings> {
+pub(crate) async fn get_settings(State(state): State<AppState>) -> Envelope<UpdateSettings> {
     UpdateSettings::answer(run_store(state.store, checking).await.map_err(Refusal::from))
 }
 
 /// `PUT /api/settings/updates`. Recorded with who set it, in the transaction that sets it; the timer checks at once
 /// when it is turned on.
-pub async fn put_settings(
+pub(crate) async fn put_settings(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<UpdateSettingsDto>,
@@ -288,7 +288,7 @@ pub async fn put_settings(
 
 /// `POST /api/settings/updates/check`: wake the timer to check now, and answer once that check is recorded. If a
 /// check is already under way, it answers the request.
-pub async fn post_check(
+pub(crate) async fn post_check(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
 ) -> Envelope<UpdateSettings> {
