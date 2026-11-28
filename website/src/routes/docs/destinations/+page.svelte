@@ -113,7 +113,7 @@
 
   <h2 id="fields">Fields</h2>
   <p>
-    Smeltr never delivers a record field whose name starts with <code>__</code>. A pipeline sets
+    Smeltr never sends a record field whose name starts with <code>__</code>. A pipeline sets
     <code>__destination</code> fields to steer a record, and each kind reads only its own:
   </p>
   <FieldsTable names={reads} />

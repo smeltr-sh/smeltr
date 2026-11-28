@@ -6,6 +6,7 @@
 //! live half.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::Arc;
@@ -285,40 +286,78 @@ impl Pki {
 
 // -- delivering ---------------------------------------------------------------------------------------------------
 
-/// Hands `batches` to `d` one after another, flushes, waits for every one, and answers what each refused, by batch. A
-/// batch some of whose rows did not land is an error.
+/// Hands `batches` to `d` one after another, flushes, waits for every one, and answers what each refused, by batch.
+/// Rows the destination was asked to send less of go again after the wait it was asked for, as egress sends them; a
+/// batch some of whose rows were not delivered otherwise is an error.
 pub fn write(
     d: &mut dyn Destination,
     batches: &[Vec<OwnedRecord>],
     deadline: Duration,
 ) -> Result<Vec<Vec<Rejection>>, String> {
     let mut refused: Vec<Vec<Rejection>> = (0..batches.len()).map(|_| Vec::new()).collect();
-    let mut pending = Vec::new();
+    // What each batch handed over is: which of `batches`, and which of its rows.
+    let mut pending: HashMap<u64, (usize, Vec<usize>)> = HashMap::new();
     for (batch, rows) in batches.iter().enumerate() {
-        let (dispatched, now) = d
-            .deliver(batch as u64, Cow::Owned(rows.clone()))
-            .map_err(|e| format!("batch {batch} not delivered: {e}"))?;
-        refused[batch].extend(now);
-        if dispatched == Dispatched::InFlight {
-            pending.push(batch as u64);
-        }
+        let id = batch as u64;
+        hand_over(
+            d,
+            batches,
+            id,
+            (batch, (0..rows.len()).collect()),
+            &mut pending,
+            &mut refused,
+        )?;
     }
     d.flush().map_err(|e| format!("not flushed: {e}"))?;
     let until = Instant::now() + deadline;
+    let mut next = batches.len() as u64;
     while !pending.is_empty() {
         for done in d.poll_completions().map_err(|e| format!("not landed: {e}"))? {
+            let Some((batch, rows)) = pending.remove(&done.batch) else {
+                return Err(format!("batch {} completed twice", done.batch));
+            };
+            refused[batch].extend(done.rejections.into_iter().map(|r| Rejection { doc: rows[r.doc], ..r }));
             if let Some(u) = done.undelivered {
-                return Err(format!("not landed: {}", u.error));
+                let Some(wait) = u.error.throttled_wait() else {
+                    return Err(format!("not landed: {}", u.error));
+                };
+                std::thread::sleep(wait);
+                // In the batch's order, as egress sends them: each of the batch's requests named its own.
+                let mut again: Vec<usize> = u.rows.iter().map(|&i| rows[i]).collect();
+                again.sort_unstable();
+                hand_over(d, batches, next, (batch, again), &mut pending, &mut refused)?;
+                next += 1;
             }
-            refused[done.batch as usize].extend(done.rejections);
-            pending.retain(|b| *b != done.batch);
         }
         if Instant::now() > until {
-            return Err(format!("batches {pending:?} never completed"));
+            return Err(format!(
+                "batches {:?} never completed",
+                pending.values().map(|(b, _)| b).collect::<Vec<_>>()
+            ));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
     Ok(refused)
+}
+
+/// Hands `d` the rows `rows` names of one of `batches`, as batch `id`.
+fn hand_over(
+    d: &mut dyn Destination,
+    batches: &[Vec<OwnedRecord>],
+    id: u64,
+    (batch, rows): (usize, Vec<usize>),
+    pending: &mut HashMap<u64, (usize, Vec<usize>)>,
+    refused: &mut [Vec<Rejection>],
+) -> Result<(), String> {
+    let owned: Vec<OwnedRecord> = rows.iter().map(|&i| batches[batch][i].clone()).collect();
+    let (dispatched, now) = d
+        .send(id, Cow::Owned(owned))
+        .map_err(|e| format!("batch {batch} not delivered: {e}"))?;
+    refused[batch].extend(now.into_iter().map(|r| Rejection { doc: rows[r.doc], ..r }));
+    if dispatched == Dispatched::InFlight {
+        pending.insert(id, (batch, rows));
+    }
+    Ok(())
 }
 
 /// Checks that each batch refused exactly the rows `is_refused` says it had to.
@@ -451,5 +490,48 @@ pub fn set_tls(d: &mut serde_json::Map<String, serde_json::Value>, tls: ClientTl
     d.insert("trustedAuthorities".into(), serde_json::json!(AUTHORITIES));
     if tls == ClientTls::Presents {
         d.insert("certificate".into(), serde_json::json!("client"));
+    }
+}
+
+/// What a destination answered of one batch: the rows it refused, each carrying its row as egress gives it one, and
+/// what it did not deliver, with why.
+pub struct Answer {
+    pub refused: Vec<Rejection>,
+    pub undelivered: Option<smeltr::io::Undelivered>,
+}
+
+/// Hands `rows` to `d` as batch `batch` and waits for its answer.
+pub fn send_and_answer(
+    d: &mut dyn Destination,
+    batch: smeltr::io::BatchId,
+    rows: Vec<OwnedRecord>,
+) -> Result<Answer, smeltr::io::IoError> {
+    let (dispatched, mut refused) = d.send(batch, Cow::Borrowed(&rows))?;
+    let mut undelivered = None;
+    if dispatched == Dispatched::InFlight {
+        d.flush()?;
+        for c in d.poll_completions()? {
+            refused.extend(c.rejections);
+            undelivered = undelivered.or(c.undelivered);
+        }
+    }
+    for r in &mut refused {
+        if r.record.is_none() {
+            r.record = rows.get(r.doc).cloned();
+        }
+    }
+    Ok(Answer { refused, undelivered })
+}
+
+/// [`send_and_answer`], with what was not delivered as the failure.
+pub fn send_and_wait(
+    d: &mut dyn Destination,
+    batch: smeltr::io::BatchId,
+    rows: Vec<OwnedRecord>,
+) -> Result<Vec<Rejection>, smeltr::io::IoError> {
+    let answer = send_and_answer(d, batch, rows)?;
+    match answer.undelivered {
+        Some(u) => Err(u.error),
+        None => Ok(answer.refused),
     }
 }

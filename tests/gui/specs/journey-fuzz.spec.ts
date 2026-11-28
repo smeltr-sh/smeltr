@@ -1,5 +1,5 @@
 // The journey fuzzer. Each seed is one administrator on a fresh leader of their own, with a theme and a window size
-// the seed draws, taking smeltr from its first start to rows flowing and on: enrolling workers into groups, adding
+// the seed draws, taking smeltr from its first start to records flowing and on: enrolling workers into groups, adding
 // sources, destinations, pipelines and their steps, routes, lookup tables and samples, opening, reviewing, closing,
 // bringing current and deploying changes, rolling back, holding secrets, adding accounts and roles, setting up
 // single sign-on and the System settings. The moves (`moves/journey.ts`) are done through the GUI and checked against the leader's API, the workers and

@@ -588,8 +588,8 @@ impl fmt::Debug for RecordChunk {
 }
 
 impl Drop for RecordChunk {
-    /// The last record to let go of a chunk may be on any thread: its columns go back to the reader that built it, or to
-    /// a pool of their own.
+    /// The last record to let go of a chunk may be on any thread: its columns go back to the reader that built it, or
+    /// to a pool of their own.
     fn drop(&mut self) {
         match &self.home {
             Some(home) => {
@@ -690,11 +690,15 @@ pub enum IoErrorKind {
     /// `smeltr_destination_healthy`.
     #[default]
     Transient,
-    /// The destination examined this record and refused it. Never retried; the destination's answer to `Refused` decides.
+    /// The destination examined this record and refused it. Never retried; the destination's answer to `Refused`
+    /// decides.
     Rejected,
     /// The answer was larger than the worker holds. The same request draws the same answer, so it is never sent again
     /// whole: a batch is split, and one record is refused.
     Oversized,
+    /// The service asked to be sent less, and to wait at least this long before asking again. Not a stall: the
+    /// service answered. Egress sends the rows again once the wait is over, and the pacing model counts them lost.
+    Throttled(Duration),
 }
 
 impl IoError {
@@ -727,6 +731,22 @@ impl IoError {
 
     pub fn is_oversized(&self) -> bool {
         self.kind == IoErrorKind::Oversized
+    }
+
+    /// The service asked to be sent less, and to wait `wait` first.
+    pub fn throttled(message: impl Into<String>, wait: Duration) -> IoError {
+        IoError {
+            message: message.into(),
+            kind: IoErrorKind::Throttled(wait),
+        }
+    }
+
+    /// The wait the service asked for, when it asked to be sent less.
+    pub fn throttled_wait(&self) -> Option<Duration> {
+        match self.kind {
+            IoErrorKind::Throttled(wait) => Some(wait),
+            _ => None,
+        }
     }
 }
 
@@ -777,14 +797,14 @@ impl fmt::Display for IoError {
     }
 }
 
-/// One document a destination refused, by its position in the rows handed to that destination for the batch. A
-/// destination whose acknowledgment is batched refuses after `deliver` has returned, and the position is enough to
-/// find the row again.
+/// One record a destination refused, by its position in the records sent to that destination for the batch. A
+/// destination whose acknowledgment is batched refuses after `send` has returned, and the position is enough to
+/// find the record again.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rejection {
     pub doc: usize,
     pub reason: String,
-    /// The document as it was handed over, from whoever still held it when the refusal came back: `deliver` has it,
+    /// The record as it was sent, from whoever still held it when the refusal came back: `send` has it,
     /// and so does egress; a completion from a transport does not. What a DLQ is sent.
     pub record: Option<OwnedRecord>,
 }
@@ -828,10 +848,10 @@ pub trait Source: Send {
     /// A source may answer before the offsets are durable and report the refusal on a later call.
     fn commit(&mut self, offsets: &CommitMap) -> Result<(), IoError>;
 
-    /// Stop supplying without leaving the group: the reader keeps calling `poll_batch` and gets nothing. Pausing the partitions rather
-    /// than stopping the poll is the point -- a consumer that stops polling is evicted after `max.poll.interval.ms`, and the
-    /// rebalance spreads one destination's problem across every partition the group owns. Idempotent; a source with no
-    /// membership does nothing.
+    /// Stop supplying without leaving the group: the reader keeps calling `poll_batch` and gets nothing. Pausing the
+    /// partitions rather than stopping the poll is the point -- a consumer that stops polling is evicted after
+    /// `max.poll.interval.ms`, and the rebalance spreads one destination's problem across every partition the group
+    /// owns. Idempotent; a source with no membership does nothing.
     fn block(&mut self) -> Result<(), IoError> {
         Ok(())
     }
@@ -894,9 +914,9 @@ pub trait Source: Send {
     /// leaves them out until a reader asks. A source whose records have no headers does nothing.
     fn keep_headers(&mut self, _keep: bool) {}
 
-    /// Partitions the source has lost since the last call: its group moved them to another member. A batch read from one
-    /// of them before the move must not commit there. The default is none: a source with no membership keeps what it
-    /// has.
+    /// Partitions the source has lost since the last call: its group moved them to another member. A batch read from
+    /// one of them before the move must not commit there. The default is none: a source with no membership keeps what
+    /// it has.
     fn take_revoked(&mut self) -> Vec<TopicPartition> {
         Vec::new()
     }
@@ -1040,8 +1060,9 @@ impl<'a> OutgoingRecord<'a> {
     }
 
     /// What this record holds once owned, less what it shares with other records -- the chunk its columns point into
-    /// and the source forms it kept -- which [`held_bytes`] counts: a document id, a placement or a salvage plan is held
-    /// as long as the record is. A plan names every DLQ down the chain, so a long chain can outweigh a small record.
+    /// and the source forms it kept -- which [`held_bytes`] counts: an identity, a placement or a salvage plan is
+    /// held as long as the record is. A plan names every DLQ down the chain, so a long chain can outweigh a small
+    /// record.
     pub fn bytes(&self) -> usize {
         self.value.len()
             + self.key.map_or(0, <[u8]>::len)
@@ -1151,7 +1172,7 @@ impl OwnedRecord {
         self.as_outgoing().bytes()
     }
 
-    /// What the record sends: its document, or its row of columns.
+    /// What the record sends: its encoded bytes, or its row of columns.
     pub fn sent_bytes(&self) -> usize {
         self.value.len() + self.columns.as_ref().map_or(0, |c| c.chunk.row_bytes(c.row))
     }
@@ -1170,7 +1191,7 @@ pub fn no_form(payload: &Payload) -> String {
 /// source form they kept -- whole and once. One row left in a queue holds all it shares, whoever else let go of it.
 pub fn held_bytes(rows: &[OwnedRecord]) -> usize {
     let mut chunks: Vec<&Arc<parquet::Chunk>> = Vec::new();
-    // By address: most rows keep forms of their own, so a unit can hold as many as it has rows.
+    // By address: most rows keep forms of their own, so a delivery unit can hold as many as it has rows.
     let mut kept: HashMap<*const u8, usize> = HashMap::new();
     let rows: Vec<&OwnedRecord> = rows.iter().flat_map(|r| std::iter::once(r).chain(&r.riders)).collect();
     for r in &rows {
@@ -1192,19 +1213,19 @@ pub fn held_bytes(rows: &[OwnedRecord]) -> usize {
 pub type BatchId = u64;
 
 /// One batch a destination has finished with, and what it refused. The rejections travel with the completion because
-/// their indices are into that batch's documents.
+/// their indices are into that batch's records.
 #[derive(Debug)]
 pub struct BatchCompletion {
     pub batch: BatchId,
     pub rejections: Vec<Rejection>,
-    /// The destination asked to be sent less while delivering it: the pacing model cuts what it may hold.
+    /// The destination asked to be sent less while sending it: the pacing model cuts what it may hold.
     pub throttled: bool,
-    /// Rows that did not land, for the caller to send again; the rest of the batch landed or was refused. `None` is
-    /// a batch wholly answered for.
+    /// Records that were not delivered, for the caller to send again; the rest of the batch was delivered or refused.
+    /// `None` is a batch wholly answered for.
     pub undelivered: Option<Undelivered>,
 }
 
-/// What of a batch did not land, and why.
+/// What of a batch was not delivered, and why.
 #[derive(Debug)]
 pub struct Undelivered {
     pub error: IoError,
@@ -1212,10 +1233,10 @@ pub struct Undelivered {
     pub rows: Vec<usize>,
 }
 
-/// What [`Destination::deliver`] did with a batch.
+/// What [`Destination::send`] did with a batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dispatched {
-    /// Acknowledged before `deliver` returned; no completion follows.
+    /// Acknowledged before `send` returned; no completion follows.
     Complete,
     /// Handed to the transport. The batch's id comes back from [`Destination::poll_completions`] once it is
     /// acknowledged.
@@ -1226,41 +1247,42 @@ pub enum Dispatched {
     NoRoom { bytes: usize },
 }
 
-/// A destination for serialized rows, driven by one egress thread. `Send` so it may be built on one thread and run
+/// A destination for payloads, driven by one egress thread. `Send` so it may be built on one thread and run
 /// on another.
 ///
 /// # Hand over, report
 ///
-/// `deliver` takes one batch's rows whole and starts delivering them without waiting, and `poll_completions` reports
-/// the batches that have landed, in any order. A transport with no asynchronous report of its own answers
-/// `Dispatched::Complete` and waits inside `deliver`. A document the destination examined and refused is not a
-/// delivery failure: it comes back against its position in the rows handed over, from `deliver` if it is known then
+/// `send` takes one batch's records whole and starts sending them without waiting, and `poll_completions` reports
+/// the batches that were delivered, in any order. A transport with no asynchronous report of its own answers
+/// `Dispatched::Complete` and waits inside `send`. A record the destination examined and refused is not a
+/// failed send: it comes back against its position in the records sent, from `send` if it is known then
 /// and with the batch's completion if not.
 ///
-/// A delivery failure loses no document: whatever was not acknowledged goes again, and where a completion names the
-/// rows that did not land, only they do. The re-send can carry a document the destination already holds, so a
-/// document may arrive more than once -- at-least-once.
+/// A failed send loses no record: whatever was not acknowledged goes again, and where a completion names the
+/// records that were not delivered, only they do. The re-send can carry a record the destination already holds, so a
+/// record may arrive more than once -- at-least-once.
 pub trait Destination: Send {
-    /// Hand over `batch`'s rows here and start delivering them without waiting. A destination ignores whichever of
-    /// `OwnedRecord`'s fields it has no notion of. `rows` is owned by a caller that has no further use for them, and
+    /// Hand over `batch`'s records here and start sending them without waiting. A destination ignores whichever of
+    /// `OwnedRecord`'s fields it has no notion of. `records` is owned by a caller that has no further use for them, and
     /// borrowed by one that keeps them to send again: a destination that queues them takes them without a copy.
     ///
-    /// Answers the refusals known now, each carrying its row. Under `Complete` that is every one; under `InFlight`
-    /// the rest come with the completion. `Err` is a delivery failure of this batch alone: nothing of it may be
+    /// Answers the refusals known now, each carrying its record. Under `Complete` that is every one; under `InFlight`
+    /// the rest come with the completion. `Err` is a failed send of this batch alone: nothing of it may be
     /// committed, and the caller hands it over again. What is already in flight is still answered for by
     /// `poll_completions`, by a completion or by its `Err`.
-    fn deliver(
+    fn send(
         &mut self,
         batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
+        records: Cow<'_, [OwnedRecord]>,
     ) -> Result<(Dispatched, Vec<Rejection>), IoError>;
 
     /// The barrier: block until everything handed over so far is acknowledged. `Err` means nothing in flight may be
     /// committed.
     fn flush(&mut self) -> Result<(), IoError>;
 
-    /// Batches answered for since the last call, in any order. A completion naming rows `undelivered` landed the rest:
-    /// only those rows go again. `Err` means a delivery failed: nothing in flight may be committed.
+    /// Batches answered for since the last call, in any order. A completion naming `undelivered` records says the
+    /// destination delivered the rest: only those go again. `Err` means a send failed: nothing in flight may be
+    /// committed.
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         Ok(Vec::new())
     }
@@ -1277,7 +1299,7 @@ pub trait Destination: Send {
     fn lend_senders(&mut self, _lend: Lend) {}
 
     /// Its deployment is stopping: from now on, finish what it holds as soon as it can, rather than when its own
-    /// interval says. Returns at once; what lands is reported by `poll_completions`. The default does nothing: a
+    /// interval says. Returns at once; what is delivered is reported by `poll_completions`. The default does nothing: a
     /// destination that acknowledges as it delivers has nothing to finish sooner.
     fn finish(&mut self) {}
 
@@ -1301,7 +1323,7 @@ pub trait Destination: Send {
     }
 
     /// Whether a batch of `bytes` would be taken now. Asked before handing rows over, so rows a full queue would drop
-    /// wait for room instead, and before re-running a batch `deliver` answered [`Dispatched::NoRoom`] to. A
+    /// wait for room instead, and before re-running a batch `send` answered [`Dispatched::NoRoom`] to. A
     /// transport that never answers `NoRoom` always has room.
     fn has_room(&self, _bytes: usize) -> bool {
         true
@@ -1480,8 +1502,8 @@ pub mod fake {
         fail_flushes: usize,
     }
 
-    /// A destination that acknowledges out of band: `deliver` returns without waiting and a batch completes only when
-    /// the test says so. `FakeDestination` completes every batch inside `deliver`, so it cannot exercise anything in
+    /// A destination that acknowledges out of band: `send` returns without waiting and a batch completes only when
+    /// the test says so. `FakeDestination` completes every batch inside `send`, so it cannot exercise anything in
     /// flight.
     #[derive(Clone, Default)]
     pub struct AsyncDestination(Arc<Mutex<AsyncState>>);
@@ -1491,7 +1513,7 @@ pub mod fake {
         dispatched: Vec<BatchId>,
         ready: Vec<BatchCompletion>,
         sent: usize,
-        /// Every batch `deliver` took, with the rows it carried.
+        /// Every batch `send` took, with the rows it carried.
         units: Vec<(BatchId, Vec<Vec<u8>>)>,
         /// The same rows whole, as `egress` keeps them to hand back with a refusal.
         records: Vec<(BatchId, Vec<OwnedRecord>)>,
@@ -1514,7 +1536,7 @@ pub mod fake {
             self.0.lock().sent
         }
 
-        /// Every batch `deliver` took, in order, with the row values it carried.
+        /// Every batch `send` took, in order, with the row values it carried.
         pub fn units(&self) -> Vec<(BatchId, Vec<Vec<u8>>)> {
             self.0.lock().units.clone()
         }
@@ -1524,7 +1546,7 @@ pub mod fake {
             self.complete_with(batch, Vec::new());
         }
 
-        /// Acknowledge `batch`, reporting documents it refused.
+        /// Acknowledge `batch`, reporting records it refused.
         pub fn complete_with(&self, batch: BatchId, mut rejections: Vec<Rejection>) {
             let mut st = self.0.lock();
             st.dispatched.retain(|b| *b != batch);
@@ -1544,7 +1566,7 @@ pub mod fake {
             });
         }
 
-        /// Answer `batch` with `rows` of it undelivered, for `why`, and `rejections` refused: the rest landed.
+        /// Answer `batch` with `rows` of it undelivered, for `why`, and `rejections` refused: the rest were delivered.
         pub fn fail_rows(&self, batch: BatchId, rows: Vec<usize>, rejections: Vec<Rejection>, why: &str) {
             let mut st = self.0.lock();
             st.dispatched.retain(|b| *b != batch);
@@ -1559,7 +1581,22 @@ pub mod fake {
             });
         }
 
-        /// Every batch `deliver` took, in order, with the rows it carried whole.
+        /// Answer `batch` as the service asking to be sent less, `wait` first, of its `rows`.
+        pub fn throttle_rows(&self, batch: BatchId, rows: Vec<usize>, wait: Duration) {
+            let mut st = self.0.lock();
+            st.dispatched.retain(|b| *b != batch);
+            st.ready.push(BatchCompletion {
+                batch,
+                rejections: Vec::new(),
+                throttled: true,
+                undelivered: Some(Undelivered {
+                    error: IoError::throttled("asked to be sent less", wait),
+                    rows,
+                }),
+            });
+        }
+
+        /// Every batch `send` took, in order, with the rows it carried whole.
         pub fn records(&self) -> Vec<(BatchId, Vec<OwnedRecord>)> {
             self.0.lock().records.clone()
         }
@@ -1569,7 +1606,7 @@ pub mod fake {
             self.0.lock().fail_next_poll = Some(msg.to_string());
         }
 
-        /// Make the next `deliver` fail, as a full producer queue does.
+        /// Make the next `send` fail, as a full producer queue does.
         pub fn fail_next_deliver(&self, msg: &str) {
             self.0.lock().fail_next_deliver = Some(msg.to_string());
         }
@@ -1581,7 +1618,7 @@ pub mod fake {
     }
 
     impl Destination for AsyncDestination {
-        fn deliver(
+        fn send(
             &mut self,
             batch: BatchId,
             rows: Cow<'_, [OwnedRecord]>,
@@ -1631,7 +1668,7 @@ pub mod fake {
         }
     }
 
-    /// Collects every row verbatim and completes each batch inside `deliver`.
+    /// Collects every row verbatim and completes each batch inside `send`.
     #[derive(Clone, Default)]
     pub struct FakeDestination(Arc<Mutex<DestinationState>>);
 
@@ -1694,7 +1731,7 @@ pub mod fake {
     }
 
     impl Destination for FakeDestination {
-        fn deliver(
+        fn send(
             &mut self,
             _batch: BatchId,
             rows: Cow<'_, [OwnedRecord]>,

@@ -2113,8 +2113,9 @@ pub enum EntraSignIn {
     ManagedIdentity { client_id: Option<String> },
 }
 
-/// Where a Prometheus destination sends remote_write. Every row goes to the one URL, one request at a time: a store
-/// refuses a series' sample older than the last it stored, so two requests in flight could land a series out of order.
+/// Where a Prometheus destination sends remote_write. Every row goes to the one URL, with requests side by side: smeltr
+/// orders nothing across requests, so a store that refuses a series' sample older than the last it stored needs its
+/// out-of-order window to take them all.
 #[derive(Clone, Debug)]
 pub struct PrometheusDestinationConfig {
     /// The whole address each request is POSTed to: a store's remote_write endpoint.
@@ -2127,6 +2128,8 @@ pub struct PrometheusDestinationConfig {
     pub credentials: Vec<(String, SecretRef)>,
     /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
     pub tls: Option<Tls>,
+    /// How many requests this destination starts with outstanding. See `ElasticDestinationConfig::in_flight`.
+    pub in_flight: usize,
     /// Bytes of samples one request may carry, before compression, before the destination sends early: each sample
     /// counted with its labels, which a request sends once per series, so a request is smaller.
     pub max_request_bytes: usize,
@@ -2134,6 +2137,13 @@ pub struct PrometheusDestinationConfig {
     pub buffer_bytes: usize,
     /// How long one batch may take to deliver before it is a stall.
     pub stall_after: std::time::Duration,
+}
+
+impl PrometheusDestinationConfig {
+    /// The most requests this destination may have outstanding at once. See `ElasticDestinationConfig::max_in_flight`.
+    pub fn max_in_flight(&self) -> usize {
+        (self.buffer_bytes / self.max_request_bytes.max(1)).clamp(1, MAX_SENDERS)
+    }
 }
 
 /// The version of remote_write a Prometheus destination sends. Every store takes 1.0; 2.0 also carries each series'

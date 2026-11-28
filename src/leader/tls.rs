@@ -1100,10 +1100,16 @@ pub fn rotation_may_begin(dir: &Path, installs: Installs) -> Result<(), Refused>
 /// Mints the incoming authority and publishes it beside the outgoing one, changing nothing about what is served.
 ///
 /// `deadline_millis` is when [`cut_over_if_due`] stops waiting for the fleet.
-pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_ms: i64) -> Result<Rotation, String> {
+///
+/// `Refused::Conflict` is a rotation that may not begin, and `Refused::Unavailable` one that failed to.
+pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_ms: i64) -> Result<Rotation, Refused> {
     let _changing = changing();
-    rotation_may_begin(dir, Installs::NextKey).map_err(|e| e.message().to_string())?;
+    rotation_may_begin(dir, Installs::NextKey)?;
+    mint_rotation(dir, validity, deadline_millis, now_ms).map_err(Refused::Unavailable)
+}
 
+/// What [`begin_rotation`] does once a rotation may begin. Its `Err` is the file or key step that failed.
+fn mint_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_ms: i64) -> Result<Rotation, String> {
     let ca_cert_path = dir.join(CA_CERT);
     let ca_key_path = dir.join(CA_KEY);
     let serving = std::fs::read(&ca_cert_path).map_err(|e| format!("{}: {e}", ca_cert_path.display()))?;
@@ -2464,7 +2470,10 @@ pub(crate) mod tests {
         install(&dir, &chain, &key, &materials.ca_pem, &names(), &[]).expect("a supplied set");
 
         let refused = begin_rotation(&dir, A_YEAR, A_WEEK_OUT, NOW).expect_err("not this leader's to rotate");
-        assert!(refused.contains("supplied"), "{refused}");
+        assert!(
+            matches!(&refused, Refused::Conflict(why) if why.contains("supplied")),
+            "{refused}"
+        );
     }
 
     /// The deadline is what stops one worker that never comes back from holding the fleet.
@@ -3689,11 +3698,7 @@ pub(crate) mod tests {
 
         let refused = rotation_may_begin(&dir, Installs::NextKey).expect_err("one is already open");
         let attempted = begin_rotation(&dir, A_DECADE, A_WEEK_OUT, NOW).expect_err("one is already open");
-        assert_eq!(
-            refused.message(),
-            attempted,
-            "the preflight and the act give different reasons"
-        );
+        assert_eq!(refused, attempted, "the preflight and the act give different reasons");
         assert!(matches!(refused, Refused::Conflict(_)), "a conflict read as a failure");
     }
 
@@ -4427,7 +4432,7 @@ mod certificate_fuzz {
                     }
                     return Ok("the leader's own rotation refused".to_string());
                 }
-                begun?;
+                begun.map_err(|e| e.to_string())?;
                 coverage.reach("rotate-own");
                 Ok("the leader's own rotation".to_string())
             }

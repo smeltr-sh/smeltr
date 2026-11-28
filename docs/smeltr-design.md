@@ -30,7 +30,8 @@ history, and a worker runs exactly one at a time.
 ```
 
 Ten systems make this up. Five live inside a worker, four describe how work
-reaches it, one crosses both tiers.
+reaches it, one crosses both tiers. [Definitions](definitions.md) gives the
+one name each thing in the data path goes by.
 
 | system | governs |
 |---|---|
@@ -39,10 +40,10 @@ reaches it, one crosses both tiers.
 | [Columnar data model](architecture/columnar-data-model.md) | what a record is in memory: batches, columns, and the rules a step obeys |
 | [Compiler](architecture/compiler.md) | turning declared configuration into executable instructions |
 | [Runtime stages](architecture/runtime-stages.md) | source, reader, transform, egress, destination: what each touches and how it scales |
-| [Exception taxonomy](architecture/exception-taxonomy.md) | what a stage does when a row or a batch goes wrong |
+| [Exception taxonomy](architecture/exception-taxonomy.md) | what a stage does when a record or a batch goes wrong |
 | **How work arrives** | |
 | [Control plane](architecture/control-plane.md) | what a worker is running and when it changes |
-| [Config plane](architecture/config-plane.md) | the bundle, its validation, the schemas its rows are held to, and how a change becomes a commit on `main` |
+| [Config plane](architecture/config-plane.md) | the bundle, its validation, the schemas its records are held to, and how a change becomes a commit on `main` |
 | [Security](architecture/security.md) | trust between worker and leader, people and their access, credentials, and the cryptography under them |
 | [API](architecture/api.md) | the routes the leader answers, who may call each, and the shape of an answer |
 | **Cross-cutting** | |
@@ -71,7 +72,7 @@ flowchart LR
   data[Columnar data model] -- column slots --> compiler
   compiler -- one plan per pipeline --> runtime[Runtime stages]
   data -- batches --> runtime
-  exceptions[Exception taxonomy] -- what a bad row or batch becomes --> runtime
+  exceptions[Exception taxonomy] -- what a bad record or batch becomes --> runtime
   runtime -- every stage records --> observability[Observability]
   config -- a commit on main --> control[Control plane]
   control -- starts and stops --> runtime
@@ -98,9 +99,9 @@ Collector, the destinations that refuse records rather than being
 unreachable; any service taking a POST of NDJSON, a JSON array or one record per request, with the headers it asks
 for; Prometheus and any store taking its remote_write; any OpenTelemetry Collector or other service taking OTLP/HTTP, one signal each; a Log Analytics workspace, through a data collection rule; S3, Google Cloud Storage, Azure Blob Storage and a directory on an SFTP server, as NDJSON, JSON, text, the bytes as they arrived, Parquet or Avro, one file per prefix across batches. Functions: Call, Code, Comment, Drop,
 Eval, Lookup, Parser, Remove, Rename, Unroll. Parsers: JSON, CSV, key-value, Grok.
-Schemas a pipeline's rows are held to, read from JSON Schema, ECS, an OCSF
+Schemas a pipeline's records are held to, read from JSON Schema, ECS, an OCSF
 class or a CSV of fields, written as JSON Schema or an Elasticsearch mapping,
-or imported by a pipeline; a row that does not fit is a finding and
+or imported by a pipeline; a record that does not fit is a finding and
 refuses nothing. Multiple routes per source. At-least-once delivery, metrics excepted, and a
 receiver that answers requests on receipt, as one does unless set to answer
 after delivery: a worker that crashes loses what it answered and had not yet

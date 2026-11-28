@@ -12,7 +12,6 @@
 
 use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -21,16 +20,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
-use smeltr::io::http::{HttpDestination, Response, Transport, Unwritten, agent_config, credential_headers};
+use smeltr::io::http::{
+    HttpDestination, HttpDestinationBuilder, Response, Transport, Unwritten, agent_config, credential_headers,
+};
 use smeltr::io::otlp::Encoding;
 use smeltr::io::otlp::export::Otlp;
-use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection, Source, SourceRecord, http_post};
+use smeltr::io::{IoError, OwnedRecord, Rejection, Source, SourceRecord, http_post};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{
     Compression, DestinationKind, HeldSecrets, HttpDestinationConfig, OtlpDestinationConfig, Signal,
 };
 
 use crate::certs;
+use crate::harness::destination::send_and_wait;
 use crate::harness::docker::{Container, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::http::gunzip;
@@ -61,13 +63,7 @@ fn read_back(signal: Signal, body: &[u8]) -> Result<usize, String> {
 }
 
 fn deliver<T: Transport>(d: &mut HttpDestination<Otlp, T>, rows: Vec<OwnedRecord>) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
-    assert_eq!(
-        dispatched,
-        Dispatched::Complete,
-        "a destination of no senders answers before it returns"
-    );
-    Ok(refused)
+    send_and_wait(d, 0, rows)
 }
 
 // -- settings
@@ -372,9 +368,10 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
         gzip: matches!(c.http.compression, Compression::Gzip(_)),
         landed: Arc::clone(&landed),
     };
-    let mut d = HttpDestination::new(service, Otlp::new(c))
+    let mut d = HttpDestinationBuilder::new(Otlp::new(c))
         .with_max_request_bytes(c.http.max_request_bytes)
-        .with_stall_after(c.http.stall_after);
+        .with_stall_after(c.http.stall_after)
+        .with_senders(vec![service], 1);
     let refused =
         deliver(&mut d, vec![row(sample(c.signal).to_vec())]).map_err(|e| format!("delivering a row: {e}"))?;
     if !refused.is_empty() {
@@ -567,7 +564,7 @@ impl Transport for FuzzService {
                 answered.push("answer split");
                 *rng.pick(&[400, 413, 422])
             }
-            // Each costs a backoff of up to the stall threshold, so they are kept rare.
+            // Each hands its batch back, so they are kept rare: a batch meeting one checks nothing after it.
             84..=87 => {
                 answered.push("answer retry");
                 *rng.pick(&[408, 429, 500, 502, 503, 504])
@@ -748,7 +745,7 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
     coverage.reach(if gzip { "gzip" } else { "no compression" });
     let max_request_bytes = *g.rng.pick(&[64, 512, 4096, 1 << 16, 1 << 20]);
     coverage.reach(format!("maxRequestBytes {max_request_bytes}"));
-    // A throttled answer naps up to the stall threshold, so most are short.
+    // Most are short, so the stall threshold is reached.
     let stall_after = *g.rng.pick(&[0, 2, 20, 50, 50, 50, 300]);
     coverage.reach(format!("stall {stall_after}ms"));
     let landed = Landed::default();
@@ -786,9 +783,10 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
         DestId::new(0),
         "d",
     );
-    let mut d = HttpDestination::new(service, Otlp::new(&config).with_unwritten(unwritten))
+    let mut d = HttpDestinationBuilder::new(Otlp::new(&config).with_unwritten(unwritten))
         .with_max_request_bytes(max_request_bytes)
-        .with_stall_after(config.http.stall_after);
+        .with_stall_after(config.http.stall_after)
+        .with_senders(vec![service], 1);
     if wild {
         coverage.reach("rows made wrong");
     }
@@ -884,6 +882,8 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
                     }
                 }
             }
+            // A service asking for less: the rows go back to egress, with the wait it asked for.
+            Err(e) if e.throttled_wait().is_some() => coverage.reach("a batch throttled"),
             // The service's own answer, or the stall threshold passed: an error the destination names.
             Err(e) if e.message.starts_with("the service ") => coverage.reach("a batch failed by the service"),
             Err(e) if e.message.contains("still undelivered after") => coverage.reach("a batch stalled"),
@@ -930,6 +930,7 @@ const ROW_OPTIONS: &[&str] = &[
     "a row the destination refused",
     "a row made wrong refused",
     "rows arrived as they were given",
+    "a batch throttled",
     "a batch failed by the service",
     "a batch stalled",
 ];

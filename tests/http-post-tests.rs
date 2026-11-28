@@ -9,7 +9,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use smeltr::io::http::{HttpDestination, Response, Transport, agent_config};
+use crate::harness::destination::send_and_wait;
+use smeltr::io::http::{HttpDestination, HttpDestinationBuilder, Response, Transport, agent_config};
 use smeltr::io::http_post::{Post, transport};
 use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
@@ -74,7 +75,9 @@ fn scripted(statuses: &[u16]) -> (ScriptedTransport, Sent) {
 fn destination(c: &HttpDestinationConfig, statuses: &[u16]) -> (HttpDestination<Post, ScriptedTransport>, Sent) {
     let (t, sent) = scripted(statuses);
     (
-        HttpDestination::new(t, Post::new(c)).with_stall_after(Duration::from_secs(5)),
+        HttpDestinationBuilder::new(Post::new(c))
+            .with_stall_after(Duration::from_secs(5))
+            .with_senders(vec![t], 1),
         sent,
     )
 }
@@ -101,11 +104,9 @@ fn source_bytes(value: &[u8]) -> OwnedRecord {
     }
 }
 
-/// Hands `rows` over as one batch, answered before `deliver` returns.
+/// Hands `rows` over as one batch, and waits for its answer.
 fn deliver<T: Transport>(d: &mut HttpDestination<Post, T>, rows: Vec<OwnedRecord>) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
-    assert_eq!(dispatched, Dispatched::Complete);
-    Ok(refused)
+    send_and_wait(d, 0, rows)
 }
 
 fn bodies(sent: &Sent) -> Vec<String> {
@@ -166,9 +167,9 @@ fn single_sends_each_row_as_its_own_request() {
 fn single_rows_go_to_the_pool_as_one_batch() {
     let c = config("http://unused", RequestBody::Single);
     let (sender, sent) = scripted(&[200, 200, 200]);
-    let mut d = HttpDestination::new(scripted(&[]).0, Post::new(&c)).with_senders(vec![sender], 1);
+    let mut d = HttpDestinationBuilder::new(Post::new(&c)).with_senders(vec![sender], 1);
     let rows = vec![row(b"{\"n\":0}"), row(b"{\"n\":1}"), row(b"{\"n\":2}")];
-    assert_eq!(d.deliver(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
+    assert_eq!(d.send(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
     d.flush().unwrap();
     let done = d.poll_completions().unwrap();
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![7]);
@@ -216,7 +217,11 @@ fn any_2xx_lands_the_request() {
 fn a_service_asking_to_wait_gets_the_request_again() {
     for status in [408, 429, 500, 502, 503, 504] {
         let (mut d, sent) = destination(&config("http://unused", RequestBody::Lines), &[status, 200]);
-        assert!(deliver(&mut d, vec![row(b"{\"a\":1}")]).unwrap().is_empty(), "{status}");
+        let rows = vec![row(b"{\"a\":1}")];
+        let throttled = deliver(&mut d, rows.clone()).unwrap_err();
+        assert!(throttled.throttled_wait().is_some(), "{status}: {throttled}");
+        // Egress sends the rows again, as it does after any throttle.
+        assert!(deliver(&mut d, rows).unwrap().is_empty(), "{status}");
         let bodies = bodies(&sent);
         assert_eq!(bodies.len(), 2, "{status}");
         assert_eq!(bodies[0], bodies[1], "{status}: the same rows again");
@@ -224,15 +229,14 @@ fn a_service_asking_to_wait_gets_the_request_again() {
 }
 
 #[test]
-fn a_service_asking_to_wait_is_waited_its_retry_after() {
-    let (mut t, sent) = scripted(&[429, 200]);
+fn a_service_asking_to_wait_names_its_retry_after() {
+    let (mut t, sent) = scripted(&[429]);
     t.answers[0].headers = vec![("retry-after".into(), "1".into())];
-    let mut d = HttpDestination::new(t, Post::new(&config("http://unused", RequestBody::Lines)))
-        .with_stall_after(Duration::from_secs(5));
-    let started = std::time::Instant::now();
-    assert!(deliver(&mut d, vec![row(b"{\"a\":1}")]).unwrap().is_empty());
-    assert!(started.elapsed() >= Duration::from_secs(1), "{:?}", started.elapsed());
-    assert_eq!(bodies(&sent).len(), 2);
+    let mut d =
+        HttpDestinationBuilder::new(Post::new(&config("http://unused", RequestBody::Lines))).with_senders(vec![t], 1);
+    let throttled = deliver(&mut d, vec![row(b"{\"a\":1}")]).unwrap_err();
+    assert_eq!(throttled.throttled_wait(), Some(Duration::from_secs(1)), "{throttled}");
+    assert_eq!(bodies(&sent).len(), 1);
 }
 
 /// A refusal naming no row is split until the row at fault is alone; only it is refused.
@@ -281,14 +285,14 @@ fn a_failed_request_names_the_rows_it_did_not_land() {
     ] {
         let c = config("http://unused", RequestBody::Lines);
         let (sender, sent) = scripted(statuses);
-        let mut d = HttpDestination::new(scripted(&[]).0, Post::new(&c)).with_senders(vec![sender], 1);
+        let mut d = HttpDestinationBuilder::new(Post::new(&c)).with_senders(vec![sender], 1);
         let rows = vec![
             row(b"{\"n\":0}"),
             row(b"{\"n\":1}"),
             row(b"{\"n\":2}"),
             row(b"{\"n\":3}"),
         ];
-        assert_eq!(d.deliver(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
+        assert_eq!(d.send(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
         d.flush().unwrap();
         let done = d
             .poll_completions()
@@ -334,8 +338,9 @@ fn an_oversized_answer_is_split_to_the_document_it_answers() {
         fits: 1,
         sent: Arc::clone(&sent),
     };
-    let mut d = HttpDestination::new(transport, Post::new(&config("http://unused", RequestBody::Lines)))
-        .with_stall_after(Duration::from_secs(5));
+    let mut d = HttpDestinationBuilder::new(Post::new(&config("http://unused", RequestBody::Lines)))
+        .with_stall_after(Duration::from_secs(5))
+        .with_senders(vec![transport], 1);
     let rows = vec![row(b"{\"n\":0}"), row(b"{\"n\":1}"), row(b"{\"n\":2}")];
     // [0,1,2] too large; [0] lands; [1,2] too large; [1] lands; [2] lands.
     let refused = deliver(&mut d, rows).unwrap();
@@ -347,8 +352,9 @@ fn an_oversized_answer_is_split_to_the_document_it_answers() {
         fits: 0,
         sent: Arc::clone(&sent),
     };
-    let mut d = HttpDestination::new(transport, Post::new(&config("http://unused", RequestBody::Lines)))
-        .with_stall_after(Duration::from_secs(5));
+    let mut d = HttpDestinationBuilder::new(Post::new(&config("http://unused", RequestBody::Lines)))
+        .with_stall_after(Duration::from_secs(5))
+        .with_senders(vec![transport], 1);
     let refused = deliver(&mut d, vec![row(b"{\"n\":0}"), row(b"{\"n\":1}")]).unwrap();
     assert_eq!(refused.len(), 2);
     for (doc, r) in refused.iter().enumerate() {
@@ -430,7 +436,7 @@ fn every_request_carries_the_headers_and_says_what_its_body_is() {
     };
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
     let credentials = vec![("DD-API-KEY".to_string(), "k-123".to_string())];
-    let mut d = HttpDestination::new(transport(&c, &credentials, &agent), Post::new(&c));
+    let mut d = HttpDestinationBuilder::new(Post::new(&c)).with_senders(vec![transport(&c, &credentials, &agent)], 1);
     assert!(deliver(&mut d, vec![row(b"{\"a\":1}")]).unwrap().is_empty());
     let (head, body) = served.join().unwrap().remove(0);
     assert!(head.starts_with("post /v1/input "), "{head}");
@@ -456,7 +462,7 @@ fn a_redirect_stalls_rather_than_being_followed() {
     let (url, served) = answering(1, "301 Moved Permanently\r\nLocation: /elsewhere\r\n");
     let c = config(&url, RequestBody::Lines);
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
-    let mut d = HttpDestination::new(transport(&c, &[], &agent), Post::new(&c));
+    let mut d = HttpDestinationBuilder::new(Post::new(&c)).with_senders(vec![transport(&c, &[], &agent)], 1);
     let err = deliver(&mut d, vec![row(b"{}")]).unwrap_err();
     assert!(err.message.contains("HTTP 301"), "{}", err.message);
     assert_eq!(

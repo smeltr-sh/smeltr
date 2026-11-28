@@ -3,15 +3,15 @@
 
 use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
-use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use smeltr::io::http::{HttpDestination, Response, Transport, agent_config};
+use crate::harness::destination::send_and_wait;
+use smeltr::io::http::{HttpDestination, HttpDestinationBuilder, Response, Transport, agent_config};
 use smeltr::io::splunk::{Collector, Hec, transport, write_epoch_seconds};
-use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection};
+use smeltr::io::{IoError, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{Acknowledgement, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig};
 
@@ -90,9 +90,13 @@ fn scripted(events: Vec<Response>, acks: Vec<Response>) -> (ScriptedTransport, A
     (t, sent)
 }
 
-fn destination(t: ScriptedTransport, acknowledgement: Acknowledgement) -> HttpDestination<Hec, ScriptedTransport> {
-    HttpDestination::new(t, Hec::new(&config("http://unused", acknowledgement)))
+fn builder(acknowledgement: Acknowledgement) -> HttpDestinationBuilder<Hec> {
+    HttpDestinationBuilder::new(Hec::new(&config("http://unused", acknowledgement)))
         .with_stall_after(Duration::from_secs(5))
+}
+
+fn destination(t: ScriptedTransport, acknowledgement: Acknowledgement) -> HttpDestination<Hec, ScriptedTransport> {
+    builder(acknowledgement).with_senders(vec![t], 1)
 }
 
 fn row(value: &[u8]) -> OwnedRecord {
@@ -114,11 +118,9 @@ fn numbered(n: usize) -> Vec<OwnedRecord> {
     (0..n).map(|i| row(format!(r#"{{"n":{i}}}"#).as_bytes())).collect()
 }
 
-/// Hands `rows` over as one batch. With no senders the batch is answered before `deliver` returns.
+/// Hands `rows` over as one batch, and waits for its answer.
 fn deliver<T: Transport>(d: &mut HttpDestination<Hec, T>, rows: Vec<OwnedRecord>) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
-    assert_eq!(dispatched, Dispatched::Complete);
-    Ok(refused)
+    send_and_wait(d, 0, rows)
 }
 
 // --- the envelope --------------------------------------------------------
@@ -199,7 +201,7 @@ fn the_raw_endpoint_sends_lines_under_the_destination_s_fields() {
         answers: vec![(path, vec![answer(200, SUCCESS)].into())],
         sent: Arc::clone(&sent),
     };
-    let mut d = HttpDestination::new(t, Hec::new(&c));
+    let mut d = HttpDestinationBuilder::new(Hec::new(&c)).with_senders(vec![t], 1);
     // A row naming the destination's own index goes as any other; one naming another is refused alone, since the
     // request's index is the destination's.
     let mut r = row(br#"{"_time":1,"a":1}"#);
@@ -321,7 +323,7 @@ fn a_refused_token_fails_the_request() {
 
 /// A busy collector is throttling: the request goes again, whole.
 #[test]
-fn a_busy_collector_is_retried() {
+fn a_busy_collector_gets_the_request_again() {
     let (t, sent) = scripted(
         vec![
             answer(503, r#"{"text":"Server is busy","code":9}"#),
@@ -330,6 +332,9 @@ fn a_busy_collector_is_retried() {
         vec![],
     );
     let mut d = destination(t, Acknowledgement::Receipt);
+    let busy = deliver(&mut d, numbered(2)).unwrap_err();
+    assert!(busy.throttled_wait().is_some(), "{busy}");
+    // Egress sends the rows again, as it does after any throttle.
     assert!(deliver(&mut d, numbered(2)).unwrap().is_empty());
     let sent = sent.lock();
     assert_eq!(sent.len(), 2);
@@ -417,10 +422,12 @@ fn a_busy_ack_endpoint_counts_as_throttled() {
             answer(200, r#"{"acks":{"7":true}}"#),
         ],
     );
-    let mut d = destination(t, Acknowledgement::Indexer).with_metrics(
-        smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-2"),
-        DestId::new(2),
-    );
+    let mut d = builder(Acknowledgement::Indexer)
+        .with_metrics(
+            smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-2"),
+            DestId::new(2),
+        )
+        .with_senders(vec![t], 1);
     assert!(deliver(&mut d, vec![row(b"{}")]).unwrap().is_empty());
     let throttled = registry
         .snapshot()
@@ -441,7 +448,9 @@ fn an_ack_that_never_comes_fails_the_batch() {
         vec![answer(200, r#"{"text":"Success","code":0,"ackId":1}"#)],
         (0..50).map(|_| answer(200, r#"{"acks":{"1":false}}"#)).collect(),
     );
-    let mut d = destination(t, Acknowledgement::Indexer).with_stall_after(Duration::from_millis(600));
+    let mut d = builder(Acknowledgement::Indexer)
+        .with_stall_after(Duration::from_millis(600))
+        .with_senders(vec![t], 1);
     let e = deliver(&mut d, vec![row(b"{}")]).unwrap_err();
     assert!(e.to_string().contains("did not acknowledge"), "{e}");
 }
@@ -560,7 +569,7 @@ fn each_transport_carries_the_token_and_a_channel_of_its_own() {
     let (url, served) = collector(1, "");
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();
     let c = config(&url, Acknowledgement::Receipt);
-    let mut d = HttpDestination::new(transport(&c, "0000-1111", &agent), Hec::new(&c));
+    let mut d = HttpDestinationBuilder::new(Hec::new(&c)).with_senders(vec![transport(&c, "0000-1111", &agent)], 1);
     assert!(deliver(&mut d, vec![row(b"{}")]).unwrap().is_empty());
     let heads = served.join().unwrap();
     assert!(heads[0].starts_with(&format!("post {EVENT} ")), "{}", heads[0]);

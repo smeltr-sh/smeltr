@@ -21,7 +21,7 @@ use crate::live;
 use std::time::Duration;
 
 use smeltr::io::elastic::{self, Elastic};
-use smeltr::io::http::{HttpDestination, HttpTransport};
+use smeltr::io::http::{HttpDestination, HttpDestinationBuilder, HttpTransport};
 use smeltr::io::{Destination, IoError, OutgoingRecord, OwnedRecord, Rejection};
 use std::borrow::Cow;
 
@@ -31,7 +31,7 @@ fn deliver(
     rows: &[OutgoingRecord<'_>],
 ) -> Result<Vec<Rejection>, IoError> {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    Ok(d.deliver(0, Cow::Owned(rows))?.1)
+    Ok(d.send(0, Cow::Owned(rows))?.1)
 }
 use smeltr::plan::topology::BulkAction;
 
@@ -48,11 +48,9 @@ fn unique(prefix: &str) -> String {
 fn dest(url: &str, index: &str, action: BulkAction) -> HttpDestination<Elastic, HttpTransport> {
     // No identity: this Elastic cluster is plain http, and what a transport presents is nothing.
     let config = smeltr::io::http::agent_config(None, &Default::default()).expect("an agent with no identity");
-    HttpDestination::new(
-        elastic::transport(url, None, &config),
-        Elastic::new(index).with_action(action),
-    )
-    .with_stall_after(Duration::from_secs(30))
+    HttpDestinationBuilder::new(Elastic::new(index).with_action(action))
+        .with_stall_after(Duration::from_secs(30))
+        .with_senders(vec![elastic::transport(url, None, &config)], 1)
 }
 
 /// Make everything indexed so far searchable. Elasticsearch refreshes on

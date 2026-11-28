@@ -383,7 +383,7 @@ export const diagrams = {
   dataPath: diagram({
     title: 'From a source to its destinations, and back to the commit',
     description:
-      "The reader polls a batch from the source and tracks its position. Transform routes the batch and runs its pipelines. Egress, one per destination, writes each destination's records and retries until they land. Each destination acknowledges its records, and once every destination the batch reached has acknowledged it, the reader commits the batch's position to the source.",
+      "The reader polls a batch from the source and tracks its position. Transform routes the batch and runs its pipelines. Egress, one per destination, writes each destination's records and retries until they are delivered. Each destination acknowledges its records, and once every destination the batch reached has acknowledged it, the reader commits the batch's position to the source.",
     caption:
       'A position is committed only after every destination the batch reached has acknowledged it, oldest batch first. After a restart or a retry a record can arrive twice, but it is not lost. Smeltr metrics and logs sources keep no position.',
     nodes: {
@@ -395,7 +395,7 @@ export const diagrams = {
       },
       egress: {
         title: 'Egress',
-        detail: ['One per destination,', 'retries until it lands'],
+        detail: ['One per destination,', 'retries until delivered'],
         stacked: true,
       },
       destination: { title: 'Destination', detail: ['Acknowledges', 'or refuses'], stacked: true },

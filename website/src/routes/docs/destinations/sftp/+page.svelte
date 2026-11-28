@@ -75,8 +75,8 @@
     <code>&lt;directory&gt;/&lt;prefix&gt;&lt;random id&gt;.&lt;extension&gt;</code>. It finishes
     the file when it reaches <code>maxObjectBytes</code> on disk, when <code>fileIntervalSecs</code>
     passes, when <code>bufferBytes</code> fills on the worker, or when a 65th file opens and this one
-    was written least recently, and acknowledges a batch once every file holding its records has landed.
-    It makes the folders the prefix names first when they are not there.
+    was written least recently, and acknowledges a batch once every file holding its records has been
+    written. It makes the folders the prefix names first when they are not there.
   </p>
   <p>
     It writes a file under a hidden temporary name in the same folder, a dot, its own name and a
@@ -88,8 +88,8 @@
   <p>
     Two files never share a name, so records written again after a failure make new files. On a
     failure the destination deletes the files it already finished, best effort; one it cannot delete
-    holds records that land twice. When the rename fails, the destination removes the temporary
-    file; a connection lost while writing can leave one behind, which is safe to delete.
+    holds records that are delivered twice. When the rename fails, the destination removes the
+    temporary file; a connection lost while writing can leave one behind, which is safe to delete.
   </p>
   <p>
     One SSH connection carries the destination's writes. It connects only to a server that shows the

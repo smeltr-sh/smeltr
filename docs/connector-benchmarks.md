@@ -21,7 +21,7 @@ flowchart LR
 ## What a row runs
 
 - **The worker** is the `smeltr` binary built with the `dist` profile, a leader with its worker inside, deployed
-  through its repository as an administrator deploys. Its one pipeline passes rows through unchanged.
+  through its repository as an administrator deploys. Its one pipeline passes records through unchanged.
 - **Cores.** The worker runs as on a host of one core: all its threads on the first core, with that core's
   hyperthread sibling left idle, and one transform thread (`SMELTR_WORKER_THREAD_LIMIT=1`). The harness and every
   container share the remaining cores. `CONNECTOR_THREADS=1,2,4` gives the worker that many cores, and a transform
@@ -32,7 +32,7 @@ flowchart LR
 - **A receiver row** sends from this host through a relay container. The relay's link is shaped, so the traffic
   crosses the link once each way, and the worker delivers to a sink on this host.
 - **A destination row** sends to an HTTP receiver on this host, which answers each request once the destination has
-  its rows, and writes to the destination's service. Destinations that write files close one every 5 seconds, the
+  its records, and writes to the destination's service. Destinations that write files close one every 5 seconds, the
   least they allow.
 - **The corpus** is the `json_app` reference pipeline's lines, about 330 bytes each.
 - **The clock.** The first tenth of a row's records is the warm-up and is not timed. A row moves 1,000,000 records
@@ -64,7 +64,7 @@ rather than measuring a perfect network.
 - **Bound by** names the one of Transform, Busiest other thread or Peer that reached nine tenths of a core. Failing
   those it says `host` when Rest was nine tenths busy, and `cores` when Cores was. `waits` means none did: the row
   waited on round trips, polls or acknowledgements, which is the link's share of the cost.
-- **A file destination** answers a file's rows when it closes the file, so the end of a row waits up to 5 seconds
+- **A file destination** answers a file's records when it closes the file, so the end of a row waits up to 5 seconds
   after the last record. That makes its rate a floor, closer to the truth the more records the row moves.
 - **A peer that saturates** measures the emulator, not the connector. The services are single-node test fixtures,
   so a `peer` row says how fast the fixture goes, not how fast the connector can. LocalStack serves S3 from about
@@ -76,7 +76,7 @@ rather than measuring a perfect network.
 - **The S2S receiver.** Only a universal forwarder speaks S2S, and the one in `tests/live/compose.live.yaml` clones to three test
   receivers.
 - **The HTTP GET and Okta sources.** They read one page per poll, so a rate measures the poll interval.
-- **The Prometheus remote write destination.** It takes metric rows, not log lines.
+- **The Prometheus remote write destination.** It takes metric records, not log lines.
 - **The metrics and logs sources.** They cross no network.
 
 ## Results

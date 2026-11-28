@@ -601,7 +601,7 @@ async fn begin_rotation(
         // The socket is untouched: what is served has not moved, and the file that did is the one `/api/worker/authority`
         // and the heartbeat read afresh.
         Ok(_) => answer(&state).await,
-        Err(e) => refuse(StatusCode::CONFLICT, &e),
+        Err(e) => refused(e),
     }
 }
 

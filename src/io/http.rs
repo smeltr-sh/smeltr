@@ -2,8 +2,9 @@
 //! pipelined through `io::pipelined::Pool`. Elasticsearch is one protocol over it.
 //!
 //! An answer may refuse some items and accept the rest, so the answer is the delivery receipt, not the status line.
-//! A retryable item is re-sent alone with backoff, or after the answer's `Retry-After` where longer; a permanent one
-//! is a rejection, since retrying it would stall the stream.
+//! A retryable item is re-sent alone at once; one the service asked to be sent less goes back to egress, which sends
+//! it again after the answer's `Retry-After`; a permanent one is a rejection, since retrying it would stall the
+//! stream.
 //!
 //! `stall_after` bounds total time -- connect, request, every retry -- because it must stay under the Kafka
 //! consumer's `max.poll.interval.ms`.
@@ -23,10 +24,8 @@ use crate::plan::topology::{HeldSecrets, Tls};
 /// Total time one `flush` may spend, retries included.
 const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(30);
 
-/// How large a request may get before `deliver` posts it and starts the next.
+/// How large a request may get before `send` posts it and starts the next.
 const DEFAULT_MAX_REQUEST_BYTES: usize = 5 * 1024 * 1024;
-
-const INITIAL_BACKOFF: Duration = Duration::from_millis(200);
 
 /// What one answer says about the items it answered.
 #[derive(Debug, Default, PartialEq)]
@@ -38,7 +37,8 @@ pub struct Outcome {
     /// The service refused the request as a whole, for this reason, without naming an item. The request is split
     /// until each part lands or is one item, which is then refused for it.
     pub split: Option<String>,
-    /// The service asked to be sent less. The retries back off, and the pool's loop hears it.
+    /// The service asked to be sent less. The retryable items go back to egress, which sends them again after the
+    /// answer's wait, and the pacing model hears it.
     pub throttled: bool,
 }
 
@@ -48,8 +48,8 @@ impl Outcome {
     }
 }
 
-/// What a store took and said it did not store as sent: counted in `smeltr_destination_unwritten_total` by the store's own
-/// unit, and warned of at most once each [`crate::logs::RELOG_EVERY`], since a store may say it of every document.
+/// What a store took and said it did not store as sent: counted in `smeltr_destination_unwritten_total` by the store's
+/// own unit, and warned of at most once each [`crate::logs::RELOG_EVERY`], since a store may say it of every record.
 /// Clones share the warning's clock, so a destination's senders warn once between them.
 #[derive(Clone)]
 pub struct Unwritten {
@@ -108,7 +108,7 @@ impl Unwritten {
 
 /// The most of an answer a transport holds. An answer is held whole until the protocol has read it, and a sender
 /// holds one at a time, so this times the senders is what a service can make a destination hold. Past it the answer
-/// is [`IoError::oversized`], and `deliver` halves the request, since half the request draws about half the answer.
+/// is [`IoError::oversized`], and `send` halves the request, since half the request draws about half the answer.
 ///
 /// Sized for the one answer that grows with the request: a bulk index answers a few hundred bytes per document, so
 /// this holds the answer to any bulk an operator is likely to set, and only a misbehaving service draws it in full.
@@ -144,7 +144,8 @@ impl Response {
     }
 }
 
-/// Writes `s` as a JSON string. A value that can come from a pipeline expression (`__destination.topic`) is escaped as data.
+/// Writes `s` as a JSON string. A value that can come from a pipeline expression (`__destination.topic`) is escaped as
+/// data.
 pub fn push_json_string(out: &mut Vec<u8>, s: &str) {
     crate::format::json::write_json_string(s.as_bytes(), out);
 }
@@ -160,9 +161,6 @@ pub fn percent_encode(value: &str) -> String {
         })
         .collect()
 }
-
-/// How two items compare in the order a service must receive them. See [`Protocol::order`].
-pub type Order<I> = fn(&I, &I) -> std::cmp::Ordering;
 
 /// What a service's requests and answers look like. `Clone` because every pool sender holds its own.
 pub trait Protocol: Clone + Send + 'static {
@@ -183,14 +181,6 @@ pub trait Protocol: Clone + Send + 'static {
     /// Which body `item` can share: items of different parts never share a request, though they go to one route.
     fn part(&self, _item: &Self::Item) -> usize {
         0
-    }
-
-    /// The order a batch's items must reach the service in, when it has one. `Some` holds a batch's items until all
-    /// are admitted and sorts each group by it before cutting requests, so no request carries an item that sorts
-    /// before one already sent. A pool sends a batch's requests side by side, so a destination whose protocol has an
-    /// order has none. `None` cuts a request as soon as it fills.
-    fn order(&self) -> Option<Order<Self::Item>> {
-        None
     }
 
     /// The item for `row`, or why the service could never take it.
@@ -228,15 +218,22 @@ pub trait Transport: Send + 'static {
     fn post(&mut self, path: &str, body: &[u8], budget: Duration) -> Result<Response, IoError>;
 }
 
+/// A destination that POSTs each batch's requests through a pool of senders, each with its own transport. Built
+/// with [`HttpDestinationBuilder`].
 pub struct HttpDestination<P: Protocol, T: Transport> {
     protocol: P,
-    transport: T,
+    max_request_bytes: usize,
+    pool: Pool<HttpSender<P, T>>,
+}
+
+/// What an [`HttpDestination`]'s senders are built with, until [`HttpDestinationBuilder::with_senders`] builds it.
+pub struct HttpDestinationBuilder<P: Protocol> {
+    protocol: P,
     max_request_bytes: usize,
     stall_after: Duration,
-    /// Present once the destination has senders; without it `deliver` posts each batch and waits.
-    pool: Option<Pool<HttpSender<P, T>>>,
     throttle: Option<Throttle>,
-    /// The destination as its author named it, for its lines. The service's name until [`HttpDestination::with_subject`].
+    /// The destination as its author named it, for its lines. The service's name until
+    /// [`HttpDestinationBuilder::with_subject`].
     subject: Arc<str>,
     said: Arc<Said>,
 }
@@ -269,30 +266,26 @@ impl Throttle {
     }
 }
 
-impl<P: Protocol, T: Transport> HttpDestination<P, T> {
-    pub fn new(transport: T, protocol: P) -> Self {
+impl<P: Protocol> HttpDestinationBuilder<P> {
+    pub fn new(protocol: P) -> Self {
         let subject = Arc::from(protocol.name());
-        HttpDestination {
+        HttpDestinationBuilder {
             protocol,
-            transport,
             max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
             stall_after: DEFAULT_STALL_AFTER,
-            pool: None,
             throttle: None,
             subject,
             said: Arc::default(),
         }
     }
 
-    /// Name the destination as its author did in its lines. Before [`HttpDestination::with_senders`], which hands
-    /// each sender the name.
+    /// Name the destination as its author did in its lines.
     pub fn with_subject(mut self, subject: &str) -> Self {
         self.subject = Arc::from(subject);
         self
     }
 
-    /// Count throttled time into `metrics` under `destination`. Before [`HttpDestination::with_senders`], which hands
-    /// each sender its own copy.
+    /// Count throttled time into `metrics` under `destination`.
     pub fn with_metrics(
         mut self,
         metrics: crate::metrics::MetricsHandle,
@@ -315,23 +308,20 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         self
     }
 
-    /// [`HttpDestination::with_senders`] with `n` senders, each `make()`'s.
-    pub fn with_senders_from(self, make: impl Fn() -> T, n: usize, start: usize) -> Self {
+    /// [`HttpDestinationBuilder::with_senders`] with `n` senders, each `make()`'s.
+    pub fn with_senders_from<T: Transport>(
+        self,
+        make: impl Fn() -> T,
+        n: usize,
+        start: usize,
+    ) -> HttpDestination<P, T> {
         self.with_senders((0..n).map(|_| make()).collect(), start)
     }
 
-    /// Delivers through `senders` concurrently instead of blocking the caller for a round trip per batch. One
-    /// connection per sender, so `senders.len()` is the most that can ever be outstanding; `start` is where the
-    /// loop begins. Empty keeps the blocking behavior.
-    pub fn with_senders(mut self, senders: Vec<T>, start: usize) -> Self {
-        if senders.is_empty() {
-            return self;
-        }
-        debug_assert!(
-            self.protocol.order().is_none(),
-            "a pool sends a batch's requests out of order"
-        );
-        self.pool = Some(Pool::new(
+    /// The destination, delivering through `senders`, at least one. One connection per sender, so `senders.len()`
+    /// is the most that can ever be outstanding; `start` is where the loop begins.
+    pub fn with_senders<T: Transport>(self, senders: Vec<T>, start: usize) -> HttpDestination<P, T> {
+        let pool = Pool::new(
             senders
                 .into_iter()
                 .map(|transport| HttpSender {
@@ -344,34 +334,16 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
                 })
                 .collect(),
             start,
-        ));
-        self
-    }
-
-    /// Sorts `group` by `order`, then cuts it into requests within `max_request_bytes`: all but the last go to
-    /// `full`, the last stays in `group`.
-    fn cut_ordered(&self, group: &mut Group<P::Item>, order: Order<P::Item>, full: &mut Vec<Group<P::Item>>) {
-        let mut sorted: Vec<(P::Item, usize)> = std::mem::take(&mut group.pending)
-            .into_iter()
-            .zip(std::mem::take(&mut group.sent_index))
-            .collect();
-        sorted.sort_by(|a, b| order(&a.0, &b.0));
-        group.bytes = 0;
-        for (item, index) in sorted {
-            let size = self.sized(group, &item);
-            let size = match self.overflows(group, size) {
-                true => {
-                    full.push(group.cut());
-                    self.protocol.size(&item, None)
-                }
-                false => size,
-            };
-            group.bytes += size;
-            group.pending.push(item);
-            group.sent_index.push(index);
+        );
+        HttpDestination {
+            protocol: self.protocol,
+            max_request_bytes: self.max_request_bytes,
+            pool,
         }
     }
+}
 
+impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     /// What `item` adds to `group` as its next item.
     fn sized(&self, group: &Group<P::Item>, item: &P::Item) -> usize {
         self.protocol.size(item, group.pending.last())
@@ -381,20 +353,6 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     /// item larger than that goes alone.
     fn overflows(&self, group: &Group<P::Item>, size: usize) -> bool {
         !group.pending.is_empty() && group.bytes + size > self.max_request_bytes
-    }
-
-    /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
-    fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
-        group.bytes = 0;
-        let mut round = Round::new(self.stall_after, self.subject.clone(), self.said.clone());
-        let delivered = deliver(&self.protocol, &mut self.transport, group, &mut round);
-        Throttle::note(&self.throttle, round.waited);
-        delivered?;
-        let mut refused = round.rejections;
-        for r in &mut refused {
-            r.record = rows.get(r.doc).cloned();
-        }
-        Ok(refused)
     }
 }
 
@@ -406,15 +364,13 @@ struct Round {
     deadline: Instant,
     /// The service asked to be sent less.
     throttled: bool,
-    /// Every backoff a throttled answer cost, whether or not the round lands.
+    /// The wait a throttled answer asked for, and what confirming the answer waited.
     waited: Duration,
     /// Refusals, as they are answered, so a failure keeps those already seen.
     rejections: Vec<Rejection>,
     /// The destination as its author named it, for the round's lines.
     subject: Arc<str>,
     said: Arc<Said>,
-    /// Whether this round has said the service asked it to slow down.
-    throttle_said: bool,
 }
 
 impl Round {
@@ -427,7 +383,6 @@ impl Round {
             rejections: Vec::new(),
             subject,
             said,
-            throttle_said: false,
         }
     }
 }
@@ -469,7 +424,6 @@ fn deliver<P: Protocol, T: Transport>(
     round: &mut Round,
 ) -> Result<(), IoError> {
     let deadline = round.deadline;
-    let mut backoff = INITIAL_BACKOFF;
     loop {
         if group.pending.is_empty() {
             return Ok(());
@@ -550,24 +504,26 @@ fn deliver<P: Protocol, T: Transport>(
         if !outcome.throttled {
             continue;
         }
+        // The round ends with them undelivered, so egress sends them again after the wait the service asked for and
+        // the pacing model hears the throttle within the round trip that drew it, as TCP hears a loss.
         round.throttled = true;
-
-        // The service's own `Retry-After`, where longer than the backoff, and never past the deadline.
-        let nap = response
-            .asked_wait()
-            .map_or(backoff, |wait| wait.max(backoff))
-            .min(deadline.saturating_duration_since(Instant::now()));
-        if nap.is_zero() {
-            continue;
-        }
-        if !round.throttle_said {
-            round.throttle_said = true;
-            crate::debug_when!(round.said.throttled.lock().due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
-        }
-        std::thread::sleep(nap);
-        round.waited += nap;
-        backoff = (backoff * 2).min(Duration::from_secs(5));
+        let wait = response.asked_wait().unwrap_or(Duration::ZERO);
+        say_throttled(protocol, &response, round);
+        round.waited += wait;
+        return Err(IoError::throttled(
+            format!(
+                "{}: asked to be sent less, so {} document(s) go again",
+                protocol.name(),
+                group.pending.len()
+            ),
+            wait,
+        ));
     }
+}
+
+/// Says, at debug once every [`crate::logs::RELOG_EVERY`], that the service asked to be sent less.
+fn say_throttled<P: Protocol>(protocol: &P, response: &Response, round: &Round) {
+    crate::debug_when!(round.said.throttled.lock().due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the rows go back to egress to be sent again after its wait");
 }
 
 /// Items bound for one route, in one part.
@@ -595,7 +551,7 @@ impl<I> Group<I> {
     }
 }
 
-/// A [`pipelined::Sender`] doing what the synchronous path does, on its own thread with its own transport.
+/// A [`pipelined::Sender`]: one request's round, on its own thread with its own transport.
 struct HttpSender<P: Protocol, T: Transport> {
     protocol: P,
     transport: T,
@@ -626,14 +582,9 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
 
 impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
     /// Rows are grouped by route and cut into requests within `max_request_bytes`. Every request goes to the pool, each
-    /// to a sender of its own, and the batch completes when the last is answered; without a pool, each is posted here.
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    /// to a sender of its own, and the batch completes when the last is answered.
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut refused = Vec::new();
-        let order = self.protocol.order();
         let mut groups: Vec<Group<P::Item>> = Vec::new();
         let mut full: Vec<Group<P::Item>> = Vec::new();
         // Each route's groups, by part, so neither a batch spanning many routes nor a part per row is searched once
@@ -672,7 +623,7 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
                 }
             };
             let size = self.sized(&groups[at], &item);
-            let size = match order.is_none() && self.overflows(&groups[at], size) {
+            let size = match self.overflows(&groups[at], size) {
                 true => {
                     full.push(groups[at].cut());
                     self.protocol.size(&item, None)
@@ -684,48 +635,32 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
             group.sent_index.push(i);
             group.pending.push(item);
         }
-        if let Some(order) = order {
-            for group in &mut groups {
-                self.cut_ordered(group, order, &mut full);
-            }
-        }
         full.extend(groups.into_iter().filter(|g| !g.pending.is_empty()));
         // A batch with nothing to send is done: no answer will come for it.
-        let Some(pool) = self.pool.as_mut().filter(|_| !full.is_empty()) else {
-            for group in &mut full {
-                refused.extend(self.post(&rows, group)?);
-            }
+        if full.is_empty() {
             return Ok((Dispatched::Complete, refused));
-        };
-        pool.submit(batch, full)?;
+        }
+        self.pool.submit(batch, full)?;
         Ok((Dispatched::InFlight, refused))
     }
 
     /// Wait for every batch the pool holds. `flush` cannot return the completions, so the pool holds them for the next
     /// `poll_completions`.
     fn flush(&mut self) -> Result<(), IoError> {
-        match &mut self.pool {
-            Some(pool) => pool.drain(),
-            None => Ok(()),
-        }
+        self.pool.drain()
     }
 
-    /// Requests the pool has open. A destination delivering one batch at a time has no pool and no figure to report.
+    /// Requests the pool has open.
     fn concurrency(&mut self) -> Option<usize> {
-        self.pool.as_ref().map(|p| p.outstanding())
+        Some(self.pool.outstanding())
     }
 
     fn lend_senders(&mut self, lend: crate::io::Lend) {
-        if let Some(pool) = &mut self.pool {
-            pool.lend_senders(lend);
-        }
+        self.pool.lend_senders(lend);
     }
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-        match &mut self.pool {
-            Some(pool) => pool.poll(),
-            None => Ok(Vec::new()),
-        }
+        self.pool.poll()
     }
 }
 

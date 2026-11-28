@@ -1,15 +1,15 @@
 //! Turning a blocking one-shot delivery into a pipelined one: a destination implements one blocking
-//! [`Sender::send_one`] and [`Pool`] supplies `deliver`/`poll_completions` around it.
+//! [`Sender::send_one`] and [`Pool`] supplies `send`/`poll_completions` around it.
 //!
 //! A pool, not one background thread: a single thread makes the call non-blocking but still serializes the round trips,
 //! so throughput stays at `1/round-trip`. Overlapping round trips is what moves it.
 //!
 //! The pool sets no limit of its own. What is in flight is bounded by the egress queue in front of it, which holds
-//! the pacing target (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
+//! the pacing window (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
 //! a batch's side by side, and reports the batch once its last request is answered. It spawns a sender when every one
-//! it has is busy, up to the sender count; the configured figure is how many it starts with. A destination that asks
-//! to be sent less (429) is obeyed by the sender that was asked, which waits out the backoff, and its completion says
-//! it was throttled, so the model caps what it holds below what was in flight then. Not for Kafka: librdkafka
+//! it has is busy, up to the sender count; the configured figure is how many it starts with. A request the destination
+//! asks to be sent less (429) is answered at once with its rows undelivered and the wait the destination asked for,
+//! so egress sends them again after it and the model counts them lost within the round trip that drew it. Not for Kafka: librdkafka
 //! pipelines on its own threads.
 
 use crate::sync::{Condvar, Mutex};
@@ -23,7 +23,7 @@ use crate::io::{BatchCompletion, BatchId, IoError, Rejection, Undelivered};
 
 /// What one delivery attempt produced.
 pub struct Delivered {
-    /// Documents the destination examined and refused. Not an error: see `Destination::deliver`.
+    /// Records the destination examined and refused. Not an error: see `Destination::send`.
     pub rejections: Vec<Rejection>,
     /// The destination asked to be sent less (429, 503, a per-item `es_rejected_execution_exception`). Reported rather
     /// than inferred from timing: a slow cluster and a throttled one call for opposite responses.
@@ -46,9 +46,9 @@ pub trait Sender: Send + 'static {
 /// chance to be reused.
 const IDLE: Duration = Duration::from_millis(100);
 
-/// Jobs waiting for a sender. A queue under a condvar rather than a channel, so every idle sender waits at once and each
-/// notices on its own that it has gone idle; a shared channel receiver lets one sender wait while the rest queue on its
-/// lock.
+/// Jobs waiting for a sender. A queue under a condvar rather than a channel, so every idle sender waits at once and
+/// each notices on its own that it has gone idle; a shared channel receiver lets one sender wait while the rest queue
+/// on its lock.
 struct Jobs<J> {
     waiting: Mutex<(VecDeque<(BatchId, J)>, bool)>,
     arrived: Condvar,
@@ -240,7 +240,13 @@ impl<S: Sender> Pool<S> {
         answers.throttled |= outcome.throttled;
         if let Some(more) = outcome.undelivered {
             match &mut answers.undelivered {
-                Some(u) => u.rows.extend(more.rows),
+                Some(u) => {
+                    u.rows.extend(more.rows);
+                    // A failure outranks a throttle: the batch's rows wait out a stall, not a service that answered.
+                    if u.error.throttled_wait().is_some() && more.error.throttled_wait().is_none() {
+                        u.error = more.error;
+                    }
+                }
                 None => answers.undelivered = Some(more),
             }
         }

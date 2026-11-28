@@ -29,7 +29,7 @@ const SETTLED: Duration = Duration::from_millis(50);
 /// Hand `rows` to `h` as `batch`, in one call, as a transform thread does.
 fn hand(h: &mut dyn Destination, batch: u64, rows: &[OutgoingRecord<'_>]) -> Dispatched {
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
-    let (dispatched, refused) = h.deliver(batch, Cow::Owned(rows)).unwrap();
+    let (dispatched, refused) = h.send(batch, Cow::Owned(rows)).unwrap();
     assert!(refused.is_empty(), "a handle refuses nothing itself");
     dispatched
 }
@@ -422,7 +422,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     struct Reporting(Arc<smeltr::sync::Mutex<Option<usize>>>);
 
     impl Destination for Reporting {
-        fn deliver(
+        fn send(
             &mut self,
             _b: u64,
             _rows: Cow<'_, [OwnedRecord]>,
@@ -1217,13 +1217,48 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
 
     let (stalled, delivered_stalled) = run(1, &[0, 1], &[1]);
     assert!(
-        stalled[1] + 1 >= both[1],
-        "the first stalled, the second keeps its share: {stalled:?} after {both:?}"
+        stalled[1] >= batches / 2,
+        "the first stalled, the second keeps its share: {stalled:?} of {batches}"
     );
     assert!(
         6 * delivered_stalled[1] >= delivered[1],
         "and carries at least half as much a second: {delivered_stalled:?} in one, {delivered:?} in three"
     );
+}
+
+/// A destination that answers inside `send` shows egress no round trip, and holds one batch at a time, under the
+/// pacing model's least window: the model is not told of its batches, so its budget stays where the model began.
+#[test]
+fn a_destination_answering_inside_deliver_leaves_the_pacing_model_as_it_began() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let dest = FakeDestination::new();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    )
+    .paced(row.len());
+    let mut h = egress.handle();
+    // Until the model sets it, the budget reported is the buffer the queue was started with.
+    let began = wait_for("the pacing model to set the budget", timeout(), || {
+        budget(&registry, 0).filter(|&b| b < BUDGET)
+    })
+    .unwrap();
+
+    for batch in 0..20 {
+        assert!(matches!(
+            hand(&mut h, batch, &[OutgoingRecord::new(&row)]),
+            Dispatched::InFlight
+        ));
+        wait_until("the batch to be answered", timeout(), || {
+            dest.sent().len() == batch as usize + 1
+        });
+    }
+    assert_eq!(budget(&registry, 0), Some(began));
 }
 
 /// A batch part of which did not land is sent again as only that part, while the batches beside it are not sent
@@ -1292,6 +1327,65 @@ fn only_the_rows_that_did_not_land_are_sent_again() {
     );
     assert_eq!(dest.units().len(), 3, "nothing else was sent again");
 }
+
+/// Rows the service asked to be sent less of go again once the wait it asked for is over, and only they. A throttle is
+/// an answer, so the destination is not stalled for it.
+#[test]
+fn throttled_rows_go_again_after_the_wait_without_a_stall() {
+    let registry = Arc::new(Metrics::new());
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    );
+    let mut h = egress.handle();
+    hand(
+        &mut h,
+        1,
+        &[OutgoingRecord::new(b"landed"), OutgoingRecord::new(b"busy")],
+    );
+    let first = wait_for("the batch to reach the destination", timeout(), || {
+        dest.units().first().map(|u| u.0)
+    })
+    .unwrap();
+    const WAIT: Duration = Duration::from_millis(300);
+    let throttled = std::time::Instant::now();
+    dest.throttle_rows(first, vec![1], WAIT);
+    let again = wait_for("the busy row to go again", timeout(), || dest.units().get(1).cloned()).unwrap();
+    assert!(
+        throttled.elapsed() >= WAIT,
+        "not before the wait: {:?}",
+        throttled.elapsed()
+    );
+    assert_eq!(again.1, vec![b"busy".to_vec()], "and only it");
+    let stalls = registry.snapshot().into_iter().find_map(|s| match s.value {
+        smeltr::metrics::MetricValue::Counter(v) if s.key.name == "smeltr_destination_stalls_total" => Some(v),
+        _ => None,
+    });
+    assert_eq!(stalls, None, "a throttle is no stall");
+    // Throttled again and again with no wait asked: each goes at once, with no backoff growing behind it.
+    let started = std::time::Instant::now();
+    let mut last = again;
+    for n in 2..7 {
+        dest.throttle_rows(last.0, vec![0], Duration::ZERO);
+        last = wait_for("the busy row to go again", timeout(), || dest.units().get(n).cloned()).unwrap();
+    }
+    assert!(
+        started.elapsed() < BACKOFF_OF_FIVE_FAILURES,
+        "five throttles took {:?}",
+        started.elapsed()
+    );
+    dest.complete(last.0);
+    let done = completions_within(&mut h, timeout());
+    assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1]);
+}
+
+/// What five failures in a row wait, doubling from egress's least retry: 50 ms up to 800 ms.
+const BACKOFF_OF_FIVE_FAILURES: Duration = Duration::from_millis(1550);
 
 /// A batch the destination would not take is sent again alone: the batch already in flight stays with the destination
 /// and is answered for once, not sent again.

@@ -269,7 +269,8 @@ fn apply_client_config_on(
     in_workload: bool,
 ) -> Result<(), IoError> {
     apply_tls(config, tls, secrets)?;
-    // Speaking no TLS of its own, librdkafka would trust the host's store alone. A client given its own roots keeps them.
+    // Speaking no TLS of its own, librdkafka would trust the host's store alone. A client given its own roots keeps
+    // them.
     let own_roots = props.literal.iter().any(|(k, _)| k.starts_with("ssl.ca."))
         || props.credentials.iter().any(|(k, _)| k.starts_with("ssl.ca."));
     let ssl = props
@@ -1067,8 +1068,9 @@ fn publish_stats(stats: &Statistics, destination: &str, metrics: &MetricsHandle)
         buffered as f64,
     );
 
-    // The link as the producer sees it: the mean round trip over the brokers that answered a request this interval. What `bufferBytes` reaches over it is bytes in flight over this figure, and the leader draws
-    // that beside the queue.
+    // The link as the producer sees it: the mean round trip over the brokers that answered a request this interval.
+    // What `bufferBytes` reaches over it is bytes in flight over this figure, and the leader draws that beside the
+    // queue.
     let answered: Vec<i64> = stats
         .brokers
         .values()
@@ -1225,7 +1227,7 @@ impl ProducerContext for DeliveryTracker {
 /// A Kafka producer.
 ///
 /// `BaseProducer`, not `ThreadedProducer`: the threaded one's background poll races `flush`'s for the same delivery
-/// events. Nothing polls this producer except `deliver`, `poll_completions` and `flush`.
+/// events. Nothing polls this producer except `send`, `poll_completions` and `flush`.
 pub struct KafkaDestination {
     producer: BaseProducer<DeliveryTracker>,
     default_topic: Arc<str>,
@@ -1329,12 +1331,12 @@ impl KafkaDestination {
             // carries a fifth of what it can. Without it a retried produce may duplicate a record, as a batch
             // smeltr sends again already may (at-least-once), or reorder it against its neighbors.
             .set("acks", config.acks.as_property())
-            // `produce` bounds the queue at the producer's share of `bufferBytes`, or at the pacing target, which
+            // `produce` bounds the queue at the producer's share of `bufferBytes`, or at the pacing window, which
             // never passes the share it is built with; it counts what librdkafka holds for each record besides its
             // payload. This only stops librdkafka's own 1 GB default from being the bound
             // should that count ever fall short. The egress queue in front of this one holds the other half of
             // `bufferBytes` and counts rows a little differently, so a full producer queue is reachable from egress:
-            // `deliver` polls it down, and a queue that stays full is the stall it already reports.
+            // `send` polls it down, and a queue that stays full is the stall it already reports.
             .set(
                 "queue.buffering.max.kbytes",
                 (config.producer_bytes() / 1024).to_string(),
@@ -1400,7 +1402,7 @@ impl KafkaDestination {
 }
 
 impl KafkaDestination {
-    /// Takes `records` that will never be reported off the count `deliver` makes up front.
+    /// Takes `records` that will never be reported off the count `send` makes up front.
     fn uncount(&mut self, records: u64) {
         let mut state = self.state.lock();
         if let Some(n) = state.outstanding.get_mut(&self.seq) {
@@ -1436,7 +1438,7 @@ impl KafkaDestination {
                     Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), rejected)) => record = rejected,
                     // Refused synchronously, before queuing: a rejection of this record (`is_rejection`), distinct
                     // from a delivery failure reported through `DeliveryTracker`. No callback will come for it, so
-                    // `deliver` takes the count back off.
+                    // `send` takes the count back off.
                     Err((e, _)) => return Err(e.into()),
                 }
             }
@@ -1485,11 +1487,7 @@ fn avro_values(
 }
 
 impl Destination for KafkaDestination {
-    fn deliver(
-        &mut self,
-        batch: BatchId,
-        rows: Cow<'_, [OwnedRecord]>,
-    ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
+    fn send(&mut self, batch: BatchId, rows: Cow<'_, [OwnedRecord]>) -> Result<(Dispatched, Vec<Rejection>), IoError> {
         let mut rejections = Vec::new();
         let encoded = match &mut self.avro {
             Some(avro) => Some(avro_values(avro, &self.default_topic, &rows)?),
@@ -2392,7 +2390,7 @@ mod tests {
             if let Some(error) = error {
                 mock.request_errors(RDKafkaApiKey::Produce, &[error]);
             }
-            dest.deliver(batch, Cow::Owned(rows(2))).unwrap();
+            dest.send(batch, Cow::Owned(rows(2))).unwrap();
             dest.flush().unwrap();
             let done = dest.poll_completions().expect("a failed record fails no poll");
             assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![batch]);
@@ -2638,7 +2636,7 @@ mod tests {
         .unwrap();
 
         let row = OwnedRecord::from(&OutgoingRecord::new(b"row"));
-        dest.deliver(0, Cow::Owned(vec![row])).unwrap();
+        dest.send(0, Cow::Owned(vec![row])).unwrap();
 
         // Statistics arrive through `poll`, which this producer only does when asked.
         let deadline = Instant::now() + STATS_INTERVAL * 4;
@@ -2776,12 +2774,12 @@ mod tests {
             .expect_err("and stands until a commit lands");
     }
 
-    /// The defect this whole mechanism exists to fix (E4), reproduced without a live broker: `kafka-nowhere.invalid`
-    /// is guaranteed by RFC 2606 never to resolve. Without the client's context (`client::Routes`) this reads as an
-    /// idle topic, since `Source::connection_error`'s default answers `None` either way; the client thread swallows
-    /// the same consumption error this test's sibling (`poll_batch_against_an_unreachable_broker_times_out_empty_not_hung`
-    /// in `kafka-tests.rs`) polls past, so only the context -- fed from `poll`'s separate `RD_KAFKA_EVENT_ERROR`
-    /// channel -- can tell the two apart.
+    /// The defect this whole mechanism exists to fix (E4), reproduced without a live broker: `kafka-nowhere.invalid` is
+    /// guaranteed by RFC 2606 never to resolve. Without the client's context (`client::Routes`) this reads as an idle
+    /// topic, since `Source::connection_error`'s default answers `None` either way; the client thread swallows the same
+    /// consumption error this test's sibling (`poll_batch_against_an_unreachable_broker_times_out_empty_not_hung` in
+    /// `kafka-tests.rs`) polls past, so only the context -- fed from `poll`'s separate `RD_KAFKA_EVENT_ERROR` channel
+    /// -- can tell the two apart.
     #[test]
     fn poll_batch_against_a_broker_that_does_not_resolve_reports_the_reason() {
         let config = KafkaSourceConfig {

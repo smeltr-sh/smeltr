@@ -88,7 +88,7 @@
     "name": "smeltr_source_poll_failures_total",
     "kind": "counter",
     "labels": ["source"],
-    "what": "Reads of the source that failed. The source is read again after a wait, and what it has not delivered stays uncommitted there."
+    "what": "Reads of the source that failed. The source is read again after a wait, and what is not yet delivered stays uncommitted there."
   },
   {
     "group": "Sources",
