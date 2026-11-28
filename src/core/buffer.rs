@@ -313,10 +313,10 @@ pub(crate) fn purge_freed() -> bool {
 /// jemalloc's settings, read once at its start: background threads hand freed pages back to the OS ten seconds after
 /// they go unused, so an idle process holds little more than it allocated. A shorter wait hands back pages the next
 /// batches fault in again, which cost throughput. Its memory comes in huge pages, each faulted in once rather than
-/// in 4 KiB pieces, which kept the transform as fast as under mimalloc. `MALLOC_CONF` in the environment, spelled
-/// `_RJEM_MALLOC_CONF`, overrides them.
+/// in 4 KiB pieces, which kept the transform as fast as under mimalloc. `MALLOC_CONF` in the environment overrides
+/// them.
 #[cfg(unix)]
-#[unsafe(export_name = "_rjem_malloc_conf")]
+#[unsafe(export_name = "malloc_conf")]
 static MALLOC_CONF: Conf =
     Conf(c"background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:0,thp:always,metadata_thp:always".as_ptr());
 
@@ -667,6 +667,31 @@ mod tests {
         };
         assert_eq!(read, 0);
         assert!(on);
+    }
+
+    /// librdkafka and the other C libraries allocate through `malloc`, so what they free is jemalloc's to hand back.
+    #[cfg(unix)]
+    #[test]
+    fn c_malloc_is_jemalloc() {
+        // SAFETY: a plain allocation, freed below.
+        let block = unsafe { libc::malloc(4096) };
+        assert!(!block.is_null());
+        let mut arena: u32 = u32::MAX;
+        let mut len = std::mem::size_of::<u32>();
+        let mut at = block;
+        // SAFETY: `arenas.lookup` reads a pointer and writes an unsigned arena index, sized as passed.
+        let found = unsafe {
+            tikv_jemalloc_sys::mallctl(
+                c"arenas.lookup".as_ptr(),
+                (&raw mut arena).cast(),
+                &mut len,
+                (&raw mut at).cast(),
+                std::mem::size_of::<*mut std::ffi::c_void>(),
+            )
+        };
+        // SAFETY: `block` came from `malloc` above and is freed once.
+        unsafe { libc::free(block) };
+        assert_eq!(found, 0, "jemalloc does not know a block from C's malloc");
     }
 
     #[test]
