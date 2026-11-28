@@ -807,13 +807,15 @@ impl Captures {
         }
         for (i, row) in rows.into_iter().enumerate() {
             let Some(mut row) = row else { continue };
+            let payload = decoded.payload[i] as usize;
             // A held record was polled before any capture of it, so it never kept its headers. It is shown without
             // them: it is the record that has to be found.
-            if why.is_none() && has_headers && records[i].headers.is_none() {
+            if why.is_none() && has_headers && records[payload].headers.is_none() {
                 continue;
             }
             if let Some(why) = why {
-                row.values.insert(0, why.get(i).cloned().unwrap_or_default().into());
+                row.values
+                    .insert(0, why.get(payload).cloned().unwrap_or_default().into());
                 for field in &mut row.failed {
                     *field += 1;
                 }

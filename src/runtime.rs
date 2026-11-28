@@ -1681,20 +1681,17 @@ impl Transform {
             captures.tap(name, slice, &lane.meta, &decoded);
         }
         let ran = 'routes: {
+            let rows = decoded.rows();
             // Which rows a route took: the union of every mask, since routing leaves `SLOT_LIVE` as it came. Over every
             // route, including the ones a resumed attempt skips -- those matched on the attempt that was refused.
-            let mut taken = vec![0u64; bits::words_for(slice.len())];
+            let mut taken = vec![0u64; bits::words_for(rows)];
             for (_, mask) in &masks {
-                bits::or_assign(
-                    &mut taken,
-                    mask.bool().expect("a route mask is Bool").values,
-                    slice.len(),
-                );
+                bits::or_assign(&mut taken, mask.bool().expect("a route mask is Bool").values, rows);
             }
 
             tracing::trace!(
                 name: "routing", target: "pipelines",
-                records = slice.len(),
+                records = rows,
                 routes = masks.len(),
                 taken = bits::popcount(&taken),
                 "routing decided which routes take which records"
@@ -1703,15 +1700,14 @@ impl Transform {
             // Before any pipeline runs: the retry meets the same rows and the same routes, so running them now is work
             // the block throws away on every attempt until a redeploy.
             if *self.topology.on_exception.answer(&ExceptionKind::Unmatched) == Answer::Block {
-                let unmatched = slice.len() - bits::popcount(&taken);
+                let unmatched = rows - bits::popcount(&taken);
                 if unmatched > 0 {
-                    self.key_unmatched(lane, slice, &taken);
+                    self.key_unmatched(lane, slice, &decoded, &taken);
                     for (_, mask) in masks {
                         mask.reclaim(pool);
                     }
-                    out.blocking = (0..slice.len())
-                        .filter(|&i| !bits::get_row(&taken, i))
-                        .map(|i| (attempt.start + i, UNMATCHED_MESSAGE.to_string()))
+                    out.blocking = (decoded.payloads_of((0..rows).filter(|&i| !bits::get_row(&taken, i))))
+                        .map(|p| (attempt.start + p, UNMATCHED_MESSAGE.to_string()))
                         .collect();
                     let msg = unmatched_block_reason(unmatched);
                     break 'routes Err(IoError::transient(msg));
@@ -1753,10 +1749,11 @@ impl Transform {
                 // what they produce, which every other batch skips. A batch the route took no row of is not it.
                 let taken_by_route = mask.bool().expect("a route mask is Bool").values;
                 let matched = bits::popcount(taken_by_route) as u64;
-                let mut matched_bytes = 0u64;
-                bits::for_each_set(taken_by_route, slice.len(), |i| {
-                    matched_bytes += slice[i].read_size() as u64
-                });
+                let mut took = Vec::with_capacity(matched as usize);
+                bits::for_each_set(taken_by_route, rows, |i| took.push(i));
+                let matched_bytes: u64 = (decoded.payloads_of(took.into_iter()))
+                    .map(|p| slice[p].read_size() as u64)
+                    .sum();
                 let took_rows = matched > 0;
                 let observed = match (&self.streams, &lane.source_name) {
                     (Some(streams), Some(name)) if took_rows && streams.due(route_idx) => Some((streams, name)),
@@ -1767,12 +1764,11 @@ impl Transform {
                     (Some(streams), Some(name)) if took_rows => streams.sender_fields(name, plan),
                     _ => Vec::new(),
                 };
-                let last = masks.peek().is_none() && bits::popcount(&taken) == slice.len();
+                let last = masks.peek().is_none() && bits::popcount(&taken) == rows;
                 let docs = buffer::catch_over_budget(|| {
                     run_and_encode(
                         plan,
                         Ingest {
-                            records: slice,
                             meta: &lane.meta,
                             decoded: &mut decoded,
                             last,
@@ -1931,13 +1927,11 @@ impl Transform {
     /// The stream each row of `slice` that `taken` leaves out was filed under, to the leader. On every batch, dropped,
     /// delivered or blocked: a stream nothing routes is what these rows are, and the leader learns of it from here or
     /// not at all. A blocked batch is held until a new config, so its rows are keyed once.
-    fn key_unmatched(&self, lane: &Lane, slice: &[SourceRecord], taken: &[u64]) {
+    fn key_unmatched(&self, lane: &Lane, slice: &[SourceRecord], decoded: &DecodedBatch, taken: &[u64]) {
         if let (Some(streams), Some(name)) = (&self.streams, &lane.source_name) {
-            let keys = slice
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !bits::get_row(taken, *i))
-                .map(|(_, r)| lane.meta.stream_key(r));
+            let keys = (0..decoded.rows())
+                .filter(|&i| !bits::get_row(taken, i))
+                .map(|i| lane.meta.stream_key(&slice[decoded.payload[i] as usize]));
             streams.saw_unmatched(name, keys);
         }
     }
@@ -1954,18 +1948,18 @@ impl Transform {
         taken: &[u64],
         out: &mut Output,
     ) {
-        let unmatched = (slice.len() - bits::popcount(taken)) as u64;
+        let unmatched = (decoded.rows() - bits::popcount(taken)) as u64;
         if unmatched == 0 {
             return;
         }
         out.outcomes.unmatched += unmatched;
-        self.key_unmatched(lane, slice, taken);
+        self.key_unmatched(lane, slice, decoded, taken);
         let targets = self.topology.on_exception.answer(&ExceptionKind::Unmatched).targets();
         if targets.is_empty() {
             out.outcomes.drop_rows(DROPPED_UNMATCHED, unmatched);
             return;
         }
-        let left: Vec<usize> = (0..slice.len()).filter(|i| !bits::get_row(taken, *i)).collect();
+        let left: Vec<usize> = (0..decoded.rows()).filter(|i| !bits::get_row(taken, *i)).collect();
         self.place_delivered(out, targets, decoded, &left, lane, DROPPED_UNMATCHED);
     }
 
@@ -2018,7 +2012,7 @@ impl Transform {
                 let target = &self.destinations[slot];
                 let origin = row.origin as usize;
                 let payload = &payload_at[slot];
-                if matches!(payload, Payload::Bytes { .. }) && !delivered.insert((row.origin, target.id)) {
+                if matches!(payload, Payload::Bytes { .. }) && !delivered.insert((decoded.payload[origin], target.id)) {
                     continue;
                 }
                 let doc_id = row.doc_id_for(target.id).map(str::to_string);
@@ -2242,7 +2236,7 @@ impl Transform {
             lane.source_name.as_deref(),
             &mut pool,
         );
-        let rows: Vec<usize> = (0..records.len()).collect();
+        let rows: Vec<usize> = (0..decoded.rows()).collect();
         self.place_delivered(out, targets, &decoded, &rows, lane, DROPPED_UNPROCESSABLE);
         decoded.batch.reclaim(&mut pool);
     }
@@ -2983,10 +2977,8 @@ impl EncodedRecord {
     }
 }
 
-/// One batch as it arrived: the records, their text, what their source says they carry, and the instant it is
-/// processed at.
+/// One batch as it arrived: its records, what their source says they carry, and the instant it is processed at.
 struct Ingest<'a> {
-    records: &'a [SourceRecord],
     meta: &'a SourceMeta,
     /// The records' columns, as routing read them.
     decoded: &'a mut DecodedBatch,
@@ -3203,7 +3195,15 @@ fn run_and_encode(
 
     let blocked = rows_answered(|a| *a == Answer::Block);
     if blocked > 0 {
-        let blocked = marked_block(plan, &batch, entries, &answers, on_exception, blocked);
+        let blocked = marked_block(
+            plan,
+            &batch,
+            &ingest.decoded.payload,
+            entries,
+            &answers,
+            on_exception,
+            blocked,
+        );
         batch.reclaim(pool);
         return Encoded::blocked(blocked, answers, raised);
     }
@@ -3257,7 +3257,11 @@ fn run_and_encode(
             .collect();
         if !declined.is_empty() {
             // By record, as a marked row's block is.
-            let records: std::collections::BTreeSet<usize> = declined.iter().map(|&row| origin[row] as usize).collect();
+            let payload = &ingest.decoded.payload;
+            let records: std::collections::BTreeSet<usize> = declined
+                .iter()
+                .map(|&row| payload[origin[row] as usize] as usize)
+                .collect();
             let blocked = Blocked {
                 rows: declined.len(),
                 cause: Cause::Declined {
@@ -3346,7 +3350,8 @@ fn run_and_encode(
         placed.push(out, row, reads.columns, watched, counted);
     }
     if let Some(Senders { tally, fields, first }) = ingest.senders {
-        let record = |row: usize| first + origin[row] as usize;
+        let payload = &ingest.decoded.payload;
+        let record = |row: usize| first + payload[origin[row] as usize] as usize;
         for field in fields {
             match field.slot {
                 Some(slot) => tally.count_column(&field.name, batch.peek(slot), &placed.delivered, record),
@@ -3417,8 +3422,8 @@ fn run_plan(
     metrics: &MetricsHandle,
     egress: &Egress<'_>,
 ) -> Batch {
-    let (records, meta) = (ingest.records, ingest.meta);
-    let rows = records.len();
+    let meta = ingest.meta;
+    let rows = ingest.decoded.rows();
     let mut batch = Batch::new(&plan.delivery_layout(), rows, 0);
     let mut origin = Column::alloc(pool, &DataType::I64, rows);
     for (row, at) in origin.i64_mut().unwrap().values.iter_mut().enumerate() {
@@ -3453,11 +3458,12 @@ fn run_plan(
     batch
 }
 
-/// The rows of `batch` whose answer is block, as a block: each record with its first exception. `blocked` is how many
-/// there are.
+/// The rows of `batch` whose answer is block, as a block: each record's payload, by `payload`, with its first
+/// exception. `blocked` is how many there are.
 fn marked_block(
     plan: &Plan,
     batch: &Batch,
+    payload: &[u32],
     entries: &[crate::core::error::Exception],
     answers: &[Answer],
     on_exception: &crate::plan::config::OnException,
@@ -3475,12 +3481,13 @@ fn marked_block(
         answers.get(a.row as usize) == Some(&Answer::Block) && *on_exception.answer(&a.kind) == Answer::Block
     });
     let first = blocking.clone().next().map(exception).unwrap_or_default();
-    // By record, not row: an `Unroll` may have made several rows of one record, and a capture shows records.
+    // By payload, not row: an `Unroll` may have made several rows of one record, and decode several records of one
+    // payload, and a block holds payloads.
     let origin = batch.peek(plan.origin_slot()).i64().unwrap().values;
     let mut by_record: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
     for a in blocking {
         by_record
-            .entry(origin[a.row as usize] as usize)
+            .entry(payload[origin[a.row as usize] as usize] as usize)
             .or_insert_with(|| exception(a));
     }
     Blocked {
@@ -3810,7 +3817,7 @@ pub fn preview_routes_at(
                 // pipeline then dropped the record would otherwise have no way to report.
                 let matched = mask
                     .bool()
-                    .map(|b| b.validity.is_valid(0) && bits::get_row(b.values, 0))
+                    .map(|b| (0..decoded.rows()).any(|i| b.validity.is_valid(i) && bits::get_row(b.values, i)))
                     .unwrap_or(false);
                 if matched {
                     entry.matched.push(route_idx);
@@ -3825,7 +3832,6 @@ pub fn preview_routes_at(
                     run_and_encode(
                         plan,
                         Ingest {
-                            records: slice,
                             meta: &meta,
                             decoded: &mut decoded,
                             last: false,
