@@ -19,6 +19,7 @@ license of the code that actually ships.
 | SQLite | `libsqlite3-sys` | public domain |
 | zstd | `zstd-sys` | BSD-3-Clause (dual-licensed BSD-3-Clause or GPL-2.0; the BSD option is taken) |
 | zlib | `libz-sys` | Zlib |
+| libdeflate | `libdeflate-sys` | MIT |
 | Cyrus SASL | `sasl2-sys` | CMU, BSD-4-Clause-style -- see the acknowledgment below |
 | MIT Kerberos | `krb5-src` | MIT/BSD-style, 45 copyright holders in `krb5/NOTICE` |
 | jemalloc (outside Windows) | `tikv-jemalloc-sys` | BSD-2-Clause |
@@ -1547,7 +1548,7 @@ requirements of the license of GCC.
 
 ## Rust crates
 
-- Apache License 2.0 (393)
+- Apache License 2.0 (395)
 - MIT License (94)
 - Unicode License v3 (21)
 - BSD 3-Clause "New" or "Revised" License (13)
@@ -8302,6 +8303,8 @@ Used by:
 - [itertools 0.13.0](https://github.com/rust-itertools/itertools)
 - [itertools 0.15.0](https://github.com/rust-itertools/itertools)
 - [lazy_static 1.5.1](https://github.com/rust-lang-nursery/lazy-static.rs)
+- [libdeflate-sys 1.26.1](https://github.com/libdeflater/libdeflater)
+- [libdeflater 1.26.1](https://github.com/libdeflater/libdeflater)
 - [libz-sys 1.1.33](https://github.com/rust-lang/libz-sys)
 - [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys)
 - [lock_api 0.4.14](https://github.com/Amanieu/parking_lot)
