@@ -91,14 +91,11 @@ impl Codec {
         }
     }
 
-    /// `data` decompressed, at most `max` bytes of it.
-    fn decompress(self, data: &[u8], max: u64) -> Result<Vec<u8>, String> {
-        let mut out = Vec::new();
-        let read = match self {
-            Codec::Null => return Ok(data.to_vec()),
-            Codec::Deflate => flate2::read::DeflateDecoder::new(data)
-                .take(max.saturating_add(1))
-                .read_to_end(&mut out),
+    /// `data` decompressed, at most `max` bytes of it, taking of `hold` each byte its buffer grows by before it grows.
+    fn decompress(self, data: Vec<u8>, max: u64, hold: &mut Hold) -> Result<Vec<u8>, String> {
+        match self {
+            Codec::Null => Ok(data),
+            Codec::Deflate => grown(self, flate2::read::DeflateDecoder::new(data.as_slice()), max, hold),
             Codec::Snappy => {
                 let Some((compressed, crc)) = data.split_last_chunk::<4>() else {
                     return Err("a snappy block too short to hold its checksum".to_string());
@@ -107,24 +104,77 @@ impl Codec {
                 if len as u64 > max {
                     return Err(format!("a block of more than {max} bytes"));
                 }
-                out = snap::raw::Decoder::new()
+                hold(len as u64)?;
+                let out = snap::raw::Decoder::new()
                     .decompress_vec(compressed)
                     .map_err(|e| format!("a snappy block that does not decompress: {e}"))?;
                 if crc32fast::hash(&out).to_be_bytes() != *crc {
                     return Err("a snappy block whose checksum does not match".to_string());
                 }
-                return Ok(out);
+                Ok(out)
             }
-            Codec::Zstandard => zstd::stream::read::Decoder::new(data)
-                .map_err(|e| e.to_string())?
-                .take(max.saturating_add(1))
-                .read_to_end(&mut out),
-        };
-        read.map_err(|e| format!("a {} block that does not decompress: {e}", self.name()))?;
-        if out.len() as u64 > max {
-            return Err(format!("a block of more than {max} bytes"));
+            Codec::Zstandard => grown(
+                self,
+                zstd::stream::read::Decoder::new(data.as_slice()).map_err(|e| e.to_string())?,
+                max,
+                hold,
+            ),
         }
-        Ok(out)
+    }
+}
+
+/// Takes bytes of what a source may hold, before they are held. Err says why they cannot be taken.
+pub(crate) type Hold<'a> = dyn FnMut(u64) -> Result<(), String> + 'a;
+
+/// The size a decompressed block's buffer first grows to; it doubles from there.
+const FIRST_GROWTH: usize = 64 * 1024;
+
+/// All of `input`, a `codec` decompressor, read, at most `max` bytes, taking of `hold` each byte the buffer grows by
+/// before it grows.
+fn grown(codec: Codec, mut input: impl Read, max: u64, hold: &mut Hold) -> Result<Vec<u8>, String> {
+    // One past `max`, so an input longer than `max` is told from one exactly `max` long.
+    let most = usize::try_from(max.saturating_add(1)).unwrap_or(usize::MAX);
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        if out.len() == out.capacity() {
+            if out.len() == most {
+                return Err(format!("a block of more than {max} bytes"));
+            }
+            let next = out.capacity().saturating_mul(2).max(FIRST_GROWTH).min(most);
+            hold((next - out.capacity()) as u64)?;
+            out.reserve_exact(next - out.len());
+        }
+        let spare = out.capacity() - out.len();
+        // Read to the capacity reserved and no further, so the buffer never grows past what was held.
+        let read = (&mut input)
+            .take(spare as u64)
+            .read_to_end(&mut out)
+            .map_err(|e| format!("a {} block that does not decompress: {e}", codec.name()))?;
+        if read < spare {
+            return Ok(out);
+        }
+    }
+}
+
+/// A block of a container file, decompressed.
+pub(crate) struct Block {
+    data: Vec<u8>,
+    count: usize,
+    /// The bytes taken of `hold` for its decompressed bytes.
+    pub(crate) held: u64,
+    /// The bytes taken of `hold` for its compressed bytes, given back once it is decompressed.
+    pub(crate) gone: u64,
+}
+
+impl Block {
+    /// How many values it holds.
+    pub(crate) fn count(&self) -> usize {
+        self.count
+    }
+
+    /// The bytes its values take together.
+    pub(crate) fn bytes(&self) -> usize {
+        self.data.len()
     }
 }
 
@@ -179,9 +229,10 @@ impl Container {
         })
     }
 
-    /// The values of the next block off `input`, each its bytes, or `None` past the last block. A block or a value
-    /// over `max` bytes is Err.
-    pub(crate) fn block(&self, input: &mut dyn BufRead, max: u64) -> Result<Option<Vec<Vec<u8>>>, String> {
+    /// The next block off `input`, decompressed, or `None` past the last block, taking of `hold` each byte it holds
+    /// before it holds it. A block over `max` bytes, compressed or not, is Err; what it took of `hold` is then the
+    /// caller's to give back.
+    pub(crate) fn block(&self, input: &mut dyn BufRead, max: u64, hold: &mut Hold) -> Result<Option<Block>, String> {
         if input.fill_buf().map_err(|e| e.to_string())?.is_empty() {
             return Ok(None);
         }
@@ -193,6 +244,7 @@ impl Container {
         if size > max {
             return Err(format!("an Avro block of more than {max} bytes"));
         }
+        hold(size)?;
         let mut data = vec![0; size as usize];
         input
             .read_exact(&mut data)
@@ -204,25 +256,49 @@ impl Container {
         if sync != self.sync {
             return Err("an Avro block whose sync marker is not its file's".to_string());
         }
-        let data = self.codec.decompress(&data, max)?;
+        let mut grew = 0;
+        let data = self.codec.decompress(data, max, &mut |bytes| {
+            hold(bytes)?;
+            grew += bytes;
+            Ok(())
+        })?;
+        // Uncompressed, its bytes are the ones already held.
+        let (held, gone) = match self.codec {
+            Codec::Null => (size, 0),
+            _ => (grew, size),
+        };
+        Ok(Some(Block {
+            data,
+            count,
+            held,
+            gone,
+        }))
+    }
+
+    /// Hands `each` the bytes of each of `block`'s values, in order. Err says why a value does not read with the file's
+    /// schema, or is what `each` returned as Err.
+    pub(crate) fn values(
+        &self,
+        block: &Block,
+        mut each: impl FnMut(&[u8]) -> Result<(), String>,
+    ) -> Result<(), String> {
         let resolved = self.schema.resolved()?;
         let reader = GenericDatumReader::builder(&self.schema.schema)
             .resolved_writer_schemata(resolved)
             .build()
             .map_err(|e| e.to_string())?;
-        let mut rest = data.as_slice();
-        let mut values = Vec::with_capacity(count.min(data.len()));
-        for _ in 0..count {
+        let mut rest = block.data.as_slice();
+        for _ in 0..block.count {
             let before = rest;
             reader
                 .read_value(&mut rest)
                 .map_err(|e| format!("an Avro value that does not read with its file's schema: {e}"))?;
-            values.push(before[..before.len() - rest.len()].to_vec());
+            each(&before[..before.len() - rest.len()])?;
         }
         if !rest.is_empty() {
             return Err(format!("an Avro block with {} bytes after its values", rest.len()));
         }
-        Ok(Some(values))
+        Ok(())
     }
 }
 

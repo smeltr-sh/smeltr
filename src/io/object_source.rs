@@ -23,6 +23,7 @@ use futures_util::StreamExt;
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange, ObjectStore};
 
+use crate::io::avro;
 use crate::io::avro::AvroReader;
 use crate::io::avro::Parsed;
 use crate::io::avro::container::Container;
@@ -1007,7 +1008,7 @@ fn fetch(
         .and_then(|()| open_object(store, runtime.clone(), path, version, &hold))
         .and_then(|mut lines| match cutting {
             Cutting::Frames(framer) => frames(&mut *lines, framer, &send, shared, &runtime),
-            Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send, &hold),
+            Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send, shared, &runtime),
         });
     shared.release();
     match cut {
@@ -1060,28 +1061,54 @@ fn frames(
     }
 }
 
-/// Reads `lines` as an Avro container file, sending its schema and then each block's values framed with `id`, once
-/// `hold` has room for them. An empty object has none.
+/// Reads `lines` as an Avro container file, sending its schema and then its values framed with `id`, about
+/// [`READ_AHEAD`] bytes of them at a time, and first taking what each block and its records hold of `shared`'s
+/// holdings. A block whose values, framed, take more than `max_record` bytes makes the object unreadable. An empty
+/// object sends nothing.
 fn values(
     lines: &mut dyn BufRead,
     id: u32,
     max_record: u64,
     send: &impl Fn(Fetch) -> Result<(), String>,
-    hold: &impl Fn(u64) -> Result<(), String>,
+    shared: &Shared,
+    runtime: &tokio::runtime::Runtime,
 ) -> Result<(), String> {
     if lines.fill_buf().map_err(|e| e.to_string())?.is_empty() {
         return Ok(());
     }
     let container = Container::open(lines)?;
     send(Fetch::Schema(container.schema.clone()))?;
-    let nowhere: Arc<str> = Arc::from("");
-    while let Some(values) = container.block(lines, max_record)? {
-        let mut out = RecordChunkBuilder::new();
-        for value in values {
-            out.push(&crate::io::avro::frame(id, &value), 0, 0, nowhere.clone(), None);
+    let prefix = avro::prefix(id);
+    while let Some(block) = container.block(lines, max_record, &mut |bytes| shared.hold(bytes, runtime))? {
+        shared.free(block.gone);
+        // A value may take no bytes, so a block's count alone can ask for any number of records.
+        let framed = (block.count() as u64)
+            .saturating_mul(avro::HEADER as u64)
+            .saturating_add(block.bytes() as u64);
+        if framed > max_record {
+            return Err(format!(
+                "an Avro block whose values, framed, take more than {max_record} bytes"
+            ));
         }
-        hold(out.size() as u64)?;
-        send_rows(out, send)?;
+        // Bytes held for values not yet framed, taken READ_AHEAD at a time so one hold serves many.
+        let mut ahead = 0;
+        let mut records = Framed::default();
+        container.values(&block, |value| {
+            let size = (avro::HEADER + value.len()) as u64;
+            if size > ahead {
+                let more = size.max(READ_AHEAD as u64);
+                shared.hold(more, runtime)?;
+                ahead += more;
+            }
+            ahead -= size;
+            records.push_parts(&[&prefix, value]);
+            match records.size() >= READ_AHEAD {
+                true => send_rows(std::mem::take(&mut records).into_records(), send),
+                false => Ok(()),
+            }
+        })?;
+        send_rows(records.into_records(), send)?;
+        shared.free(ahead + block.held);
     }
     Ok(())
 }
@@ -1604,5 +1631,62 @@ mod tests {
                 "a decoder held {most} bytes, said {said}"
             );
         }
+    }
+
+    /// An Avro container file of `schema`, uncompressed, of one block of `count` values in `data`.
+    fn avro_file(schema: &str, count: u64, data: &[u8]) -> Vec<u8> {
+        /// An Avro long, positive: zig-zag, then base-128 varint.
+        fn long(out: &mut Vec<u8>, n: u64) {
+            let mut z = n << 1;
+            while z >= 0x80 {
+                out.push(z as u8 | 0x80);
+                z >>= 7;
+            }
+            out.push(z as u8);
+        }
+        let sync = [9; 16];
+        let mut file = crate::io::avro::container::header(schema, "null", &[], &sync);
+        long(&mut file, count);
+        long(&mut file, data.len() as u64);
+        file.extend_from_slice(data);
+        file.extend_from_slice(&sync);
+        file
+    }
+
+    /// The size of each batch `values` sends of `file`, each taken off the queue as soon as it is sent. Err says why the
+    /// file is unreadable. Asserts that every batch sent is held, and that nothing is held once the fetch ends.
+    fn avro_values(file: &[u8]) -> Result<Vec<u64>, String> {
+        let (holdings, shared, _, runtime) = fetches();
+        shared.make_current();
+        let sizes = std::cell::RefCell::new(Vec::new());
+        let send = |fetch: Fetch| {
+            if let Fetch::Rows(_, size) = fetch {
+                shared.waiting().bytes += size as u64;
+                assert!(holdings.held() >= size, "a batch of {size} bytes was sent unheld");
+                shared.take_queued(size as u64);
+                sizes.borrow_mut().push(size as u64);
+            }
+            Ok(())
+        };
+        let read = values(&mut &file[..], 1, MAX_RECORD_BYTES, &send, &shared, &runtime);
+        shared.release();
+        assert_eq!(holdings.held(), 0, "what it held is given back");
+        read.map(|()| sizes.into_inner())
+    }
+
+    #[test]
+    fn avro_values_are_sent_held_a_bounded_batch_at_a_time() {
+        // A long of 0 is one byte, framed six.
+        let file = avro_file(r#""long""#, 100_000, &[0; 100_000]);
+        let sizes = avro_values(&file).unwrap();
+        assert_eq!(sizes.iter().sum::<u64>(), 600_000);
+        assert!(sizes.iter().all(|&s| s < READ_AHEAD as u64 + 6), "{sizes:?}");
+    }
+
+    #[test]
+    fn an_avro_block_whose_values_framed_are_too_long_is_unreadable() {
+        // A null takes no bytes, so a block of no bytes may count any number of them.
+        let file = avro_file(r#""null""#, 1 << 60, &[]);
+        assert!(avro_values(&file).unwrap_err().contains("framed, take more than"));
     }
 }

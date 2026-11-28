@@ -144,8 +144,21 @@ impl StrBuilder {
         self.push_parts_grow(pool, &[s]);
     }
 
+    /// `push` of `parts` written one after another as one row, so a caller joins them without a copy of its own. Panics
+    /// where `push` does.
+    #[inline]
+    pub(crate) fn push_parts(&mut self, parts: &[&[u8]]) {
+        self.unchecked = true;
+        let len = parts.iter().map(|p| p.len()).sum();
+        assert!(
+            self.fits(len),
+            "StrBuilder overflow: {len} bytes more do not fit. Use push_parts_grow()."
+        );
+        self.put_parts(parts);
+    }
+
     /// `push_grow` of `parts` written one after another as one row, so a caller joins them without a copy of its own.
-    fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
+    pub(crate) fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
         self.unchecked = true;
         self.put_parts_grow(pool, parts);
     }
@@ -165,6 +178,12 @@ impl StrBuilder {
 
     fn put_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
         self.room_for(pool, parts.iter().map(|p| p.len()).sum());
+        self.put_parts(parts);
+    }
+
+    /// `parts` written one after another as one row, in room already there.
+    #[inline]
+    fn put_parts(&mut self, parts: &[&[u8]]) {
         for part in parts {
             self.data.as_mut_slice::<u8>()[self.pos as usize..self.pos as usize + part.len()].copy_from_slice(part);
             self.pos += part.len() as u32;

@@ -126,6 +126,11 @@ impl Framed {
         self.records.push(frame, 0, 0, self.nowhere.clone(), None);
     }
 
+    /// A payload of `parts` written one after another.
+    pub(super) fn push_parts(&mut self, parts: &[&[u8]]) {
+        self.records.push_parts(parts, self.nowhere.clone());
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
