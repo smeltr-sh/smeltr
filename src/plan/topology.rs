@@ -153,7 +153,7 @@ pub struct SourceMeta {
 
 /// How a source's payloads are laid out, and so how transform decodes them into its record.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Format {
+pub(crate) enum Format {
     /// Text, read in the source's text encoding into `_raw`.
     Text,
     /// Confluent-framed Avro, read with the writer's schema each names (`io::avro::decode`).
@@ -778,11 +778,6 @@ impl SourceMeta {
         }
     }
 
-    /// How this source's payloads are decoded.
-    pub fn format(&self) -> Format {
-        self.format
-    }
-
     /// Whether this source's record is `_raw`: each payload read as text in the source's text encoding.
     pub fn raw_record(&self) -> bool {
         self.reads_text() && !self.record.is_empty()
@@ -946,7 +941,10 @@ impl SourceMeta {
         if self.raw_record() {
             let values = text.iter().map(|t| Some(t.as_ref().as_bytes()));
             batch.put(crate::core::batch::SLOT_RAW, str_column(pool, values), pool);
-        } else if let (Format::Avro, Some(writers)) = (self.format, writers) {
+        } else if self.format == Format::Avro && records.first().is_some_and(|r| r.bytes().is_some()) {
+            // Payloads, not a sample's stored fields. With no schemas to read them by, each one is noted unread.
+            let none = crate::io::avro::Writers::default();
+            let writers = writers.unwrap_or(&none);
             let payloads: Vec<&[u8]> = self.read_bytes_each(records).map(Option::unwrap_or_default).collect();
             let read = crate::io::avro::decode(&self.record, writers, payloads.iter().copied(), pool);
             for (i, column) in read.columns.into_iter().enumerate() {
@@ -1088,13 +1086,15 @@ impl SourceMeta {
 
 impl DecodedBatch {
     /// Puts the record's fields and each `__source` field `wanted` names into `batch`, a route's. They are copied, or
-    /// moved when `last` says nothing reads them here again. Returns what was noted against the slots it put.
+    /// moved when `last` says nothing reads them here again, but for each record field `kept` names: a destination
+    /// reads its bytes here. Returns what was noted against the slots it put.
     pub fn give(
         &mut self,
         batch: &mut Batch,
         meta: &SourceMeta,
         wanted: impl Fn(usize) -> bool,
         last: bool,
+        kept: &[bool],
         pool: &mut crate::core::buffer::BufferPool,
     ) -> Vec<Noted> {
         let record =
@@ -1104,9 +1104,7 @@ impl DecodedBatch {
             .map(|field| meta.source_slot(field));
         let slots: Vec<crate::core::id::SlotId> = record.chain(source).collect();
         for (at, &slot) in slots.iter().enumerate() {
-            // A bytes field of the record stays, for a destination that writes it as the source read it.
-            let stays = at < meta.record_len() && self.batch.peek(slot).data_type() == DataType::Bytes;
-            let column = if last && !stays {
+            let column = if last && !kept.get(at).copied().unwrap_or(false) {
                 self.batch.take_dead(slot)
             } else {
                 self.batch.peek(slot).deep_copy(pool)
@@ -3571,6 +3569,15 @@ impl CompiledTopology {
     }
 
     /// Every field a destination writes as text, each once, sorted.
+    /// By `meta`'s record field, whether a destination writes it as bytes, as the source read it.
+    pub(crate) fn kept_bytes(&self, meta: &SourceMeta) -> Vec<bool> {
+        let written =
+            |field: &str| (self.payloads.values()).any(|p| matches!(p, Payload::Bytes { field: f } if **f == *field));
+        (meta.record.iter())
+            .map(|(entry, ty)| *ty == DataType::Bytes && entry.field().is_some_and(written))
+            .collect()
+    }
+
     pub(crate) fn text_fields(&self) -> Vec<String> {
         let mut fields: Vec<String> = Vec::new();
         for p in self.payloads.values() {
@@ -4251,6 +4258,30 @@ mod tests {
             .read_table(&pasted_from(&[(&shown, &crate::io::SourceFields::new())]))
             .unwrap();
         assert_eq!(meta.record_object(&records[0]), shown);
+    }
+
+    /// An Avro payload decoded with no writers' schemas is noted unread, never read as stored fields.
+    #[test]
+    fn an_avro_payload_with_no_schemas_does_not_read() {
+        let meta = SourceMeta::KAFKA
+            .decoding_avro(vec![("id".into(), DataType::I64)])
+            .unwrap();
+        let payload = crate::io::avro::frame(crate::io::avro::SchemaId::new(7), b"\x02");
+        let records = [crate::io::SourceRecord {
+            chunk: crate::io::RecordChunk::of_bytes(&payload),
+            row: 0,
+            offset: 0,
+            partition: 0,
+            topic: std::sync::Arc::from("t"),
+            headers: None,
+        }];
+        let mut pool = crate::core::buffer::BufferPool::new();
+        let decoded = meta.decode(&records, None::<&[&str]>, None, None, &mut pool);
+        let [(0, _, ExceptionKind::Unparsable, Some(why))] = &decoded.noted[..] else {
+            panic!("{:?}", decoded.noted)
+        };
+        assert!(why.contains("schema 7"), "{why}");
+        decoded.batch.reclaim(&mut pool);
     }
 
     /// A stored record is read as its source reads: a payload source's must be one `_raw` text, and a typed source's may
