@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use prost::Message;
 use smeltr::io::Source;
-use smeltr::io::prometheus::{self, Samples, Version, Written};
+use smeltr::io::prometheus::{self, Samples, Version};
 use smeltr::io::receiver::INBOX_BYTES;
 use smeltr::plan::topology::{ConnectionLimits, Receiver};
 
@@ -748,8 +748,8 @@ fn corrupted(rng: &mut Rng, cov: &mut Coverage) -> (Vec<u8>, Version) {
 
 /// What a receiver holding at most `limit` makes of `body` read as `version`, in the order it reads it: refused for a
 /// header claiming more than it holds, refused unread past `limit`, checked whole, then every record taken. The
-/// records and what the request wrote, or `Err` for a refusal and whether it is for size (413) or not (400).
-fn decode(body: &[u8], version: Version, limit: usize) -> Result<(usize, Written), bool> {
+/// records, or `Err` for a refusal and whether it is for size or not.
+fn decode(body: &[u8], version: Version, limit: usize) -> Result<usize, bool> {
     let len = prometheus::decompressed_len(body).map_err(|_| false)?;
     if body.len().saturating_add(len) > limit {
         return Err(true);
@@ -758,8 +758,8 @@ fn decode(body: &[u8], version: Version, limit: usize) -> Result<(usize, Written
     if samples.size() > limit {
         return Err(true);
     }
-    let written = samples.check().map_err(|_| false)?;
-    Ok((std::iter::from_fn(|| samples.next_record()).count(), written))
+    samples.check().map_err(|_| false)?;
+    Ok(std::iter::from_fn(|| samples.next_record()).count())
 }
 
 /// A remote_write request is whatever reaches the receiver's port. Valid 1.0 and 2.0 requests of every record kind,
@@ -768,22 +768,12 @@ fn decode(body: &[u8], version: Version, limit: usize) -> Result<(usize, Written
 #[test]
 fn decoding_never_panics_on_corrupted_requests() {
     // Each sample and histogram a record, exemplars alone a record, and each family's metadata once.
-    let v1 = Written {
-        samples: 9,
-        histograms: 5,
-        exemplars: 4,
-    };
-    let v2 = Written {
-        samples: 14,
-        histograms: 6,
-        exemplars: 4,
-    };
-    for (proto, version, records, written) in [
-        (v1_request().encode_to_vec(), Version::V1, 24, v1),
-        (v2_request().encode_to_vec(), Version::V2, 28, v2),
+    for (proto, version, records) in [
+        (v1_request().encode_to_vec(), Version::V1, 24),
+        (v2_request().encode_to_vec(), Version::V2, 28),
     ] {
         let read = decode(&snappy(&proto), version, INBOX_BYTES).expect("the request reads");
-        assert_eq!(read, (records, written), "{version:?} before it is corrupted");
+        assert_eq!(read, records, "{version:?} before it is corrupted");
     }
 
     const LIMITS: &[usize] = &[0, 16, 300, 4096, 65_536, 1 << 20, INBOX_BYTES];
@@ -897,9 +887,8 @@ struct Sent {
 struct Expected {
     /// 0 for a connection refused before any HTTP is spoken.
     status: u16,
+    /// The records transform decodes its payload into.
     records: usize,
-    /// What a 2.0 sender is told its request wrote.
-    written: Option<Written>,
 }
 
 /// `Content-Type`s a sender may send, and the version each names, or `None` for one that is not remote_write's.
@@ -1009,7 +998,7 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
         1 => corrupted(rng, cov),
         2 => (Vec::new(), Version::V1),
         3 => (
-            (0..rng.below(2048)).map(|_| rng.next_u64() as u8).collect(),
+            (0..rng.below(2028)).map(|_| rng.next_u64() as u8).collect(),
             Version::V1,
         ),
         _ => (
@@ -1066,11 +1055,7 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
         headers.extend(b"\r\n");
     }
 
-    let refused = |status| Expected {
-        status,
-        records: 0,
-        written: None,
-    };
+    let refused = |status| Expected { status, records: 0 };
     let expected = if !settings.tls.admits(presents) {
         refused(0)
     } else if path == "/health" {
@@ -1086,20 +1071,14 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
     } else if body.len() > max {
         refused(413)
     } else {
-        let version = version.unwrap();
-        let v2 = |written| (version == Version::V2).then_some(written);
-        match decode(&body, version, INBOX_BYTES) {
-            Ok((records, written)) => Expected {
-                status: 204,
-                records,
-                written: v2(written),
+        // The receiver decompresses it, and transform decodes it: one that does not decode is one record that says so.
+        match prometheus::decompressed_len(&body) {
+            Ok(len) if body.len().saturating_add(len) > INBOX_BYTES => refused(413),
+            Ok(_) if prometheus::decompress(&body).is_ok() => Expected {
+                status: 202,
+                records: decode(&body, version.unwrap(), INBOX_BYTES).unwrap_or(1),
             },
-            Err(true) => refused(413),
-            Err(false) => Expected {
-                status: 400,
-                records: 0,
-                written: v2(Written::default()),
-            },
+            _ => refused(400),
         }
     };
     Sent {
@@ -1110,22 +1089,6 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
         presents,
         expected,
     }
-}
-
-/// What a 2.0 answer says its request wrote, where it says.
-fn answered_written(answer: &Answer) -> Option<Written> {
-    let header = |name: &str| {
-        let line = answer
-            .head
-            .lines()
-            .find_map(|l| l.strip_prefix(name)?.strip_prefix(':'))?;
-        line.trim().parse::<usize>().ok()
-    };
-    Some(Written {
-        samples: header("x-prometheus-remote-write-samples-written")?,
-        histograms: header("x-prometheus-remote-write-histograms-written")?,
-        exemplars: header("x-prometheus-remote-write-exemplars-written")?,
-    })
 }
 
 /// `sent` over a new connection to `at`, under TLS where `tls` says.
@@ -1141,10 +1104,18 @@ fn exchange(at: SocketAddr, tls: Tls, pki: &Pki, sent: &Sent) -> Answer {
     receiver::exchange(at, tls, pki, &request)
 }
 
+/// The records `payloads` decode into on transform.
+fn decoded(payloads: &[smeltr::io::SourceRecord]) -> usize {
+    let mut pool = smeltr::core::buffer::BufferPool::new();
+    let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    meta.decode_requests(payloads, &mut pool)
+        .map_or(0, |(records, _, _)| records.len())
+}
+
 /// What a Prometheus receiver documents it answers at `path` to `method`. 0 is no answer: a connection its TLS refused.
 fn documented(method: &str, path: &str) -> &'static [u16] {
     match (method, path) {
-        ("POST", prometheus::WRITE_PATH) => &[0, 204, 400, 401, 413, 415, 503],
+        ("POST", prometheus::WRITE_PATH) => &[0, 202, 400, 401, 413, 415, 503],
         (_, prometheus::WRITE_PATH) => &[0, 405],
         ("GET" | "HEAD", "/health") => &[0, 200, 503],
         (_, "/health") => &[0, 405],
@@ -1160,7 +1131,7 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
     crate::certs::install_provider();
     let pki = Arc::new(Pki::new());
     let ipv6 = receiver::ipv6();
-    let statuses = [0, 200, 204, 400, 401, 404, 405, 413, 415];
+    let statuses = [0, 200, 202, 400, 401, 404, 405, 413, 415];
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
@@ -1175,7 +1146,7 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
             .chain(BODIES.iter().chain(AUTHORIZATIONS).map(|s| s.to_string()))
             .chain([
                 "a body compressed twice".to_string(),
-                "records of a request answered 204".to_string(),
+                "records of a request answered 202".to_string(),
             ])
             .chain(CONTENT_TYPES.iter().map(|(t, _)| format!("Content-Type {t:?}")))
             .chain(ENCODINGS.iter().map(|(e, _)| format!("Content-Encoding {e:?}")))
@@ -1215,14 +1186,11 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
                 return Err("the sender is still waiting".into());
             }
             let batch = source.poll_batch(10_000, 1 << 26, Duration::from_millis(10)).unwrap();
-            records += batch.len();
+            records += decoded(&batch);
             commit(&mut source, &batch);
         }
         let answers = sender.join().unwrap();
-        records += source
-            .poll_batch(10_000, 1 << 26, Duration::from_millis(10))
-            .unwrap()
-            .len();
+        records += decoded(&source.poll_batch(10_000, 1 << 26, Duration::from_millis(10)).unwrap());
 
         for (i, (sent, answer)) in sending.iter().zip(&answers).enumerate() {
             let what = format!(
@@ -1247,24 +1215,15 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
                     answer.status, sent.expected.status, answer.head
                 ));
             }
-            if let Some(written) = sent.expected.written
-                && answered_written(answer) != Some(written)
-            {
-                return Err(format!(
-                    "{what}: wrote {:?}, not {written:?}: {}",
-                    answered_written(answer),
-                    answer.head
-                ));
-            }
             cov.reach(format!("answered {}", answer.status));
-            if answer.status == 204 && sent.expected.records > 0 {
-                cov.reach("records of a request answered 204");
+            if answer.status == 202 && sent.expected.records > 0 {
+                cov.reach("records of a request answered 202");
             }
         }
         match records == expected_records {
             true => receiver::holds_to_limits(settings.connect, &limits),
             false => Err(format!(
-                "{records} records arrived of the {expected_records} of the requests answered 204"
+                "{records} records arrived of the {expected_records} of the requests answered 202"
             )),
         }
     });
@@ -1441,6 +1400,7 @@ fn live_prometheus_remote_writes_under_random_configurations() {
     // The receiver of the seed before, until Prometheus has reloaded away from it.
     let mut last: Option<Box<dyn Source>> = None;
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let mut pool = smeltr::core::buffer::BufferPool::new();
     let pki = Pki::new();
     let ipv6 = receiver::ipv6();
     let toggles = ["2.0", "native histograms", "exemplars", "metadata"];
@@ -1569,15 +1529,17 @@ remote_write:
         let deadline = started + Duration::from_secs(60);
         loop {
             let batch = source.poll_batch(10_000, 1 << 26, Duration::from_millis(200)).unwrap();
-            for record in &batch {
-                let row = meta.record_object(record);
+            let decoded = meta.decode(&batch, None::<&[&str]>, None, None, &mut pool);
+            for row in 0..decoded.rows() {
+                let row = decoded.record_object(&meta, row);
                 well_formed(&row).map_err(|why| format!("{what}: {why}: {row:?}"))?;
                 up |= row.get("name").is_some_and(|n| n == "up") && row.get("value").is_some_and(|v| v == 1.0);
                 native |= row.get("type").is_some_and(|t| t == "exponentialHistogram");
                 exemplar |= row.get("exemplars").is_some();
                 family |= row.get("type").is_some() && row.get("time").is_none();
             }
-            records += batch.len();
+            records += decoded.rows();
+            decoded.batch.reclaim(&mut pool);
             commit(&mut source, &batch);
             if panicked.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(format!("{what}: the receiver panicked"));

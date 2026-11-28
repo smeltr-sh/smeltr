@@ -58,7 +58,7 @@ use crate::egress::QueuePool;
 use crate::format::json::write_json_string;
 use crate::format::json_scan::{Next, Reader};
 use crate::plan::topology::{
-    ApiRecords, ConnectionLimits, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport,
+    ApiRecords, ConnectionLimits, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, Transport,
 };
 
 /// Where a receiver answers whether it takes requests: 200 while it does, 503 while it is busy, blocked or stopping.
@@ -145,7 +145,7 @@ pub fn open(
             return Ok(Box::new(ReceiverSource {
                 shared,
                 serving: None,
-                port: Some(joined),
+                _port: Some(joined),
             }));
         }
         Receiver::Socket(datagrams) if datagrams.transport == Transport::Udp => {
@@ -170,7 +170,7 @@ pub fn open(
             return Ok(Box::new(ReceiverSource {
                 shared,
                 serving: Some(Serving::Task(task)),
-                port: None,
+                _port: None,
             }));
         }
         Receiver::S2s(s2s) => {
@@ -261,7 +261,7 @@ pub fn open(
     Ok(Box::new(ReceiverSource {
         shared,
         serving: Some(Serving::Server(server)),
-        port: None,
+        _port: None,
     }))
 }
 
@@ -301,7 +301,7 @@ where
     Ok(Box::new(ReceiverSource {
         shared,
         serving: Some(Serving::Task(task)),
-        port: None,
+        _port: None,
     }))
 }
 
@@ -367,7 +367,7 @@ pub fn open_raw(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Box<dy
     Ok(Box::new(ReceiverSource {
         shared,
         serving: Some(Serving::Task(task)),
-        port: None,
+        _port: None,
     }))
 }
 
@@ -773,7 +773,7 @@ pub struct ReceiverSource {
     /// Dropped with the source, which ends the server and every connection it holds.
     serving: Option<Serving>,
     /// An OTLP receiver's place on the port it shares with the receivers of other signals.
-    port: Option<Joined>,
+    _port: Option<Joined>,
 }
 
 impl Drop for ReceiverSource {
@@ -791,25 +791,13 @@ impl Source for ReceiverSource {
         timeout: Duration,
     ) -> Result<Vec<SourceRecord>, IoError> {
         let taken = self.shared.take(max_rows, max_bytes, timeout);
-        // A receiver speaks one protocol, so a poll's records are all bytes or all rows, of OTLP or of Prometheus.
-        if let Some(joined) = &self.port {
-            return Ok(rows_chunk(taken, &SourceMeta::otlp(joined.signal)));
-        }
-        if matches!(taken.first().map(|q| &q.record), Some(Payload::Row(_))) {
-            return Ok(rows_chunk(taken, &SourceMeta::prometheus_receiver()));
-        }
-        let records = taken.into_iter().map(|q| {
-            let Payload::Chunk(chunk, row) = q.record else {
-                unreachable!("a poll's records are all of one protocol")
-            };
-            SourceRecord {
-                chunk,
-                row,
-                offset: q.offset,
-                partition: 0,
-                topic: q.remote,
-                headers: q.filed.map(Arc::unwrap_or_clone),
-            }
+        let records = taken.into_iter().map(|q| SourceRecord {
+            chunk: q.chunk,
+            row: q.row,
+            offset: q.offset,
+            partition: 0,
+            topic: q.remote,
+            headers: q.filed.map(Arc::unwrap_or_clone),
         });
         Ok(records.collect())
     }
@@ -863,129 +851,6 @@ impl Source for ReceiverSource {
         self.shared.room.notify_waiters();
         Ok(())
     }
-}
-
-/// `taken`, each a typed row, as one chunk of `meta`'s record columns. They are filed under one value
-/// (`Shared::take`), which the chunk carries for them all.
-fn rows_chunk(taken: Vec<Queued>, meta: &SourceMeta) -> Vec<SourceRecord> {
-    use crate::core::column::{Column, DataType, StrBuilder, VarType};
-    use otlp::Cell;
-
-    let mut pool = crate::core::buffer::BufferPool::new();
-    let rows: Vec<&otlp::Row> = taken
-        .iter()
-        .map(|q| match &q.record {
-            Payload::Row(row) => row,
-            Payload::Chunk(..) => unreachable!("a poll's records are all of one protocol"),
-        })
-        .collect();
-    let mismatch = |name: &crate::plan::topology::Entry, ty: &DataType| -> ! {
-        unreachable!("{name} is a {ty}, and a row gave it otherwise")
-    };
-    let columns = (meta.record().iter().enumerate())
-        .map(|(at, (name, ty))| {
-            let cells = rows.iter().map(|r| r.0[at].as_ref());
-            match ty {
-                DataType::I64 | DataType::DateTime | DataType::F64 | DataType::Bool => {
-                    let mut column = Column::alloc(&mut pool, ty, rows.len());
-                    match ty {
-                        DataType::Bool => {
-                            let out = column.bool_mut().expect("a column of its own type");
-                            for (row, cell) in cells.enumerate() {
-                                match cell {
-                                    Some(Cell::Bool(b)) => _ = crate::core::bits::set_row(out.values, row, *b),
-                                    None => out.validity.set_valid(row, false),
-                                    Some(_) => mismatch(name, ty),
-                                }
-                            }
-                        }
-                        DataType::F64 => {
-                            let out = column.f64_mut().expect("a column of its own type");
-                            for (row, cell) in cells.enumerate() {
-                                match cell {
-                                    Some(Cell::Float(f)) => out.values[row] = *f,
-                                    None => out.validity.set_valid(row, false),
-                                    Some(_) => mismatch(name, ty),
-                                }
-                            }
-                        }
-                        _ => {
-                            let out = match ty {
-                                DataType::DateTime => column.datetime_mut(),
-                                _ => column.i64_mut(),
-                            }
-                            .expect("a column of its own type");
-                            for (row, cell) in cells.enumerate() {
-                                match cell {
-                                    Some(Cell::Int(i)) => out.values[row] = *i,
-                                    None => out.validity.set_valid(row, false),
-                                    Some(_) => mismatch(name, ty),
-                                }
-                            }
-                        }
-                    }
-                    column
-                }
-                DataType::Str | DataType::Variant => {
-                    let var = if *ty == DataType::Str {
-                        VarType::Str
-                    } else {
-                        VarType::Variant
-                    };
-                    fn bytes(cell: Option<&Cell>, var: VarType) -> Result<Option<&[u8]>, ()> {
-                        match cell {
-                            Some(Cell::Text(t)) if var == VarType::Str => Ok(Some(t.as_bytes())),
-                            Some(Cell::Variant(v)) if var == VarType::Variant => Ok(Some(v)),
-                            None => Ok(None),
-                            Some(_) => Err(()),
-                        }
-                    }
-                    let bytes = |cell| bytes(cell, var).unwrap_or_else(|()| mismatch(name, ty));
-                    let mut b = StrBuilder::new(&mut pool, var, rows.len());
-                    b.reserve(&mut pool, cells.clone().filter_map(bytes).map(<[u8]>::len).sum());
-                    for cell in cells {
-                        match bytes(cell) {
-                            Some(v) => b.push(v),
-                            None => b.push_null(),
-                        }
-                    }
-                    b.finish()
-                }
-                // An array or struct cell is a variant the decoder wrote in its type's shape.
-                DataType::Array(_) | DataType::Struct(..) => {
-                    let values = cells.map(|cell| match cell {
-                        Some(Cell::Variant(v)) => Some(crate::format::typed::Cell::Variant(
-                            crate::core::variant::Encoded::check(v),
-                        )),
-                        None => None,
-                        Some(_) => mismatch(name, ty),
-                    });
-                    let (column, failed) = crate::format::typed::build(values, rows.len(), ty, 0, &mut pool);
-                    assert!(failed.is_empty(), "{name}: a row's variant is not a {ty}");
-                    column
-                }
-                _ => unreachable!("a typed record has no {ty} field"),
-            }
-        })
-        .collect();
-    let filed = taken.first().and_then(|q| q.filed.clone());
-    let chunk = super::RecordChunk::new(columns, Vec::new());
-    let chunk = Arc::new(match filed {
-        Some(filed) => chunk.filed_under(filed),
-        None => chunk,
-    });
-    taken
-        .into_iter()
-        .enumerate()
-        .map(|(row, q)| SourceRecord {
-            chunk: chunk.clone(),
-            row: row as u32,
-            offset: q.offset,
-            partition: 0,
-            topic: q.remote,
-            headers: None,
-        })
-        .collect()
 }
 
 /// What the server and the reader share.
@@ -1085,39 +950,15 @@ pub(super) enum Cutter {
     Each(s2s_receiver::Cuts),
     /// Records cut already, filed under nothing.
     Messages(super::framing::Messages),
-    Otlp(otlp::Export),
-    Samples(prometheus::Samples),
     Documents(elastic_receiver::Documents),
 }
 
-/// What of a request the reader has not taken.
-enum Rest {
-    /// Its byte records, cut into one chunk on its handler's thread when it arrived, so the reader only hands out
-    /// rows. `filed` is what each row is filed under, where its protocol files records.
-    Chunk {
-        rows: ChunkRows,
-        filed: Vec<Arc<hec::Filed>>,
-    },
-    /// Its typed rows, cut as they are taken, the next cut ahead so the last one is known when it is taken.
-    Rows { rows: RowCutter, next: Option<Cut> },
-}
-
-/// What cuts a request's typed rows.
-enum RowCutter {
-    Otlp(otlp::Export),
-    Samples(Box<prometheus::Samples>),
-}
-
-/// One row cut from a request, and what it is filed under. The rows a request files under one value share it.
-struct Cut {
-    row: otlp::Row,
-    filed: Option<Arc<hec::Filed>>,
-}
-
-/// What a taken record holds: its row of a request's chunk, or, where its protocol types records, its fields.
-enum Payload {
-    Chunk(Arc<RecordChunk>, u32),
-    Row(otlp::Row),
+/// What of a request the reader has not taken: its records, cut into one chunk on its handler's thread when it
+/// arrived, so the reader only hands out rows. `filed` is what each row is filed under, where its protocol files
+/// records.
+struct Rest {
+    rows: ChunkRows,
+    filed: Vec<Arc<hec::Filed>>,
 }
 
 /// The bytes `filed` holds, as a record counts what it is filed under.
@@ -1158,8 +999,6 @@ impl Rest {
                 }
             }
             Cutter::Messages(messages) => messages.each(push),
-            Cutter::Otlp(export) => return Rest::rows(RowCutter::Otlp(export)),
-            Cutter::Samples(samples) => return Rest::rows(RowCutter::Samples(Box::new(samples))),
         }
         if out.is_empty() {
             return None;
@@ -1171,71 +1010,26 @@ impl Rest {
             .filter(|(i, under)| *i == 0 || !Arc::ptr_eq(under, &filed[i - 1]));
         let size = out.size() + shared.map(|(_, under)| filed_size(under)).sum::<usize>();
         let rows = ChunkRows::new(out.into_chunk());
-        Some((Rest::Chunk { rows, filed }, size))
-    }
-
-    /// A request of typed rows as the reader takes it. `None` when it holds no row.
-    fn rows(mut rows: RowCutter) -> Option<(Rest, usize)> {
-        let next = rows.next_row()?;
-        Some((Rest::Rows { rows, next: Some(next) }, 0))
+        Some((Rest { rows, filed }, size))
     }
 
     /// What the next record holds once taken, with what it is filed under. A row's chunk shares that, but a reader
     /// that needs it as rows copies it to each, so a poll is bounded by what its rows hold so copied.
     fn next_size(&self) -> usize {
-        match self {
-            Rest::Chunk { rows, filed } => rows.next_size() + filed.get(rows.at()).map_or(0, |under| filed_size(under)),
-            Rest::Rows { next, .. } => {
-                let next = next.as_ref().expect("a request in the inbox has a record left");
-                next.row.size() + next.filed.as_deref().map_or(0, filed_size)
-            }
-        }
+        self.rows.next_size() + self.filed.get(self.rows.at()).map_or(0, |under| filed_size(under))
     }
 
-    /// Whether the next record is filed apart from `queued`'s: a poll's rows are one chunk, filed under one value.
-    fn files_apart(&self, queued: &Queued) -> bool {
-        match self {
-            Rest::Chunk { .. } => false,
-            Rest::Rows { next, .. } => match (&next.as_ref().expect("a record left").filed, &queued.filed) {
-                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-                (a, b) => a.is_some() || b.is_some(),
-            },
-        }
-    }
-
-    /// Takes the next record, and whether it was the last.
-    fn take(&mut self) -> (Payload, Option<Arc<hec::Filed>>, bool) {
-        match self {
-            Rest::Chunk { rows, filed } => {
-                let under = filed.get(rows.at()).cloned();
-                let (chunk, row) = rows.take();
-                (Payload::Chunk(chunk, row), under, rows.is_done())
-            }
-            Rest::Rows { rows, next } => {
-                let following = rows.next_row();
-                let last = following.is_none();
-                let Cut { row, filed } = std::mem::replace(next, following).expect("a record left");
-                (Payload::Row(row), filed, last)
-            }
-        }
-    }
-}
-
-impl RowCutter {
-    /// The next of its rows.
-    fn next_row(&mut self) -> Option<Cut> {
-        match self {
-            RowCutter::Otlp(export) => export.next_record().map(|(row, filed)| Cut {
-                row,
-                filed: Some(filed),
-            }),
-            RowCutter::Samples(samples) => samples.next_record().map(|row| Cut { row, filed: None }),
-        }
+    /// Takes the next record: its chunk and row, what it is filed under, and whether it was the last.
+    fn take(&mut self) -> (Arc<RecordChunk>, u32, Option<Arc<hec::Filed>>, bool) {
+        let under = self.filed.get(self.rows.at()).cloned();
+        let (chunk, row) = self.rows.take();
+        (chunk, row, under, self.rows.is_done())
     }
 }
 
 struct Queued {
-    record: Payload,
+    chunk: Arc<RecordChunk>,
+    row: u32,
     filed: Option<Arc<hec::Filed>>,
     offset: i64,
     /// The sender's address, which is the record's `__source.remote`.
@@ -1413,17 +1207,16 @@ impl Shared {
         while taken.len() < max_rows.max(1) {
             let Some(front) = inbox.queued.front_mut() else { break };
             let size = front.records.next_size();
-            if let Some(first) = taken.first()
-                && (front.records.files_apart(first) || bytes + size > max_bytes)
-            {
+            if !taken.is_empty() && bytes + size > max_bytes {
                 break;
             }
             bytes += size;
-            let (record, filed, last) = front.records.take();
+            let (chunk, row, filed, last) = front.records.take();
             let offset = inbox.next_offset;
             inbox.next_offset += 1;
             taken.push(Queued {
-                record,
+                chunk,
+                row,
                 filed,
                 offset,
                 remote: front.remote.clone(),
@@ -1865,7 +1658,7 @@ impl Server {
             // A sender sends again on 5xx and 429 and drops a request on any other 4xx, so a request sent too slowly,
             // which was never taken, is answered busy.
             Speaks::Prometheus => match outcome {
-                Outcome::Delivered | Outcome::Acked(_) => StatusCode::NO_CONTENT.into_response(),
+                Outcome::Delivered | Outcome::Acked(_) => StatusCode::ACCEPTED.into_response(),
                 Outcome::Refused(_) => {
                     bearer((StatusCode::UNAUTHORIZED, "a receiver token is required\n").into_response())
                 }
@@ -2217,7 +2010,7 @@ async fn otlp_export(
         &headers,
         named,
         Incoming::Http(body),
-        |body, holding| otlp_cut(&server, signal, body, wire, holding),
+        |body, _| Ok(payload(body, wire.encoding().content_type())),
         |outcome| otlp_answer(&server, outcome, wire),
     )
     .await
@@ -2254,14 +2047,15 @@ async fn otlp_grpc(
         &headers,
         Ok(None),
         Incoming::Grpc(body),
-        |body, holding| otlp_cut(&server, signal, body, Wire::Grpc, holding),
+        |body, _| Ok(payload(body, otlp::Encoding::Protobuf.content_type())),
         |outcome| otlp_answer(&server, outcome, Wire::Grpc),
     )
     .await
 }
 
 /// A remote_write request: a snappy-compressed `WriteRequest` of 1.0 or 2.0, refused unread when it is sent as
-/// anything else. A 2.0 request read is answered with what it wrote, as 2.0's senders read it.
+/// anything else. Its payload is its decompressed body, which transform decodes, so it is answered 202 with no
+/// counts: 2.0 has a sender assume nothing of a 202 that names none.
 async fn prometheus_write(
     State(server): State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -2270,9 +2064,8 @@ async fn prometheus_write(
 ) -> Response {
     let named = |name| headers.get(name).and_then(|v: &HeaderValue| v.to_str().ok());
     let unsupported = |why| Err(Box::new(server.answer(Outcome::Unsupported(why))));
-    let readable = prometheus::readable(named(header::CONTENT_TYPE));
-    let version = *readable.as_ref().unwrap_or(&prometheus::Version::V1);
-    let named = match readable {
+    let content_type = named(header::CONTENT_TYPE);
+    let named = match prometheus::readable(content_type) {
         Err(why) => unsupported(why),
         Ok(_) if !prometheus::is_snappy(named(header::CONTENT_ENCODING)) => unsupported(format!(
             "a remote_write request is compressed as snappy, not as {}",
@@ -2280,47 +2073,23 @@ async fn prometheus_write(
         )),
         Ok(_) => Ok(None),
     };
-    let written = std::sync::OnceLock::new();
-    let mut response = take_in(
-        &server,
-        peer,
-        &headers,
-        named,
-        Incoming::Snappy(body),
-        |body, holding| {
-            let (cutter, wrote) = prometheus_cut(&server, body, holding, version)?;
-            let _ = written.set(wrote);
-            Ok(cutter)
-        },
-        |outcome| server.answer(outcome),
-    )
-    .await;
-    // A 2.0 sender reads what its request wrote once it is read, taken or refused: none, refused.
-    let wrote = match response.status() {
-        status if status.is_success() => written.get().copied(),
-        StatusCode::BAD_REQUEST => Some(prometheus::Written::default()),
-        _ => None,
-    };
-    if let (prometheus::Version::V2, Some(wrote)) = (version, wrote) {
-        for (name, n) in [
-            ("x-prometheus-remote-write-samples-written", wrote.samples),
-            ("x-prometheus-remote-write-histograms-written", wrote.histograms),
-            ("x-prometheus-remote-write-exemplars-written", wrote.exemplars),
-        ] {
-            response.headers_mut().insert(name, HeaderValue::from(n));
-        }
-    }
-    response
+    let cut =
+        |body, holding: &mut Holding<'_>| prometheus_cut(&server, body, holding, content_type.unwrap_or_default());
+    take_in(&server, peer, &headers, named, Incoming::Snappy(body), cut, |outcome| {
+        server.answer(outcome)
+    })
+    .await
 }
 
-/// A request's samples, decompressed within what an inbox holds. The snappy header says what decompressing holds before
-/// it starts, so the read budget takes that first, and the inbox counts the request as its decompressed body.
+/// A request decompressed within what an inbox holds, as one payload filed under its content type. The snappy header
+/// says what decompressing holds before it starts, so the read budget takes that first, and the inbox counts the
+/// request as its decompressed body.
 fn prometheus_cut(
     server: &Server,
     body: Vec<u8>,
     holding: &mut Holding<'_>,
-    version: prometheus::Version,
-) -> Result<(Cutter, prometheus::Written), Box<Response>> {
+    content_type: &str,
+) -> Result<Cutter, Box<Response>> {
     let refused = |outcome| Box::new(server.answer(outcome));
     let len = prometheus::decompressed_len(&body).map_err(|why| refused(Outcome::Unreadable(why)))?;
     if body.len().saturating_add(len) > INBOX_BYTES {
@@ -2333,20 +2102,15 @@ fn prometheus_cut(
         ));
     }
     holding.hold(body.len() + len).map_err(refused)?;
-    let samples =
-        prometheus::Samples::snappy(&body, version, INBOX_BYTES).map_err(|why| refused(Outcome::Unreadable(why)))?;
-    drop(body);
-    let size = samples.size();
-    if size > INBOX_BYTES {
-        let why = format!("a request holds {size} bytes decoded, and a receiver holds at most {INBOX_BYTES}");
-        return Err(Box::new(
-            (StatusCode::PAYLOAD_TOO_LARGE, format!("{why}\n")).into_response(),
-        ));
-    }
-    holding.hold(size).map_err(refused)?;
-    holding.counts(size);
-    let written = samples.check().map_err(|why| refused(Outcome::Unreadable(why)))?;
-    Ok((Cutter::Samples(samples), written))
+    let body = prometheus::decompress(&body).map_err(|why| refused(Outcome::Unreadable(why)))?;
+    holding.counts(body.len());
+    Ok(payload(body, content_type))
+}
+
+/// `body` as one payload, filed under `content_type`, by which transform decodes it.
+fn payload(body: Vec<u8>, content_type: &str) -> Cutter {
+    let filed = vec![(hec::CONTENT_TYPE.to_string(), content_type.as_bytes().to_vec())];
+    Cutter::Filed(Records::whole(body), Arc::new(filed))
 }
 
 /// An export of a signal no receiver on its port takes: 404, which gRPC calls UNIMPLEMENTED, as an OpenTelemetry
@@ -2386,56 +2150,6 @@ impl Wire {
             Wire::Grpc => otlp::Encoding::Protobuf,
         }
     }
-}
-
-/// An export's records, decoded within what an inbox holds. A decoded export holds more than its body, so it takes
-/// the read budget for what decoding holds before it decodes, and the inbox counts it as what it holds decoded.
-fn otlp_cut(
-    server: &Server,
-    signal: Signal,
-    body: Vec<u8>,
-    wire: Wire,
-    holding: &mut Holding<'_>,
-) -> Result<Cutter, Box<Response>> {
-    let too_large = |why: String| {
-        let why = format!("{why}, and a receiver holds at most {INBOX_BYTES}; send it in smaller exports");
-        Err(Box::new(otlp_refused(StatusCode::PAYLOAD_TOO_LARGE, &why, wire)))
-    };
-    let decoded = |size: usize| format!("an export holds {size} bytes once decoded");
-    let unreadable = |why| Box::new(otlp_answer(server, Outcome::Unreadable(why), wire));
-    let busy = |outcome| Box::new(otlp_answer(server, outcome, wire));
-    // What decoding holds at once, which the read budget must have room for before it starts.
-    let peak = match wire.encoding() {
-        otlp::Encoding::Protobuf => otlp::decoded_size(signal, &body).map_err(unreadable)?,
-        otlp::Encoding::Json => {
-            let peak = otlp::json_peak(signal, &body);
-            if peak > INBOX_BYTES {
-                let why = format!(
-                    "an export holds up to {peak} bytes while its JSON is read, and a receiver holds at most \
-                     {INBOX_BYTES}; send it in smaller exports, or as protobuf"
-                );
-                return Err(Box::new(otlp_refused(StatusCode::PAYLOAD_TOO_LARGE, &why, wire)));
-            }
-            peak
-        }
-    };
-    if peak > INBOX_BYTES {
-        return too_large(decoded(peak));
-    }
-    holding.hold(peak).map_err(busy)?;
-    let export = match wire.encoding() {
-        otlp::Encoding::Protobuf => otlp::Export::protobuf(signal, &body),
-        otlp::Encoding::Json => otlp::Export::json(signal, &body),
-    }
-    .map_err(unreadable)?;
-    drop(body);
-    let size = export.decoded_size();
-    if size > INBOX_BYTES {
-        return too_large(decoded(size));
-    }
-    holding.hold(size).map_err(busy)?;
-    holding.counts(size);
-    Ok(Cutter::Otlp(export))
 }
 
 /// An OTLP answer, as `wire` answers: an empty partial success once delivered, and otherwise a `Status` naming why,
@@ -3783,10 +3497,7 @@ mod tests {
     impl Queued {
         /// The bytes of a record sent as bytes.
         fn bytes(&self) -> &[u8] {
-            match &self.record {
-                Payload::Chunk(chunk, row) => chunk.bytes(*row as usize).expect("a byte record"),
-                Payload::Row(_) => panic!("a row, not bytes"),
-            }
+            self.chunk.bytes(self.row as usize).expect("a byte record")
         }
     }
 
@@ -3838,7 +3549,7 @@ mod tests {
         let mut source = ReceiverSource {
             shared: shared.clone(),
             serving: None,
-            port: None,
+            _port: None,
         };
         let line = format!("{{\"message\":\"{}\"}}\n", "x".repeat(260));
         let body: Vec<u8> = line.repeat(1000).into_bytes();
@@ -3986,94 +3697,6 @@ mod tests {
             Admitted::Later(_)
         ));
         assert!(shared.state.lock().queued_bytes.total() < 1100);
-    }
-
-    /// A poll's rows are one chunk, which carries what they are filed under for them all.
-    #[test]
-    fn a_poll_of_rows_stops_where_what_they_are_filed_under_changes() {
-        let shared = Shared::default();
-        let resource = |r| {
-            format!(
-                r#"{{"resource": {{"attributes": [{{"key": "r", "value": {{"stringValue": "{r}"}}}}]}},
-                    "scopeLogs": [{{"scope": {{"name": "s"}}, "logRecords": [{{}}, {{}}]}}]}}"#
-            )
-        };
-        let body = format!(r#"{{"resourceLogs": [{}, {}]}}"#, resource("r1"), resource("r2"));
-        let logs = otlp::Export::json(Signal::Logs, body.as_bytes()).unwrap();
-        assert!(matches!(
-            shared.admit(
-                Cutter::Otlp(logs),
-                body.len(),
-                remote(),
-                None,
-                Charge::new(&shared.holdings)
-            ),
-            Admitted::Later(_)
-        ));
-        for _ in ["r1", "r2"] {
-            let records = rows_chunk(shared.take(10, 1 << 20, Duration::ZERO), &SourceMeta::OTLP_LOGS);
-            assert_eq!(records.len(), 2);
-            assert!(
-                records
-                    .iter()
-                    .all(|r| r.headers.is_none() && Arc::ptr_eq(&r.chunk, &records[0].chunk))
-            );
-            let filed = records[0].chunk.filed().expect("the chunk carries it");
-            assert!(filed.iter().any(|(k, _)| k == otlp::RESOURCE));
-        }
-    }
-
-    /// A data point's arrays and structs are columns of their declared types, holding what the decoder wrote.
-    #[test]
-    fn a_metric_point_s_arrays_and_structs_are_typed_columns() {
-        use crate::core::column::DataType;
-        let body = r#"{"resourceMetrics": [{"scopeMetrics": [{"metrics": [
-            {"name": "h", "histogram": {"dataPoints": [{"bucketCounts": ["1", "2"], "explicitBounds": [1.5]}]}},
-            {"name": "e", "exponentialHistogram": {"dataPoints": [{"positive": {"offset": 1, "bucketCounts": ["3"]}}]}},
-            {"name": "s", "summary": {"dataPoints": [{"quantileValues": [{"quantile": 0.5, "value": 2}]}]}}
-        ]}]}]}"#;
-        let meta = SourceMeta::otlp(Signal::Metrics);
-        let mut export = otlp::Export::json(Signal::Metrics, body.as_bytes()).unwrap();
-        let rows: Vec<otlp::Row> = std::iter::from_fn(|| export.next_record())
-            .map(|(row, _)| row)
-            .collect();
-        let shared = Shared::default();
-        let export = otlp::Export::json(Signal::Metrics, body.as_bytes()).unwrap();
-        assert!(matches!(
-            shared.admit(
-                Cutter::Otlp(export),
-                body.len(),
-                remote(),
-                None,
-                Charge::new(&shared.holdings)
-            ),
-            Admitted::Later(_)
-        ));
-        let records = rows_chunk(shared.take(10, 1 << 20, Duration::ZERO), &meta);
-        assert_eq!(records.len(), 3);
-        let mut pool = crate::core::buffer::BufferPool::new();
-        let mut typed = 0;
-        for (at, (name, ty)) in meta.record().iter().enumerate() {
-            let column = records[0].chunk.column(at);
-            assert_eq!(&column.data_type(), ty, "{name}");
-            if !matches!(ty, DataType::Array(_) | DataType::Struct(..)) {
-                continue;
-            }
-            let as_variant = crate::format::tag::to_variant(column, &mut pool);
-            let shown = as_variant.variant().unwrap();
-            for (row, cells) in rows.iter().enumerate() {
-                match &cells.0[at] {
-                    Some(otlp::Cell::Variant(wrote)) => {
-                        typed += 1;
-                        assert_eq!(shown.get(row).bytes(), wrote.as_slice(), "{name} at row {row}");
-                    }
-                    None => assert!(!shown.validity.is_valid(row), "{name} at row {row}"),
-                    Some(other) => panic!("{name} is {other:?}"),
-                }
-            }
-            as_variant.reclaim(&mut pool);
-        }
-        assert_eq!(typed, 4, "bucket counts, bounds, positive and quantiles");
     }
 
     #[test]
@@ -4578,7 +4201,7 @@ mod tests {
         let mut source = ReceiverSource {
             shared: shared.clone(),
             serving: None,
-            port: None,
+            _port: None,
         };
         source.block().unwrap();
         let waiting = tokio::spawn({
@@ -4607,7 +4230,7 @@ mod tests {
         let source = ReceiverSource {
             shared: shared.clone(),
             serving: None,
-            port: None,
+            _port: None,
         };
         assert_eq!(source.held_bytes(), Some(0));
         let mut charge = Charge::new(&shared.holdings);

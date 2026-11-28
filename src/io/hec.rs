@@ -22,6 +22,8 @@ pub type Filed = Vec<(String, Vec<u8>)>;
 /// The keys of [`Filed`] that are text, as the envelope and the raw endpoint's query name them.
 pub const NAMED: [&str; 4] = ["host", "source", "sourcetype", "index"];
 pub const TIME: &str = "time";
+/// The key an OTLP or remote_write request's payload files its content type under, by which transform decodes it.
+pub const CONTENT_TYPE: &str = "content-type";
 pub const FIELDS: &str = "fields";
 
 /// Why HEC refuses a body: its code, its text, and the envelope it refuses, counted from 0.

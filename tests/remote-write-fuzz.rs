@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use smeltr::io::http::{HttpDestination, Response, Transport, Unwritten, agent_config, credential_headers};
-use smeltr::io::prometheus::{Samples, Version, Written};
+use smeltr::io::otlp::Cell;
+use smeltr::io::prometheus::{self, Samples, Version};
 use smeltr::io::remote_write::{RemoteWrite, transport};
 use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
@@ -40,16 +41,28 @@ fn any(rng: &mut Rng, items: Vec<Value>) -> Value {
 /// holds, never its size.
 const READ_LIMIT: usize = 1 << 40;
 
-/// Reads `body` as the Prometheus receiver does, every record of it taken.
-fn read_back(body: &[u8], version: RemoteWriteVersion) -> Result<Written, String> {
+/// Reads `body` as the Prometheus receiver and transform do, every record of it taken: whether a record is a
+/// histogram, and whether one carries exemplars.
+fn read_back(body: &[u8], version: RemoteWriteVersion) -> Result<(bool, bool), String> {
     let version = match version {
         RemoteWriteVersion::V1 => Version::V1,
         RemoteWriteVersion::V2 => Version::V2,
     };
-    let mut samples = Samples::snappy(body, version, READ_LIMIT)?;
-    let written = samples.check()?;
-    while samples.next_record().is_some() {}
-    Ok(written)
+    let mut samples = Samples::read(&prometheus::decompress(body)?, version, READ_LIMIT)?;
+    let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let at = |name| {
+        (meta.record().iter())
+            .position(|(e, _)| e.field() == Some(name))
+            .unwrap()
+    };
+    let (time, kind, exemplars) = (at("time"), at("type"), at("exemplars"));
+    let (mut histograms, mut exemplared) = (false, false);
+    while let Some(row) = samples.next_record() {
+        // A metadata record names its family's type, and has no time.
+        histograms |= row.0[time].is_some() && matches!(&row.0[kind], Some(Cell::Text(t)) if t.ends_with("istogram"));
+        exemplared |= row.0[exemplars].is_some();
+    }
+    Ok((histograms, exemplared))
 }
 
 fn row(value: Vec<u8>) -> OwnedRecord {
@@ -1163,12 +1176,12 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
                     "the receiver panicked reading what the destination sent: {body:02x?}"
                 ));
             }
-            Ok(Ok(written)) => {
+            Ok(Ok((histograms, exemplars))) => {
                 coverage.reach(format!("read {v}"));
-                if written.histograms > 0 {
+                if histograms {
                     coverage.reach(format!("histograms read {v}"));
                 }
-                if written.exemplars > 0 {
+                if exemplars {
                     coverage.reach(format!("exemplars read {v}"));
                 }
             }

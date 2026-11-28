@@ -91,6 +91,13 @@ pub fn decompressed_len(body: &[u8]) -> Result<usize, String> {
     snap::raw::decompress_len(body).map_err(|e| format!("not snappy: {e}"))
 }
 
+/// `body`, snappy block format, decompressed, or why it is not snappy.
+pub fn decompress(body: &[u8]) -> Result<Vec<u8>, String> {
+    snap::raw::Decoder::new()
+        .decompress_vec(body)
+        .map_err(|e| format!("not snappy: {e}"))
+}
+
 // The messages of prometheus/prompb that remote_write 1.0 sends, by their field numbers there. Fields this module does
 // not read are left out: protobuf skips them. 2.0's samples and histograms are 1.0's with a start time added, so the
 // same messages read both.
@@ -369,14 +376,6 @@ pub struct Samples {
     series_count: usize,
 }
 
-/// What a request holds that its records keep: its samples, its histograms, and its exemplars a record holds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Written {
-    pub samples: usize,
-    pub histograms: usize,
-    pub exemplars: usize,
-}
-
 struct Series {
     name: Option<String>,
     attributes: Option<Vec<u8>>,
@@ -389,7 +388,26 @@ struct Series {
 }
 
 impl Samples {
-    /// A snappy-compressed `WriteRequest` of `version`, decompressed, with what each series and metadata entry holds
+    /// A decompressed `WriteRequest` of `version`, checked whole, its records to be taken; or why it does not read
+    /// within `limit` bytes decoded. What a receiver's payload decodes into.
+    pub fn read(body: &[u8], version: Version, limit: usize) -> Result<Samples, String> {
+        let samples = Samples::new(body.to_vec(), version, limit)?;
+        let size = samples.size();
+        if size > limit {
+            return Err(format!(
+                "a request holds {size} bytes decoded, and a request decodes within {limit}"
+            ));
+        }
+        samples.check()?;
+        Ok(samples)
+    }
+
+    /// A snappy-compressed `WriteRequest` of `version`, decompressed, as [`Samples::new`] reads it.
+    pub fn snappy(body: &[u8], version: Version, limit: usize) -> Result<Samples, String> {
+        Samples::new(decompress(body)?, version, limit)
+    }
+
+    /// A decompressed `WriteRequest` of `version`, with what each series and metadata entry holds
     /// decoded read from its bytes, or why it does not read. Its series are not decoded here, but each histogram is,
     /// as it is small and what it holds as a record is read from its spans; [`Samples::check`] decodes the series and
     /// metadata, once what that holds is held. A histogram whose buckets do not add up refuses the request, as taking
@@ -398,10 +416,7 @@ impl Samples {
     /// A 2.0 request's table is counted before it is made, and one that would take the request past `limit` bytes is
     /// not made nor its series read: [`Samples::size`] says it passes `limit`, and [`Samples::check`] refuses it. A 2.0
     /// request whose series decode to more than `limit` between them is refused, as each copies the strings it names.
-    pub fn snappy(body: &[u8], version: Version, limit: usize) -> Result<Samples, String> {
-        let body = snap::raw::Decoder::new()
-            .decompress_vec(body)
-            .map_err(|e| format!("not snappy: {e}"))?;
+    fn new(body: Vec<u8>, version: Version, limit: usize) -> Result<Samples, String> {
         let not = |e: String| format!("not a remote_write request: {e}");
         let symbol_count = match version {
             Version::V1 => 0,
@@ -455,9 +470,9 @@ impl Samples {
         Ok(samples)
     }
 
-    /// Why a series or metadata entry of this request is not one as its version of remote_write has it, or what its
-    /// records keep. Decodes each in turn, so it holds what [`Samples::size`] says.
-    pub fn check(&self) -> Result<Written, String> {
+    /// Why a series or metadata entry of this request is not one as its version of remote_write has it. Decodes each
+    /// in turn, so it holds what [`Samples::size`] says.
+    pub fn check(&self) -> Result<(), String> {
         if self.symbols.len() != self.symbol_count {
             return Err(format!(
                 "a request's table of {} strings is more than a receiver holds",
@@ -465,7 +480,6 @@ impl Samples {
             ));
         }
         let not = |e: prost::DecodeError| format!("not a remote_write request: {e}");
-        let mut written = Written::default();
         let mut at = 0;
         while let Some((entry, next)) =
             next_entry(&self.body, at, self.version).expect("a request is scanned when it is made")
@@ -491,12 +505,9 @@ impl Samples {
                 }
             };
             labels_valid(&series.labels)?;
-            written.samples += series.samples.len();
-            written.histograms += series.histograms.len();
-            written.exemplars += series.exemplars.iter().filter(|e| exemplar_kept(&e.labels)).count();
             at = next;
         }
-        Ok(written)
+        Ok(())
     }
 
     /// What this request holds at most: its decompressed body, its table of strings, the families its metadata has
@@ -2719,15 +2730,7 @@ mod tests {
             },
         ];
         let samples = v2.samples().unwrap();
-        assert_eq!(
-            samples.check(),
-            Ok(Written {
-                samples: 1,
-                histograms: 0,
-                exemplars: 1
-            }),
-            "an exemplar left out is not written"
-        );
+        assert_eq!(samples.check(), Ok(()));
         let rows = v2.rows();
         let Some(Cell::Variant(exemplars)) = &rows[0].0[field::EXEMPLARS] else {
             panic!("the sample carries its exemplars")

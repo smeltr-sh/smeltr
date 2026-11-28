@@ -52,6 +52,12 @@ fn object_prefix(key: &[u8]) -> std::borrow::Cow<'_, str> {
 }
 
 impl SourceMeta {
+    /// This meta, its payloads decoded as `format`.
+    const fn formatted(mut self, format: Format) -> SourceMeta {
+        self.format = format;
+        self
+    }
+
     /// A source of `kind` whose payloads are text, in the text encoding it detects.
     const fn new(kind: &'static str, record: RecordFields, source: &'static [(&'static str, DataType)]) -> SourceMeta {
         SourceMeta {
@@ -158,6 +164,10 @@ pub enum Format {
     Text,
     /// Confluent-framed Avro, read with the writer's schema each names (`io::avro::decode`).
     Avro,
+    /// An OTLP export of a signal, in the encoding its content type names (`io::otlp::Export`).
+    Otlp(Signal),
+    /// A decompressed remote_write request, of the version its content type names (`io::prometheus::Samples`).
+    RemoteWrite,
 }
 
 /// The entries of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
@@ -588,10 +598,12 @@ impl SourceMeta {
     pub const SOCKET_RECEIVER: SourceMeta = SourceMeta::new("socketReceiver", PAYLOAD_RECORD, RECEIVER_FIELDS);
 
     /// What an OTLP receiver of logs carries: a log record, its sender's address, and its resource and scope.
-    pub const OTLP_LOGS: SourceMeta = SourceMeta::new("otlpReceiver", OTLP_LOG, OTLP_RECEIVER_FIELDS);
+    pub const OTLP_LOGS: SourceMeta =
+        SourceMeta::new("otlpReceiver", OTLP_LOG, OTLP_RECEIVER_FIELDS).formatted(Format::Otlp(Signal::Logs));
 
     /// What an OTLP receiver of traces carries: a span, its sender's address, and its resource and scope.
-    pub const OTLP_TRACES: SourceMeta = SourceMeta::new("otlpReceiver", OTLP_SPAN, OTLP_RECEIVER_FIELDS);
+    pub const OTLP_TRACES: SourceMeta =
+        SourceMeta::new("otlpReceiver", OTLP_SPAN, OTLP_RECEIVER_FIELDS).formatted(Format::Otlp(Signal::Traces));
 
     /// What an OTLP receiver of `signal` carries: a log record, a metric's data point or a span, its sender's address,
     /// and its resource and scope.
@@ -599,7 +611,8 @@ impl SourceMeta {
         match signal {
             Signal::Logs => SourceMeta::OTLP_LOGS,
             // A data point's record holds arrays and structs, which no `const` can build.
-            Signal::Metrics => SourceMeta::new("otlpReceiver", otlp_metric_point(), OTLP_RECEIVER_FIELDS),
+            Signal::Metrics => SourceMeta::new("otlpReceiver", otlp_metric_point(), OTLP_RECEIVER_FIELDS)
+                .formatted(Format::Otlp(Signal::Metrics)),
             Signal::Traces => SourceMeta::OTLP_TRACES,
         }
     }
@@ -608,6 +621,7 @@ impl SourceMeta {
     // Its record holds arrays and structs, which no `const` can build.
     pub fn prometheus_receiver() -> SourceMeta {
         SourceMeta::new("prometheusReceiver", prometheus_record(), PROMETHEUS_RECEIVER_FIELDS)
+            .formatted(Format::RemoteWrite)
     }
 
     /// The kind `__source.type` names, or `None` for a kind no source has.
@@ -1062,6 +1076,11 @@ impl SourceMeta {
         pool: &mut crate::core::buffer::BufferPool,
     ) -> DecodedBatch {
         let (writers, of) = (writers.cloned(), writers.map(|w| &**w));
+        let (held, payload, mut noted) = match self.decode_requests(records, pool) {
+            Some((held, payload, noted)) => (Some(held), payload, noted),
+            None => (None, (0..records.len() as u32).collect(), Vec::new()),
+        };
+        let records = held.as_deref().unwrap_or(records);
         let rows = records.len();
         let layout: Vec<DataType> = ingest_fields(self).into_iter().map(|(_, t)| t).collect();
         let mut batch = Batch::new(&layout, rows, 0);
@@ -1079,14 +1098,15 @@ impl SourceMeta {
                 |row, kind| repairs.push((row as u32, kind)),
             ),
         });
-        let (noted, writer) = self.ingest(&mut batch, records, raw, of, source, pool);
+        let (ingested, writer) = self.ingest(&mut batch, records, raw, of, source, pool);
+        noted.extend(ingested);
         DecodedBatch {
             batch,
             noted,
             repairs,
             writers,
             writer,
-            payload: (0..rows as u32).collect(),
+            payload,
         }
     }
 }
@@ -1264,7 +1284,7 @@ fn filed<'a>(record: &'a crate::io::SourceRecord, key: &str) -> Option<&'a [u8]>
         record
             .headers
             .as_deref()
-            .or_else(|| record.chunk.filed().map(Vec::as_slice))?,
+            .or_else(|| record.chunk.filed(record.row as usize).map(|f| f.as_slice()))?,
         key,
     )
 }
@@ -1273,12 +1293,17 @@ fn filed_at<'a>(filed: &'a [(String, Vec<u8>)], key: &str) -> Option<&'a [u8]> {
     filed.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_slice())
 }
 
-/// What every record of `records` is filed under, where they share one chunk that carries it for them all. Each
-/// value of it is then one column's every row.
+/// What every record of `records` is filed under, where their chunks carry one value for them all. Each value of it
+/// is then one column's every row.
 fn shared_filed(records: &[crate::io::SourceRecord]) -> Option<&[(String, Vec<u8>)]> {
-    let first = records.first()?;
-    let shared = (records.iter()).all(|r| r.headers.is_none() && std::sync::Arc::ptr_eq(&r.chunk, &first.chunk));
-    shared.then(|| first.chunk.filed().map(Vec::as_slice)).flatten()
+    let filed = records.first()?.chunk.filed(records[0].row as usize)?;
+    let shared = (records.iter()).all(|r| {
+        r.headers.is_none()
+            && r.chunk
+                .filed(r.row as usize)
+                .is_some_and(|f| std::sync::Arc::ptr_eq(f, filed))
+    });
+    shared.then_some(filed.as_slice())
 }
 
 /// Each record's headers as one variant object. A record with none is an empty object, so a read of a header it
@@ -3913,6 +3938,7 @@ pub fn route_masks<'a>(
     out
 }
 
+mod requests;
 mod stored;
 
 #[cfg(test)]

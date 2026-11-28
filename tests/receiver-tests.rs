@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::live;
 
-use crate::harness::receiver::{free_loopback, poll_until};
+use crate::harness::receiver::{decoded, free_loopback, poll_decoded, poll_until, undecoded};
 use crate::harness::{wait_for, wait_until};
 use smeltr::heartbeat::pasted_from;
 use smeltr::io::line_breaker::LineBreaker;
@@ -708,8 +708,8 @@ fn an_otlp_export_is_answered_once_its_log_records_are_committed() {
     let sent =
         std::thread::spawn(move || request(TcpStream::connect(at).unwrap(), "POST", "/v1/logs", OTLP_JSON, body));
 
-    let records = poll_until(&mut source, 2);
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
+    let records = poll_decoded(&mut source, &meta, 2);
     let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["body"], "paid");
     assert_eq!(rows[0]["severityNumber"], 9);
@@ -793,8 +793,8 @@ fn an_otlp_protobuf_export_is_read_as_its_log_records() {
         answer
     });
 
-    let records = poll_until(&mut source, 1);
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
+    let records = poll_decoded(&mut source, &meta, 1);
     let record = meta.record_object(&records[0]);
     assert_eq!(record["body"], "slow");
     assert_eq!(record["severityText"], "WARN");
@@ -825,7 +825,7 @@ fn an_otlp_protobuf_export_is_read_as_its_log_records() {
 }
 
 /// What an exporter is refused, it is refused before anything reaches the inbox: 401 without the token, 415 in an
-/// encoding OTLP does not have, 400 for a body that does not read, which an exporter drops rather than sends again.
+/// encoding OTLP does not have, which an exporter drops rather than sends again.
 #[test]
 fn an_otlp_receiver_refuses_before_anything_is_taken() {
     let at = free_loopback();
@@ -836,11 +836,6 @@ fn an_otlp_receiver_refuses_before_anything_is_taken() {
     assert_eq!(send("Content-Type: application/json\r\n", export).0, 401);
     let (status, answer) = send("Authorization: Bearer s3cret\r\nContent-Type: text/plain\r\n", export);
     assert_eq!(status, 415, "{answer}");
-    let (status, answer) = send(OTLP_JSON, b"{\"resourceLogs\":");
-    assert_eq!(status, 400);
-    let answer: serde_json::Value = serde_json::from_str(&answer).unwrap();
-    assert_eq!(answer["code"], 3, "a JSON export is refused with a JSON Status");
-    assert_eq!(send(OTLP_PROTOBUF, b"\xff\xff\xff").0, 400);
     assert!(
         source
             .poll_batch(100, 1 << 20, Duration::from_millis(200))
@@ -869,8 +864,8 @@ fn otlp_protobuf(at: SocketAddr, body: &[u8]) -> (u16, Vec<u8>) {
 }
 
 /// An export is held to what it holds once decoded, not to its body: two bytes on the wire are an empty log record of
-/// a hundred and more once decoded, and a resource is copied to each record it files. Past what an inbox holds, it is
-/// refused before it is decoded, and nothing reaches the inbox.
+/// a hundred and more once decoded. Past what a request decodes within, it is not decoded, and is one record that says
+/// why.
 #[test]
 fn an_otlp_export_is_held_to_what_it_holds_decoded() {
     use otlp_messages::*;
@@ -880,21 +875,16 @@ fn an_otlp_export_is_held_to_what_it_holds_decoded() {
     let mut source = otlp_receiver_reading(at, 64 << 20);
     let empty = export(0, vec![LogRecord::default(); 1_000_000]).encode_to_vec();
     assert!(empty.len() < 3 << 20, "{} bytes on the wire", empty.len());
-    let (status, answer) = otlp_protobuf(at, &empty);
-    assert_eq!(status, 413, "{}", String::from_utf8_lossy(&answer));
-    assert!(String::from_utf8_lossy(&answer).contains("once decoded"));
-
-    assert!(
-        source
-            .poll_batch(100, 1 << 20, Duration::from_millis(200))
-            .unwrap()
-            .is_empty()
-    );
+    let sent = std::thread::spawn(move || otlp_protobuf(at, &empty).0);
+    let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
+    let why = undecoded(&mut source, &meta);
+    assert!(why.contains("while it is decoded"), "{why}");
+    assert_eq!(sent.join().unwrap(), 200);
 
     // Its records share a large resource rather than each holding a copy of it.
     let fits = export(1 << 20, vec![LogRecord::default(); 1000]).encode_to_vec();
     let sent = std::thread::spawn(move || otlp_protobuf(at, &fits).0);
-    let records = poll_until(&mut source, 1000);
+    let records = poll_decoded(&mut source, &meta, 1000);
     commit(&mut source, &records);
     assert_eq!(sent.join().unwrap(), 200);
 }
@@ -985,8 +975,8 @@ fn a_grpc_export_is_answered_once_its_log_records_are_committed() {
     let body = grpc_frame(true, &gzip.finish().unwrap());
     let sent = std::thread::spawn(move || grpc(at, &[GRPC[0], GRPC[1], ("grpc-encoding", "gzip")], body));
 
-    let records = poll_until(&mut source, 1);
     let meta = smeltr::plan::topology::SourceMeta::OTLP_LOGS;
+    let records = poll_decoded(&mut source, &meta, 1);
     let record = meta.record_object(&records[0]);
     assert_eq!(record["body"], "slow");
     assert_eq!(record["severityText"], "WARN");
@@ -1047,8 +1037,6 @@ fn a_grpc_receiver_refuses_in_grpcs_codes() {
         status, "3",
         "a message past what a request may carry is invalid: {why:?}"
     );
-    let (status, why) = code(&GRPC, grpc_frame(false, b"\xff\xff\xff"));
-    assert_eq!(status, "3", "a message that does not decode is invalid: {why:?}");
 
     let answer = grpc(at, &[GRPC[0], ("content-type", "application/x-protobuf")], message);
     assert_eq!(answer.status, 415);
@@ -1118,8 +1106,11 @@ fn otlp_receivers_of_each_signal_share_a_port() {
     wait_until("the port to close with its last receiver", WITHIN, || {
         TcpStream::connect(at).is_err()
     });
-    let _again = otlp_receiver_of(at, Signal::Metrics, 4096);
-    assert_eq!(post("/v1/metrics", b"{}").0, 200, "and opens again with the next");
+    let mut again = otlp_receiver_of(at, Signal::Metrics, 4096);
+    let sent = std::thread::spawn(move || post("/v1/metrics", b"{}"));
+    let records = poll_until(&mut again, 1);
+    commit(&mut again, &records);
+    assert_eq!(sent.join().unwrap().0, 200, "and opens again with the next");
 }
 
 /// A container this test started, removed when the test ends however it ends.
@@ -1244,6 +1235,7 @@ fn an_opentelemetry_sdk_exports_every_signal_over_grpc_and_http() {
                 .spawn()
                 .expect("docker runs");
             // It sends its next export once it hears the last one answered, so each is committed as it arrives.
+            let meta = smeltr::plan::topology::SourceMeta::otlp(signal);
             let mut records = Vec::new();
             let exited = wait_for(
                 &format!("telemetrygen to finish sending {what}"),
@@ -1251,7 +1243,7 @@ fn an_opentelemetry_sdk_exports_every_signal_over_grpc_and_http() {
                 || {
                     let taken = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
                     commit(source, &taken);
-                    records.extend(taken);
+                    records.extend(decoded(&meta, &taken));
                     sent.try_wait().unwrap()
                 },
             )
@@ -1264,7 +1256,6 @@ fn an_opentelemetry_sdk_exports_every_signal_over_grpc_and_http() {
                 "{what}: {logs}"
             );
             assert!(records.len() >= 3, "{what}: {} records", records.len());
-            let meta = smeltr::plan::topology::SourceMeta::otlp(signal);
             let first = meta.record_object(&records[0]);
             let named = match signal {
                 Signal::Logs => first["body"] == "the message",
@@ -1470,7 +1461,7 @@ fn remote_write_request(at: SocketAddr, headers: &str, body: &[u8]) -> (u16, Str
 const REMOTE_WRITE: &str =
     "Authorization: Bearer s3cret\r\nContent-Type: application/x-protobuf\r\nContent-Encoding: snappy\r\n";
 
-/// A sender hears 204 once every sample of its request is committed, and not before. Each sample is a record: its
+/// A sender hears 202 once every sample of its request is committed, and not before. Each sample is a record: its
 /// series' name, its value and time, and its other labels.
 #[test]
 fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
@@ -1487,8 +1478,8 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
     ]);
     let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
 
-    let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let records = poll_decoded(&mut source, &meta, 3);
     let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["name"], "up");
     assert_eq!(rows[0]["value"], 1.0);
@@ -1520,12 +1511,11 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
     std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
-    assert_eq!(sent.join().unwrap().0, 204);
+    assert_eq!(sent.join().unwrap().0, 202);
 }
 
 /// What a sender is refused, it is refused before anything reaches the inbox: 401 without the token, 415 for a
-/// request that is not remote_write 1.0 or 2.0 or not snappy, 400 for a body that does not read or a histogram that is not
-/// one. A sender drops each.
+/// request that is not remote_write 1.0 or 2.0 or not snappy, 400 for a body that is not snappy. A sender drops each.
 #[test]
 fn a_prometheus_receiver_refuses_before_anything_is_taken() {
     use remote_write::series;
@@ -1544,14 +1534,6 @@ fn a_prometheus_receiver_refuses_before_anything_is_taken() {
     let gzip = "Authorization: Bearer s3cret\r\nContent-Type: application/x-protobuf\r\nContent-Encoding: gzip\r\n";
     assert_eq!(send(gzip, &body).0, 415);
     assert_eq!(send(REMOTE_WRITE, b"\xff\xff\xff\xff").0, 400);
-    let mut histogram = series(&[("__name__", "latency")], &[]);
-    histogram.histograms.push(remote_write::Histogram {
-        schema: 9,
-        ..Default::default()
-    });
-    let (status, answer) = send(REMOTE_WRITE, &remote_write::body(vec![histogram]));
-    assert_eq!(status, 400);
-    assert!(answer.contains("of schema 9"), "{answer}");
     assert!(
         source
             .poll_batch(100, 1 << 20, Duration::from_millis(200))
@@ -1633,10 +1615,10 @@ fn remote_write_v2(at: SocketAddr, body: &[u8]) -> String {
 }
 
 /// A remote_write 2.0 request reads to the records 1.0's does, its labels from its table of strings, a sample's start
-/// time its `startTime`, and its family's metadata one record ahead of its first series. Its sender hears 204 once
-/// they are committed, with what it wrote.
+/// time its `startTime`, and its family's metadata one record ahead of its first series. Its sender hears 202 once
+/// they are committed, naming no counts, so it assumes nothing was written.
 #[test]
-fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_with_what_it_wrote() {
+fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_202() {
     use prost::Message;
     use remote_write_v2::*;
 
@@ -1689,8 +1671,8 @@ fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_with_what_it_wrote() 
         .unwrap();
     let sent = std::thread::spawn(move || remote_write_v2(at, &body));
 
-    let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let records = poll_decoded(&mut source, &meta, 3);
     let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(
         serde_json::Value::Object(rows[0].clone()),
@@ -1727,20 +1709,14 @@ fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_with_what_it_wrote() 
 
     commit(&mut source, &records);
     let answer = sent.join().unwrap();
-    assert!(answer.starts_with("http/1.1 204"), "{answer}");
-    for written in [
-        "x-prometheus-remote-write-samples-written: 2",
-        "x-prometheus-remote-write-histograms-written: 0",
-        "x-prometheus-remote-write-exemplars-written: 1",
-    ] {
-        assert!(answer.contains(written), "{answer}");
-    }
+    assert!(answer.starts_with("http/1.1 202"), "{answer}");
+    assert!(!answer.contains("-written"), "{answer}");
 }
 
-/// A remote_write 2.0 request that breaks the protocol is refused whole, with 400 and nothing written: a label naming
-/// a string past its table, here.
+/// A remote_write 2.0 request that breaks the protocol is taken, and is one record that says why on transform: a label
+/// naming a string past its table, here.
 #[test]
-fn a_remote_write_2_request_naming_a_string_past_its_table_is_refused() {
+fn a_remote_write_2_request_naming_a_string_past_its_table_does_not_decode() {
     use prost::Message;
     use remote_write_v2::*;
 
@@ -1762,21 +1738,11 @@ fn a_remote_write_2_request_naming_a_string_past_its_table_is_refused() {
     let body = snap::raw::Encoder::new()
         .compress_vec(&request.encode_to_vec())
         .unwrap();
-    let answer = remote_write_v2(at, &body);
-    assert!(answer.starts_with("http/1.1 400"), "{answer}");
-    assert!(answer.contains("past the request's 2 strings"), "{answer}");
-    for written in ["samples", "histograms", "exemplars"] {
-        assert!(
-            answer.contains(&format!("x-prometheus-remote-write-{written}-written: 0")),
-            "{answer}"
-        );
-    }
-    assert!(
-        source
-            .poll_batch(100, 1 << 20, Duration::from_millis(200))
-            .unwrap()
-            .is_empty()
-    );
+    let sent = std::thread::spawn(move || remote_write_v2(at, &body));
+    let why = undecoded(&mut source, &smeltr::plan::topology::SourceMeta::prometheus_receiver());
+    assert!(why.contains("past the request's 2 strings"), "{why}");
+    let answer = sent.join().unwrap();
+    assert!(answer.starts_with("http/1.1 202"), "{answer}");
 }
 
 /// A native histogram is a record typed as an OTLP histogram point: an exponential one's buckets as `positive` and
@@ -1835,8 +1801,8 @@ fn a_remote_write_histogram_is_a_record_typed_as_an_otlp_histogram_point() {
     let body = remote_write::body(vec![latency]);
     let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
 
-    let records = poll_until(&mut source, 5);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let records = poll_decoded(&mut source, &meta, 5);
     let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["value"], 0.5);
     assert!(rows[0].get("type").is_none(), "a float sample has no type");
@@ -1892,7 +1858,7 @@ fn a_remote_write_histogram_is_a_record_typed_as_an_otlp_histogram_point() {
         "a stored histogram reads back as it was received"
     );
     commit(&mut source, &records);
-    assert_eq!(sent.join().unwrap().0, 204);
+    assert_eq!(sent.join().unwrap().0, 202);
 }
 
 /// A series' exemplars ride on its last record of the request, its last histogram where it has any, each shaped as an
@@ -1929,8 +1895,8 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
     let body = remote_write::body(vec![requests, latency, alone]);
     let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
 
-    let records = poll_until(&mut source, 6);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let records = poll_decoded(&mut source, &meta, 6);
     let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     let with: Vec<_> = rows.iter().map(|r| r.get("exemplars").is_some()).collect();
     assert_eq!(with, [false, true, false, false, true, true]);
@@ -1967,7 +1933,7 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
         "a stored exemplar reads back as it was received"
     );
     commit(&mut source, &records);
-    assert_eq!(sent.join().unwrap().0, 204);
+    assert_eq!(sent.join().unwrap().0, 202);
 
     // Prometheus drops an exemplar it cannot store and keeps the request; so does the receiver.
     let mut s = series(&[("__name__", "x")], &[(1.0, 1)]);
@@ -1977,10 +1943,10 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
     ];
     let body = remote_write::body(vec![s]);
     let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
-    let records = poll_until(&mut source, 1);
+    let records = poll_decoded(&mut source, &meta, 1);
     assert!(meta.record_object(&records[0]).get("exemplars").is_none());
     commit(&mut source, &records);
-    assert_eq!(sent.join().unwrap().0, 204);
+    assert_eq!(sent.join().unwrap().0, 202);
     assert!(
         source
             .poll_batch(100, 1 << 20, Duration::from_millis(200))
@@ -2008,8 +1974,8 @@ fn remote_write_metadata_is_a_record_of_each_metric_family() {
     );
     let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
 
-    let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let records = poll_decoded(&mut source, &meta, 3);
     let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["value"], 3.0);
     assert!(rows[0].get("isMonotonic").is_none(), "a sample has no metadata");
@@ -2037,7 +2003,7 @@ fn remote_write_metadata_is_a_record_of_each_metric_family() {
         "stored metadata reads back as it was received"
     );
     commit(&mut source, &records);
-    assert_eq!(sent.join().unwrap().0, 204);
+    assert_eq!(sent.join().unwrap().0, 202);
     assert!(
         source
             .poll_batch(100, 1 << 20, Duration::from_millis(200))
@@ -2046,18 +2012,24 @@ fn remote_write_metadata_is_a_record_of_each_metric_family() {
     );
 }
 
-/// A histogram whose buckets do not add up refuses its request whole with why, and one whose spans lie far apart is
-/// held at what its buckets hold dense, so a few bytes sent are refused as too large rather than made.
+/// A histogram whose buckets do not add up, or is not one, keeps its request from decoding, which is one record that
+/// says why; and one whose spans lie far apart is held at what its buckets hold dense, so a few bytes sent do not
+/// decode as too large rather than made.
 #[test]
-fn a_histogram_that_does_not_add_up_or_does_not_fit_refuses_the_request() {
+fn a_histogram_that_does_not_add_up_or_does_not_fit_does_not_decode() {
     use remote_write::{Histogram, series, span};
 
     let at = free_loopback();
     let mut source = prometheus_receiver(at);
-    let send = |h: Histogram| {
+    let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let mut send = |h: Histogram| {
         let mut s = series(&[("__name__", "latency")], &[(1.0, 1)]);
         s.histograms.push(h);
-        remote_write_request(at, REMOTE_WRITE, &remote_write::body(vec![s]))
+        let body = remote_write::body(vec![s]);
+        let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
+        let why = undecoded(&mut source, &meta);
+        assert_eq!(sent.join().unwrap().0, 202);
+        why
     };
     let custom = || Histogram {
         schema: -53,
@@ -2065,6 +2037,13 @@ fn a_histogram_that_does_not_add_up_or_does_not_fit_refuses_the_request() {
         ..Default::default()
     };
     for (h, why) in [
+        (
+            Histogram {
+                schema: 9,
+                ..Default::default()
+            },
+            "of schema 9",
+        ),
         (
             Histogram {
                 positive_spans: vec![span(0, 2)],
@@ -2164,8 +2143,7 @@ fn a_histogram_that_does_not_add_up_or_does_not_fit_refuses_the_request() {
             "custom buckets have no zero bucket",
         ),
     ] {
-        let (status, answer) = send(h);
-        assert_eq!(status, 400, "{answer}");
+        let answer = send(h);
         assert!(answer.contains(why), "{answer}, not {why}");
     }
     let far_apart = Histogram {
@@ -2174,8 +2152,8 @@ fn a_histogram_that_does_not_add_up_or_does_not_fit_refuses_the_request() {
         positive_deltas: vec![1, 0],
         ..Default::default()
     };
-    let (status, answer) = send(far_apart);
-    assert_eq!(status, 413, "{answer}");
+    let answer = send(far_apart);
+    assert!(answer.contains("decodes within"), "{answer}");
     assert!(
         source
             .poll_batch(100, 1 << 20, Duration::from_millis(200))
@@ -2218,15 +2196,15 @@ fn a_histogram_counts_what_its_buckets_hold() {
     let body = remote_write::body(vec![latency]);
     let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body));
 
-    let records = poll_until(&mut source, 3);
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let records = poll_decoded(&mut source, &meta, 3);
     let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
     assert_eq!(rows[0]["count"], 3.0);
     assert_eq!(rows[1]["count"], 0.0);
     assert_eq!(rows[2]["count"], 0.3);
     commit(&mut source, &records);
     let (status, answer) = sent.join().unwrap();
-    assert_eq!(status, 204, "{answer}");
+    assert_eq!(status, 202, "{answer}");
 }
 
 /// Prometheus itself, scraping its own metrics, delivers them over remote_write and hears each request answered.
@@ -2271,7 +2249,7 @@ remote_write:
     let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
     let up = wait_for("an `up` sample", Duration::from_secs(60), || {
         let records = source.poll_batch(1000, 16 << 20, Duration::from_millis(200)).unwrap();
-        let rows: Vec<_> = records.iter().map(|r| meta.record_object(r)).collect();
+        let rows: Vec<_> = decoded(&meta, &records).iter().map(|r| meta.record_object(r)).collect();
         commit(&mut source, &records);
         rows.into_iter().find(|r| r["name"] == "up")
     })
