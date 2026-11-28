@@ -7,7 +7,8 @@
 //! sent under `suricata.eve`, maps each event type to ECS in a branch of
 //! its own, then enriches both ends: GeoIP on both addresses, the company's
 //! networks by CIDR, and the domain by an exact list and a regex list. The
-//! field names are Suricata's EVE format's; the values are synthetic.
+//! field names are Suricata's EVE format's; the values are synthetic, and so
+//! are the GeoIP and network databases, which the corpus writes.
 
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -28,7 +29,7 @@ const SERVICES: &[&str] = &["git", "wiki", "ci", "vault", "jira", "mail", "files
 
 /// Outside domains the sensors see, with the category and owner the
 /// company's domain list gives each.
-const DOMAINS: &[(&str, &str, &str)] = &[
+pub const DOMAINS: &[(&str, &str, &str)] = &[
     ("login.idp.example", "identity", "it-ops"),
     ("api.payments.example", "finance", "finance"),
     ("crm.salescloud.example", "saas", "sales"),
@@ -55,7 +56,7 @@ const UNLISTED: &[&str] = &[
 ];
 
 /// The regex list, first match wins: what a domain is, by its shape.
-const PATTERNS: &[(&str, &str, &str)] = &[
+pub const PATTERNS: &[(&str, &str, &str)] = &[
     (r"\.acme\.internal$", "internal", "company domain"),
     (r"^[a-z0-9]{12,}\.(top|xyz|click)$", "suspicious", "generated name"),
     (
@@ -114,9 +115,54 @@ fn csv(header: &str, rows: impl Iterator<Item = Vec<String>>) -> String {
     out
 }
 
-fn tables() -> Vec<Value> {
-    let (_, networks) = people::networks();
-    let networks = csv("network,site,city,tier,business_unit", networks.into_iter());
+/// Where the GeoIP database places addresses: the networks MaxMind's own test database answers for, and each
+/// internet address's /24, in the country `people::PUBLIC` names, at a city there.
+const PLACES: &[(&str, u8, &str, &str, &str, f64, f64)] = &[
+    ("10.1.0.0", 16, "US", "United States", "Springfield", 39.7817, -89.6501),
+    ("10.2.0.0", 24, "CA", "Canada", "Toronto", 43.6532, -79.3832),
+    ("81.2.69.0", 24, "GB", "United Kingdom", "London", 51.5072, -0.1276),
+    ("2.125.160.0", 24, "GB", "United Kingdom", "London", 51.5072, -0.1276),
+    ("89.160.20.0", 24, "SE", "Sweden", "Stockholm", 59.3293, 18.0686),
+    ("175.16.199.0", 24, "CN", "China", "Beijing", 39.9042, 116.4074),
+    ("216.160.83.0", 24, "US", "United States", "Seattle", 47.6062, -122.3321),
+    ("67.43.156.0", 24, "BT", "Bhutan", "Thimphu", 27.4728, 89.639),
+];
+
+/// The GeoIP database: a City database's records, of [`PLACES`]. Its type is the City type, so every engine's GeoIP
+/// reader takes it; its data is the corpus's own.
+fn city() -> Vec<u8> {
+    let networks: Vec<_> = (PLACES.iter())
+        .map(|&(net, len, iso, country, city, lat, lon)| {
+            (
+                net.parse().expect("an address"),
+                len,
+                json!({"city": {"names": {"en": city}}, "country": {"iso_code": iso, "names": {"en": country}},
+                       "location": {"latitude": lat, "longitude": lon}}),
+            )
+        })
+        .collect();
+    super::mmdb::write("GeoIP2-City", "The Suricata corpus's places", &networks)
+}
+
+/// The company's networks, each a CIDR's record of its site, city, tier and business unit.
+fn networks() -> Vec<u8> {
+    let (_, rows) = people::networks();
+    let networks: Vec<_> = (rows.into_iter())
+        .map(|row| {
+            let (net, len) = row[0].split_once('/').expect("a CIDR");
+            (
+                net.parse().expect("a network address"),
+                len.parse().expect("a prefix length"),
+                json!({"site": row[1], "city": row[2], "tier": row[3], "business_unit": row[4]}),
+            )
+        })
+        .collect();
+    super::mmdb::write("Smeltr-Networks", "The company's networks", &networks)
+}
+
+/// The lookup files, each by its name under `lookups/`: the GeoIP database, the company's networks, and the domain
+/// lists.
+pub fn files() -> Vec<(&'static str, Vec<u8>)> {
     let domains = csv(
         "domain,category,owner",
         DOMAINS
@@ -129,24 +175,23 @@ fn tables() -> Vec<Value> {
             .iter()
             .map(|(p, v, r)| vec![p.to_string(), v.to_string(), r.to_string()]),
     );
-    let file = |id: &str, name: &str, body: &str| json!({"id": id, "type": "csv", "path": super::lookup_file(name, body.as_bytes()), "delimiter": ","});
-    // The repository's test database knows two private networks and costs a lookup little. A benchmark can name a
-    // real City database instead, which the repository may not carry under its license; the check then does not hold.
-    let geoip = match std::env::var("BENCH_GEOIP") {
-        Ok(path) => super::lookup_file("city.mmdb", &std::fs::read(&path).expect("the BENCH_GEOIP database")),
-        Err(_) => super::lookup_file(
-            "city.mmdb",
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/src/lookup/test-data/test-city.mmdb"
-            )),
-        ),
-    };
     vec![
-        json!({"id": "geoip", "type": "mmdb", "path": geoip}),
-        file("networks", "networks.csv", &networks),
-        file("domains", "domains.csv", &domains),
-        file("patterns", "domain-patterns.csv", &patterns),
+        ("city.mmdb", city()),
+        ("networks.mmdb", networks()),
+        ("domains.csv", domains.into_bytes()),
+        ("domain-patterns.csv", patterns.into_bytes()),
+    ]
+}
+
+/// The tables over [`files`], each naming its file as `lookups/<name>`.
+pub fn tables() -> Vec<Value> {
+    let file =
+        |id: &str, name: &str| json!({"id": id, "type": "csv", "path": format!("lookups/{name}"), "delimiter": ","});
+    vec![
+        json!({"id": "geoip", "type": "mmdb", "path": "lookups/city.mmdb"}),
+        json!({"id": "networks", "type": "mmdb", "path": "lookups/networks.mmdb"}),
+        file("domains", "domains.csv"),
+        file("patterns", "domain-patterns.csv"),
     ]
 }
 
@@ -458,7 +503,7 @@ pub fn line(i: u64) -> String {
 
 /// What Suricata sends, each event type's object moved whole under
 /// `suricata.eve` so the ECS objects of the same names start empty.
-const EVE_OBJECTS: &[&str] = &[
+pub const EVE_OBJECTS: &[&str] = &[
     "alert",
     "flow",
     "tcp",
@@ -477,7 +522,7 @@ const EVE_OBJECTS: &[&str] = &[
     "host",
 ];
 
-fn steps() -> Vec<Value> {
+pub fn steps() -> Vec<Value> {
     let s = |n: &str| json!({"name": n, "type": "str"});
     let i = |n: &str| json!({"name": n, "type": "i64"});
     let open =
@@ -600,7 +645,7 @@ fn steps() -> Vec<Value> {
     };
     let network = |side: &str| {
         json!({"id": format!("{side}-network"), "type": "lookup", "input": format!("{side}.ip"), "table": "networks",
-        "matchKind": "cidr", "multiplicity": "best", "keyColumn": "network",
+        "matchKind": "cidr", "multiplicity": "best",
         "outputs": [
             {"source": "site", "field": format!("{side}.site")},
             {"source": "tier", "field": format!("{side}.network_tier")},
@@ -686,6 +731,9 @@ fn steps() -> Vec<Value> {
 }
 
 fn bundle() -> String {
+    for (name, contents) in files() {
+        super::lookup_file(name, &contents);
+    }
     super::bundle(steps(), tables())
 }
 

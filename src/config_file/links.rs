@@ -51,7 +51,8 @@ pub struct Connections {
 }
 
 impl Connections {
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.downstream.is_empty() && self.upstream.is_empty()
     }
 }

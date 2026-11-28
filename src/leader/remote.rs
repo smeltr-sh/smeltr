@@ -2556,7 +2556,7 @@ mod tests {
     fn a_save_made_while_approve_pushes_keeps_its_branch() {
         let host = Host::start("approve-save-host");
         let (repo, remote) = approving(&host, "approve-save");
-        let squash = git::squash_change(data_dir(&repo), "al/more", &Actor::system()).unwrap();
+        let squash = git::squash_change_from(data_dir(&repo), "al/more", None, &Actor::system()).unwrap();
         let saved = save(
             &repo,
             "al/more",

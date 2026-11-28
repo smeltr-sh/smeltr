@@ -369,7 +369,8 @@ impl Sessions {
         before - held.entries.len()
     }
 
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.0.lock().entries.len()
     }
 
@@ -384,7 +385,8 @@ impl Sessions {
         self.0.lock().lifetimes = lifetimes;
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 

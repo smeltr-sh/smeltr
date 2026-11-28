@@ -270,7 +270,6 @@ pub struct UserRecord {
 /// the work factor leaves every stored hash verifiable and rehashing is a decision taken per login.
 pub struct LocalCredentialRecord {
     pub(crate) user_id: String,
-    pub username: String,
     pub(crate) password_hash: String,
     /// The account's generation as of this hash. Read with it rather than after it, so a verifier and the
     /// generation a session would quote for it cannot come from either side of a reset.

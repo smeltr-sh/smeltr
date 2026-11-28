@@ -59,7 +59,7 @@ pub fn validation_errors(file: FileConfig) -> Vec<ValidationError> {
 
 /// `validation_errors` for a bundle read from a directory, so a relative lookup path resolves.
 pub fn validation_errors_at(file: FileConfig, declared_at: &DeclaredAt) -> Vec<ValidationError> {
-    match super::validate_at(file, declared_at) {
+    match super::validate(file, declared_at) {
         Ok(_) => Vec::new(),
         Err(LoadError::Validation(errs)) => errs,
         Err(e) => vec![e.to_string().into()],

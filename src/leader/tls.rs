@@ -1608,14 +1608,6 @@ pub fn cut_over_is_possible(dir: &Path) -> Result<(), Refused> {
     }
 }
 
-/// Whether the open rotation can still reach a cutover -- there is one, and nothing standing in its way.
-///
-/// What tells a rotation under way from one that is stuck, for a warning that would otherwise stay silent on the
-/// grounds that an answer is already coming.
-pub fn rotation_can_finish(dir: &Path) -> bool {
-    matches!(rotation(dir), Ok(Some(_))) && cut_over_is_possible(dir).is_ok()
-}
-
 /// Refuses while a replacement of what is served is on its way to the socket ([`reload_pending`]).
 ///
 /// A rotation is a promise carried on the heartbeat, and [`leader::authority_to_hand`] withholds the bundle for
@@ -3634,7 +3626,6 @@ pub(crate) mod tests {
 
         let state = begin_rotation(&dir, A_DECADE, A_WEEK_OUT, NOW).expect("a rotation");
         assert!(cut_over_is_possible(&dir).is_ok(), "an open rotation is cuttable");
-        assert!(rotation_can_finish(&dir), "an open rotation reads as stuck");
         cut_over(&dir, names(), A_YEAR).expect("and so it cuts over");
         assert_eq!(signing(&dir), state.incoming);
 
@@ -3647,10 +3638,6 @@ pub(crate) mod tests {
             preflight.message(),
             attempted,
             "the preflight and the act give different reasons"
-        );
-        assert!(
-            !rotation_can_finish(&dir),
-            "a rotation that cannot cut over reads as under way"
         );
     }
 
@@ -3675,7 +3662,10 @@ pub(crate) mod tests {
     fn a_rotation_whose_incoming_key_is_gone_is_stuck_rather_than_under_way() {
         let dir = rotating("key-gone");
         begin_rotation(&dir, A_DECADE, A_WEEK_OUT, NOW).expect("a rotation");
-        assert!(rotation_can_finish(&dir), "an untouched rotation reads as stuck");
+        assert!(
+            cut_over_is_possible(&dir).is_ok(),
+            "an untouched rotation reads as stuck"
+        );
 
         std::fs::remove_file(dir.join(NEXT_CA_KEY)).expect("the incoming key");
         assert!(
@@ -3683,7 +3673,7 @@ pub(crate) mod tests {
             "a cutover ran without the key that signs"
         );
         assert!(
-            !rotation_can_finish(&dir),
+            cut_over_is_possible(&dir).is_err(),
             "a rotation that can never cut over still silences the aging warning"
         );
     }

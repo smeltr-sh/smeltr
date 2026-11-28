@@ -348,16 +348,6 @@ fn reclaim_recurses_into_struct_fields() {
     c.reclaim(&mut p);
 }
 
-#[test]
-fn set_all_null_returns_buffers_and_keeps_the_type() {
-    let mut p = pool();
-    let mut c = Column::alloc(&mut p, &DataType::I64, 8);
-    c.set_all_null(&mut p);
-    assert!(c.is_unbound());
-    assert!(c.has_nulls());
-    assert_eq!(c.data_type(), DataType::I64);
-}
-
 // --- StrBuilder -------------------------------------------------------
 
 #[test]

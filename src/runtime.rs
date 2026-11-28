@@ -4834,7 +4834,7 @@ mod tests {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut reader = Reader::new(
             SourceId::new(7),
-            Box::new(crate::io::fake::FakeSource::new((0..3).map(record))),
+            Box::new(crate::fake::FakeSource::new((0..3).map(record))),
             vec![],
             MAX_IN_FLIGHT,
             MetricsHandle::new(registry.clone(), "reader-7"),

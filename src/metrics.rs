@@ -201,7 +201,8 @@ impl Metrics {
     /// process exists to stop. What is left behind is a thread the new deployment has no counterpart for: a reader
     /// for a source that was deleted, a pool thread past a lowered `thread_limit`. Their series would otherwise
     /// report on every heartbeat forever.
-    pub fn retire_threads_except(&self, live: &[&str]) -> usize {
+    #[cfg(test)]
+    pub(crate) fn retire_threads_except(&self, live: &[&str]) -> usize {
         let live: std::collections::HashSet<&str> = live.iter().copied().collect();
         let orphan = |key: &MetricKey| {
             key.labels
@@ -247,7 +248,8 @@ impl Metrics {
     }
 
     /// [`Metrics::take_delta`] over what this process mirrors rather than what it recorded.
-    pub fn take_mirrored_delta(&self, cursor: &mut Cursor) -> Vec<MetricSample> {
+    #[cfg(test)]
+    pub(crate) fn take_mirrored_delta(&self, cursor: &mut Cursor) -> Vec<MetricSample> {
         let out = delta(&self.mirrored.lock(), Some(cursor));
         advance(cursor, &out);
         out

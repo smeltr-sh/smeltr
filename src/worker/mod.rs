@@ -1720,8 +1720,8 @@ fn resolve_subject_labels(metrics: &mut [crate::heartbeat::MetricSampleDto], sub
     }
 }
 
-/// The same grouping [`heartbeat::split_by_thread`] does, for samples that arrived over a pipe rather than from a
-/// registry: a runtime's own counters are already DTOs by the time this process sees them.
+/// Samples grouped by their `thread` label, for samples that arrived over a pipe rather than from a registry: a
+/// runtime's own counters are already DTOs by the time this process sees them.
 fn split_dtos_by_thread(
     samples: &[crate::heartbeat::MetricSampleDto],
 ) -> std::collections::HashMap<String, Vec<crate::heartbeat::MetricSampleDto>> {

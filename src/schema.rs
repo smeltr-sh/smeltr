@@ -204,12 +204,7 @@ pub enum Misfit {
     Recommended,
 }
 
-impl Misfit {
-    /// Whether the record breaks the schema by it.
-    pub fn breaks(&self) -> bool {
-        *self != Misfit::Recommended
-    }
-}
+impl Misfit {}
 
 impl Finding {
     /// The field's path as the pipeline editor shows it.

@@ -49,7 +49,8 @@ pub struct Matched<'m, 't> {
 
 impl<'t> Matched<'_, 't> {
     /// A named capture's text, or `None` where the group did not participate.
-    pub fn name(&self, name: &str) -> Option<&'t str> {
+    #[cfg(test)]
+    pub(crate) fn name(&self, name: &str) -> Option<&'t str> {
         match self.tail {
             Some((tail, text)) if tail == name => Some(text),
             _ => self.caps.name(name).map(|m| m.as_str()),
