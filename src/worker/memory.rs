@@ -388,7 +388,7 @@ pub(super) fn queue_charge(kind: &DestinationKind) -> usize {
     }
 }
 
-/// What the Kafka sources being fitted hold of their `fetchBytes`, and what their clients hold whatever it is.
+/// What the Kafka sources being fitted hold of their `fetchBytes`, and what their clients hold whatever `fetchBytes` is.
 struct FetchClaims {
     /// Each source's claim, in the order given.
     claims: Vec<Claim>,

@@ -886,8 +886,8 @@ struct Expansion {
     unnamed: crate::logs::Relog,
 }
 
-/// The most a decompressed buffer holds for each four bytes of records in it: librdkafka grows it by three quarters at
-/// a time, so up to three quarters of it can be slack.
+/// The bytes a decompressed buffer can hold for each four bytes of records in it: librdkafka grows it by three quarters
+/// of its size at a time, so it can hold three quarters more than its records, seven quarters in all.
 const DECOMPRESS_SLACK_QUARTERS: usize = 7;
 
 /// The least received between two weighings: under it, a few records' framing would outweigh what they hold.
