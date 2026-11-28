@@ -82,9 +82,9 @@ const ZSTD_WINDOW: u64 = 1 << 27;
 /// What a decoder holds at most: zstd's at its largest window.
 const LARGEST_DECODER: u64 = ZSTD_WINDOW + ZSTD_DECODER;
 
-/// What the object being read holds at most: its chunk, its queue, its decoder at its largest, and a record as long as
-/// the longest, with the push that ends it, twice over: in its framer and framed. Held for it above the room, so it is
-/// read whatever the objects fetched ahead hold.
+/// What the object being read holds at most: its chunk, its queue, its decoder at its largest, and, twice over, a record
+/// as long as the longest with the push that ends it: once in its framer and once framed. Held for it above the room, so
+/// it is read whatever the objects fetched ahead hold.
 const READING: u64 = CHUNK + QUEUED + LARGEST_DECODER + 2 * (MAX_RECORD_BYTES + READ_AHEAD as u64);
 
 /// The most an object source holds beyond its lane: the room, and what the object being read holds.
@@ -1017,8 +1017,8 @@ fn fetch(
     }
 }
 
-/// Cuts `lines` into records with `framer`, sending each block's as it is cut, what it holds taken of `shared`'s
-/// holdings first. Err says why the object is unreadable: a record the framer refuses, one over the longest, or one the
+/// Frames `lines` into records with `framer`, sending each block's records as they are framed, and first taking what
+/// they hold of `shared`'s holdings. Err says why the object is unreadable: a record the framer refuses, one over the longest, or one the
 /// object ends partway through.
 fn frames(
     lines: &mut dyn BufRead,
@@ -1196,10 +1196,10 @@ impl Shared {
     }
 
     /// Takes `bytes` more of the holdings, waiting on `runtime` until they fit: while its object is fetched ahead, in
-    /// the room; once it is the one read, of the reserve too, which holds what it holds at most. Err once its reader is
-    /// gone.
+    /// the room; once it is the one read, of the reserve too, which is sized for what that object holds at most
+    /// ([`READING`]). Err once its reader is gone.
     fn hold(&self, bytes: u64, runtime: &tokio::runtime::Runtime) -> Result<(), String> {
-        // What no memory holds never fits.
+        // More than the room and the reserve could ever hold never fits.
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
         loop {
             let mut freed = std::pin::pin!(self.holdings.freed.notified());

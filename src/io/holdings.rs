@@ -32,7 +32,7 @@ struct Account {
     turn: bool,
 }
 
-/// Bytes taken of a receiver's holdings: those it shares, and those of its reserve.
+/// Bytes taken of a source's holdings: those it shares, and those of its reserve.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Counted {
     shared: usize,
@@ -64,7 +64,7 @@ impl Counted {
 }
 
 impl Default for Holdings {
-    /// A receiver alone: no pool and no reserve, held to its ceiling.
+    /// A source alone: no pool and no reserve, held to its ceiling.
     fn default() -> Holdings {
         Holdings::reserving(0, None)
     }
@@ -77,7 +77,7 @@ impl Holdings {
         Holdings {
             account: Mutex::new(Account::default()),
             reserve,
-            // A receiver buffers into the memory its worker gives it: the pool is sized to that.
+            // A source buffers into the memory its worker gives it: the pool is sized to that.
             ceiling: pool.as_ref().map_or(INBOX_BYTES, |p| p.limit()),
             lender: pool.as_ref().map_or(0, |p| p.lender()),
             pool,
@@ -178,8 +178,8 @@ impl Holdings {
         self.full.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Waits for `room` or `freed`, enabled before the caller looked. Another receiver giving back to the pool wakes
-    /// neither, so a receiver borrowing looks again after a while.
+    /// Waits for `room` or `freed`, enabled before the caller looked. Another source giving back to the pool wakes
+    /// neither, so a source borrowing looks again after a while.
     pub(super) async fn wait(
         &self,
         room: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
@@ -193,5 +193,5 @@ impl Holdings {
     }
 }
 
-/// How often a receiver waiting on the pool looks again.
+/// How often a source waiting on the pool looks again.
 const POOL_LOOK: Duration = Duration::from_millis(100);

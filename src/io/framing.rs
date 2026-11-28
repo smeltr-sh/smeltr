@@ -291,7 +291,7 @@ impl Framer {
         }
     }
 
-    /// How many bytes it holds that frames are cut from: the most the frames it cuts next hold.
+    /// How many bytes it holds that frames come from: the most the frames its next push completes can hold.
     pub(super) fn held(&self) -> usize {
         self.held.len() - self.cut
     }
