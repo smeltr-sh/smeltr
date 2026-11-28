@@ -1230,12 +1230,17 @@ impl Transform {
                 return Ok(HandOff::Parked);
             }
             match self.destinations[i].destination.send(id, Cow::Owned(these)) {
-                // Room taken since it was asked: the rows are gone, so the batch runs again once there is room. A
-                // destination earlier in this loop may already hold it, and the re-run duplicates there --
-                // at-least-once, as specified.
-                Ok((Dispatched::NoRoom { bytes }, _)) => {
+                // Room taken since `has_room` was asked: the rows come back and wait for room as above. Running the
+                // pipelines again would cost a batch's transform each time two threads race for the same room.
+                Ok((Dispatched::NoRoom { bytes, rows: these }, _)) => {
+                    rows.insert(dest_id, these);
+                    let processed = (!unprocessable).then(|| Processed {
+                        dests: dests[at..].to_vec(),
+                        rows,
+                        outcomes,
+                    });
                     let waiting = Waiting { bytes, ..waiting };
-                    self.lanes[lane].park_waiting(id, records, waiting, unprocessable, None);
+                    self.lanes[lane].park_waiting(id, records, waiting, unprocessable, processed);
                     return Ok(HandOff::Parked);
                 }
                 Ok((dispatched, refused)) => self.handed(lane, id, dest_id, dispatched, refused),
