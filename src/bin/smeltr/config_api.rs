@@ -2708,7 +2708,7 @@ mod tests {
             serde_json::json!({
                 "pipeline": null, "function": null, "step": null, "assignmentIndex": null,
                 "item": { "section": "destinations", "id": "archive" },
-                "field": "bucket", "rule": null,
+                "field": "bucket", "rule": null, "span": null,
                 "message": "destination \"archive\" names no bucket",
             })
         );

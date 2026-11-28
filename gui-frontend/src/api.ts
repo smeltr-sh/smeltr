@@ -4,6 +4,8 @@
 // is a framework rejection (a request body the handler could not deserialize).
 // Both surface as a thrown error.
 
+import type { ByteSpan } from './errorMarks';
+
 export interface ApiError {
   /** The pipeline this came from, by its id, where one is known. */
   pipeline: string | null;
@@ -25,6 +27,8 @@ export interface ApiError {
   /** The route's delivery rule `field` is a setting of, by its position in
    * the route's `deliver`. */
   rule: number | null;
+  /** The part of `field`'s text at fault, where the compiler places it. */
+  span: ByteSpan | null;
   message: string;
 }
 

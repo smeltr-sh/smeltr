@@ -310,6 +310,8 @@ pub struct ApiError {
     field: Option<&'static str>,
     /// The route's delivery rule, by its position, when `field` is one of its settings. See `CompileError::rule`.
     rule: Option<u32>,
+    /// The part of `field`'s text at fault, in bytes. See `CompileError::span`.
+    span: Option<crate::expr::ast::Span>,
     pub message: String,
 }
 
@@ -323,6 +325,7 @@ impl ApiError {
             item: None,
             field: None,
             rule: None,
+            span: None,
             message: message.into(),
         }
     }
@@ -338,6 +341,7 @@ impl ApiError {
             item: e.item.clone().map(Box::new),
             field: e.field,
             rule: e.rule,
+            span: e.span,
             message: e.message.clone(),
         }
     }
@@ -351,8 +355,9 @@ impl ApiError {
             step,
             assignment_index: e.assignment_index,
             item: None,
-            field: None,
+            field: e.field,
             rule: None,
+            span: e.span,
             message: e.message.clone(),
         }
     }

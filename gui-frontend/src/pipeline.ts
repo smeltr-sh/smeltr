@@ -5,6 +5,7 @@
 // loader accepts, tag for tag.
 
 import type { OnboardProposal } from './api';
+import type { ByteSpan } from './errorMarks';
 import type { PipelineNames } from './pipelineNames';
 
 /** A field's declared type. `object` is a `Struct` and `arrayOfObjects` is
@@ -1142,10 +1143,12 @@ export interface PreviewError {
   step: string | null;
   function: number | null;
   assignmentIndex: number | null;
-  /** Which of the assignment's two boxes, `target` or `expr`, where the
-   * bundle's validation names one. A compile error names none: it is the
-   * expression's. */
+  /** The step's setting this is about, by its name in the file: one of the
+   * assignment's two boxes, `target` or `expr`, or `filter`, `condition` or
+   * `body`. */
   field?: string | null;
+  /** The part of `field`'s text at fault, where the compiler places it. */
+  span?: ByteSpan | null;
   message: string;
 }
 

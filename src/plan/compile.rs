@@ -33,6 +33,16 @@ use crate::plan::resolve::{
 use crate::plan::topology::{Placement, SourceMeta};
 use crate::plan::tree::{self, Node, Object, Place};
 
+/// The setting of a step of `kind` that holds the code the author wrote, by its name in the file.
+fn text_field(kind: &FunctionKind) -> Option<&'static str> {
+    match kind {
+        FunctionKind::Code { .. } => Some("body"),
+        FunctionKind::Eval { .. } => Some("expr"),
+        FunctionKind::Drop { .. } => Some("condition"),
+        _ => None,
+    }
+}
+
 /// The error for a declaration of `name`, a local.
 fn local_declared(name: &str) -> String {
     format!("`{name}` is a local; its type is its value's")
@@ -41,7 +51,7 @@ fn local_declared(name: &str) -> String {
 /// Parse an expression's source, the error naming the step it belongs to.
 pub fn parse(src: &str, fid: Option<FunctionId>) -> Result<Expr, CompileError> {
     crate::expr::parse::parse_expr(src)
-        .map_err(|e| CompileError::new(fid, format!("parse error in `{src}`: {}", e.message)))
+        .map_err(|e| CompileError::new(fid, format!("parse error in `{src}`: {}", e.message)).at(Some(e.span)))
 }
 
 /// The places the runtime fills, in slot order: `core::batch`'s prefix, the record's entries, then the source's
@@ -1298,6 +1308,13 @@ impl Compiler<'_> {
     fn attribute_to_assignment(&mut self, before: usize, index: usize) {
         for e in &mut self.errors[before..] {
             e.assignment_index = Some(index as u32);
+        }
+    }
+
+    /// Gives `field` as the setting of every error recorded since `before` that names none yet.
+    fn in_field(&mut self, before: usize, field: &'static str) {
+        for e in &mut self.errors[before..] {
+            e.field.get_or_insert(field);
         }
     }
 
@@ -4511,10 +4528,10 @@ impl Compiler<'_> {
             });
             match step {
                 Step::If { id, cond, then, else_ } => {
-                    let Some(cond_ir) = self.expr(cond, *id) else {
-                        continue;
-                    };
-                    let Some(cond_ir) = self.condition(cond_ir, "an `if` condition", *id) else {
+                    let before = self.errors.len();
+                    let cond_ir = (self.expr(cond, *id)).and_then(|ir| self.condition(ir, "an `if` condition", *id));
+                    self.in_field(before, "condition");
+                    let Some(cond_ir) = cond_ir else {
                         continue;
                     };
                     self.note_constant(&cond_ir, cond, *id);
@@ -4534,9 +4551,17 @@ impl Compiler<'_> {
                         continue;
                     }
                     let mut every_row = f.filter.is_none();
-                    let effective = match &f.filter {
+                    let before = self.errors.len();
+                    let filter = (f.filter.as_ref()).map(|src| {
+                        (
+                            src,
+                            self.expr(src, f.id).and_then(|ir| self.condition(ir, "a filter", f.id)),
+                        )
+                    });
+                    self.in_field(before, "filter");
+                    let effective = match filter {
                         None => guard,
-                        Some(src) => match self.expr(src, f.id).and_then(|ir| self.condition(ir, "a filter", f.id)) {
+                        Some((src, filter)) => match filter {
                             // A filter of `true` is the field's own placeholder: every row, as no filter is.
                             Some(ir) if matches!(ir.kind, IrKind::Literal(Value::Bool(true))) => {
                                 every_row = true;
@@ -4551,6 +4576,7 @@ impl Compiler<'_> {
                     };
                     // A filter is an `if` around the step, so a name the step first writes is declared ahead of it
                     // from the record's key, and the rows the filter skips keep the key.
+                    let before = self.errors.len();
                     if every_row {
                         self.function(
                             &f.kind,
@@ -4571,6 +4597,9 @@ impl Compiler<'_> {
                                 guard,
                             )
                         });
+                    }
+                    if let Some(field) = text_field(&f.kind) {
+                        self.in_field(before, field);
                     }
                 }
             }
@@ -4620,7 +4649,10 @@ impl Compiler<'_> {
                         }
                         self.code(&stmts, here)
                     }
-                    Err(e) => self.err(Some(id), format!("parse error in code block: {}", e.message)),
+                    Err(e) => (self.errors).push(
+                        CompileError::new(Some(id), format!("parse error in code block: {}", e.message))
+                            .at(Some(e.span)),
+                    ),
                 }
                 return;
             }
@@ -4685,7 +4717,7 @@ impl Compiler<'_> {
         let Here { id, .. } = here;
         match crate::expr::inline::expand(stmts) {
             Ok(stmts) => self.settle(|c| c.code_block(&stmts, here)),
-            Err(e) => self.err(Some(id), e.message),
+            Err(e) => self.errors.push(CompileError::new(Some(id), e.message).at(e.span)),
         }
     }
 
@@ -5327,6 +5359,34 @@ mod tests {
         let errs = compile(&p, &SourceMeta::NONE).unwrap_err();
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].assignment_index, Some(1));
+    }
+
+    /// A parse error names the setting its text is in and the part of that text at fault, so the editor can
+    /// underline it.
+    #[test]
+    fn a_parse_error_names_its_setting_and_the_text_at_fault() {
+        let only = |p: &PipelineConfig| {
+            let errs = compile(p, &SourceMeta::NONE).unwrap_err();
+            assert_eq!(errs.len(), 1, "{errs:?}");
+            let e = errs[0].clone();
+            (e.field, e.span.map(|s| (s.start, s.end)))
+        };
+        let body = "x = 1;\ny = (2;";
+        let (field, span) = only(&code_pipeline(body));
+        assert_eq!(field, Some("body"));
+        let (start, end) = span.expect("a parse error has a span");
+        assert!(start >= 7 && end as usize <= body.len(), "{start}..{end} in {body:?}");
+
+        let (field, span) = only(&eval_pipeline(&[("good", "1"), ("bad", "1 +")]));
+        assert_eq!(field, Some("expr"));
+        assert!(span.is_some_and(|(_, end)| end <= 3), "{span:?}");
+
+        let mut filtered = code_pipeline("x = 1;");
+        let Step::Function(f) = &mut filtered.body[0] else {
+            unreachable!("code_pipeline holds one function")
+        };
+        f.filter = Some("x ==".into());
+        assert_eq!(only(&filtered).0, Some("filter"));
     }
 
     /// Two assignments can share a target -- `Eval` clobbers-always, so a reassignment is ordinary -- and only one

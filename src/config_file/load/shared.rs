@@ -48,6 +48,8 @@ pub struct ValidationError {
     pub field: Option<&'static str>,
     /// The route's delivery rule this is about, by its position in the route's `deliver`. See `CompileError::rule`.
     pub rule: Option<u32>,
+    /// The part of `field`'s text at fault. See `CompileError::span`.
+    pub span: Option<crate::expr::ast::Span>,
     pub message: String,
 }
 
@@ -61,6 +63,7 @@ impl From<String> for ValidationError {
             item: None,
             field: None,
             rule: None,
+            span: None,
             message,
         }
     }

@@ -218,8 +218,13 @@ impl LoadedSystem {
                 section: "routes",
                 id: r.id.clone(),
             }),
-            field: route.map(|_| if e.rule.is_some() { "deliver.when" } else { "condition" }),
+            field: match route {
+                Some(_) if e.rule.is_some() => Some("deliver.when"),
+                Some(_) => Some("condition"),
+                None => e.field,
+            },
             rule: route.and(e.rule),
+            span: e.span,
             ..load::ValidationError::from(message)
         }
     }
@@ -767,7 +772,9 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.pipeline.as_deref() == Some("second")
                 && e.function == Some(FunctionId::new(1))
-                && e.step.as_deref() == Some("e2")),
+                && e.step.as_deref() == Some("e2")
+                && e.field == Some("expr")
+                && e.span.is_some()),
             "{errors:?}"
         );
     }
