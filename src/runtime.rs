@@ -37,7 +37,9 @@ use crate::plan::compile::Plan;
 use crate::plan::config::{Answer, Payload};
 use crate::plan::exec;
 use crate::plan::output::{RaisedIn, answer_rows, tag_column, tag_or_not};
-use crate::plan::topology::{CompiledRoute, CompiledTopology, DecodedBatch, Placement, SourceMeta, route_masks};
+use crate::plan::topology::{
+    CompiledRoute, CompiledTopology, DecodedBatch, Placement, SOURCE_BYTES, SourceMeta, route_masks,
+};
 
 /// The block reason for a destination that stopped taking records. The cause is quoted: a missing topic, an unreachable
 /// broker and a full queue are three different fixes.
@@ -1767,7 +1769,15 @@ impl Transform {
                     (Some(streams), Some(name)) if took_rows => streams.sender_fields(name, plan),
                     _ => Vec::new(),
                 };
-                let last = masks.peek().is_none() && bits::popcount(&taken) == slice.len();
+                // `place_unmatched` reads `decoded` after the last route, when there are rows it delivers.
+                let unmatched_read = bits::popcount(&taken) < slice.len()
+                    && !self
+                        .topology
+                        .on_exception
+                        .answer(&ExceptionKind::Unmatched)
+                        .targets()
+                        .is_empty();
+                let last = masks.peek().is_none() && !unmatched_read;
                 let docs = buffer::catch_over_budget(|| {
                     run_and_encode(
                         plan,
@@ -1848,7 +1858,12 @@ impl Transform {
                         captures.offer_sent(&at_destinations[tap.at], rows);
                     }
                 }
-                self.place_rows(out, docs, route_idx, &lane.meta, &decoded, &mut delivered);
+                let arrived = Arrived {
+                    meta: &lane.meta,
+                    records: slice,
+                    decoded: Some(&decoded),
+                };
+                self.place_rows(out, docs, route_idx, &arrived, &mut delivered);
                 out.outcomes.drop_rows(DROPPED_EXCEPTION, dropped);
                 out.outcomes.no_rule += no_rule;
                 out.outcomes.drop_rows(DROPPED_UNMATCHED, no_rule_dropped);
@@ -1966,7 +1981,12 @@ impl Transform {
             return;
         }
         let left: Vec<usize> = (0..slice.len()).filter(|i| !bits::get_row(taken, *i)).collect();
-        self.place_delivered(out, targets, decoded, &left, lane, DROPPED_UNMATCHED);
+        let arrived = Arrived {
+            meta: &lane.meta,
+            records: slice,
+            decoded: Some(decoded),
+        };
+        self.place_delivered(out, targets, &arrived, &left, lane, DROPPED_UNMATCHED);
     }
 
     /// Put every row in `docs`, which route `route` made, in `out`, once for each destination its set names, in that
@@ -1977,8 +1997,7 @@ impl Transform {
         out: &mut Output,
         docs: Encoded,
         route: usize,
-        meta: &SourceMeta,
-        decoded: &DecodedBatch,
+        arrived: &Arrived,
         delivered: &mut HashSet<(u32, DestId)>,
     ) {
         // Destination id -> position in `destinations`, so the per-row loop visits only the destinations a row goes
@@ -2039,7 +2058,7 @@ impl Transform {
                 let mut field_bytes = |field| {
                     source_bytes_of
                         .entry((origin, field))
-                        .or_insert_with(|| decoded.field_bytes(meta, origin, field).map(Into::into))
+                        .or_insert_with(|| arrived.bytes(origin, field).map(Into::into))
                         .clone()
                 };
                 let kept: Vec<(Payload, Arc<[u8]>)> = kept_at[slot]
@@ -2232,22 +2251,37 @@ impl Transform {
         Ok(rows)
     }
 
-    /// Puts `records`, a batch no pipeline finished, in `out` for `targets` as they arrived, decoding them here.
+    /// Puts `records`, a batch no pipeline finished, in `out` for `targets` as they arrived. They are decoded here only
+    /// for a form that reads the decoded record, and outside the memory budget: a record here may be one that does not
+    /// decode within it, and its form is what the destination it goes to is for.
     fn place_arrived(&self, out: &mut Output, targets: &[DestId], records: &[SourceRecord], lane: &Lane) {
+        let decodes = |p: &Payload| !matches!(p, Payload::Bytes { field } if **field == *SOURCE_BYTES);
+        let read = targets
+            .iter()
+            .any(|&to| decodes(&self.topology.payload(to)) || self.kept(to).iter().any(decodes));
         let mut pool = BufferPool::new();
-        let decoded = lane.meta.decode(
-            records,
-            None::<&[&str]>,
-            lane.writers.as_ref(),
-            lane.source_name.as_deref(),
-            &mut pool,
-        );
+        let decoded = read.then(|| {
+            lane.meta.decode(
+                records,
+                None::<&[&str]>,
+                lane.writers.as_ref(),
+                lane.source_name.as_deref(),
+                &mut pool,
+            )
+        });
         let rows: Vec<usize> = (0..records.len()).collect();
-        self.place_delivered(out, targets, &decoded, &rows, lane, DROPPED_UNPROCESSABLE);
-        decoded.batch.reclaim(&mut pool);
+        let arrived = Arrived {
+            meta: &lane.meta,
+            records,
+            decoded: decoded.as_ref(),
+        };
+        self.place_delivered(out, targets, &arrived, &rows, lane, DROPPED_UNPROCESSABLE);
+        if let Some(decoded) = decoded {
+            decoded.batch.reclaim(&mut pool);
+        }
     }
 
-    /// Puts `rows` of `decoded` in `out` for each of `targets`, each in that destination's form (`source_form`): rows
+    /// Puts `rows` of `arrived` in `out` for each of `targets`, each in that destination's form (`Arrived::form`): rows
     /// no route or pipeline answered for, unmatched or unprocessable. They count as sent at hand-off, like any row; a
     /// destination that refuses one answers as it does for any row.
     ///
@@ -2257,12 +2291,12 @@ impl Transform {
         &self,
         out: &mut Output,
         targets: &[DestId],
-        decoded: &DecodedBatch,
+        arrived: &Arrived,
         rows: &[usize],
         lane: &Lane,
         dropped: &'static str,
     ) {
-        let text = decoded.raw(&lane.meta);
+        let text = arrived.decoded.map(|decoded| decoded.raw(&lane.meta));
         // The record no pipeline ran on, `{_raw: str}`, as columns: cut once, for every target that reads them. Only a
         // payload source's record has that type; a typed record gets no columns, so a Parquet target refuses it.
         let mut raw: Option<Arc<Chunk>> = None;
@@ -2277,14 +2311,14 @@ impl Transform {
             let fields = self.topology.text_fields();
             let columns = self.columnar.route(None, &self.topology, &fields);
             let chunk = match (columns.reads(&[to], &self.topology.dlq_of).columns, columns.schema) {
-                (true, Some(schema)) if raw_record => Some(
+                (true, Some(schema)) if raw_record => text.as_ref().map(|text| {
                     raw.get_or_insert_with(|| Arc::new(Chunk::raw(schema, rows.iter().map(|&row| text[row]))))
-                        .clone(),
-                ),
+                        .clone()
+                }),
                 _ => None,
             };
             for (i, &row) in rows.iter().enumerate() {
-                let (value, unfit) = match source_form(&payload, &lane.meta, decoded, row) {
+                let (value, unfit) = match arrived.form(&payload, row) {
                     Some(value) => (value, None),
                     None => (Vec::new(), Some(crate::io::no_form(&payload))),
                 };
@@ -2296,7 +2330,7 @@ impl Transform {
                         unfit,
                         kept: kept
                             .iter()
-                            .filter_map(|p| Some((p.clone(), source_form(p, &lane.meta, decoded, row)?.into())))
+                            .filter_map(|p| Some((p.clone(), arrived.form(p, row)?.into())))
                             .collect(),
                         columns: chunk.clone().map(|chunk| Columns { chunk, row: i as u32 }),
                         ..OwnedRecord::default()
@@ -3010,14 +3044,33 @@ struct Senders<'a> {
     first: usize,
 }
 
-/// Row `row` of `decoded` in the form `payload` names, for a row no pipeline made: the record as it arrived, the
-/// document a pipeline with no steps would write for it, or one of that document's fields. `None` for a field the
-/// record does not have.
-fn source_form(payload: &Payload, meta: &SourceMeta, decoded: &DecodedBatch, row: usize) -> Option<Vec<u8>> {
-    match payload {
-        Payload::Bytes { field } => decoded.field_bytes(meta, row, field),
-        Payload::Record => Some(decoded.record_json(meta, row)),
-        Payload::Text { field } => decoded.record_text(meta, row, field),
+/// Records as they arrived, and the batch decoding made of them: what a row no pipeline made is written from, in each
+/// destination's form. `decoded` is `None` for records not decoded; they have only their `__source.bytes` to write.
+struct Arrived<'a> {
+    meta: &'a SourceMeta,
+    records: &'a [SourceRecord],
+    decoded: Option<&'a DecodedBatch>,
+}
+
+impl Arrived<'_> {
+    /// Row `row` in the form `payload` names: the record as it arrived, the document a pipeline with no steps would
+    /// write for it, or one of that document's fields. `None` for a field the record does not have.
+    fn form(&self, payload: &Payload, row: usize) -> Option<Vec<u8>> {
+        match (payload, self.decoded) {
+            (Payload::Bytes { field }, _) => self.bytes(row, field),
+            (_, None) => None,
+            (Payload::Record, Some(decoded)) => Some(decoded.record_json(self.meta, row)),
+            (Payload::Text { field }, Some(decoded)) => decoded.record_text(self.meta, row, field),
+        }
+    }
+
+    /// What a destination writing `field`'s bytes takes of row `row`: its `__source.bytes`, read off its record as
+    /// the source read it, or a `bytes` field of its record.
+    fn bytes(&self, row: usize, field: &str) -> Option<Vec<u8>> {
+        if field == SOURCE_BYTES {
+            return self.meta.read_bytes(&self.records[row]).map(<[u8]>::to_vec);
+        }
+        self.decoded?.record_bytes(self.meta, row, field)
     }
 }
 
@@ -4383,7 +4436,15 @@ mod tests {
         let records = meta.read_table(&pasted_from(&[(&object, &fields)])).unwrap();
         let mut pool = BufferPool::new();
         let typed = meta.decode(&records, None::<&[&str]>, None, None, &mut pool);
-        let form = |payload: Payload| source_form(&payload, &meta, &typed, 0).map(|v| String::from_utf8(v).unwrap());
+        let form = |payload: Payload| {
+            Arrived {
+                meta: &meta,
+                records: &records,
+                decoded: Some(&typed),
+            }
+            .form(&payload, 0)
+            .map(|v| String::from_utf8(v).unwrap())
+        };
 
         assert_eq!(form(Payload::Record).as_deref(), Some(r#"{"id":7,"name":"a"}"#));
         assert_eq!(form(Payload::source_bytes()), None);
@@ -4395,9 +4456,16 @@ mod tests {
         );
 
         let bytes = crate::io::SourceRecord::read(crate::io::RecordChunk::of_bytes(b"line"), 0, &fields);
-        let line = SourceMeta::KAFKA.decode(&[bytes], None::<&[&str]>, None, None, &mut pool);
+        let bytes = [bytes];
+        let line = SourceMeta::KAFKA.decode(&bytes, None::<&[&str]>, None, None, &mut pool);
         let raw = |payload: Payload| {
-            source_form(&payload, &SourceMeta::KAFKA, &line, 0).map(|v| String::from_utf8(v).unwrap())
+            Arrived {
+                meta: &SourceMeta::KAFKA,
+                records: &bytes,
+                decoded: Some(&line),
+            }
+            .form(&payload, 0)
+            .map(|v| String::from_utf8(v).unwrap())
         };
         assert_eq!(raw(Payload::Record).as_deref(), Some(r#"{"_raw":"line"}"#));
         assert_eq!(raw(Payload::source_bytes()).as_deref(), Some("line"));

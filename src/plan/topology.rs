@@ -1104,9 +1104,10 @@ impl DecodedBatch {
             .filter(|field| wanted(*field))
             .map(|field| meta.source_slot(field));
         let slots: Vec<crate::core::id::SlotId> = record.chain(source).collect();
-        for &slot in &slots {
-            // A bytes column stays, for a destination that writes it as the source read it.
-            let column = if last && self.batch.peek(slot).data_type() != DataType::Bytes {
+        for (at, &slot) in slots.iter().enumerate() {
+            // A bytes field of the record stays, for a destination that writes it as the source read it.
+            let stays = at < meta.record_len() && self.batch.peek(slot).data_type() == DataType::Bytes;
+            let column = if last && !stays {
                 self.batch.take_dead(slot)
             } else {
                 self.batch.peek(slot).deep_copy(pool)
@@ -1141,16 +1142,12 @@ impl DecodedBatch {
         self.record(meta).text(field, row).map(String::into_bytes)
     }
 
-    /// What a destination writing `field`'s bytes takes of row `row`: its `__source.bytes`, or a `bytes` field of its
-    /// record. `None` for a null, or for a field the record does not have (loading refuses a destination that names
-    /// one, `check_bytes_fields`).
-    pub fn field_bytes(&self, meta: &SourceMeta, row: usize, field: &str) -> Option<Vec<u8>> {
-        let slot = if field == SOURCE_BYTES {
-            meta.source_slot(meta.source.iter().position(|(name, _)| *name == SOURCE_BYTES)?)
-        } else {
-            let bytes = |(entry, t): &(Entry, DataType)| entry.field() == Some(field) && *t == DataType::Bytes;
-            crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + meta.record.iter().position(bytes)?)
-        };
+    /// The bytes of row `row`'s field `field`, a `bytes` field of its record, as a destination writing that field's
+    /// bytes takes them. `None` for a null, or for a field the record does not have (loading refuses a destination
+    /// that names one, `check_bytes_fields`).
+    pub fn record_bytes(&self, meta: &SourceMeta, row: usize, field: &str) -> Option<Vec<u8>> {
+        let bytes = |(entry, t): &(Entry, DataType)| entry.field() == Some(field) && *t == DataType::Bytes;
+        let slot = crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + meta.record.iter().position(bytes)?);
         let column = self.batch.peek(slot);
         (column.is_valid(row)).then(|| column.varlen().expect("a bytes column").get(row).to_vec())
     }
@@ -4078,11 +4075,7 @@ mod tests {
         let one = std::slice::from_ref(&record);
         let decoded = SourceMeta::KAFKA.decode(one, None::<&[&str]>, None, None, &mut pool);
         assert_eq!(SourceMeta::KAFKA.read_bytes(&record), Some(&read[..]));
-        assert_eq!(
-            decoded.field_bytes(&SourceMeta::KAFKA, 0, SOURCE_BYTES),
-            Some(read.clone())
-        );
-        assert_eq!(decoded.field_bytes(&SourceMeta::KAFKA, 0, "_raw"), None);
+        assert_eq!(decoded.record_bytes(&SourceMeta::KAFKA, 0, "_raw"), None);
         decoded.batch.reclaim(&mut pool);
 
         let typed = SourceMeta::KAFKA
@@ -4091,8 +4084,7 @@ mod tests {
         assert_eq!(typed.read_bytes(&record), None);
         assert_eq!(typed.field_type(SOURCE_BYTES), None);
         let decoded = typed.decode(one, None::<&[&str]>, None, None, &mut pool);
-        assert_eq!(decoded.field_bytes(&typed, 0, SOURCE_BYTES), None);
-        assert_eq!(decoded.field_bytes(&typed, 0, "payload"), Some(read));
+        assert_eq!(decoded.record_bytes(&typed, 0, "payload"), Some(read));
         decoded.batch.reclaim(&mut pool);
     }
 
@@ -4185,7 +4177,7 @@ mod tests {
         assert_eq!(meta.record_json(&records[0]), b"{}");
         let decoded = meta.decode(&records, None::<&[&str]>, None, None, &mut pool);
         assert_eq!(decoded.record_text(&meta, 0, "_raw"), None);
-        assert_eq!(decoded.field_bytes(&meta, 0, SOURCE_BYTES), Some(read));
+        assert_eq!(meta.read_bytes(&records[0]), Some(&read[..]));
         decoded.batch.reclaim(&mut pool);
     }
 

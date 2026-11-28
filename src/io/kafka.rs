@@ -769,7 +769,7 @@ impl Source for KafkaSource {
                 }
                 // The registry is asked before the record leaves the inbox, so a registry that does not answer
                 // leaves it there to be read again.
-                let unasked = (self.avro.as_ref())
+                let unasked = (self.avro.as_mut())
                     .and_then(|a| a.unasked(state.inbox.front().expect("a front").bytes().unwrap_or_default()));
                 if let (Some(id), Some(avro)) = (unasked, self.avro.as_mut()) {
                     drop(state);
