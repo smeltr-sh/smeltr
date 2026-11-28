@@ -35,7 +35,7 @@ const ALLOWED: &[(&str, &str)] = &[
         "a path's quoted keys, read when a pipeline compiles",
     ),
     (
-        "src/plan/topology.rs",
+        "src/plan/topology/read.rs",
         "a stream's route condition, written once per onboarding proposal",
     ),
     (

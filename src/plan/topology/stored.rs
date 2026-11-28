@@ -2,6 +2,7 @@
 //! bound of rows, so `serde_json` holds them.
 
 use super::*;
+use crate::core::column::Column;
 
 impl SourceMeta {
     /// `record` as its record object: `{"_raw": text}`, `{}` for a source that decodes none, or a row's fields. A
