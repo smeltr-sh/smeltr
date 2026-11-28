@@ -11,7 +11,7 @@ use smeltr::core::id::{DestId, SourceId};
 use smeltr::io::SourceRecord;
 use smeltr::io::fake::{FakeDestination, FakeSource};
 use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
-use smeltr::plan::config::{Answer, PipelineConfig, Step};
+use smeltr::plan::config::{Answer, Payload, PipelineConfig, Step};
 use smeltr::plan::topology::{DeliverRule, RouteConfig, compile_topology};
 use smeltr::runtime::{DestinationTarget, Worker};
 
@@ -213,22 +213,32 @@ fn a_batch_that_does_not_fit_is_split_until_it_does() {
     assert!(budget.peak() <= limit, "the ceiling held: peaked at {}", budget.peak());
 }
 
-/// A record that will not fit alone leaves the pipeline alone, for where the deployment sends unprocessable rows.
-#[test]
-fn a_record_that_will_not_fit_alone_goes_where_unprocessable_rows_go_by_itself() {
+/// A worker whose one pipeline fans the third of its five records out past a 2 MiB budget, and whose unprocessable rows
+/// go to `dlq`, which writes `payload`.
+fn worker_with_a_record_that_will_not_fit(
+    dest: &FakeDestination,
+    dlq: &FakeDestination,
+    payload: Payload,
+) -> (Worker, Arc<Metrics>) {
     let budget = MemoryBudget::new(2 * 1024 * 1024);
     let mut records: Vec<SourceRecord> = (0..4).map(|i| record(r#"{"items":["a"]}"#, i)).collect();
     records.insert(2, fanning_record(50_000, 99));
     let src = FakeSource::new(records);
     let (mut w, registry) = worker(vec![catch_all(0)], vec![unrolling_pipeline(0)], &src, budget);
-    let dest = FakeDestination::new();
-    let dlq = FakeDestination::new();
-    w.add_destination(target(DestId::new(0), &dest));
-    w.add_destination(target(DestId::new(1), &dlq));
-    Arc::get_mut(&mut w.transform.topology)
-        .expect("a test worker's topology is its own")
-        .on_exception
-        .answers[ExceptionKind::Unprocessable.index()] = Answer::Deliver(vec![DestId::new(1)]);
+    w.add_destination(target(DestId::new(0), dest));
+    w.add_destination(target(DestId::new(1), dlq));
+    let topology = Arc::get_mut(&mut w.transform.topology).expect("a test worker's topology is its own");
+    topology.on_exception.answers[ExceptionKind::Unprocessable.index()] = Answer::Deliver(vec![DestId::new(1)]);
+    topology.payloads.insert(DestId::new(1), payload);
+    (w, registry)
+}
+
+/// A record that will not fit alone leaves the pipeline alone, for where the deployment sends unprocessable rows, as
+/// the source read it.
+#[test]
+fn a_record_that_will_not_fit_alone_goes_where_unprocessable_rows_go_by_itself() {
+    let (dest, dlq) = (FakeDestination::new(), FakeDestination::new());
+    let (mut w, registry) = worker_with_a_record_that_will_not_fit(&dest, &dlq, Payload::source_bytes());
 
     assert_eq!(tick(&mut w), 5, "every record committed");
 
@@ -237,12 +247,32 @@ fn a_record_that_will_not_fit_alone_goes_where_unprocessable_rows_go_by_itself()
         1,
         "exactly the one record that could not be split further"
     );
-    assert_eq!(dlq.sent().len(), 1, "and it went where unprocessable rows go");
+    let sent = dlq.sent();
+    assert_eq!(sent.len(), 1, "and it went where unprocessable rows go");
+    assert_eq!(
+        sent[0].value,
+        fanning_record(50_000, 99).bytes().expect("a payload record has bytes"),
+        "as the source read it"
+    );
     assert_eq!(
         dest.sent().len(),
         4,
         "the four records that fit were delivered, not punished for it"
     );
+}
+
+/// A record too big to decode within the budget even alone has no record to write: a DLQ that writes the record
+/// refuses it.
+#[test]
+fn a_record_too_big_to_decode_alone_is_refused_by_a_dlq_that_writes_the_record() {
+    let (dest, dlq) = (FakeDestination::new(), FakeDestination::new());
+    let (mut w, registry) = worker_with_a_record_that_will_not_fit(&dest, &dlq, Payload::Record);
+
+    assert_eq!(tick(&mut w), 5, "every record committed: the DLQ drops what it refuses");
+
+    assert!(dlq.sent().is_empty(), "the DLQ had no record to write");
+    assert_eq!(counter(&registry, "smeltr_rows_rejected_total"), 1, "and refused it");
+    assert_eq!(dest.sent().len(), 4, "the four records that fit were delivered");
 }
 
 /// Under block, a record that will not fit alone holds its whole batch until the config changes: nothing of it is
