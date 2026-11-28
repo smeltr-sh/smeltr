@@ -2257,41 +2257,43 @@ impl Transform {
         let read = targets
             .iter()
             .any(|&to| decodes(&self.topology.payload(to)) || self.kept(to).iter().any(decodes));
-        // Last in, first out: the first half is pushed last, so the ranges are placed in the batch's order.
-        let mut ranges = vec![0..records.len()];
-        while let Some(range) = ranges.pop() {
-            let records = &records[range.clone()];
-            let mut pool = BufferPool::with_budget(self.memory.clone());
-            let decoded = read.then(|| {
-                buffer::catch_over_budget(|| {
-                    lane.meta.decode(
-                        records,
-                        None::<&[&str]>,
-                        lane.writers.as_ref(),
-                        lane.source_name.as_deref(),
-                        &mut pool,
-                    )
-                })
-            });
-            let decoded = match decoded {
-                Some(Err(_)) if range.len() > 1 => {
-                    let mid = range.start + range.len() / 2;
-                    ranges.extend([mid..range.end, range.start..mid]);
-                    continue;
-                }
-                Some(Ok(decoded)) => Some(decoded),
-                Some(Err(_)) | None => None,
-            };
-            let rows: Vec<usize> = (0..decoded.as_ref().map_or(records.len(), DecodedBatch::rows)).collect();
-            let arrived = Arrived {
-                meta: &lane.meta,
-                records,
-                decoded: decoded.as_ref(),
-            };
-            self.place_delivered(out, targets, &arrived, &rows, lane, DROPPED_UNPROCESSABLE);
-            if let Some(decoded) = decoded {
-                decoded.batch.reclaim(&mut pool);
+        self.place_range(out, targets, records, lane, read);
+    }
+
+    /// `place_arrived` for `records`, decoded when `read` says a form needs it.
+    fn place_range(&self, out: &mut Output, targets: &[DestId], records: &[SourceRecord], lane: &Lane, read: bool) {
+        let mut pool = BufferPool::with_budget(self.memory.clone());
+        let decoded = read.then(|| {
+            buffer::catch_over_budget(|| {
+                lane.meta.decode(
+                    records,
+                    None::<&[&str]>,
+                    lane.writers.as_ref(),
+                    lane.source_name.as_deref(),
+                    &mut pool,
+                )
+            })
+        });
+        let decoded = match decoded {
+            Some(Err(_)) if records.len() > 1 => {
+                drop(pool);
+                let (first, second) = records.split_at(records.len() / 2);
+                self.place_range(out, targets, first, lane, read);
+                self.place_range(out, targets, second, lane, read);
+                return;
             }
+            Some(Ok(decoded)) => Some(decoded),
+            Some(Err(_)) | None => None,
+        };
+        let rows: Vec<usize> = (0..decoded.as_ref().map_or(records.len(), DecodedBatch::rows)).collect();
+        let arrived = Arrived {
+            meta: &lane.meta,
+            records,
+            decoded: decoded.as_ref(),
+        };
+        self.place_delivered(out, targets, &arrived, &rows, lane, DROPPED_UNPROCESSABLE);
+        if let Some(decoded) = decoded {
+            decoded.batch.reclaim(&mut pool);
         }
     }
 
