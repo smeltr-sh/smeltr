@@ -48,10 +48,11 @@
 //!
 //! | status | meaning |
 //! |---|---|
-//! | 2xx | landed |
-//! | 2xx to 2.0 naming nothing written | the destination stalls: the store takes 1.0 alone, reading 2.0 as empty |
+//! | 2xx | delivered |
+//! | 202 to 2.0 naming nothing written | delivered: the store took it and has not counted it yet |
+//! | other 2xx to 2.0 naming nothing written | the destination stalls: the store takes 1.0 alone, reading 2.0 as empty |
 //! | 429, 5xx | retried, backing off |
-//! | 400, 409, 413, 422 to 2.0 naming something written | landed; what it did not write counts as unwritten |
+//! | 400, 409, 413, 422 to 2.0 naming something written | delivered; what it did not write counts as unwritten |
 //! | 400, 409, 413, 422 | split until the row at fault is alone, which is refused |
 //! | 415 to 2.0 | the destination stalls: the store takes 1.0 alone |
 //! | anything else | the destination stalls, naming the status |
@@ -1257,10 +1258,13 @@ impl Protocol for RemoteWrite {
     fn read(&self, response: &Response, items: &[Self::Item]) -> Result<Outcome, IoError> {
         let count = items.len();
         match response.status {
-            // A 2.0 receiver names what it wrote, if only none. A 1.0 one that reads the request as 1.0's finds nothing
-            // in it and says nothing; Prometheus' own sender takes a 2xx that wrote nothing as a failure too.
+            // A 2.0 receiver names what it wrote, if only none, except in a 202, which says it has not counted yet. A
+            // 1.0 one that reads the request as 1.0's finds nothing in it and says nothing, so the 2.0 spec says a sender
+            // should take any other 2xx that names nothing as a 415, Unsupported Media Type.
             200..=299
-                if self.version == RemoteWriteVersion::V2 && !WRITTEN.iter().any(|h| response.header(h).is_some()) =>
+                if self.version == RemoteWriteVersion::V2
+                    && response.status != 202
+                    && !WRITTEN.iter().any(|h| response.header(h).is_some()) =>
             {
                 Err(IoError::transient(format!(
                     "the store took a remote_write 2.0 request without saying what it wrote, as a store of only 1.0 \
@@ -2491,7 +2495,7 @@ mod tests {
     }
 
     #[test]
-    fn a_2_0_answer_that_says_nothing_written_stalls_the_destination_naming_1_0() {
+    fn a_2_0_answer_other_than_202_that_says_nothing_written_stalls_the_destination_naming_1_0() {
         let answer = |headers: &[(&str, &str)]| Response {
             status: 204,
             headers: (headers.iter()).map(|(n, v)| (n.to_string(), v.to_string())).collect(),
@@ -2509,6 +2513,14 @@ mod tests {
         assert!(
             protocol().read(&answer(&[]), &samples(1)).unwrap().is_clean(),
             "1.0 has no such headers"
+        );
+        let accepted = Response {
+            status: 202,
+            ..answer(&[])
+        };
+        assert!(
+            v2.read(&accepted, &samples(1)).unwrap().is_clean(),
+            "a 202 has not counted yet"
         );
     }
 
