@@ -839,8 +839,12 @@ fn run(
                             };
                             p.abandoned(queue, c, paced.bytes.saturating_sub(rest.bytes));
                         }
-                        let (at, rest) = failed(rest);
-                        again.push((throttled.map_or(at, |wait| at.max(Instant::now() + wait)), rest));
+                        // The pacing model answers a throttle, so it takes no backoff of its own: the rows go again
+                        // once the wait the service asked for is over.
+                        again.push(match throttled {
+                            Some(wait) => (Instant::now() + wait, rest),
+                            None => failed(rest),
+                        });
                         continue;
                     }
                     any_delivered = true;

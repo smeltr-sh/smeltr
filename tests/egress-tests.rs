@@ -1367,10 +1367,25 @@ fn throttled_rows_go_again_after_the_wait_without_a_stall() {
         _ => None,
     });
     assert_eq!(stalls, None, "a throttle is no stall");
-    dest.complete(again.0);
+    // Throttled again and again with no wait asked: each goes at once, with no backoff growing behind it.
+    let started = std::time::Instant::now();
+    let mut last = again;
+    for n in 2..7 {
+        dest.throttle_rows(last.0, vec![0], Duration::ZERO);
+        last = wait_for("the busy row to go again", timeout(), || dest.units().get(n).cloned()).unwrap();
+    }
+    assert!(
+        started.elapsed() < BACKOFF_OF_FIVE_FAILURES,
+        "five throttles took {:?}",
+        started.elapsed()
+    );
+    dest.complete(last.0);
     let done = completions_within(&mut h, timeout());
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1]);
 }
+
+/// What five failures in a row wait, doubling from egress's least retry: 50 ms up to 800 ms.
+const BACKOFF_OF_FIVE_FAILURES: Duration = Duration::from_millis(1550);
 
 /// A batch the destination would not take is sent again alone: the batch already in flight stays with the destination
 /// and is answered for once, not sent again.
