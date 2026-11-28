@@ -2055,7 +2055,7 @@ fn in_memory(
 /// `source`, reading Avro where `avro` says, as `object_source::open` builds it.
 fn reading(source: ObjectSource, avro: Option<&smeltr::plan::topology::AvroRead>) -> ObjectSource {
     match avro {
-        Some(avro) => source.reading_avro(avro.writers.clone()),
+        Some(_) => source.reading_avro(),
         None => source,
     }
 }

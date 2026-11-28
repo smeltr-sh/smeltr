@@ -428,6 +428,9 @@ pub struct RecordChunk {
     time: Option<Vec<Option<i64>>>,
     /// What each row's values hold, counted once when the chunk is made: every limit asks it of each record.
     sizes: Vec<u32>,
+    /// The writer's schema each row's value is framed with, where the chunk carries its own: an Avro container file's,
+    /// which no registry holds. It lives as long as a batch holds a row of the chunk.
+    avro: Option<(avro::SchemaId, Arc<avro::Parsed>)>,
 }
 
 impl RecordChunk {
@@ -450,7 +453,19 @@ impl RecordChunk {
             home: None,
             filed: None,
             time: None,
+            avro: None,
         }
+    }
+
+    /// This chunk, each row's value framed with `id`, the id of `schema`.
+    pub(crate) fn written_with(mut self, id: avro::SchemaId, schema: Arc<avro::Parsed>) -> RecordChunk {
+        self.avro = Some((id, schema));
+        self
+    }
+
+    /// The writer's schema this chunk carries for its rows, and the id they are framed with.
+    pub(crate) fn avro_schema(&self) -> Option<&(avro::SchemaId, Arc<avro::Parsed>)> {
+        self.avro.as_ref()
     }
 
     /// This chunk, its every record filed under `filed`.
@@ -516,6 +531,7 @@ impl RecordChunk {
             .collect();
         let mut chunk = RecordChunk::new(columns, failed);
         chunk.filed = self.filed.clone();
+        chunk.avro = self.avro.clone();
         chunk.time = (self.time.as_ref()).map(|time| rows.iter().map(|&row| time[row as usize]).collect());
         chunk
     }
