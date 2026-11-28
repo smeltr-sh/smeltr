@@ -391,7 +391,7 @@ pub(crate) fn open(
     let protocol = Elastic::new(c.default_index.clone())
         .with_action(c.action)
         .with_unwritten(Unwritten::new(metrics.clone(), id, name));
-    let make = || transport(&c.url, auth.clone(), &config);
+    let make = || transport(&c.url, auth.clone(), &config).compressing(c.compression);
     Ok(match &c.sniff {
         Some(sniff) => {
             let nodes = Nodes::new(&c.url, sniff, auth.clone(), &config, name.to_string());

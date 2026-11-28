@@ -19,7 +19,7 @@ use super::pipelined::{self, Pool};
 use super::{BatchCompletion, BatchId, Destination, Dispatched, IoError, OwnedRecord, Rejection};
 use crate::core::id::DestId;
 use crate::metrics::MetricsHandle;
-use crate::plan::topology::{HeldSecrets, Tls};
+use crate::plan::topology::{Compression, GzipLevel, HeldSecrets, IgzipLevel, Tls};
 
 /// Total time one `flush` may spend, retries included.
 const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(30);
@@ -683,6 +683,9 @@ pub struct HttpTransport {
     /// Signs every request in with a token. Shared by every sender of a destination, so they hold one token
     /// between them.
     sign_in: Option<SharedSignIn>,
+    /// The gzip level every body is compressed at, or `None` to send each plain. The body and its `Content-Encoding`
+    /// are both set from this one field, so they cannot disagree: a service refuses a plain body that says it is gzip.
+    gzip: Option<IgzipLevel>,
 }
 
 /// One sign-in, shared by the transports that send with its token.
@@ -711,7 +714,18 @@ impl HttpTransport {
             follow_redirects: true,
             connect_within: None,
             sign_in: None,
+            gzip: None,
         }
+    }
+
+    /// Compresses every body with `compression`, which is `Gzip` or `None`: load takes no other codec.
+    pub fn compressing(mut self, compression: Compression) -> Self {
+        self.gzip = match compression {
+            Compression::Gzip(GzipLevel::Igzip(level)) => Some(level),
+            Compression::None => None,
+            other => unreachable!("an HTTP destination's compression is gzip or none, not {other:?}"),
+        };
+        self
     }
 
     /// Signs every request in with `sign_in`'s token. A request whose token is refused with a 401 is sent once more
@@ -745,6 +759,9 @@ impl HttpTransport {
 
 impl Transport for HttpTransport {
     fn post(&mut self, path: &str, body: &[u8], budget: Duration) -> Result<Response, IoError> {
+        // Gzipped once, before the sign-in loop, so a second try with a new token sends the same bytes.
+        let gzipped = self.gzip.map(|level| super::gzip::gzip(body, level));
+        let body = gzipped.as_deref().unwrap_or(body);
         let Some(sign_in) = self.sign_in.clone() else {
             return self.send(path, body, budget, &[]);
         };
@@ -808,6 +825,9 @@ impl HttpTransport {
         let mut req = config.build();
         for (name, value) in self.headers.iter().chain(auth) {
             req = req.header(name, value);
+        }
+        if self.gzip.is_some() {
+            req = req.header("Content-Encoding", "gzip");
         }
         if !self.cookies.is_empty() {
             let jar: Vec<String> = self.cookies.iter().map(|(n, v)| format!("{n}={v}")).collect();
@@ -994,6 +1014,78 @@ mod tests {
         // The trailing dot keeps a resolver from trying the name under its search domains, where a wildcard answers.
         let e = agent.get("http://es.nowhere.invalid.:9200/").call().unwrap_err();
         assert!(e.to_string().contains("could not resolve es.nowhere.invalid"), "{e}");
+    }
+
+    /// One request as a service got it.
+    #[derive(Debug, PartialEq)]
+    struct Received {
+        encoding: Option<String>,
+        body: Vec<u8>,
+    }
+
+    /// A service on 127.0.0.1 answering 204 to one request, and handing it over.
+    fn serve_one() -> (String, std::sync::mpsc::Receiver<Received>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn);
+            let (mut length, mut encoding) = (0, None);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                let (name, value) = line.split_once(':').unwrap_or((line, ""));
+                match name.to_ascii_lowercase().as_str() {
+                    "content-length" => length = value.trim().parse().unwrap(),
+                    "content-encoding" => encoding = Some(value.trim().to_string()),
+                    _ => {}
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let _ = write!(
+                reader.into_inner(),
+                "HTTP/1.1 204 X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            tx.send(Received { encoding, body }).unwrap();
+        });
+        (url, rx)
+    }
+
+    /// What `compression` makes of a posted body, as the service gets it.
+    fn sent(compression: Compression) -> Received {
+        let (url, got) = serve_one();
+        let config = ureq::Agent::config_builder().proxy(None).build();
+        let mut t = HttpTransport::new(&url, "application/json", Vec::new(), &config).compressing(compression);
+        assert_eq!(t.post("/x", b"[1,2,3]", Duration::from_secs(5)).unwrap().status, 204);
+        got.recv_timeout(Duration::from_secs(5)).unwrap()
+    }
+
+    #[test]
+    fn a_gzip_transport_sends_the_body_gzipped_and_says_so() {
+        let got = sent(Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT)));
+        assert_eq!(got.encoding.as_deref(), Some("gzip"));
+        let mut plain = Vec::new();
+        flate2::read::GzDecoder::new(got.body.as_slice())
+            .read_to_end(&mut plain)
+            .unwrap();
+        assert_eq!(plain, b"[1,2,3]");
+    }
+
+    #[test]
+    fn a_transport_without_compression_sends_the_body_as_it_is() {
+        assert_eq!(
+            sent(Compression::None),
+            Received {
+                encoding: None,
+                body: b"[1,2,3]".to_vec()
+            }
+        );
     }
 
     /// A sign-in handing out `token-1`, `token-2`, ... and saying a refused token is worth replacing when `replace`.

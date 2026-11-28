@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use smeltr::format::bytes_text::BytesForm;
 use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection};
 use smeltr::plan::topology::{
-    Acknowledgement, DestinationKind, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig,
+    Acknowledgement, Compression, DestinationKind, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig,
 };
 
 /// A marker no earlier run wrote, so a search sees this test's events alone.
@@ -52,6 +52,7 @@ fn config(s: &live::Splunk, acknowledgement: Acknowledgement) -> SplunkHecDestin
         host: None,
         endpoint: Endpoint::Event,
         acknowledgement,
+        compression: Compression::None,
         tls: None,
         in_flight: 2,
         max_request_bytes: 1024 * 1024,

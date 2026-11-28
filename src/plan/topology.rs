@@ -1853,6 +1853,8 @@ pub struct ElasticDestinationConfig {
     pub tls: Option<Tls>,
     /// What happens to a document whose `_id` is already in the index. See `BulkAction`.
     pub action: BulkAction,
+    /// `None` or `Gzip`; load refuses the others.
+    pub compression: Compression,
     /// How many bulk requests this destination starts with outstanding, each on its own connection.
     ///
     /// Where it begins, not where it stays: see `max_in_flight` for where it stops, and `egress::pacing` for what
@@ -1922,6 +1924,8 @@ pub struct SplunkHecDestinationConfig {
     /// What each event is: the record, one field's text, or, on the raw endpoint, the source's bytes.
     pub payload: Payload,
     pub acknowledgement: Acknowledgement,
+    /// `None` or `Gzip`; load refuses the others. Acknowledgement polls are compressed too.
+    pub compression: Compression,
     /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
     pub tls: Option<Tls>,
     /// How many requests this destination starts with outstanding. See `ElasticDestinationConfig::in_flight`.

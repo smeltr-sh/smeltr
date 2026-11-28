@@ -18,9 +18,7 @@ use super::http::{
 };
 use super::{IoError, OwnedRecord, Payload};
 use crate::format::bytes_text::BytesForm;
-use crate::plan::topology::{
-    Compression, GzipLevel, HeldSecrets, HttpDestinationConfig, IgzipLevel, LogAnalyticsDestinationConfig, RequestBody,
-};
+use crate::plan::topology::{HeldSecrets, HttpDestinationConfig, LogAnalyticsDestinationConfig, RequestBody};
 
 /// One row as its request carries it.
 #[derive(Clone, Debug)]
@@ -35,7 +33,6 @@ pub struct Item {
 pub struct Post {
     /// How rows make a request's body.
     shape: RequestBody,
-    gzip: Option<IgzipLevel>,
     /// The URL's trailing slashes, which the transport trims off its base address and this puts back.
     path: String,
     /// Where the next row's part is taken from under [`RequestBody::Single`]. Shared by every clone, though only the
@@ -51,7 +48,6 @@ impl Post {
         Post {
             name: "http",
             shape: config.body,
-            gzip: igzip_level(config.compression),
             path: url[url.trim_end_matches('/').len()..].to_string(),
             next_part: Arc::new(AtomicUsize::new(0)),
         }
@@ -144,13 +140,12 @@ pub fn transport_as(
     credentials: &[(String, String)],
     agent: &ureq::config::Config,
 ) -> HttpTransport {
-    let mut headers: Vec<(String, String)> = config.headers.iter().chain(credentials).cloned().collect();
-    if matches!(config.compression, Compression::Gzip(_)) {
-        headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
-    }
+    let headers: Vec<(String, String)> = config.headers.iter().chain(credentials).cloned().collect();
     // A redirect would land nothing: see `HttpTransport::without_redirects`. It would also carry the credential
     // headers to wherever it points.
-    HttpTransport::new(&config.url, content_type, headers, agent).without_redirects()
+    HttpTransport::new(&config.url, content_type, headers, agent)
+        .without_redirects()
+        .compressing(config.compression)
 }
 
 fn content_type(config: &HttpDestinationConfig) -> &'static str {
@@ -257,29 +252,12 @@ impl Protocol for Post {
                 }
             }
         }
-        compressed(body, self.gzip)
+        body
     }
 
     fn read(&self, response: &Response, items: &[Self::Item]) -> Result<Outcome, IoError> {
         answered(response, items.len())
     }
-}
-
-/// The gzip level smeltr compresses this destination's bodies at, or `None` when it sends them as they are.
-pub(crate) fn igzip_level(compression: Compression) -> Option<IgzipLevel> {
-    match compression {
-        Compression::Gzip(GzipLevel::Igzip(level)) => Some(level),
-        Compression::None => None,
-        other => unreachable!("this destination's compression is gzip or none, not {other:?}"),
-    }
-}
-
-/// `body` gzipped at level `gzip`, or as it is when `gzip` is `None`.
-pub(crate) fn compressed(body: Vec<u8>, gzip: Option<IgzipLevel>) -> Vec<u8> {
-    let Some(level) = gzip else {
-        return body;
-    };
-    super::gzip::gzip(&body, level)
 }
 
 /// What `response` says of the `count` items its request carried, as the module's table gives it.

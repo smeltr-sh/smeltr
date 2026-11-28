@@ -13,7 +13,9 @@ use smeltr::io::http::{HttpDestination, HttpDestinationBuilder, Response, Transp
 use smeltr::io::splunk::{Collector, Hec, transport, write_epoch_seconds};
 use smeltr::io::{IoError, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
-use smeltr::plan::topology::{Acknowledgement, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig};
+use smeltr::plan::topology::{
+    Acknowledgement, Compression, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig,
+};
 
 const EVENT: &str = "/services/collector/event";
 const ACK: &str = "/services/collector/ack";
@@ -34,6 +36,7 @@ fn config(url: &str, acknowledgement: Acknowledgement) -> SplunkHecDestinationCo
         host: None,
         endpoint: Endpoint::Event,
         acknowledgement,
+        compression: Compression::None,
         tls: None,
         in_flight: 1,
         max_request_bytes: 1024 * 1024,

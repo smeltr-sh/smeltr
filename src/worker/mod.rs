@@ -5675,6 +5675,7 @@ mod tests {
                 auth: None,
                 basic: None,
                 action: BulkAction::default(),
+                compression: Compression::None,
                 in_flight: 4,
                 max_bulk_bytes: 5 * 1024 * 1024,
                 buffer_bytes: 64 * 1024 * 1024,

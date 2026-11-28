@@ -26,13 +26,15 @@ use smeltr::config_file::load_str;
 use smeltr::io::{Destination, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{
-    Acknowledgement, DestinationKind, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig, take_zone,
+    Acknowledgement, Compression, DestinationKind, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig,
+    take_zone,
 };
 
 use crate::harness::destination::{
     self, AUTHORITIES, Broken, ClientTls, Pki, Reached, connector_secrets, set_tls, unknown_key_taken,
 };
 use crate::harness::fuzz::Rng;
+use crate::harness::http::gunzip;
 use crate::live;
 
 const SEEDS: u64 = 300;
@@ -84,6 +86,9 @@ const OPTIONS: &[&str] = &[
     "acknowledgement.indexer",
     "acknowledgement.default",
     "acknowledgement.receipt",
+    "compression.none",
+    "compression.gzip",
+    "compressionLevel",
     "tls.trustedAuthorities",
     "tls.certificate",
     "inFlight",
@@ -137,6 +142,8 @@ const OPTIONS: &[&str] = &[
     "broken.endpoint",
     "broken.acknowledgement",
     "broken.format",
+    "broken.compression",
+    "broken.compressionLevel",
     "mangled",
 ];
 
@@ -262,6 +269,8 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
             d.insert("acknowledgement".into(), json!("receipt"));
         }
     }
+
+    destination::draw_request_compression(rng, cov, &mut d);
 
     for key in ["index", "sourcetype", "source", "host"] {
         // Splunk parses a raw line by its sourcetype, and `_json` is one line one event whatever the line holds.
@@ -417,6 +426,8 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Broken {
         "endpoint",
         "acknowledgement",
         "format",
+        "compression",
+        "compressionLevel",
     ];
     let what = *rng.pick(&breaks);
     cov.reach(format!("broken.{what}"));
@@ -530,6 +541,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Broken {
             set("format", json!(rng.pick(&["ndjson", "JSON", "raw"])));
             Broken::Unread
         }
+        "compression" | "compressionLevel" => Broken::Field(Some(destination::break_request_compression(rng, d, what))),
         other => unreachable!("{other}"),
     }
 }
@@ -543,7 +555,7 @@ fn pki() -> &'static Pki {
 /// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw) -> Value {
     let mut b = json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [Value::Object(draw.destination.clone())],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
@@ -681,6 +693,11 @@ fn check_loaded(draw: &Draw, c: &SplunkHecDestinationConfig, named: &[SecretRef]
         "acknowledgement",
         format!("{acknowledgement:?}"),
         format!("{:?}", c.acknowledgement),
+    );
+    expect(
+        "compression",
+        format!("{:?}", destination::drawn_request_compression(d)),
+        format!("{:?}", c.compression),
     );
     expect(
         "tls",
@@ -1118,6 +1135,8 @@ struct Faults {
 struct Hec {
     token: String,
     acks_on: bool,
+    /// Whether every request, an acknowledgement poll among them, must come gzipped.
+    gzip: bool,
     base_path: &'static str,
     faults: Faults,
 }
@@ -1147,6 +1166,7 @@ struct Logged {
     landed: bool,
 }
 
+#[derive(Clone)]
 struct Request {
     method: String,
     target: String,
@@ -1310,6 +1330,23 @@ fn answer(hec: &Hec, seen: &mut Seen, r: &Request) -> (u16, String) {
     if r.header("content-type") != Some("application/json") {
         seen.wrong.push(format!("content type {:?}", r.header("content-type")));
     }
+    // Splunk reads a body by its `Content-Encoding`, and refuses one that is not what it says.
+    let gzip = r.header("content-encoding") == Some("gzip");
+    if gzip != hec.gzip {
+        seen.wrong
+            .push(format!("content encoding {:?}", r.header("content-encoding")));
+    }
+    let decoded;
+    let r = if gzip {
+        let Ok(body) = gunzip(&r.body) else {
+            seen.wrong.push("a body that is not the gzip it says".to_string());
+            return (400, String::new());
+        };
+        decoded = Request { body, ..r.clone() };
+        &decoded
+    } else {
+        r
+    };
     let channel = r.header("x-splunk-request-channel").map(str::to_string);
     if let Some(c) = &channel
         && !is_guid(c)
@@ -1585,7 +1622,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
             &mut rng,
             reached,
             &mut draw.destination,
-            &["unknownSetting", "compression", "channel", "indexes"],
+            &["unknownSetting", "gzip", "channel", "indexes"],
         );
     let json = bundle(&draw).to_string();
     if mangled {
@@ -1653,6 +1690,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
     let hec = Hec {
         token: TOKEN.to_string(),
         acks_on: token_acks,
+        gzip: matches!(c.compression, Compression::Gzip(_)),
         base_path: draw.base_path,
         faults,
     };

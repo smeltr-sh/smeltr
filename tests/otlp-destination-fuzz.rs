@@ -11,7 +11,6 @@
 //! and the second receiver.
 
 use smeltr::core::id::DestId;
-use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use smeltr::sync::Mutex;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -36,7 +35,6 @@ use crate::certs;
 use crate::harness::destination::send_and_wait;
 use crate::harness::docker::{Container, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
-use crate::harness::http::gunzip;
 use crate::harness::receiver::{commit, free_loopback};
 use crate::otlp_destination_tests::{carried, post, receiver};
 use crate::otlp_receiver_fuzz::{Gen, pb_export, random_export};
@@ -367,7 +365,6 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     let landed = Landed::default();
     let service = Takes {
         signal: c.signal,
-        gzip: matches!(c.http.compression, Compression::Gzip(_)),
         landed: Arc::clone(&landed),
     };
     let mut d = HttpDestinationBuilder::new(Otlp::new(c))
@@ -392,32 +389,28 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     Ok(Reached::Delivered)
 }
 
-/// The bodies a service took, as they were before their compression.
+/// The bodies a service took. A transport compresses a body after these services see it.
 type Landed = Arc<Mutex<Vec<Vec<u8>>>>;
 
-/// Opens a body as the service reads it, checking it went to its signal's path.
-fn opened(path: &str, signal: Signal, gzip: bool, body: &[u8]) -> Vec<u8> {
+/// Checks a body went to its signal's path.
+fn opened(path: &str, signal: Signal, body: &[u8]) -> Vec<u8> {
     assert_eq!(
         path,
         smeltr::io::otlp::http_path(signal),
         "a request goes to its signal's path"
     );
-    match gzip {
-        true => gunzip(body).expect("a gzip destination sends gzip"),
-        false => body.to_vec(),
-    }
+    body.to_vec()
 }
 
 /// A service that takes every request.
 struct Takes {
     signal: Signal,
-    gzip: bool,
     landed: Landed,
 }
 
 impl Transport for Takes {
     fn post(&mut self, path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        let body = opened(path, self.signal, self.gzip, body);
+        let body = opened(path, self.signal, body);
         self.landed.lock().push(body);
         Ok(Response {
             status: 200,
@@ -499,7 +492,6 @@ type Answered = Arc<Mutex<Vec<&'static str>>>;
 struct FuzzService {
     seed: u64,
     signal: Signal,
-    gzip: bool,
     /// How often each body, by its hash, was sent.
     attempts: HashMap<u64, u64>,
     landed: Landed,
@@ -540,7 +532,7 @@ impl Transport for FuzzService {
         let attempt = self.attempts.entry(key).or_default();
         *attempt += 1;
         let rng = &mut Rng::seeded(self.seed ^ key ^ *attempt);
-        let plain = opened(path, self.signal, self.gzip, body);
+        let plain = opened(path, self.signal, body);
         if plain.len() > self.max_request_bytes && read_back(self.signal, &plain).unwrap_or(0) > 1 {
             self.oversized.lock().push(plain.len());
         }
@@ -743,8 +735,6 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
     } = &mut receivers[at];
     let signal = *signal;
     coverage.reach(format!("signal {}", signal.name()));
-    let gzip = g.rng.chance(2);
-    coverage.reach(if gzip { "gzip" } else { "no compression" });
     let max_request_bytes = *g.rng.pick(&[64, 512, 4096, 1 << 16, 1 << 20]);
     coverage.reach(format!("maxRequestBytes {max_request_bytes}"));
     // Most are short, so the stall threshold is reached.
@@ -756,7 +746,6 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
     let service = FuzzService {
         seed: !seed,
         signal,
-        gzip,
         attempts: HashMap::new(),
         landed: Arc::clone(&landed),
         answered: Arc::clone(&answered),
@@ -769,11 +758,7 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
             zone_urls: Default::default(),
             body: Default::default(),
             payload: Payload::Record,
-            compression: if gzip {
-                Compression::Gzip(GzipLevel::Igzip(IgzipLevel::DEFAULT))
-            } else {
-                Compression::None
-            },
+            compression: Compression::None,
             headers: Vec::new(),
             credentials: Vec::new(),
             tls: None,
@@ -912,8 +897,6 @@ const ROW_OPTIONS: &[&str] = &[
     "signal logs",
     "signal metrics",
     "signal traces",
-    "gzip",
-    "no compression",
     "maxRequestBytes 64",
     "maxRequestBytes 512",
     "maxRequestBytes 4096",

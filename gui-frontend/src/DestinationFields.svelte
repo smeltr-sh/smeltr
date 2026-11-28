@@ -18,6 +18,7 @@
   import PropsEditor from './PropsEditor.svelte';
   import ZoneUrls from './ZoneUrls.svelte';
   import RequestDelivery, { requestDeliveryModified } from './RequestDelivery.svelte';
+  import RequestCompression, { compressionModified } from './RequestCompression.svelte';
   import Toggle from './Toggle.svelte';
   import {
     batchedFormat,
@@ -40,7 +41,6 @@
     type BulkAction,
     type Compression,
     type SchemaRegistry,
-    type HttpCompression,
     type OtlpSignal,
     type Acks,
     type KafkaFacts,
@@ -115,6 +115,7 @@
     if (d.type !== 'elasticsearch') return false;
     return (
       d.idField !== undefined ||
+      compressionModified(d) ||
       d.zoneUrls !== undefined ||
       d.sniff === true ||
       requestDeliveryModified(d, 'maxBulkBytes', LIMITS.maxBulkBytes.default)
@@ -124,6 +125,7 @@
   function splunkModified(d: DestinationDto): boolean {
     if (d.type !== 'splunkHec') return false;
     return (
+      compressionModified(d) ||
       d.zoneUrls !== undefined ||
       requestDeliveryModified(d, 'maxRequestBytes', LIMITS.maxRequestBytes.default)
     );
@@ -421,6 +423,7 @@
           placeholder="__destination.id"
         />
       </Field>
+      <RequestCompression value={destination} />
       <RequestDelivery
         value={destination}
         size="maxBulkBytes"
@@ -582,6 +585,7 @@
     </Field>
     <TlsFields value={destination} farEnd="destination" />
     <Advanced label="Advanced" modified={splunkModified(destination)}>
+      <RequestCompression value={destination} />
       <RequestDelivery
         value={destination}
         sizeDefault={LIMITS.maxRequestBytes.default}
@@ -732,25 +736,7 @@
     <Advanced label="Advanced" modified={httpModified(h)}>
       <TlsFields value={h} farEnd="destination" />
       {#if h.type === 'http' || h.type === 'otlp'}
-        <Field field="compression" label="compression">
-          {#snippet help()}
-            Each request body is sent gzipped, with <code>Content-Encoding: gzip</code>; the service
-            must accept it.
-          {/snippet}
-          <select
-            value={h.compression ?? 'none'}
-            onchange={(e) => {
-              const v = e.currentTarget.value as HttpCompression;
-              if (v === 'none') delete h.compression;
-              else h.compression = v;
-              delete h.compressionLevel;
-            }}
-          >
-            <option value="none">none</option>
-            <option value="gzip">gzip</option>
-          </select>
-        </Field>
-        <CompressionLevel value={h} codec={h.compression ?? 'none'} />
+        <RequestCompression value={h} />
       {/if}
       <RequestDelivery
         value={h}

@@ -30,12 +30,15 @@ use smeltr::config_file::load_str;
 use smeltr::core::column::DataType;
 use smeltr::io::OwnedRecord;
 use smeltr::io::elastic_mapping::mapping;
-use smeltr::plan::topology::{BulkAction, DestinationKind, ElasticDestinationConfig, HeldSecrets, SecretRef};
+use smeltr::plan::topology::{
+    BulkAction, Compression, DestinationKind, ElasticDestinationConfig, HeldSecrets, SecretRef,
+};
 
 use crate::harness::destination::{
     self, Broken, ClientTls, Head, Pki, Reached, connector_secrets, read_request, set_tls, unknown_key_taken,
 };
 use crate::harness::fuzz::{self, Coverage, Rng};
+use crate::harness::http::gunzip;
 use crate::live;
 
 const SEEDS: u64 = 250;
@@ -85,6 +88,9 @@ const OPTIONS: &[&str] = &[
     "action.docId",
     "idField.pipeline",
     "idField",
+    "compression.none",
+    "compression.gzip",
+    "compressionLevel",
     "inFlight",
     "maxBulkBytes",
     "bytes.text",
@@ -123,6 +129,8 @@ const OPTIONS: &[&str] = &[
     "broken.auth",
     "broken.username",
     "broken.password",
+    "broken.compression",
+    "broken.compressionLevel",
     "mangled",
 ];
 
@@ -277,6 +285,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
         sets_id = true;
     }
 
+    destination::draw_request_compression(rng, cov, &mut d);
     draw_sizes(rng, cov, &mut d);
     if rng.chance(2) {
         cov.reach("stallAfterSecs");
@@ -429,6 +438,8 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         "auth",
         "username",
         "password",
+        "compression",
+        "compressionLevel",
     ]);
     cov.reach(format!("broken.{what}"));
     let d = &mut draw.destination;
@@ -532,6 +543,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
                 Some("auth")
             }
         }
+        "compression" | "compressionLevel" => Some(destination::break_request_compression(rng, d, what)),
         other => unreachable!("{other}"),
     }
 }
@@ -544,7 +556,7 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         json!([])
     };
     let mut b = json!({
-        "version": 1,
+        "version": smeltr::config_file::CURRENT_VERSION,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [Value::Object(draw.destination.clone())],
         "pipelines": [{"id": "p", "name": "p", "steps": steps}],
@@ -629,6 +641,11 @@ fn check_loaded(draw: &Draw, c: &ElasticDestinationConfig, named: &[SecretRef]) 
     };
     let s = |key: &str| d.get(key).and_then(Value::as_str).map(str::to_string);
     expect("url", s("url").unwrap(), c.url.clone());
+    expect(
+        "compression",
+        format!("{:?}", destination::drawn_request_compression(d)),
+        format!("{:?}", c.compression),
+    );
     expect(
         "zoneUrls",
         format!("{:?}", destination::drawn_zones(d)),
@@ -984,6 +1001,8 @@ struct Expect {
     auth: Option<String>,
     action: &'static str,
     max_bulk: usize,
+    /// Whether every bulk request must come gzipped.
+    gzip: bool,
 }
 
 /// How the cluster answers, beyond each document's fate.
@@ -1016,6 +1035,23 @@ struct Cluster {
 }
 
 impl Cluster {
+    /// `body` as Elasticsearch reads it, by its `Content-Encoding`; `None` for one that is not the gzip it says.
+    fn decoded(&mut self, head: &Head, body: Vec<u8>) -> Option<Vec<u8>> {
+        let gzip = head.header("content-encoding") == Some("gzip");
+        if head.method == "POST" && gzip != self.expect.gzip {
+            self.wrong
+                .push(format!("content encoding {:?}", head.header("content-encoding")));
+        }
+        if !gzip {
+            return Some(body);
+        }
+        let plain = gunzip(&body).ok();
+        if plain.is_none() {
+            self.wrong.push("a bulk body that is not the gzip it says".into());
+        }
+        plain
+    }
+
     fn answer(&mut self, head: &Head, body: &[u8]) -> (u16, Vec<(&'static str, String)>, String) {
         if head.method == "GET" && head.path.contains("/_nodes/http") {
             if head.header("authorization") != self.expect.auth.as_deref() {
@@ -1187,6 +1223,9 @@ fn contains(body: &[u8], doc: &[u8]) -> bool {
 fn converse(mut s: impl Read + Write, cluster: &Mutex<Cluster>) {
     let mut buf = Vec::new();
     while let Some((head, body)) = read_request(&mut s, &mut buf) {
+        let Some(body) = cluster.lock().decoded(&head, body) else {
+            return;
+        };
         let slow = {
             let mut cluster = cluster.lock();
             let carried = (cluster.answers.slow_on.as_ref()).is_some_and(|(doc, _)| contains(&body, doc));
@@ -1416,7 +1455,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     if busy {
         answers.busy_on = Some(rng.pick(&carried).to_vec());
     }
-    let slow = c.stall_after == Duration::from_secs(1) && !carried.is_empty() && rng.chance(8);
+    let slow = c.stall_after == Duration::from_secs(1) && !carried.is_empty() && rng.chance(4);
     if slow {
         answers.slow_on = Some((rng.pick(&carried).to_vec(), Duration::from_millis(1300)));
     }
@@ -1444,6 +1483,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
                 auth: draw.auth.clone(),
                 action: action(c.action),
                 max_bulk: c.max_bulk_bytes,
+                gzip: matches!(c.compression, Compression::Gzip(_)),
             },
             answers,
             policy: c.action,

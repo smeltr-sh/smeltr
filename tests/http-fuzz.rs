@@ -14,7 +14,6 @@
 //! back.
 
 use smeltr::core::id::DestId;
-use smeltr::plan::topology::{GzipLevel, IgzipLevel};
 use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
@@ -271,16 +270,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
         let field = if format == "text" { "message" } else { "__source.bytes" };
         d.insert("field".into(), json!(field));
     }
-    let compression = *rng.pick(&["none", "gzip"]);
-    cov.reach(format!("compression.{compression}"));
-    if compression != "none" || rng.chance(2) {
-        d.insert("compression".into(), json!(compression));
-    }
-    if compression == "gzip" && rng.chance(2) {
-        cov.reach("compressionLevel");
-        // igzip's levels, 0 to 3.
-        d.insert("compressionLevel".into(), json!(rng.below(4)));
-    }
+    destination::draw_request_compression(rng, cov, &mut d);
 
     let mut taken: BTreeSet<String> = BTreeSet::new();
     let mut headers = Map::new();
@@ -522,17 +512,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             d.insert("field".into(), json!(rng.pick(&["", " "])));
             "field"
         }
-        "compression" => {
-            d.remove("compressionLevel");
-            d.insert("compression".into(), json!(rng.pick(&["snappy", "lz4", "zstd"])));
-            "compression"
-        }
-        // Past the top of gzip's levels, or any level for none.
-        "compressionLevel" => {
-            let gzip = d.get("compression").and_then(Value::as_str) == Some("gzip");
-            d.insert("compressionLevel".into(), json!(if gzip { 4 } else { 1 }));
-            "compressionLevel"
-        }
+        "compression" | "compressionLevel" => destination::break_request_compression(rng, d, what),
         "headers.name" | "headers.owned" | "headers.value" => {
             let in_credentials = what != "headers.value" && rng.chance(2);
             let key = if in_credentials { "credentials" } else { "headers" };
@@ -755,17 +735,9 @@ fn check_loaded(draw: &Draw, c: &HttpDestinationConfig, named: &[SecretRef]) -> 
         },
     };
     expect("format", format!("{payload:?}"), format!("{:?}", c.payload));
-    let compression = match s("compression").unwrap_or("none") {
-        "gzip" => {
-            let level = d.get("compressionLevel").and_then(Value::as_u64).map(|l| l as u8);
-            let level = level.map_or(IgzipLevel::DEFAULT, |l| IgzipLevel::new(l).unwrap());
-            Compression::Gzip(GzipLevel::Igzip(level))
-        }
-        _ => Compression::None,
-    };
     expect(
         "compression",
-        format!("{compression:?}"),
+        format!("{:?}", destination::drawn_request_compression(d)),
         format!("{:?}", c.compression),
     );
     let headers: Vec<(String, String)> = match d.get("headers") {

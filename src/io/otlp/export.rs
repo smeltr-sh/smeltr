@@ -31,7 +31,7 @@ use super::metrics::{self, DataPoint, Metric, PointRow};
 use super::traces::Span;
 use super::{InstrumentationScope, Nested, Resource, http_path, logs, rows, traces};
 use crate::io::http::{Outcome, Protocol, Response, Unwritten};
-use crate::io::http_post::{answered, compressed};
+use crate::io::http_post::answered;
 use crate::io::{IoError, OwnedRecord};
 use crate::plan::topology::{OtlpDestinationConfig, Signal};
 
@@ -39,7 +39,6 @@ use crate::plan::topology::{OtlpDestinationConfig, Signal};
 #[derive(Clone, Debug)]
 pub struct Otlp {
     signal: Signal,
-    gzip: Option<crate::plan::topology::IgzipLevel>,
     /// What the last row admitted came under, which the next most often shares. Shared by every clone, though only
     /// the egress thread admits.
     last: Arc<Mutex<Last>>,
@@ -57,7 +56,6 @@ impl Otlp {
     pub fn new(config: &OtlpDestinationConfig) -> Otlp {
         Otlp {
             signal: config.signal,
-            gzip: crate::io::http_post::igzip_level(config.http.compression),
             last: Arc::default(),
             unwritten: None,
         }
@@ -222,7 +220,7 @@ impl Protocol for Otlp {
     }
 
     fn body(&self, items: &[Item]) -> Vec<u8> {
-        let request = match self.signal {
+        match self.signal {
             Signal::Logs => logs::request(nested(items, |record| match record {
                 Record::Log(log) => (**log).clone(),
                 _ => unreachable!("a logs destination admits log records"),
@@ -238,8 +236,7 @@ impl Protocol for Otlp {
                 });
                 metrics::request(by_metric(points))
             }
-        };
-        compressed(request, self.gzip)
+        }
     }
 
     fn read(&self, response: &Response, items: &[Self::Item]) -> Result<Outcome, IoError> {
