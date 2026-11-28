@@ -338,9 +338,8 @@ def upload_directory(c, branch, scope):
 
 
 def lock_tests(c, branch, scope, tests):
-    at = int(time.time() * 1e6)
     for name, pipeline, sample, fields in tests:
-        c.lock_test(branch, scope, name, pipeline, sample, fields, at)
+        c.lock_test(branch, scope, name, pipeline, sample, fields)
 
 
 def groups():

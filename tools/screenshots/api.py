@@ -102,26 +102,26 @@ class Client:
     def put_sample(self, s, branch, scope):
         return self.cfg("PUT", f"/samples/{urllib.parse.quote(s['id'])}", branch, scope, s)
 
-    def preview(self, branch, scope, pipeline, sample, at_micros):
+    def preview(self, branch, scope, pipeline, sample):
         # The config the editor sends (`buildFileConfig` in pipeline.ts): this scope's pipelines and tables, and
         # nothing routed, so a route naming another scope's destination cannot fail the preview.
         full = self.cfg("GET", "", branch, scope)["config"]
         config = {"version": 1, "destinations": [], "lookupTables": full["lookupTables"],
                   "pipelines": full["pipelines"]}
         body = {"config": json.dumps(config), "pipeline": pipeline, "sample": sample,
-                "show_internal": False, "at_micros": at_micros}
+                "show_internal": False}
         return self.call("POST", f"/api/areas/{scope}/preview/pipeline", body, {"branch": branch})
 
-    def lock_test(self, branch, scope, name, pipeline, sample, fields, at_micros):
+    def lock_test(self, branch, scope, name, pipeline, sample, fields):
         """Locks `fields` on every row the pipeline makes of `sample`, as the grid locks the fields chosen in it."""
-        pv = self.preview(branch, scope, pipeline, sample, at_micros)
+        pv = self.preview(branch, scope, pipeline, sample)
         if not pv["ok"]:
             raise ApiError(f"preview of {pipeline} failed: {pv['errors']}")
         leaves = [leaves_of(r["json"]) if r["json"] is not None else None for r in pv["rows"]]
         missing = [f for f in fields if not any(row and f in row for row in leaves)]
         if missing:
             raise ApiError(f"{pipeline} makes no {', '.join(missing)}")
-        test = {"name": name, "pipeline": pipeline, "sample": sample, "lockedAt": at_micros, "fields": fields}
+        test = {"name": name, "pipeline": pipeline, "sample": sample, "fields": fields}
         return self.cfg("PUT", f"/tests/{urllib.parse.quote(name)}", branch, scope, test)
 
     # -- changes ------------------------------------------------------------------------------------

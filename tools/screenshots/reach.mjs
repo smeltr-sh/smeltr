@@ -44,6 +44,13 @@ export async function reachable(open, base) {
       const choices = await page.locator(SEGMENTED).count();
       for (let i = 0; i < choices; i++) {
         await page.locator(SEGMENTED).nth(i).click();
+        // A choice that asks to be confirmed changes more than the page, as an editor's preset does: decline it.
+        const confirm = page.locator('dialog[open]');
+        if (await confirm.count()) {
+          await confirm.getByRole('button', { name: 'Cancel' }).click();
+          await confirm.waitFor({ state: 'detached' });
+          continue;
+        }
         await settle(page);
         await pickRows(page, rowsSeen);
       }
