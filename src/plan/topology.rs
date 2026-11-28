@@ -1510,8 +1510,6 @@ pub struct KafkaProps {
     pub credentials: Vec<(String, SecretRef)>,
 }
 
-impl KafkaProps {}
-
 #[derive(Clone, Debug)]
 pub struct KafkaSourceConfig {
     /// Bytes its client may hold fetched-but-unprocessed (`queued.max.messages.kbytes`) -- the largest term in a

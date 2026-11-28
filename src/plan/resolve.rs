@@ -102,8 +102,6 @@ pub struct Scope {
     serial: usize,
 }
 
-impl Scope {}
-
 impl SymbolTable {
     /// A table over a *compiled pipeline's output*, for resolving an expression that runs after the pipeline rather
     /// than inside it — a route's `deliver` rule's `when` (design doc, Runtime stages: "Delivery belongs to routes").

@@ -39,8 +39,6 @@ pub enum Unread {
     Refused(String),
 }
 
-impl Unread {}
-
 /// A schema as the registry holds it: its Avro text, and each schema it references by name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Text {
