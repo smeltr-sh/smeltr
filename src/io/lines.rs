@@ -172,7 +172,11 @@ impl Stream {
                 flate2::Compression::new(level.into()),
             ))),
             Compression::Snappy => Stream::Snappy(Box::new(snap::write::FrameEncoder::new(Vec::new()))),
-            Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::new(Vec::new()))),
+            // A fixed block, so its buffers are the size `files::LZ4_BYTES` counts, whatever the first line's length.
+            Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::with_frame_info(
+                lz4_flex::frame::FrameInfo::new().block_size(lz4_flex::frame::BlockSize::Max64KB),
+                Vec::new(),
+            ))),
             Compression::Zstd(level) => Stream::Zstd(Box::new(
                 zstd::stream::write::Encoder::new(Vec::new(), level.into()).expect("a zstd level the loader checked"),
             )),
@@ -300,6 +304,8 @@ mod tests {
         ] {
             let before = crate::core::buffer::allocated_bytes();
             let mut encoder = LineEncoder::open(false, codec);
+            // A first line past every lz4 block size, which would pick lz4's largest block if it chose by it.
+            encoder.put(&line.repeat(1024));
             for _ in 0..1024 {
                 encoder.put(&line);
             }
