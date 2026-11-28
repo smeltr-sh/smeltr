@@ -1232,17 +1232,18 @@ pub struct Undelivered {
 }
 
 /// What [`Destination::send`] did with a batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Dispatched {
     /// Acknowledged before `send` returned; no completion follows.
     Complete,
     /// Handed to the transport. The batch's id comes back from [`Destination::poll_completions`] once it is
     /// acknowledged.
     InFlight,
-    /// Not taken: the destination's queue has no room for a batch of `bytes`. Nothing was sent and the rows are
-    /// dropped, so the caller keeps the batch and runs it again once [`Destination::has_room`] says so. A batch
-    /// kept waiting longer than [`Destination::stall_after`] is a stall, reported as a block.
-    NoRoom { bytes: usize },
+    /// Not taken: the destination's queue has no room for a batch of `bytes`. Nothing was sent and `rows` come
+    /// back, so the caller keeps them and hands them over again once [`Destination::has_room`] says so, without
+    /// running the pipelines again. A batch kept waiting longer than [`Destination::stall_after`] is a stall,
+    /// reported as a block.
+    NoRoom { bytes: usize, rows: Vec<OwnedRecord> },
 }
 
 /// A destination for payloads, driven by one egress thread. `Send` so it may be built on one thread and run
@@ -1320,9 +1321,9 @@ pub trait Destination: Send {
         None
     }
 
-    /// Whether a batch of `bytes` would be taken now. Asked before handing rows over, so rows a full queue would drop
-    /// wait for room instead, and before re-running a batch `send` answered [`Dispatched::NoRoom`] to. A
-    /// transport that never answers `NoRoom` always has room.
+    /// Whether a batch of `bytes` would be taken now. Asked before handing rows over, so rows a full queue would
+    /// refuse wait for room instead, and again before handing over the rows an earlier `send` answered with
+    /// [`Dispatched::NoRoom`]. A transport that never answers `NoRoom` always has room.
     fn has_room(&self, _bytes: usize) -> bool {
         true
     }

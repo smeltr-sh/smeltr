@@ -1404,9 +1404,9 @@ impl Destination for EgressHandle {
                 self.outstanding += 1;
                 Dispatched::InFlight
             }
-            // The rows go with the delivery unit: the batch is re-run whole when room returns.
             Err(Refused::NoRoom(delivery_unit)) => Dispatched::NoRoom {
                 bytes: delivery_unit.bytes,
+                rows: delivery_unit.rows,
             },
             Err(Refused::Closed) => return Err(IoError::transient("destination is shutting down")),
         };

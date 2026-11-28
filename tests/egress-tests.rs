@@ -236,9 +236,14 @@ fn each_destination_holds_its_own_budget() {
 
     let started = std::time::Instant::now();
     let answer = hand(&mut h, 2, &[OutgoingRecord::new(&big)]);
-    let Dispatched::NoRoom { bytes, .. } = answer else {
+    let Dispatched::NoRoom { bytes, rows } = answer else {
         panic!("this destination's own budget is full: {answer:?}");
     };
+    assert_eq!(
+        rows.len(),
+        1,
+        "the refused rows come back, so the pipelines need not run again"
+    );
     assert!(
         started.elapsed() < Duration::from_millis(100),
         "a full queue answers at once; it does not hold the thread"
