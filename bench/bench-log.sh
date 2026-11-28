@@ -47,11 +47,11 @@ trap 'for w in "$work"/wt-*; do git -C "$root" worktree remove --force "$w" 2>/d
 workload="tests/panos tests/reference tests/panos-ecs-profile.rs tests/reference-pipelines.rs"
 workload_id=$(cd "$root" && { git ls-files -s $workload; git diff HEAD -- $workload; } | sha1sum | cut -c1-12)
 
-# Builds `commit` with HEAD's workload and the commit's own driver into `bin`, in the release profile. Each side has
-# a target of its own: cargo hashes a path package by name and version, so a shared one runs one side's build script
-# for the other. The binary is kept under target/bench-bins by commit and workload, so a run that comes back to
-# either builds neither.
-# The test binary's path changes with its hash, so cargo is asked for it. A commit from before the rename reads only
+# Builds `commit` with HEAD's workload and the commit's own driver into `bin`, as `[profile.optimized]` builds: as
+# overrides of release, since the reference predates that profile. Each side has a target of its own: cargo hashes a
+# path package by name and version, so a shared one runs one side's build script for the other. The binary is kept
+# under target/bench-bins by commit and workload, so a run that comes back to either builds neither. The test
+# binary's path changes with its hash, so cargo is asked for it. A commit from before the rename reads only
 # `SMELTR_ALLOW_STALE_GUI`, so both are set.
 build() {
     local commit=$1 bin=$2 side=$3 wt=$work/wt-$1 kept=$root/target/bench-bins/$1-$workload_id
@@ -68,7 +68,7 @@ build() {
     (cd "$wt" && rm -rf tests/panos tests/reference)
     (cd "$root" && cp -r $workload "$wt/tests/")
     cp "$work/driver.rs" "$wt/tests/reference/driver.rs"
-    (cd "$wt" && SMELTR_ALLOW_STALE_FRONTENDS=1 SMELTR_ALLOW_STALE_GUI=1 CARGO_TARGET_DIR=$root/target/bench-$side \
+    (cd "$wt" && SMELTR_ALLOW_STALE_FRONTENDS=1 SMELTR_ALLOW_STALE_GUI=1 CARGO_TARGET_DIR=$root/target/bench-$side CARGO_PROFILE_RELEASE_LTO=thin \
         cargo test --release --test reference-pipelines --no-run --message-format=json) |
         jq -r 'select(.executable != null and .target.name == "reference-pipelines") | .executable' |
         tail -1 | xargs -I{} cp {} "$bin"
