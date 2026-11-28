@@ -31,7 +31,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use super::framing::{Framed, Framer, Framing, Malformed, Truncations};
-use super::receiver::{Closed, Connection, Counted, Cutter, Held, STREAM_STEP};
+use super::holdings::Counted;
+use super::receiver::{Closed, Connection, Cutter, Held, STREAM_STEP};
 use crate::plan::topology::SocketReceiverConfig;
 
 /// How much one read of the socket takes.

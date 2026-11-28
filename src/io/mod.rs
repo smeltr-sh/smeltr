@@ -31,6 +31,7 @@ pub(crate) mod entra;
 pub mod files;
 pub mod framing;
 pub(crate) mod hec;
+mod holdings;
 pub mod http;
 mod http_api;
 pub mod http_post;

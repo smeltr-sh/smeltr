@@ -291,6 +291,11 @@ impl Framer {
         }
     }
 
+    /// How many bytes it holds that frames are cut from: the most the frames it cuts next hold.
+    pub(super) fn held(&self) -> usize {
+        self.held.len() - self.cut
+    }
+
     /// How many bytes its buffer holds room for, which a reader charges against what it may hold.
     pub(super) fn capacity(&self) -> usize {
         self.held.capacity()

@@ -48,6 +48,7 @@ use super::connections::{self, Connections, Marked};
 use super::elastic_receiver;
 use super::framing::Framed;
 use super::hec;
+use super::holdings::{Counted, Holdings};
 use super::line_breaker::LineBreaker;
 use super::otlp;
 use super::prometheus;
@@ -1486,175 +1487,6 @@ impl Shared {
         inbox.open() && (inbox.queued.is_empty() || self.holdings.has_room())
     }
 }
-
-/// Everything one receiver holds in memory: the requests its inbox queues, the bodies it is reading, and what its
-/// connections hold between requests. What it takes it shares with the other receivers: up to its `ceiling`, borrowed
-/// from the pool the deployment's receivers share when there is one. Its `reserve`, held above that, is its turn's
-/// alone: one taker at a time that found no shared room takes from it, so a receiver whose shared room is spent still
-/// finishes a request and moves. Nothing takes past the two, which is what `fit` counts for a receiver.
-pub(super) struct Holdings {
-    account: Mutex<Account>,
-    reserve: usize,
-    ceiling: usize,
-    /// This receiver's name in `pool`.
-    lender: u64,
-    pool: Option<Arc<QueuePool>>,
-    /// Woken when it gives bytes back or its turn is let go.
-    freed: Notify,
-    /// Times a taker found no room, once for each wait, since the reader last asked.
-    full: std::sync::atomic::AtomicU64,
-}
-
-#[derive(Default)]
-struct Account {
-    counted: Counted,
-    /// Whether a taker holds the turn.
-    turn: bool,
-}
-
-/// Bytes taken of a receiver's holdings: those it shares, and those of its reserve.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Counted {
-    shared: usize,
-    reserved: usize,
-}
-
-impl Counted {
-    pub(super) fn total(self) -> usize {
-        self.shared + self.reserved
-    }
-
-    fn add(&mut self, other: Counted) {
-        self.shared += other.shared;
-        self.reserved += other.reserved;
-    }
-
-    /// `bytes` of it, its reserve first so the turn has room again soonest.
-    fn split_off(&mut self, bytes: usize) -> Counted {
-        assert!(bytes <= self.total(), "gives back no more than it took");
-        let reserved = bytes.min(self.reserved);
-        let part = Counted {
-            shared: bytes - reserved,
-            reserved,
-        };
-        self.shared -= part.shared;
-        self.reserved -= part.reserved;
-        part
-    }
-}
-
-impl Default for Holdings {
-    /// A receiver alone: no pool and no reserve, held to its ceiling.
-    fn default() -> Holdings {
-        Holdings::reserving(0, None)
-    }
-}
-
-impl Holdings {
-    /// Holdings with `reserve` bytes for its turn and shared bytes from `pool`, as far as the pool lends. Without a
-    /// pool, `INBOX_BYTES` shared.
-    fn reserving(reserve: usize, pool: Option<Arc<QueuePool>>) -> Holdings {
-        Holdings {
-            account: Mutex::new(Account::default()),
-            reserve,
-            // A receiver buffers into the memory its worker gives it: the pool is sized to that.
-            ceiling: pool.as_ref().map_or(INBOX_BYTES, |p| p.limit()),
-            lender: pool.as_ref().map_or(0, |p| p.lender()),
-            pool,
-            freed: Notify::new(),
-            full: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    /// Takes `bytes` more for a taker that holds `counted` and, when `turn`, the turn: shared where they fit, else of
-    /// the reserve, taking the turn when it is free. Whether it took them.
-    fn take(&self, bytes: usize, counted: &mut Counted, turn: &mut bool) -> bool {
-        let mut account = self.account.lock();
-        let shared = account.counted.shared + bytes <= self.ceiling
-            && self
-                .pool
-                .as_ref()
-                .is_none_or(|p| p.take(self.lender, account.counted.shared, bytes, false));
-        if shared {
-            account.counted.shared += bytes;
-            counted.shared += bytes;
-            return true;
-        }
-        if !*turn && !account.turn {
-            account.turn = true;
-            *turn = true;
-        }
-        if *turn && account.counted.reserved + bytes <= self.reserve {
-            account.counted.reserved += bytes;
-            counted.reserved += bytes;
-            return true;
-        }
-        false
-    }
-
-    fn give(&self, counted: Counted) {
-        if counted.total() == 0 {
-            return;
-        }
-        let mut account = self.account.lock();
-        account.counted.shared -= counted.shared;
-        account.counted.reserved -= counted.reserved;
-        if let Some(pool) = &self.pool {
-            pool.give(self.lender, account.counted.shared, counted.shared);
-        }
-        drop(account);
-        self.freed.notify_waiters();
-    }
-
-    /// Lets the turn go, so the next taker short of room may take it.
-    fn release(&self) {
-        self.account.lock().turn = false;
-        self.freed.notify_waiters();
-    }
-
-    /// Whether it could ever hold `bytes` for one taker: of its reserve, or shared when the rest is let go.
-    fn could_hold(&self, bytes: usize) -> bool {
-        bytes <= self.reserve || (bytes <= self.ceiling && self.pool.as_ref().is_none_or(|p| bytes <= p.limit()))
-    }
-
-    /// What its takers hold now, shared and of its reserve.
-    fn held(&self) -> usize {
-        self.account.lock().counted.total()
-    }
-
-    /// Whether a taker without the turn, or one that would take it, takes another byte.
-    fn has_room(&self) -> bool {
-        let account = self.account.lock();
-        (account.counted.shared < self.ceiling
-            && self
-                .pool
-                .as_ref()
-                .is_none_or(|p| p.fits(self.lender, account.counted.shared, 1)))
-            || (!account.turn && account.counted.reserved < self.reserve)
-    }
-
-    /// Counts a taker that found no room.
-    fn note_full(&self) {
-        self.full.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Waits for `room` or `freed`, enabled before the caller looked. Another receiver giving back to the pool wakes
-    /// neither, so a receiver borrowing looks again after a while.
-    async fn wait(
-        &self,
-        room: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
-        freed: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
-    ) {
-        tokio::select! {
-            () = room => {}
-            () = freed => {}
-            () = tokio::time::sleep(POOL_LOOK), if self.pool.is_some() => {}
-        }
-    }
-}
-
-/// How often a receiver waiting on the pool looks again.
-const POOL_LOOK: Duration = Duration::from_millis(100);
 
 /// Bytes taken from a receiver's holdings for one request, given back when dropped.
 struct Charge<'a> {
@@ -4101,10 +3933,7 @@ mod tests {
     #[tokio::test]
     async fn a_connection_reads_on_into_shared_room_or_with_the_turn() {
         let shared = Arc::new(Shared {
-            holdings: Holdings {
-                ceiling: 100,
-                ..Holdings::reserving(50, None)
-            },
+            holdings: Holdings::within(100, 50),
             ..Shared::default()
         });
         let inlet = Inlet {
@@ -4312,10 +4141,7 @@ mod tests {
     /// A server whose receiver holds at most `ceiling`.
     fn server(speaks: Speaks, tokens: &[&str], ceiling: usize) -> Server {
         let shared = Shared {
-            holdings: Holdings {
-                ceiling,
-                ..Holdings::default()
-            },
+            holdings: Holdings::within(ceiling, 0),
             ..Shared::default()
         };
         Server {

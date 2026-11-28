@@ -15,7 +15,7 @@ use crate::sync::{Condvar, Mutex, MutexGuard};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ use crate::io::avro::AvroReader;
 use crate::io::avro::Parsed;
 use crate::io::avro::container::Container;
 use crate::io::framing::{Framed, Framer};
+use crate::io::holdings::{Counted, Holdings};
 use crate::io::{
     ChunkRows, CommitMap, IoError, PartitionLag, Progress, RecordChunk, RecordChunkBuilder, Source, SourceRecord,
     TopicPartition,
@@ -62,8 +63,8 @@ const LAG_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
 /// How long one receive waits for a message to arrive. SQS's own limit: it answers as soon as one does.
 const RECEIVE_WAIT: Duration = Duration::from_secs(20);
 
-/// What the objects fetched ahead of the one being read may hold together: their chunks, decoders, framers and queued
-/// records. A fetch ahead waits for room; the object being read takes what it needs.
+/// What the objects fetched ahead of the one being read may hold together: their chunks, decoders, framers, the records
+/// they frame and those they queued. A fetch ahead waits for room.
 const ROOM: u64 = AHEAD as u64 * (CHUNK + QUEUED);
 
 /// What gzip's decoder holds, with the buffer it is read through, measured in this build.
@@ -81,11 +82,13 @@ const ZSTD_WINDOW: u64 = 1 << 27;
 /// What a decoder holds at most: zstd's at its largest window.
 const LARGEST_DECODER: u64 = ZSTD_WINDOW + ZSTD_DECODER;
 
-/// The most an object source holds beyond its lane. The objects fetched ahead hold their room, and framing what their
-/// framers hold copies it once more before it is queued. The object being read holds its chunk, its queue, its decoder
-/// at its largest, and a record as long as the longest three times over: in its framer, framed, and in the chunk it is
-/// sent in.
-pub(crate) const HELD_BYTES: u64 = 2 * ROOM + CHUNK + QUEUED + LARGEST_DECODER + 3 * MAX_RECORD_BYTES;
+/// What the object being read holds at most: its chunk, its queue, its decoder at its largest, and a record as long as
+/// the longest, with the push that ends it, twice over: in its framer and framed. Held for it above the room, so it is
+/// read whatever the objects fetched ahead hold.
+const READING: u64 = CHUNK + QUEUED + LARGEST_DECODER + 2 * (MAX_RECORD_BYTES + READ_AHEAD as u64);
+
+/// The most an object source holds beyond its lane: the room, and what the object being read holds.
+pub(crate) const HELD_BYTES: u64 = ROOM + READING;
 
 /// The longest record read: one record must fit in memory. A longer one, such as a decompression bomb's, makes its
 /// object unreadable, which leaves its message to the queue's redrive policy.
@@ -391,8 +394,9 @@ pub struct ObjectSource {
     waiting: VecDeque<(u64, ObjectRef)>,
     /// Objects being fetched, in the order they are read, with the message that named each.
     ahead: VecDeque<(u64, ObjectRef, Fetched)>,
-    /// What the objects fetched ahead hold together, shared with their fetches.
-    room: Arc<Room>,
+    /// What the objects fetched hold together, shared with their fetches: the room for those fetched ahead, and what
+    /// the one being read holds of it or above it.
+    holdings: Arc<Holdings>,
     /// How many objects to fetch ahead, from 1 to [`AHEAD`]. When an object is opened it doubles if that object had
     /// nothing ready for the reader, and falls by one if its fetch had to wait for the reader.
     ahead_target: usize,
@@ -455,7 +459,7 @@ impl ObjectSource {
             next_message: 0,
             waiting: VecDeque::new(),
             ahead: VecDeque::new(),
-            room: Arc::default(),
+            holdings: Arc::new(Holdings::within(ROOM as usize, READING as usize)),
             ahead_target: 1,
             current: None,
             reads: HashMap::new(),
@@ -617,7 +621,7 @@ impl ObjectSource {
             if !self.held.lock().contains_key(&message) {
                 continue;
             }
-            self.room.make_current(&fetched.shared);
+            fetched.shared.make_current();
             let partition = fetched.partition;
             self.reads.insert(
                 partition,
@@ -657,10 +661,7 @@ impl ObjectSource {
             None => Cutting::Frames(Framer::refusing(self.framing.clone(), self.max_record as usize)),
         };
         let (tx, blocks) = std::sync::mpsc::channel();
-        let shared = Arc::new(Shared {
-            room: self.room.clone(),
-            ..Shared::default()
-        });
+        let shared = Arc::new(Shared::new(self.holdings.clone()));
         let (runtime, version, counted) = (self.runtime.clone(), object.version.clone(), shared.clone());
         std::thread::Builder::new()
             .name("object-source-fetch".to_string())
@@ -938,12 +939,7 @@ impl Source for ObjectSource {
             .iter()
             .map(|c| &c.fetched)
             .chain(self.ahead.iter().map(|(_, _, f)| f));
-        Some(
-            untaken
-                + fetches
-                    .map(|f| f.shared.queued() + f.shared.holds.load(Ordering::Relaxed))
-                    .sum::<u64>(),
-        )
+        Some(untaken + fetches.map(|f| f.shared.waiting().counted.total() as u64).sum::<u64>())
     }
 
     /// The queue's depth, as its sampler last measured it. Never a call to the queue on this thread.
@@ -1001,26 +997,19 @@ fn fetch(
 ) {
     let send = |fetch: Fetch| -> Result<(), String> {
         if let Fetch::Rows(_, size) = &fetch {
-            let mut waiting = shared.waiting();
-            if waiting.bytes >= QUEUED {
-                shared.stalled.store(true, Ordering::Relaxed);
-            }
-            while waiting.bytes >= QUEUED && !waiting.gone {
-                waiting = shared.taken.wait(waiting);
-            }
-            drop(waiting);
-            shared.room.queue(shared, *size as u64)?;
+            shared.wait_for_reader()?;
+            shared.waiting().bytes += *size as u64;
         }
         tx.send(Ok(fetch)).map_err(|_| READER_GONE.to_string())
     };
-    let hold = |bytes: u64| shared.room.hold(shared, bytes);
+    let hold = |bytes: u64| shared.hold(bytes, &runtime);
     let cut = hold(CHUNK)
-        .and_then(|()| open_object(store, runtime, path, version, &hold))
+        .and_then(|()| open_object(store, runtime.clone(), path, version, &hold))
         .and_then(|mut lines| match cutting {
-            Cutting::Frames(framer) => frames(&mut *lines, framer, &send, &hold),
-            Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send),
+            Cutting::Frames(framer) => frames(&mut *lines, framer, &send, shared, &runtime),
+            Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send, &hold),
         });
-    shared.room.release(shared);
+    shared.release();
     match cut {
         Ok(()) => drop(send(Fetch::End)),
         Err(why) if why == READER_GONE => {}
@@ -1028,27 +1017,34 @@ fn fetch(
     }
 }
 
-/// Cuts `lines` into records with `framer`, sending each block's as it is cut. Err says why the object is unreadable:
-/// a record the framer refuses, one over the longest, or one the object ends partway through.
+/// Cuts `lines` into records with `framer`, sending each block's as it is cut, what it holds taken of `shared`'s
+/// holdings first. Err says why the object is unreadable: a record the framer refuses, one over the longest, or one the
+/// object ends partway through.
 fn frames(
     lines: &mut dyn BufRead,
     mut framer: Framer,
     send: &impl Fn(Fetch) -> Result<(), String>,
-    hold: &impl Fn(u64) -> Result<(), String>,
+    shared: &Shared,
+    runtime: &tokio::runtime::Runtime,
 ) -> Result<(), String> {
     loop {
         let ready = lines.fill_buf().map_err(|e| e.to_string())?;
         let n = ready.len().min(READ_AHEAD);
+        if n > 0 {
+            shared.hold(framer.growth(n) as u64, runtime)?;
+            framer.push(&ready[..n]);
+            lines.consume(n);
+        }
+        // The records framed are a copy of what the framer holds, sent once the reader has room for them.
+        shared.wait_for_reader()?;
+        let copy = framer.held() as u64;
+        shared.hold(copy, runtime)?;
         let mut records = Framed::default();
         let cut = match n {
             0 => framer.finish(&mut records),
-            n => {
-                hold(framer.growth(n) as u64)?;
-                framer.push(&ready[..n]);
-                lines.consume(n);
-                framer.cut(&mut records).map(|()| 0)
-            }
+            _ => framer.cut(&mut records).map(|()| 0),
         };
+        shared.free(copy - records.size() as u64);
         send_rows(records.into_records(), send)?;
         match cut {
             Err(malformed) => return Err(format!("{}, at byte {}", malformed.what, malformed.at)),
@@ -1061,13 +1057,14 @@ fn frames(
     }
 }
 
-/// Reads `lines` as an Avro container file, sending its schema and then each block's values framed with `id`. An
-/// empty object has none.
+/// Reads `lines` as an Avro container file, sending its schema and then each block's values framed with `id`, once
+/// `hold` has room for them. An empty object has none.
 fn values(
     lines: &mut dyn BufRead,
     id: u32,
     max_record: u64,
     send: &impl Fn(Fetch) -> Result<(), String>,
+    hold: &impl Fn(u64) -> Result<(), String>,
 ) -> Result<(), String> {
     if lines.fill_buf().map_err(|e| e.to_string())?.is_empty() {
         return Ok(());
@@ -1080,6 +1077,7 @@ fn values(
         for value in values {
             out.push(&crate::io::avro::frame(id, &value), 0, 0, nowhere.clone(), None);
         }
+        hold(out.size() as u64)?;
         send_rows(out, send)?;
     }
     Ok(())
@@ -1152,21 +1150,16 @@ fn open_object(
 }
 
 /// What an object's fetch and its reader share.
-#[derive(Default)]
 struct Shared {
     waiting: Mutex<Waiting>,
     /// Told when the reader takes a chunk or is gone.
     taken: Condvar,
     /// The fetch found [`QUEUED`] bytes waiting and waited for the reader to take some.
     stalled: AtomicBool,
-    /// What the fetch holds besides the records it queued: its chunk, its decoder and its framer. Changed under its
-    /// room's lock.
-    holds: AtomicU64,
-    /// Whether its object is the one being read, which takes what it needs outside its room. Changed under its room's
-    /// lock.
+    /// Whether its object is the one being read, which takes of the holdings' reserve where the room is spent.
     current: AtomicBool,
-    /// What the objects its source fetches ahead hold together.
-    room: Arc<Room>,
+    /// What the objects its source fetches hold together.
+    holdings: Arc<Holdings>,
 }
 
 #[derive(Default)]
@@ -1175,9 +1168,24 @@ struct Waiting {
     bytes: u64,
     /// The reader is dropped, so nothing more is taken.
     gone: bool,
+    /// What the fetch has taken of its source's holdings: what it holds, and the records it sent and are not yet
+    /// taken.
+    counted: Counted,
+    /// Whether it holds the holdings' turn, which only the object being read takes.
+    turn: bool,
 }
 
 impl Shared {
+    fn new(holdings: Arc<Holdings>) -> Shared {
+        Shared {
+            waiting: Mutex::default(),
+            taken: Condvar::default(),
+            stalled: AtomicBool::default(),
+            current: AtomicBool::default(),
+            holdings,
+        }
+    }
+
     fn waiting(&self) -> MutexGuard<'_, Waiting> {
         self.waiting.lock()
     }
@@ -1185,6 +1193,95 @@ impl Shared {
     /// The bytes of records sent and not yet taken.
     fn queued(&self) -> u64 {
         self.waiting().bytes
+    }
+
+    /// Takes `bytes` more of the holdings, waiting on `runtime` until they fit: while its object is fetched ahead, in
+    /// the room; once it is the one read, of the reserve too, which holds what it holds at most. Err once its reader is
+    /// gone.
+    fn hold(&self, bytes: u64, runtime: &tokio::runtime::Runtime) -> Result<(), String> {
+        // What no memory holds never fits.
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        loop {
+            let mut freed = std::pin::pin!(self.holdings.freed.notified());
+            freed.as_mut().enable();
+            let mut waiting = self.waiting();
+            if waiting.gone {
+                return Err(READER_GONE.to_string());
+            }
+            let Waiting { counted, turn, .. } = &mut *waiting;
+            let took = match self.current.load(Ordering::Relaxed) {
+                true => self.holdings.take(bytes, counted, turn),
+                false => self.holdings.take_shared(bytes, counted),
+            };
+            if took {
+                return Ok(());
+            }
+            drop(waiting);
+            runtime.block_on(freed);
+        }
+    }
+
+    /// Gives back `bytes` it held.
+    fn free(&self, bytes: u64) {
+        let part = self.waiting().counted.split_off(bytes as usize);
+        self.holdings.give(part);
+    }
+
+    /// Waits while [`QUEUED`] bytes of records wait for the reader. Err once it is gone.
+    fn wait_for_reader(&self) -> Result<(), String> {
+        let mut waiting = self.waiting();
+        if waiting.bytes >= QUEUED {
+            self.stalled.store(true, Ordering::Relaxed);
+        }
+        while waiting.bytes >= QUEUED && !waiting.gone {
+            waiting = self.taken.wait(waiting);
+        }
+        match waiting.gone {
+            true => Err(READER_GONE.to_string()),
+            false => Ok(()),
+        }
+    }
+
+    /// Its object is the one being read now, so it takes of the reserve where the room is spent.
+    fn make_current(&self) {
+        self.current.store(true, Ordering::Relaxed);
+        self.holdings.freed.notify_waiters();
+    }
+
+    /// The reader took `bytes` of records it sent.
+    fn take_queued(&self, bytes: u64) {
+        let mut waiting = self.waiting();
+        waiting.bytes -= bytes;
+        let part = waiting.counted.split_off(bytes as usize);
+        drop(waiting);
+        self.holdings.give(part);
+        self.taken.notify_one();
+    }
+
+    /// Its fetch has ended: what it held besides the records it queued is given back.
+    fn release(&self) {
+        let mut waiting = self.waiting();
+        let held = waiting.counted.total() - waiting.bytes as usize;
+        let part = waiting.counted.split_off(held);
+        drop(waiting);
+        self.holdings.give(part);
+    }
+
+    /// Its reader is gone: everything it took is given back, what it queued dropped, and its fetch, should it wait for
+    /// the holdings or the reader, ends.
+    fn forget(&self) {
+        let mut waiting = self.waiting();
+        waiting.gone = true;
+        waiting.bytes = 0;
+        let counted = std::mem::take(&mut waiting.counted);
+        let turn = std::mem::take(&mut waiting.turn);
+        drop(waiting);
+        self.holdings.give(counted);
+        if turn {
+            self.holdings.release();
+        }
+        self.holdings.freed.notify_waiters();
+        self.taken.notify_one();
     }
 }
 
@@ -1205,8 +1302,7 @@ impl Fetched {
             .recv()
             .unwrap_or_else(|_| Err("its fetch stopped before the end of the object".to_string()))?;
         if let Fetch::Rows(_, size) = &fetch {
-            self.shared.waiting().bytes -= *size as u64;
-            self.shared.taken.notify_one();
+            self.shared.take_queued(*size as u64);
         }
         Ok(fetch)
     }
@@ -1215,85 +1311,7 @@ impl Fetched {
 impl Drop for Fetched {
     /// Lets a fetch waiting for room end.
     fn drop(&mut self) {
-        self.shared.room.forget(&self.shared);
-        self.shared.taken.notify_one();
-    }
-}
-
-/// What the objects a source fetches ahead hold together, which each fetch adds to before it allocates or queues.
-#[derive(Default)]
-struct Room {
-    held: Mutex<u64>,
-    /// Told when what is held falls, or a fetch's object becomes the one read, or its reader is gone.
-    freed: Condvar,
-}
-
-impl Room {
-    /// Adds `bytes` to what `fetch` holds. While its object is fetched ahead, waits until they fit; the object being
-    /// read never waits. Err once its reader is gone.
-    fn hold(&self, fetch: &Shared, bytes: u64) -> Result<(), String> {
-        let _held = self.admit(fetch, bytes)?;
-        fetch.holds.fetch_add(bytes, Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Queues `bytes` of records for `fetch`'s reader. While its object is fetched ahead, waits until they fit; the
-    /// object being read never waits. Err once its reader is gone.
-    fn queue(&self, fetch: &Shared, bytes: u64) -> Result<(), String> {
-        let _held = self.admit(fetch, bytes)?;
-        fetch.waiting().bytes += bytes;
-        Ok(())
-    }
-
-    /// The room with `bytes` more of `fetch`'s in it. While its object is fetched ahead, waits until they fit; the
-    /// object being read never waits. The lock is held until the caller has counted them. Err once its reader is gone.
-    fn admit(&self, fetch: &Shared, bytes: u64) -> Result<MutexGuard<'_, u64>, String> {
-        let mut held = self.held.lock();
-        loop {
-            if fetch.waiting().gone {
-                return Err(READER_GONE.to_string());
-            }
-            if fetch.current.load(Ordering::Relaxed) {
-                return Ok(held);
-            }
-            if *held + bytes <= ROOM {
-                *held += bytes;
-                return Ok(held);
-            }
-            held = self.freed.wait(held);
-        }
-    }
-
-    /// `fetch`'s object is the one being read now: what it holds and has queued leaves the room.
-    fn make_current(&self, fetch: &Shared) {
-        let mut held = self.held.lock();
-        if !fetch.current.swap(true, Ordering::Relaxed) {
-            *held -= fetch.holds.load(Ordering::Relaxed) + fetch.queued();
-        }
-        self.freed.notify_all();
-    }
-
-    /// `fetch`'s reader is gone: what it queued is dropped, and every fetch waiting for room looks again.
-    fn forget(&self, fetch: &Shared) {
-        let mut held = self.held.lock();
-        let mut waiting = fetch.waiting();
-        waiting.gone = true;
-        if !fetch.current.load(Ordering::Relaxed) {
-            *held -= waiting.bytes;
-        }
-        waiting.bytes = 0;
-        drop(waiting);
-        self.freed.notify_all();
-    }
-
-    /// `fetch` has ended, and what it held besides its queued records is freed.
-    fn release(&self, fetch: &Shared) {
-        let mut held = self.held.lock();
-        let bytes = fetch.holds.swap(0, Ordering::Relaxed);
-        if !fetch.current.load(Ordering::Relaxed) {
-            *held -= bytes;
-        }
-        self.freed.notify_all();
+        self.shared.forget();
     }
 }
 
@@ -1303,7 +1321,8 @@ fn decoder_bytes(magic: &[u8]) -> u64 {
     if magic.starts_with(&[0x1f, 0x8b]) {
         GZIP_DECODER
     } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-        zstd_window(&magic[4..]).unwrap_or(ZSTD_WINDOW) + ZSTD_DECODER
+        // The decoder refuses a larger window.
+        zstd_window(&magic[4..]).unwrap_or(ZSTD_WINDOW).min(ZSTD_WINDOW) + ZSTD_DECODER
     } else if magic.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
         // A frame's blocks are its largest size at most, and the decoder keeps two: the block it decodes and the one
         // before, which a linked block may refer to.
@@ -1416,11 +1435,19 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn fetch_in(room: &Arc<Room>) -> Arc<Shared> {
-        Arc::new(Shared {
-            room: room.clone(),
-            ..Shared::default()
-        })
+    /// Fetches sharing one source's holdings, and the runtime they wait on.
+    fn fetches() -> (Arc<Holdings>, Arc<Shared>, Arc<Shared>, Arc<tokio::runtime::Runtime>) {
+        let holdings = Arc::new(Holdings::within(ROOM as usize, READING as usize));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        (
+            holdings.clone(),
+            Arc::new(Shared::new(holdings.clone())),
+            Arc::new(Shared::new(holdings)),
+            Arc::new(runtime),
+        )
     }
 
     /// How long a fetch is given to show it does not wait, or that it does.
@@ -1428,40 +1455,58 @@ mod tests {
 
     #[test]
     fn a_fetch_ahead_waits_for_room_until_its_object_is_read() {
-        let room = Arc::new(Room::default());
-        let (first, second) = (fetch_in(&room), fetch_in(&room));
-        first.room.hold(&first, ROOM - CHUNK).unwrap();
+        let (holdings, first, second, runtime) = fetches();
+        first.hold(ROOM - CHUNK, &runtime).unwrap();
         let waiter = {
-            let second = second.clone();
-            std::thread::spawn(move || second.room.hold(&second, 2 * CHUNK))
+            let (second, runtime) = (second.clone(), runtime.clone());
+            std::thread::spawn(move || second.hold(2 * CHUNK, &runtime))
         };
         std::thread::sleep(SETTLE);
         assert!(!waiter.is_finished(), "a fetch ahead took more than the room");
-        room.make_current(&second);
+        second.make_current();
         waiter.join().unwrap().unwrap();
         assert_eq!(
-            *room.held.lock(),
-            ROOM - CHUNK,
-            "the object read holds outside the room"
+            holdings.held() as u64,
+            ROOM + CHUNK,
+            "the object read holds above the room"
         );
-        room.release(&first);
-        assert_eq!(*room.held.lock(), 0);
+        first.release();
+        second.release();
+        assert_eq!(holdings.held(), 0);
     }
 
     #[test]
     fn a_fetch_ahead_waiting_for_room_ends_once_its_reader_is_gone() {
-        let room = Arc::new(Room::default());
-        let (first, second) = (fetch_in(&room), fetch_in(&room));
-        first.room.queue(&first, ROOM).unwrap();
+        let (holdings, first, second, runtime) = fetches();
+        first.hold(ROOM, &runtime).unwrap();
+        first.waiting().bytes += ROOM;
         let waiter = {
-            let second = second.clone();
-            std::thread::spawn(move || second.room.queue(&second, 1))
+            let (second, runtime) = (second.clone(), runtime.clone());
+            std::thread::spawn(move || second.hold(1, &runtime))
         };
         std::thread::sleep(SETTLE);
-        room.forget(&second);
+        second.forget();
         assert_eq!(waiter.join().unwrap(), Err(READER_GONE.to_string()));
-        room.forget(&first);
-        assert_eq!(*room.held.lock(), 0, "what a reader never took leaves the room with it");
+        first.release();
+        assert_eq!(holdings.held() as u64, ROOM, "records queued are held until taken");
+        first.forget();
+        assert_eq!(holdings.held(), 0, "what a reader never took is given back with it");
+    }
+
+    #[test]
+    fn what_the_reader_takes_makes_room_for_a_fetch_ahead() {
+        let (holdings, first, second, runtime) = fetches();
+        first.hold(ROOM, &runtime).unwrap();
+        first.waiting().bytes += ROOM;
+        let waiter = {
+            let (second, runtime) = (second.clone(), runtime.clone());
+            std::thread::spawn(move || second.hold(CHUNK, &runtime))
+        };
+        std::thread::sleep(SETTLE);
+        assert!(!waiter.is_finished(), "a fetch ahead took more than the room");
+        first.take_queued(CHUNK);
+        waiter.join().unwrap().unwrap();
+        assert_eq!(holdings.held() as u64, ROOM);
     }
 
     #[test]
