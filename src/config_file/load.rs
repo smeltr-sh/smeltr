@@ -524,7 +524,7 @@ pub fn to_byte(s: &str, field: &str) -> Result<u8, String> {
 /// always a column of nulls), plus `Array`/`Struct` recursion. A `datetime` in either spelling is refused here: it is
 /// legal only as a parser's own top-level declared field (`to_declared_fields`), because the conversion it names
 /// replaces one batch slot in place -- nested one level down, there is no slot of its own to convert.
-pub(crate) fn to_data_type(dto: &DataTypeDto) -> Result<DataType, String> {
+fn to_data_type(dto: &DataTypeDto) -> Result<DataType, String> {
     match dto {
         DataTypeDto::Scalar(s) => match s.as_str() {
             "bool" => Ok(DataType::Bool),

@@ -28,11 +28,11 @@ use crate::io::table::{self, Bound};
 use super::metadata::{Literal, NestedField, PartitionSpec, Primitive, ROW_LINEAGE_VERSION, Schema, Transform, Type};
 
 /// `commit.manifest.target-size-bytes`'s default: the size a merged manifest is packed up to.
-pub const TARGET_SIZE_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const TARGET_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// `commit.manifest.min-count-to-merge`'s default: how many small manifests of one spec there must be before any
 /// are merged.
-pub const MIN_COUNT_TO_MERGE: usize = 100;
+pub(crate) const MIN_COUNT_TO_MERGE: usize = 100;
 
 /// The code points of a string bound, and the bytes of a binary one; Iceberg's `write.metadata.metrics.default`.
 const TRUNCATE_LENGTH: usize = 16;
@@ -66,12 +66,12 @@ impl Status {
 
 /// Column statistics, each keyed by field id. Bounds are single-value serialized (the spec's appendix D).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Stats {
-    pub column_sizes: BTreeMap<i32, i64>,
-    pub value_counts: BTreeMap<i32, i64>,
-    pub null_value_counts: BTreeMap<i32, i64>,
-    pub lower_bounds: BTreeMap<i32, Vec<u8>>,
-    pub upper_bounds: BTreeMap<i32, Vec<u8>>,
+pub(crate) struct Stats {
+    column_sizes: BTreeMap<i32, i64>,
+    value_counts: BTreeMap<i32, i64>,
+    null_value_counts: BTreeMap<i32, i64>,
+    lower_bounds: BTreeMap<i32, Vec<u8>>,
+    upper_bounds: BTreeMap<i32, Vec<u8>>,
 }
 
 /// One data file in a manifest. A `None` sequence number or snapshot id is one inherited from the manifest's entry
@@ -80,21 +80,21 @@ pub struct Stats {
 pub struct DataFileEntry {
     pub status: Status,
     pub snapshot_id: Option<i64>,
-    pub sequence_number: Option<i64>,
-    pub file_sequence_number: Option<i64>,
+    sequence_number: Option<i64>,
+    file_sequence_number: Option<i64>,
     pub file_path: String,
-    pub file_format: String,
+    file_format: String,
     /// One value per partition field, in the spec's order.
     pub partition: Vec<Option<Literal>>,
     pub record_count: i64,
-    pub file_size_in_bytes: i64,
-    pub stats: Stats,
+    pub(crate) file_size_in_bytes: i64,
+    stats: Stats,
     /// The row id of the file's first row; `None` for a file this snapshot adds, which inherits it from its
     /// manifest's. A file read from a manifest has it made explicit.
-    pub first_row_id: Option<i64>,
+    pub(crate) first_row_id: Option<i64>,
     /// The data file's fields this writer does not make and another writer set, by name, their union's branch taken:
     /// a merge writes them back unchanged. Each is one of [`CARRIED`].
-    pub carried: Vec<(String, Value)>,
+    carried: Vec<(String, Value)>,
 }
 
 /// The data file's optional fields this writer never fills, which a merge carries from the manifest it read.
@@ -108,7 +108,7 @@ const CARRIED: [&str; 5] = [
 
 impl DataFileEntry {
     /// A Parquet file the snapshot `snapshot_id` adds. Its sequence numbers are the snapshot's, assigned at commit.
-    pub fn added(
+    pub(crate) fn added(
         snapshot_id: i64,
         file_path: String,
         partition: Vec<Option<Literal>>,
@@ -135,7 +135,7 @@ impl DataFileEntry {
 
 /// What a manifest holds: data files, or delete files, which this writer never writes but keeps in a list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Content {
+enum Content {
     Data,
     Deletes,
 }
@@ -146,40 +146,40 @@ pub enum Content {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ManifestFile {
     pub manifest_path: String,
-    pub manifest_length: i64,
-    pub partition_spec_id: i32,
-    pub content: Content,
+    manifest_length: i64,
+    pub(crate) partition_spec_id: i32,
+    content: Content,
     /// `None` for a manifest this snapshot adds: the snapshot's sequence number, assigned at commit.
-    pub sequence_number: Option<i64>,
+    sequence_number: Option<i64>,
     /// The least data sequence number of the manifest's live files; `None` when that is the snapshot's own.
-    pub min_sequence_number: Option<i64>,
-    pub added_snapshot_id: i64,
-    pub added_files_count: Option<i32>,
-    pub existing_files_count: Option<i32>,
-    pub deleted_files_count: Option<i32>,
-    pub added_rows_count: Option<i64>,
-    pub existing_rows_count: Option<i64>,
-    pub deleted_rows_count: Option<i64>,
+    min_sequence_number: Option<i64>,
+    added_snapshot_id: i64,
+    pub(crate) added_files_count: Option<i32>,
+    pub(crate) existing_files_count: Option<i32>,
+    pub(crate) deleted_files_count: Option<i32>,
+    pub(crate) added_rows_count: Option<i64>,
+    pub(crate) existing_rows_count: Option<i64>,
+    pub(crate) deleted_rows_count: Option<i64>,
     /// One per partition field, in the spec's order.
-    pub partitions: Vec<FieldSummary>,
+    partitions: Vec<FieldSummary>,
     /// The row id of the first row of the manifest's first file without one of its own; `None` until a snapshot of a
     /// table that tracks row lineage assigns it (`assign_row_ids`).
-    pub first_row_id: Option<i64>,
+    first_row_id: Option<i64>,
 }
 
 /// The values one partition field takes across a manifest's entries. Bounds are single-value serialized.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FieldSummary {
-    pub contains_null: bool,
+struct FieldSummary {
+    contains_null: bool,
     /// Known only for a floating-point field.
-    pub contains_nan: Option<bool>,
-    pub lower_bound: Option<Vec<u8>>,
-    pub upper_bound: Option<Vec<u8>>,
+    contains_nan: Option<bool>,
+    lower_bound: Option<Vec<u8>>,
+    upper_bound: Option<Vec<u8>>,
 }
 
 /// Column statistics from a Parquet footer. A leaf without an Iceberg field id is skipped; a leaf inside a list or a
 /// map has sizes and counts but no bounds, and so does one whose row groups do not all carry min and max.
-pub fn stats(metadata: &ParquetMetaData, schema: &Schema) -> Stats {
+pub(crate) fn stats(metadata: &ParquetMetaData, schema: &Schema) -> Stats {
     let mut types = HashMap::new();
     bounded_types(&schema.fields, &mut types);
     let mut stats = Stats::default();
@@ -287,7 +287,7 @@ fn truncate_binary_upper(bytes: &[u8]) -> Option<Vec<u8>> {
 
 /// A manifest of data files, for a table of `format_version` whose current schema is `schema`, partitioned by `spec`,
 /// whose fields' values are of `types`.
-pub fn write_manifest(
+pub(crate) fn write_manifest(
     format_version: u8,
     schema: &Schema,
     spec: &PartitionSpec,
@@ -322,7 +322,7 @@ pub fn write_manifest(
 
 /// The list entry for a manifest this snapshot just wrote, at `path`, `length` bytes long, for a table whose current
 /// schema is `schema`.
-pub fn summarize(
+pub(crate) fn summarize(
     path: String,
     length: u64,
     schema: &Schema,
@@ -364,7 +364,7 @@ pub fn summarize(
 
 /// Sets each count `manifest` lacks from `entries`, the manifest's own as [`read_manifest`] gives them; a count the
 /// list held is kept.
-pub fn fill_counts(manifest: &mut ManifestFile, entries: &[DataFileEntry]) {
+pub(crate) fn fill_counts(manifest: &mut ManifestFile, entries: &[DataFileEntry]) {
     let files = |status| Some(files_count(entries, status));
     let rows = |status| Some(rows_count(entries, status));
     manifest.added_files_count = manifest.added_files_count.or_else(|| files(Status::Added));
@@ -449,7 +449,7 @@ fn literal_bytes(literal: &Literal) -> Vec<u8> {
 
 /// A snapshot's manifest list, for a table of `format_version`. A manifest whose sequence numbers are `None` gets
 /// `sequence_number`, the snapshot's. A manifest with a count still `None` is an error.
-pub fn write_manifest_list(
+pub(crate) fn write_manifest_list(
     format_version: u8,
     snapshot_id: i64,
     parent: Option<i64>,
@@ -475,7 +475,7 @@ pub fn write_manifest_list(
 /// Assigns row ids from `next_row_id` on to each data manifest of a snapshot's `manifests` that has none, in order,
 /// each as many as its added and existing rows, so that every file without a row id of its own inherits one. Gives
 /// how many it assigned: the snapshot's `added-rows`. Every count must be set.
-pub fn assign_row_ids(manifests: &mut [ManifestFile], next_row_id: i64) -> i64 {
+pub(crate) fn assign_row_ids(manifests: &mut [ManifestFile], next_row_id: i64) -> i64 {
     let mut next = next_row_id;
     for m in manifests.iter_mut() {
         if m.content == Content::Data && m.first_row_id.is_none() {
@@ -615,7 +615,7 @@ pub fn read_manifest(bytes: &[u8], manifest: &ManifestFile) -> Result<Vec<DataFi
 /// The groups of `manifests` worth merging, each a list of indices to rewrite into one manifest: small data
 /// manifests of one partition spec, packed in order up to `target_bytes`, once a spec has `min_count` of them. A
 /// group holds two manifests or more.
-pub fn merge_plan(manifests: &[ManifestFile], target_bytes: u64, min_count: usize) -> Vec<Vec<usize>> {
+pub(crate) fn merge_plan(manifests: &[ManifestFile], target_bytes: u64, min_count: usize) -> Vec<Vec<usize>> {
     let mut by_spec: Vec<(i32, Vec<usize>)> = Vec::new();
     for (i, m) in manifests.iter().enumerate() {
         // A manifest listed with no sequence number was written before format version 2: its files' sequence
@@ -650,7 +650,7 @@ pub fn merge_plan(manifests: &[ManifestFile], target_bytes: u64, min_count: usiz
 /// The entries of a merged manifest written by the snapshot `snapshot_id`, from the entries of the manifests it
 /// replaces, read with `read_manifest` so their sequence numbers are explicit. What an earlier snapshot added or kept
 /// is now existing, and what it deleted is gone; what this snapshot added or deleted stays so.
-pub fn merge(entries: Vec<DataFileEntry>, snapshot_id: i64) -> Vec<DataFileEntry> {
+pub(crate) fn merge(entries: Vec<DataFileEntry>, snapshot_id: i64) -> Vec<DataFileEntry> {
     entries
         .into_iter()
         .filter_map(|mut entry| {

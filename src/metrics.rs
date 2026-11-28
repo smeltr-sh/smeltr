@@ -39,12 +39,12 @@ pub enum MetricValue {
 }
 
 impl MetricValue {
-    pub fn is_counter(&self) -> bool {
+    fn is_counter(&self) -> bool {
         matches!(self, MetricValue::Counter(_) | MetricValue::FloatCounter(_))
     }
 
     /// A counter's increase of nothing, which a reader may drop before one that moved.
-    pub fn is_idle(&self) -> bool {
+    fn is_idle(&self) -> bool {
         matches!(self, MetricValue::Counter(0)) || matches!(self, MetricValue::FloatCounter(v) if *v == 0.0)
     }
 }
@@ -85,7 +85,7 @@ impl MetricSample {
 pub const SUBSCRIBER_HEARTBEAT: &str = "heartbeat";
 
 /// The supervisor's cursor for what it has sent its runtime to mirror, moved once the frame is on the pipe.
-pub const SUBSCRIBER_MIRROR: &str = "mirror";
+pub(crate) const SUBSCRIBER_MIRROR: &str = "mirror";
 
 /// Where one subscriber has read the registry to: each counter's total as of its last move. Gauges need none.
 pub type Cursor = HashMap<MetricKey, MetricValue>;
@@ -127,7 +127,7 @@ impl Metrics {
     /// Raise counter `name{labels}` to `total`, a count something else keeps for the life of this process. A total
     /// below what it holds changes nothing, so the counter never falls. A no-op on a name already used as another
     /// kind.
-    pub fn count_to(&self, name: &'static str, labels: &[(&'static str, &str)], total: u64) {
+    pub(crate) fn count_to(&self, name: &'static str, labels: &[(&'static str, &str)], total: u64) {
         let key = MetricKey::new(name, labels);
         let mut values = self.values.lock();
         if let MetricValue::Counter(held) = values.entry(key).or_insert(MetricValue::Counter(0)) {
@@ -137,7 +137,7 @@ impl Metrics {
 
     /// Add `seconds` to `name{labels}`, as [`Metrics::incr`] adds a whole number. A no-op on a name already used as
     /// another kind.
-    pub fn incr_seconds(&self, name: &'static str, labels: &[(&'static str, &str)], seconds: f64) {
+    fn incr_seconds(&self, name: &'static str, labels: &[(&'static str, &str)], seconds: f64) {
         if seconds == 0.0 {
             return;
         }
@@ -151,13 +151,13 @@ impl Metrics {
 
     /// Start counter `name{labels}` at 0 if nothing has written it, so it reports 0 rather than nothing until it first
     /// moves. Once, where the series is known to exist: a thread's start, not its hot path.
-    pub fn start(&self, name: &'static str, labels: &[(&'static str, &str)]) {
+    fn start(&self, name: &'static str, labels: &[(&'static str, &str)]) {
         let key = MetricKey::new(name, labels);
         self.values.lock().entry(key).or_insert(MetricValue::Counter(0));
     }
 
     /// Set `name{labels}` to `value`, overwriting whatever was there.
-    pub fn gauge(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
+    pub(crate) fn gauge(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
         let key = MetricKey::new(name, labels);
         self.values.lock().insert(key, MetricValue::Gauge(value));
     }
@@ -183,7 +183,7 @@ impl Metrics {
     }
 
     /// Advance `subscriber`'s cursor past `delivered`. Anything not named stays owed.
-    pub fn commit_delta(&self, subscriber: &str, delivered: &[MetricSample]) {
+    pub(crate) fn commit_delta(&self, subscriber: &str, delivered: &[MetricSample]) {
         let mut cursors = self.cursors.lock();
         advance(cursors.entry(subscriber.to_string()).or_default(), delivered);
     }
@@ -221,7 +221,7 @@ impl Metrics {
     }
 
     /// Fold in samples another process read out of its own registry: a counter's increase adds, a gauge replaces.
-    pub fn mirror(&self, samples: impl IntoIterator<Item = MetricSample>) {
+    pub(crate) fn mirror(&self, samples: impl IntoIterator<Item = MetricSample>) {
         let mut mirrored = self.mirrored.lock();
         for sample in samples {
             let held = mirrored.entry(sample.key).or_insert(MetricValue::Counter(0));
@@ -235,14 +235,14 @@ impl Metrics {
 
     /// [`Metrics::snapshot`] over what this process mirrors: each counter's total since this process started
     /// mirroring it.
-    pub fn snapshot_mirrored(&self) -> Vec<MetricSample> {
+    pub(crate) fn snapshot_mirrored(&self) -> Vec<MetricSample> {
         delta(&self.mirrored.lock(), None)
     }
 
     /// Drop the mirrored gauges, once the process that sent them is gone, since nothing now says what they measured.
     /// Its counters stay, and the next process's counts add to them: a total this process reports, alone or summed
     /// with its own share, then never falls, which Prometheus would read as a reset and count again.
-    pub fn forget_mirrored(&self) {
+    pub(crate) fn forget_mirrored(&self) {
         self.mirrored.lock().retain(|_, value| value.is_counter());
     }
 
@@ -326,19 +326,19 @@ impl MetricsHandle {
         &self.registry
     }
 
-    pub fn incr(&self, name: &'static str, labels: &[(&'static str, &str)], delta: u64) {
+    pub(crate) fn incr(&self, name: &'static str, labels: &[(&'static str, &str)], delta: u64) {
         self.registry.incr(name, &self.with_thread(labels), delta);
     }
 
-    pub fn start(&self, name: &'static str, labels: &[(&'static str, &str)]) {
+    pub(crate) fn start(&self, name: &'static str, labels: &[(&'static str, &str)]) {
         self.registry.start(name, &self.with_thread(labels));
     }
 
-    pub fn incr_seconds(&self, name: &'static str, labels: &[(&'static str, &str)], seconds: f64) {
+    pub(crate) fn incr_seconds(&self, name: &'static str, labels: &[(&'static str, &str)], seconds: f64) {
         self.registry.incr_seconds(name, &self.with_thread(labels), seconds);
     }
 
-    pub fn gauge(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
+    pub(crate) fn gauge(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
         self.registry.gauge(name, &self.with_thread(labels), value);
     }
 
@@ -351,10 +351,10 @@ impl MetricsHandle {
 }
 
 /// The label `MetricsHandle` stamps on everything it writes.
-pub const THREAD_LABEL: &str = "thread";
+pub(crate) const THREAD_LABEL: &str = "thread";
 
 /// The label that names a route beside its `route` label, its id (`Subjects::resolve`).
-pub const ROUTE_NAME_LABEL: &str = "route_name";
+const ROUTE_NAME_LABEL: &str = "route_name";
 
 /// Config for the smeltr metrics source (`plan::topology::SourceKind::Metrics`).
 #[derive(Clone, Copy, Debug)]
@@ -389,13 +389,13 @@ pub struct MetricsSource {
 /// compiled topology that produced every id the deployment labels a metric with.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Subjects {
-    pub sources: Vec<String>,
-    pub destinations: Vec<String>,
-    pub pipelines: Vec<String>,
-    pub steps: Vec<Vec<String>>,
+    pub(crate) sources: Vec<String>,
+    pub(crate) destinations: Vec<String>,
+    pub(crate) pipelines: Vec<String>,
+    pub(crate) steps: Vec<Vec<String>>,
     /// Each route's `RouteConfig::name` by its id.
     #[serde(default)]
-    pub routes: std::collections::HashMap<String, String>,
+    pub(crate) routes: std::collections::HashMap<String, String>,
 }
 
 impl Subjects {
@@ -404,7 +404,7 @@ impl Subjects {
     /// and rewritten last. A capture's thread labels by name already, since its source may be in no deployment.
     ///
     /// A `route` label keeps the route's id, which outlives a rename, and gains [`ROUTE_NAME_LABEL`] beside it.
-    pub fn resolve<K: AsRef<str> + From<&'static str>>(&self, labels: &mut Vec<(K, String)>) {
+    pub(crate) fn resolve<K: AsRef<str> + From<&'static str>>(&self, labels: &mut Vec<(K, String)>) {
         if labels
             .iter()
             .any(|(k, v)| k.as_ref() == THREAD_LABEL && v == crate::worker::capture::CAPTURE_LABEL)
@@ -454,7 +454,7 @@ fn resolve_subject(names: &[String], value: &str) -> String {
 }
 
 /// The `__source.topic` value every `MetricsSource` record carries.
-pub const METRICS_TOPIC: &str = "__smeltr_metrics";
+const METRICS_TOPIC: &str = "__smeltr_metrics";
 
 impl MetricsSource {
     pub fn new(metrics: std::sync::Arc<Metrics>, config: MetricsSourceConfig) -> MetricsSource {
@@ -472,7 +472,7 @@ impl MetricsSource {
     }
 
     /// `self`, labeling each record's subjects by the names in `subjects`.
-    pub fn with_subjects(mut self, subjects: Arc<Subjects>) -> MetricsSource {
+    pub(crate) fn with_subjects(mut self, subjects: Arc<Subjects>) -> MetricsSource {
         self.subjects = subjects;
         self
     }
@@ -566,7 +566,7 @@ impl Source for MetricsSource {
     }
 }
 
-pub mod exposition;
+pub(crate) mod exposition;
 
 #[cfg(test)]
 mod fuzz;

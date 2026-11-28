@@ -15,11 +15,11 @@ use bytemuck::{AnyBitPattern, NoUninit};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverBudget {
     /// Bytes the refused allocation asked for, after rounding up to the bucket size that would have been allocated.
-    pub requested: usize,
+    requested: usize,
     /// Bytes already charged when the request arrived.
-    pub used: usize,
+    used: usize,
     /// The ceiling.
-    pub limit: usize,
+    limit: usize,
 }
 
 impl std::fmt::Display for OverBudget {
@@ -71,7 +71,7 @@ impl MemoryBudget {
 
     /// Moves the ceiling to `limit`, for every pool sharing this budget. A ceiling below what is charged refuses every
     /// fresh allocation until enough is released. No-op on an unlimited budget.
-    pub fn set_limit(&self, limit: usize) {
+    pub(crate) fn set_limit(&self, limit: usize) {
         if let Some(state) = self.0.as_ref() {
             state.limit.store(limit, Ordering::Relaxed);
         }
@@ -168,7 +168,7 @@ pub fn quiet_refusals() {
 
 /// The global allocator: jemalloc, or mimalloc on Windows, counting the bytes each thread holds, so a step's heap beside its columns can be
 /// held to the budget. Counting never fails and never panics; only `check` refuses.
-pub struct Counting;
+pub(crate) struct Counting;
 
 thread_local! {
     /// Bytes this thread allocated less what it freed, leaving out column buffers, which the budget charges itself. A
@@ -203,7 +203,7 @@ static NEXT_SHARD: AtomicUsize = AtomicUsize::new(0);
 
 /// What the process's own allocations hold now: what it allocated and has not freed, whatever the allocator keeps of
 /// what was freed. Memory a C library allocates itself is not in it.
-pub fn allocated_bytes() -> usize {
+pub(crate) fn allocated_bytes() -> usize {
     let sum: isize = ALLOCATED.iter().map(|s| s.0.load(Ordering::Relaxed)).sum();
     sum.max(0) as usize
 }
@@ -247,7 +247,7 @@ unsafe impl GlobalAlloc for Counting {
 /// Hands back this thread's free pages as [`release_idle`] does, unless it did within [`RELEASE_EVERY`]. For a thread
 /// that cannot tell when it goes idle, only that it is about to wait: each wait hands back what the work before it
 /// freed, at a bounded cost while waits come quickly. Whether it handed them back.
-pub fn release_if_due() -> bool {
+pub(crate) fn release_if_due() -> bool {
     thread_local! {
         static RELEASED: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
     }
@@ -265,7 +265,7 @@ const RELEASE_EVERY: std::time::Duration = std::time::Duration::from_millis(100)
 
 /// Hands back what this thread's allocator holds free for it. Each thread caches blocks it freed for its own next
 /// allocations, so a thread that has gone idle keeps whatever its last work freed until it works again.
-pub fn release_idle() {
+pub(crate) fn release_idle() {
     // jemalloc's background threads hand free pages to the OS; the thread's cache goes back to the arenas only here.
     // SAFETY: the name is NUL-terminated, and `thread.tcache.flush` reads and writes nothing through the pointers.
     #[cfg(unix)]
@@ -288,7 +288,7 @@ pub fn release_idle() {
 /// Hands every page the process has freed back to the OS now, rather than once it has gone unused for jemalloc's
 /// `dirty_decay_ms`. Until then those pages count against a container's memory limit as if they were still held.
 /// Whether the allocator did it.
-pub fn purge_freed() -> bool {
+pub(crate) fn purge_freed() -> bool {
     // `4096` is jemalloc's `MALLCTL_ARENAS_ALL`: every arena at once.
     // SAFETY: the name is NUL-terminated, and `arena.<i>.purge` reads and writes nothing through the pointers.
     #[cfg(unix)]
@@ -317,13 +317,13 @@ pub fn purge_freed() -> bool {
 /// `_RJEM_MALLOC_CONF`, overrides them.
 #[cfg(unix)]
 #[unsafe(export_name = "_rjem_malloc_conf")]
-pub static MALLOC_CONF: Conf =
+static MALLOC_CONF: Conf =
     Conf(c"background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:0,thp:always,metadata_thp:always".as_ptr());
 
 /// A C string jemalloc reads at its start.
 #[cfg(unix)]
 #[repr(transparent)]
-pub struct Conf(*const std::ffi::c_char);
+struct Conf(*const std::ffi::c_char);
 
 // SAFETY: it points at a static string nothing writes.
 #[cfg(unix)]
@@ -341,13 +341,13 @@ const SCRATCH_CHUNK: usize = 64 << 10;
 
 /// While it lives, what this thread allocates beside its columns is charged to `budget` at each `check`, and released
 /// when it drops. Scratches nest: an inner one counts from where it began, and the outer one sees what it left behind.
-pub struct Scratch {
+pub(crate) struct Scratch {
     prior: Option<Charge>,
     prior_ceiling: isize,
 }
 
 impl Scratch {
-    pub fn begin(budget: &MemoryBudget) -> Scratch {
+    pub(crate) fn begin(budget: &MemoryBudget) -> Scratch {
         let start = LIVE.get();
         let charge = budget.limit().map(|_| Charge {
             budget: budget.clone(),
@@ -375,7 +375,7 @@ impl Drop for Scratch {
 /// input: a record can then overshoot by what it allocated since the last call, never by its whole expansion. Unwinds
 /// with an `OverBudget` payload when the budget refuses; does nothing outside a `Scratch`.
 #[inline]
-pub fn check() {
+pub(crate) fn check() {
     if LIVE.get() > CEILING.get() {
         charge_scratch();
     }
@@ -430,7 +430,7 @@ const MIN_ALLOC: usize = 8;
 
 impl Buffer {
     /// Panics if `capacity` is not a multiple of `size_of::<T>()`.
-    pub fn as_slice<T: AnyBitPattern>(&self) -> &[T] {
+    pub(crate) fn as_slice<T: AnyBitPattern>(&self) -> &[T] {
         let full_bytes: &[u8] = bytemuck::cast_slice(&self.data);
         bytemuck::cast_slice(&full_bytes[..self.capacity])
     }
@@ -464,11 +464,11 @@ impl Buffer {
     }
 
     /// The bytes it can grow to without taking a new buffer.
-    pub fn room(&self) -> usize {
+    pub(crate) fn room(&self) -> usize {
         self.data.len() * 8
     }
 
-    pub fn grow(&mut self, buffer_pool: &mut BufferPool, new_capacity: usize) {
+    pub(crate) fn grow(&mut self, buffer_pool: &mut BufferPool, new_capacity: usize) {
         if new_capacity <= self.data.len() * 8 {
             self.capacity = new_capacity;
             return;
@@ -548,22 +548,22 @@ impl BufferPool {
 
     /// Keep at most `bytes` idle after `trim`. The budget is shared, and another pool's idle buffers are charged where
     /// this one cannot free them; a cap bounds how much of the budget a refused pool finds taken that way.
-    pub fn with_idle_cap(mut self, bytes: usize) -> Self {
+    pub(crate) fn with_idle_cap(mut self, bytes: usize) -> Self {
         self.idle_cap = bytes;
         self
     }
 
-    pub fn budget(&self) -> &MemoryBudget {
+    pub(crate) fn budget(&self) -> &MemoryBudget {
         &self.budget
     }
 
     /// Whether the pool holds free buffers, which are charged though nothing uses them.
-    pub fn holds_idle(&self) -> bool {
+    pub(crate) fn holds_idle(&self) -> bool {
         self.classes.iter().any(|c| !c.free.is_empty())
     }
 
     /// An empty pool with this one's budget and cap.
-    pub fn empty_like(&self) -> Self {
+    pub(crate) fn empty_like(&self) -> Self {
         Self::with_budget(self.budget.clone()).with_idle_cap(self.idle_cap)
     }
 
@@ -573,7 +573,7 @@ impl BufferPool {
     /// charged and never refused.
     /// Unwinds as an allocation of `bytes` the budget refused: for a request no columnar buffer can hold at all, such as
     /// more elements than a `u32` offset counts. The runtime takes it as it takes any refusal.
-    pub fn refuse(&self, bytes: usize) -> ! {
+    pub(crate) fn refuse(&self, bytes: usize) -> ! {
         refuse(self.budget.refusal_for(bytes))
     }
 
@@ -616,7 +616,7 @@ impl BufferPool {
 
     /// End a batch, once every buffer it took is given back. Each size class keeps as many free buffers as it had out at
     /// once in the most demanding of the last `TRIM_WINDOW` batches, and frees the rest, oldest first.
-    pub fn trim(&mut self) {
+    pub(crate) fn trim(&mut self) {
         for class in &mut self.classes {
             class.recent[self.batch] = class.peak;
             let keep = class.recent.iter().copied().max().unwrap_or(0);

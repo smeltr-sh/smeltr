@@ -13,12 +13,12 @@ use std::fmt::Write as _;
 use super::{MetricSample, MetricValue};
 
 /// What a scrape is answered with.
-pub const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 /// `samples` in the text format, families by name. A series given twice sums its counters and otherwise keeps the
 /// earlier sample, so a caller puts the samples it trusts most first. A sample whose metric or label name Prometheus
 /// would refuse is left out, since one would cost every other series in the scrape.
-pub fn render(samples: impl IntoIterator<Item = MetricSample>) -> String {
+pub(crate) fn render(samples: impl IntoIterator<Item = MetricSample>) -> String {
     let mut families: BTreeMap<&'static str, Family> = BTreeMap::new();
     // Where each series already written sits in its family.
     let mut seen: HashMap<(&'static str, Labels), usize> = HashMap::new();

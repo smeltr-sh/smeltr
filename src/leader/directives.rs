@@ -17,7 +17,7 @@ pub struct Directives(Mutex<HashMap<String, Held>>);
 
 /// How long a request waits for a beat to take it: a minute, and never less than the window a worker counts as
 /// heartbeating, so only a worker that has gone misses it.
-pub fn untaken_for() -> Duration {
+fn untaken_for() -> Duration {
     Duration::from_secs(60).max(super::heartbeat_window())
 }
 
@@ -45,7 +45,7 @@ impl Directives {
     ///
     /// A beat that names the pending request as taken ends it. So does a worker saying it is stopping: whatever
     /// was pending, a worker on its way out acts on nothing more.
-    pub fn heard(
+    pub(crate) fn heard(
         &self,
         worker_id: &str,
         accepts: Vec<DirectiveAction>,
@@ -63,7 +63,7 @@ impl Directives {
 
     /// Asks `worker_id` for `action` on its next heartbeat, in place of anything it has not yet taken. Refused for
     /// a worker that has not said it does that.
-    pub fn ask(&self, worker_id: &str, action: DirectiveAction) -> Result<(), String> {
+    pub(crate) fn ask(&self, worker_id: &str, action: DirectiveAction) -> Result<(), String> {
         let mut workers = self.0.lock();
         let Some(held) = workers.get_mut(worker_id).filter(|h| h.accepts.contains(&action)) else {
             return Err(format!(
@@ -81,7 +81,7 @@ impl Directives {
     }
 
     /// What `worker_id` does when asked, as of its last heartbeat.
-    pub fn accepts(&self, worker_id: &str) -> Vec<DirectiveAction> {
+    pub(crate) fn accepts(&self, worker_id: &str) -> Vec<DirectiveAction> {
         self.0
             .lock()
             .get(worker_id)
@@ -90,7 +90,7 @@ impl Directives {
     }
 
     /// What `worker_id` has been asked and has not yet taken.
-    pub fn pending(&self, worker_id: &str) -> Option<DirectiveAction> {
+    pub(crate) fn pending(&self, worker_id: &str) -> Option<DirectiveAction> {
         self.0
             .lock()
             .get_mut(worker_id)
@@ -98,7 +98,7 @@ impl Directives {
     }
 
     /// Drops everything held about `worker_id`.
-    pub fn forget(&self, worker_id: &str) {
+    pub(crate) fn forget(&self, worker_id: &str) {
         self.0.lock().remove(worker_id);
     }
 }

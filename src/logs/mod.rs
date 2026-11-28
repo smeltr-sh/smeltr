@@ -33,7 +33,7 @@ mod noted;
 pub(crate) use console::{render_fields, render_value, stamp};
 #[cfg(test)]
 pub(crate) use layer::LogLayer;
-pub use layer::library_said;
+pub(crate) use layer::library_said;
 
 use crate::sync::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
@@ -42,13 +42,13 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-pub use event::{Event, Value};
-pub use noted::Noted;
-pub use tracing::Level;
+pub(crate) use event::{Event, Value};
+pub(crate) use noted::Noted;
+pub(crate) use tracing::Level;
 
 /// One event as a test reads it: its level, its class and type, and its fields with the sentence under `message`.
 #[cfg(test)]
-pub(crate) type Said = (Level, String, String, Vec<(String, String)>);
+type Said = (Level, String, String, Vec<(String, String)>);
 
 /// Every event raised on this thread while `f` runs.
 #[cfg(test)]
@@ -93,13 +93,13 @@ pub const CAPACITY: usize = 4096;
 /// Events held for a logs source. Smaller than what is held for the leader, and for a different reason:
 /// this one is drained every poll by a reader thread, so a backlog here means the pipeline carrying it has
 /// stalled -- in which case its own logs matter more than the ones it was carrying.
-pub const LOGS_CAPACITY: usize = 1024;
+pub(crate) const LOGS_CAPACITY: usize = 1024;
 
 /// Events held for the leader while it is out of contact, on a worker, or until a leader writes its own into its
 /// store. A worker that cannot reach one keeps the oldest and
 /// refuses the rest, the same way the buffer in front of it refuses rather than evicts: the start of an outage is
 /// what explains it, and the symptoms after are the part that repeats.
-pub const PENDING_CAPACITY: usize = 4096;
+const PENDING_CAPACITY: usize = 4096;
 
 /// How long [`stop`] waits for the drain thread to finish what it holds. Long enough for a full buffer to reach a
 /// slow pipe, and short enough that a ctrl-c still feels immediate.
@@ -109,25 +109,25 @@ pub const PENDING_CAPACITY: usize = 4096;
 pub const STOP_GRACE: Duration = Duration::from_secs(1);
 
 /// How long the leader shows a warning a worker logged after its last log of it.
-pub const WARNING_FADES_AFTER: Duration = Duration::from_secs(5 * 60);
+pub(crate) const WARNING_FADES_AFTER: Duration = Duration::from_secs(5 * 60);
 
 /// How often a worker logs a condition that lasts again: inside [`WARNING_FADES_AFTER`], so its warning stands
 /// while the condition does and fades once it stops.
-pub const RELOG_EVERY: Duration = Duration::from_secs(4 * 60);
+pub(crate) const RELOG_EVERY: Duration = Duration::from_secs(4 * 60);
 
 /// When a thing was last said, so a site says it once, then again every [`RELOG_EVERY`] while it goes on, and
 /// once more as soon as it starts again after [`Repeat::clear`].
 #[derive(Debug, Default)]
-pub struct Repeat(Option<std::time::Instant>);
+pub(crate) struct Repeat(Option<std::time::Instant>);
 
 impl Repeat {
     /// Not said yet. `const`, so a static can hold one.
-    pub const fn new() -> Repeat {
+    pub(crate) const fn new() -> Repeat {
         Repeat(None)
     }
 
     /// Whether the thing is due to be said now, and counts it said.
-    pub fn due(&mut self) -> bool {
+    pub(crate) fn due(&mut self) -> bool {
         if self.0.is_none_or(|at| at.elapsed() >= RELOG_EVERY) {
             self.0 = Some(std::time::Instant::now());
             return true;
@@ -136,7 +136,7 @@ impl Repeat {
     }
 
     /// The thing stopped: it is said again as soon as it starts.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.0 = None;
     }
 }
@@ -145,7 +145,7 @@ impl Repeat {
 /// [`RELOG_EVERY`] while it lasts, so its warning stands as long as the fault does. The log line itself stays with
 /// the caller, which knows what to say.
 #[derive(Debug, Default)]
-pub struct Relog {
+pub(crate) struct Relog {
     why: Option<String>,
     /// When `why` was last logged.
     logged: Repeat,
@@ -153,7 +153,7 @@ pub struct Relog {
 
 impl Relog {
     /// No fault under way. `const`, so a static can hold one.
-    pub const fn new() -> Relog {
+    pub(crate) const fn new() -> Relog {
         Relog {
             why: None,
             logged: Repeat::new(),
@@ -162,7 +162,7 @@ impl Relog {
 
     /// Keeps `why` as the fault under way. A changed message is due its log at once; one that differs only in what
     /// [`steady`] drops is the same fault.
-    pub fn fail(&mut self, why: String) {
+    pub(crate) fn fail(&mut self, why: String) {
         if self.why.as_deref().is_none_or(|old| steady(old) != steady(&why)) {
             self.logged.clear();
         }
@@ -170,13 +170,13 @@ impl Relog {
     }
 
     /// [`Relog::fail`] and [`Relog::due`] in one, for a site with nothing to do between them.
-    pub fn fail_due(&mut self, why: String) -> Option<&str> {
+    pub(crate) fn fail_due(&mut self, why: String) -> Option<&str> {
         self.fail(why);
         self.due()
     }
 
     /// The fault under way, when it is due its log now, and counts it logged.
-    pub fn due(&mut self) -> Option<&str> {
+    pub(crate) fn due(&mut self) -> Option<&str> {
         if self.why.is_none() || !self.logged.due() {
             return None;
         }
@@ -184,12 +184,12 @@ impl Relog {
     }
 
     /// The fault under way.
-    pub fn why(&self) -> Option<&str> {
+    pub(crate) fn why(&self) -> Option<&str> {
         self.why.as_deref()
     }
 
     /// The fault is over. Whether one was under way, for a caller that says so.
-    pub fn clear(&mut self) -> bool {
+    pub(crate) fn clear(&mut self) -> bool {
         self.logged.clear();
         self.why.take().is_some()
     }
@@ -198,7 +198,7 @@ impl Relog {
 /// `text` without the parts of an error that change from one report of the same fault to the next: how long curl or
 /// librdkafka waited ("after 3005ms", "after 30 milliseconds with 0 bytes received"), and how many repeats librdkafka
 /// counted (", 571 identical error(s) suppressed"). For telling two reports apart; the line keeps the text as it was.
-pub fn steady(text: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn steady(text: &str) -> std::borrow::Cow<'_, str> {
     static VARYING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
             r"(, \d+ identical error\(s\) suppressed)|( ?after \d+ ?(milliseconds|ms)\b( with \d+ (out of \d+ )?bytes received)?)",
@@ -307,12 +307,12 @@ static BOOT_ID: LazyLock<u64> = LazyLock::new(|| {
     now ^ (Box::into_raw(Box::new(0u8)) as u64).rotate_left(32)
 });
 
-pub(crate) fn next_seq() -> u64 {
+fn next_seq() -> u64 {
     NEXT_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// This process's boot id, which with an event's sequence number names it uniquely for the life of the fleet.
-pub fn boot_id() -> u64 {
+pub(crate) fn boot_id() -> u64 {
     *BOOT_ID
 }
 
@@ -365,12 +365,12 @@ macro_rules! log_enabled {
 }
 
 /// Whether a line of `class` and `kind` said in `module` at `level` would be kept. [`log_enabled!`]'s.
-pub fn kept(class: &str, kind: &str, module: &str, level: Level) -> bool {
+pub(crate) fn kept(class: &str, kind: &str, module: &str, level: Level) -> bool {
     levels::keeps(level, Some(class), kind, levels::service(module))
 }
 
 /// `took` in whole milliseconds, as a line's `ms` says how long something took.
-pub fn millis(took: Duration) -> u64 {
+pub(crate) fn millis(took: Duration) -> u64 {
     u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -380,7 +380,7 @@ pub fn max_level() -> Level {
 }
 
 /// The levels anything written down may name, most severe first.
-pub const LEVEL_LABELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
+pub(crate) const LEVEL_LABELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
 
 /// One of [`LEVEL_LABELS`], in any case and with surrounding space. Nothing else, the numbers `tracing`'s own
 /// parser accepts included: `3` tells whoever reads the config back nothing.
@@ -412,7 +412,7 @@ pub fn pending_map<T>(limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T> {
 }
 
 /// [`pending_map`] for what this process's leader raised, which the leader writes into its own store.
-pub fn leader_pending_map<T>(limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T> {
+pub(crate) fn leader_pending_map<T>(limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T> {
     map_queue(&LEADER_PENDING, limit, f)
 }
 
@@ -431,7 +431,7 @@ pub fn delivered(count: usize) {
 }
 
 /// [`delivered`] for what the leader wrote into its own store.
-pub fn leader_delivered(count: usize) {
+pub(crate) fn leader_delivered(count: usize) {
     drop_oldest(&LEADER_PENDING, count);
 }
 
@@ -478,7 +478,7 @@ impl Tap {
     ///
     /// The queue is still bounded: what no longer fits is refused here exactly as it would have been on the way
     /// in, and counted the same way.
-    pub fn put_back(&self, events: Vec<Event>) {
+    pub(crate) fn put_back(&self, events: Vec<Event>) {
         let mut logs = LOGS.lock();
         let Some(queue) = logs.iter_mut().find(|q| q.tap == self.0) else {
             return;
@@ -502,7 +502,7 @@ impl Drop for Tap {
 /// Hand every open reader events the worker's other process recorded and sent here. They reach the readers only:
 /// the process that recorded them has written them to its console and queued them for the leader, so the leader
 /// hears each event once, from the process that owns it.
-pub fn mirror(events: impl IntoIterator<Item = Event>) {
+pub(crate) fn mirror(events: impl IntoIterator<Item = Event>) {
     let worker = worker();
     // Collected before the lock: whatever produces them may log, and a log here with no drain thread takes it.
     let events: Vec<Event> = events.into_iter().collect();
@@ -528,7 +528,7 @@ fn offer<'a>(queues: impl IntoIterator<Item = &'a mut Queue>, event: &Event) {
 }
 
 /// Events a full logs queue refused, for the life of the process. One count per reader that refused one.
-pub fn unread() -> u64 {
+pub(crate) fn unread() -> u64 {
     UNREAD.load(Ordering::Relaxed)
 }
 
@@ -573,7 +573,7 @@ pub fn mark_leader_thread() {
 /// Say what the buffers lost since the last call, once per outage and on the interval: the counts a scrape reads,
 /// for a reader of the log alone. Console-only, since what carries logs onward must not queue a report of its own
 /// failing to.
-pub fn report_losses() {
+pub(crate) fn report_losses() {
     static LAST: Mutex<([u64; 4], Relog)> = Mutex::new(([0; 4], Relog::new()));
     let now = [dropped(), undelivered(), unread(), unwritable()];
     let mut last = LAST.lock();
@@ -604,7 +604,7 @@ pub fn report_losses() {
 
 /// What a panic said, for a line or an error: its message when it has one, as `panic!` and `expect` leave it,
 /// and nothing otherwise.
-pub fn panic_text(payload: &dyn std::any::Any) -> String {
+pub(crate) fn panic_text(payload: &dyn std::any::Any) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| s.to_string())
@@ -630,7 +630,7 @@ pub fn while_delivering<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Whether this thread is delivering logs. Unwinding through [`while_delivering`] still clears it.
-pub(crate) fn delivering() -> bool {
+fn delivering() -> bool {
     DELIVERING.with(std::cell::Cell::get)
 }
 

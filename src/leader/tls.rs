@@ -56,7 +56,7 @@ const AUTHORITY_SUBJECT: &str = "smeltr leader certificate authority";
 
 /// The entry of the certificate list this leader issues itself, for the names it is reached by. Served unless an
 /// admin chooses another, and served in place of one a start cannot serve.
-pub const OWN_ENTRY: &str = "leader";
+pub(crate) const OWN_ENTRY: &str = "leader";
 
 /// How long before an authority expires a rotation stops waiting for the fleet.
 ///
@@ -381,7 +381,7 @@ fn issue_own(dir: &Path, issued: &Issued) -> Result<(), String> {
 /// A certificate this leader's authority issues for `names`, as a chain ending at that root and its private key,
 /// both PEM. For an entry of the certificate list, which a receiver serves and a client presents, so it permits
 /// both server and client authentication. Never outlives the authority.
-pub fn issue(dir: &Path, names: Vec<String>, validity: Duration) -> Result<(String, String), String> {
+pub(crate) fn issue(dir: &Path, names: Vec<String>, validity: Duration) -> Result<(String, String), String> {
     let _reading = changing();
     issue_held(dir, names, validity, "those names cannot be put in a certificate")
 }
@@ -412,7 +412,7 @@ fn issue_held(dir: &Path, names: Vec<String>, validity: Duration, unusable: &str
 }
 
 /// The fingerprint of the root [`issue`] signs under now: after a rotation's cutover, the incoming one.
-pub fn signing_root_fingerprint(dir: &Path) -> Result<String, String> {
+pub(crate) fn signing_root_fingerprint(dir: &Path) -> Result<String, String> {
     let _reading = changing();
     Ok(authority_held(dir)?.2.fingerprint)
 }
@@ -626,7 +626,7 @@ pub fn on_reload(reload: impl Fn(&Path) + Send + Sync + 'static) {
 
 /// Makes the socket serving `dir` take what is on disk. Does nothing where nothing registered a way to, which is
 /// a leader serving plain HTTP and having no socket to reload.
-pub fn reload(dir: &Path) {
+pub(crate) fn reload(dir: &Path) {
     if let Some(reload) = RELOAD.get() {
         reload(dir);
     }
@@ -672,7 +672,7 @@ fn changing() -> crate::sync::MutexGuard<'static, ()> {
 /// folded into `false`. `exists()` makes that same fold, and a caller reading its `false` as "no certificate" would
 /// mint an enrollment code naming no root, or spend one that names none, for a leader a moment's read failure never
 /// actually asked.
-pub fn has_own_material(dir: &Path) -> Result<bool, String> {
+pub(crate) fn has_own_material(dir: &Path) -> Result<bool, String> {
     for name in [CA_CERT, SERVED] {
         let path = dir.join(name);
         if path.try_exists().map_err(|e| format!("{}: {e}", path.display()))? {
@@ -688,7 +688,7 @@ pub fn has_own_material(dir: &Path) -> Result<bool, String> {
 /// replacement takes. Asked apart, a caller can be handed the certificate from before a cutover and the rotation
 /// from after it -- `None` where a moment ago it was `Some` -- and a root read that way is one this leader had
 /// already stopped signing under by the time it was named.
-pub fn current_and_rotation(dir: &Path) -> Result<(Materials, Option<Rotation>), String> {
+pub(crate) fn current_and_rotation(dir: &Path) -> Result<(Materials, Option<Rotation>), String> {
     let _reading = changing();
     Ok((current_held(dir)?, rotation(dir)?))
 }
@@ -994,7 +994,7 @@ pub struct Rotation {
     pub incoming: String,
     /// The root still being served, so a caller can say which of the two in the bundle is which without matching
     /// keys to certificates itself.
-    pub outgoing: String,
+    outgoing: String,
     pub started_millis: i64,
     /// When this leader signs under the incoming root whatever the fleet has reported. An operator rotating the
     /// leader's own authority sets it, because only they know how long their workers take to come round, and
@@ -1007,7 +1007,7 @@ pub struct Rotation {
     pub installs: Installs,
     /// The list entry the cutover serves, for [`Installs::Supplied`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entry: Option<Entry>,
+    pub(crate) entry: Option<Entry>,
 }
 
 /// What cutting over puts in force. The overlap before it, and the recovery around it, do not depend on this.
@@ -1309,7 +1309,7 @@ fn self_signed_authority(pem: &[u8]) -> Result<bool, String> {
 }
 
 /// The root `chain` is signed under, as the one PEM block of `ca` that holds it.
-pub(crate) fn signing_root_pem(ca: &[u8], chain: &[u8]) -> Result<(Described, String), String> {
+fn signing_root_pem(ca: &[u8], chain: &[u8]) -> Result<(Described, String), String> {
     let root = signing_root(ca, chain)?;
     let mut only = Vec::new();
     for block in blocks(ca)? {
@@ -1836,7 +1836,7 @@ fn root_of_key(ca_pem: &[u8], key_pem: &str) -> Result<Described, String> {
 ///
 /// The check the leader already makes about its own certificate, offered to the certificate list, which refuses a
 /// chain and a key that do not belong together: nothing else would notice until a handshake failed.
-pub fn is_pair(chain: &[u8], key: &[u8]) -> Result<(), String> {
+pub(crate) fn is_pair(chain: &[u8], key: &[u8]) -> Result<(), String> {
     rustls_config(chain, key).map(|_| ())
 }
 
@@ -1864,13 +1864,13 @@ fn rustls_config(chain: &[u8], key: &[u8]) -> Result<rustls::ServerConfig, Strin
 #[serde(rename_all = "camelCase")]
 pub struct Described {
     /// The subject's common name, or the whole distinguished name when it carries no common name.
-    pub subject: String,
+    pub(crate) subject: String,
     /// SHA-256 over the certificate's DER, lowercase hex. What a worker is told to expect out of band, and the one
     /// short string that says two certificates are the same one.
     pub fingerprint: String,
     /// The names a client may reach this certificate by. Empty on an authority, which is reached by no name.
     pub names: Vec<String>,
-    pub not_before_millis: i64,
+    pub(crate) not_before_millis: i64,
     pub not_after_millis: i64,
 }
 
@@ -1999,7 +1999,7 @@ fn from_der(der: &[u8], what: &str) -> Result<Described, String> {
 }
 
 /// SHA-256 over DER, lowercase hex. The form an operator compares by eye and a worker is given out of band.
-pub fn fingerprint(der: &[u8]) -> String {
+pub(crate) fn fingerprint(der: &[u8]) -> String {
     use std::fmt::Write;
 
     let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, der);
@@ -2216,7 +2216,7 @@ pub(crate) mod tests {
 
     /// `chain` and `key` as the newest version of the entry `supplied` in `dir`'s list, served with the root in `ca`
     /// that signs it, as the upload form chooses it.
-    pub(crate) fn listed(dir: &Path, chain: &[u8], key: &[u8], ca: &[u8]) -> Entry {
+    fn listed(dir: &Path, chain: &[u8], key: &[u8], ca: &[u8]) -> Entry {
         let list = list_of(dir).expect("a list");
         let (chain, key) = (std::str::from_utf8(chain).unwrap(), std::str::from_utf8(key).unwrap());
         let version = match list.add_certificate_version("supplied", chain, key, None) {
@@ -2276,17 +2276,17 @@ pub(crate) mod tests {
     }
 
     /// The certificate the socket in `dir` presents, without its root.
-    pub(crate) fn served_cert(dir: &Path) -> Result<Vec<u8>, String> {
+    fn served_cert(dir: &Path) -> Result<Vec<u8>, String> {
         Ok(to_serve(dir)?.1)
     }
 
     /// The private key of [`served_cert`].
-    pub(crate) fn served_key(dir: &Path) -> Result<Vec<u8>, String> {
+    fn served_key(dir: &Path) -> Result<Vec<u8>, String> {
         Ok(to_serve(dir)?.2)
     }
 
     /// A new version of the leader's own entry, served, as the renewal pass issues one.
-    pub(crate) fn renew(dir: &Path) -> Result<(), String> {
+    fn renew(dir: &Path) -> Result<(), String> {
         issue_own(
             dir,
             &Issued {

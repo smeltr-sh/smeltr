@@ -51,7 +51,7 @@ impl FileFormat for LineFormat {
 
 /// A new file of lines, compressed as one stream, opening with `header`. A format that renders its own lines
 /// (`io::csv`) admits them as `FileRow::Line`.
-pub fn encoder(compression: Compression, header: &[u8]) -> Box<dyn FileEncoder> {
+pub(crate) fn encoder(compression: Compression, header: &[u8]) -> Box<dyn FileEncoder> {
     let mut encoder = LineEncoder::open(false, compression);
     encoder.put(header);
     Box::new(encoder)
@@ -231,7 +231,7 @@ impl Stream {
 }
 
 /// `bytes` kept to one line: `\` becomes `\\`, a newline `\n` and a carriage return `\r`.
-pub fn escape_line(bytes: &[u8]) -> Vec<u8> {
+fn escape_line(bytes: &[u8]) -> Vec<u8> {
     let mut line = Vec::with_capacity(bytes.len());
     for &b in bytes {
         match b {
@@ -245,7 +245,7 @@ pub fn escape_line(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// The bytes `escape_line` kept to `line`. A `\` before any other byte stays as it is.
-pub fn unescape_line(line: &[u8]) -> Vec<u8> {
+pub(crate) fn unescape_line(line: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(line.len());
     let mut rest = line.iter();
     while let Some(&b) = rest.next() {

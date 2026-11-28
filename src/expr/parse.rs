@@ -8,10 +8,10 @@ use crate::ops::{BinOp, UnOp};
 use crate::plan::tree;
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct ParseError {
+pub(crate) struct ParseError {
     /// Covers the token at fault, so an editor can underline it.
-    pub span: Span,
-    pub message: String,
+    span: Span,
+    pub(crate) message: String,
 }
 
 impl std::fmt::Display for ParseError {
@@ -64,7 +64,7 @@ const MAX_DEPTH: u32 = 128;
 
 /// The head of the name of the temporary `move(from, to)` desugars through: `let #move1 = from; delete(from);
 /// to = #move1;`. Code cannot spell it.
-pub const MOVE_TEMP: &str = "#move";
+pub(crate) const MOVE_TEMP: &str = "#move";
 
 /// The calls that are statements where they stand alone.
 pub const STATEMENT_CALLS: [&str; 4] = ["delete", "drop", "unroll", "move"];
@@ -116,24 +116,24 @@ impl AssignTarget {
 /// What the parser learned of the text's layout that its tokens alone do not say, for the formatter
 /// (`expr::pretty`). Every place is a byte offset into the text parsed.
 #[derive(Default, Debug)]
-pub struct Shape {
+pub(crate) struct Shape {
     /// Each block's `{` and `}`, in the order they close.
-    pub blocks: Vec<(u32, u32)>,
+    pub(crate) blocks: Vec<(u32, u32)>,
     /// Where each statement ends, and whether a `;` belongs there: not after a block's `}`, and not after an
     /// expression a `}` or `else` follows, which may be a function's value.
-    pub statements: Vec<(u32, bool)>,
+    pub(crate) statements: Vec<(u32, bool)>,
     /// Each type a declaration, a parameter or `as` spells.
-    pub types: Vec<Span>,
+    pub(crate) types: Vec<Span>,
     /// Each ternary's `:`.
-    pub ternary_colons: Vec<u32>,
+    pub(crate) ternary_colons: Vec<u32>,
     /// Each `switch` label's `case` or `default`.
-    pub case_labels: Vec<u32>,
+    pub(crate) case_labels: Vec<u32>,
     /// The label of each case with statements of its own that runs on into the next case: no `break`, `return`,
     /// `throw`, `continue` or `drop()` ends it.
-    pub fall_throughs: Vec<Span>,
+    pub(crate) fall_throughs: Vec<Span>,
     /// What ends a block before statements that therefore never run: `drop()`, `return`, `throw`, `break` or
     /// `continue`.
-    pub unreachable: Vec<&'static str>,
+    pub(crate) unreachable: Vec<&'static str>,
 }
 
 impl Shape {
@@ -186,7 +186,7 @@ fn ends_the_row(body: &[Stmt]) -> bool {
     }
 }
 
-pub struct Parser<'s> {
+struct Parser<'s> {
     /// The text the tokens came from, so an error can quote what it refuses.
     src: &'s str,
     tokens: Vec<Spanned>,
@@ -224,12 +224,12 @@ fn shift_expr_spans(e: &mut Expr, offset: usize) {
 }
 
 /// Parse one expression; the whole input must be consumed.
-pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
+pub(crate) fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     parse_expr_within(src, 0)
 }
 
 /// `parse_expr`, with the text's [`Shape`].
-pub fn parse_expr_shaped(src: &str) -> Result<(Expr, Shape), ParseError> {
+pub(crate) fn parse_expr_shaped(src: &str) -> Result<(Expr, Shape), ParseError> {
     let mut p = Parser::new(src)?;
     let e = p.expr_bp(0)?;
     p.expect_eof()?;
@@ -253,7 +253,7 @@ fn parse_expr_within(src: &str, depth: u32) -> Result<Expr, ParseError> {
 }
 
 /// Parse one type as a declaration spells it (`DataType::spell`); the whole input must be consumed.
-pub fn parse_type(src: &str) -> Result<DataType, ParseError> {
+pub(crate) fn parse_type(src: &str) -> Result<DataType, ParseError> {
     let mut p = Parser::new(src)?;
     let ty = p.type_expr()?;
     p.expect_eof()?;
@@ -261,7 +261,7 @@ pub fn parse_type(src: &str) -> Result<DataType, ParseError> {
 }
 
 /// `move(from, to)`: `let #move{n} = from; delete(from); to = #move{n};`, `n` unique in its block.
-pub fn move_stmts(from: &str, to: &str, n: usize, span: Span) -> [Stmt; 3] {
+pub(crate) fn move_stmts(from: &str, to: &str, n: usize, span: Span) -> [Stmt; 3] {
     let tmp = format!("{MOVE_TEMP}{n}");
     [
         Stmt::Let {
@@ -282,7 +282,7 @@ pub fn move_stmts(from: &str, to: &str, n: usize, span: Span) -> [Stmt; 3] {
 }
 
 /// `value` declared as `ty` for `name` where there is an exception: checked, and converted only from a variant.
-pub fn declared(name: &str, ty: Option<DataType>, value: Expr) -> Expr {
+pub(crate) fn declared(name: &str, ty: Option<DataType>, value: Expr) -> Expr {
     match ty {
         Some(ty) => Expr {
             span: value.span,
@@ -297,12 +297,12 @@ pub fn declared(name: &str, ty: Option<DataType>, value: Expr) -> Expr {
 }
 
 /// Parse a `Code` body: a statement list with no enclosing braces.
-pub fn parse_block(src: &str) -> Result<Vec<Stmt>, ParseError> {
+pub(crate) fn parse_block(src: &str) -> Result<Vec<Stmt>, ParseError> {
     parse_block_shaped(src).map(|(stmts, _)| stmts)
 }
 
 /// `parse_block`, with the text's [`Shape`].
-pub fn parse_block_shaped(src: &str) -> Result<(Vec<Stmt>, Shape), ParseError> {
+pub(crate) fn parse_block_shaped(src: &str) -> Result<(Vec<Stmt>, Shape), ParseError> {
     let mut p = Parser::new(src)?;
     let mut out = Vec::new();
     while !p.at_eof() {
@@ -1948,7 +1948,7 @@ fn put_field(fields: &mut Vec<(String, DataType)>, key: &str, ty: DataType, name
 
 /// `base[index]`. A string key applied to a name is the name of that key, `o["a.b"]` the field `o["a.b"]`, so a read, a
 /// write and a declaration of it are one name, as `$["a.b"]` is.
-pub fn index_of(base: Expr, index: Expr, span: Span) -> Expr {
+pub(crate) fn index_of(base: Expr, index: Expr, span: Span) -> Expr {
     if let (ExprKind::Field(name), ExprKind::Literal(Value::Str(key))) = (&base.kind, &index.kind) {
         return Expr::new(span, ExprKind::Field(tree::child(name, key)));
     }

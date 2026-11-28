@@ -61,7 +61,7 @@ const FOOTER_GUESS: u64 = 64 * 1024;
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Whether `version` of a table with `metadata` is one to checkpoint.
-pub fn due(metadata: &Metadata, version: i64) -> bool {
+pub(crate) fn due(metadata: &Metadata, version: i64) -> bool {
     let interval = metadata
         .property("delta.checkpointInterval")
         .and_then(|v| v.trim().parse::<i64>().ok())
@@ -72,7 +72,7 @@ pub fn due(metadata: &Metadata, version: i64) -> bool {
 
 /// Writes the checkpoint of `snapshot`'s version, then deletes what the table's log retention lets go. Gives the
 /// checkpoint. A failed cleanup is logged: the checkpoint stands without it.
-pub fn write(log: &Log, snapshot: &Snapshot) -> Result<Checkpoint, String> {
+pub(crate) fn write(log: &Log, snapshot: &Snapshot) -> Result<Checkpoint, String> {
     let now = now_ms();
     let metadata = &snapshot.metadata;
     // A retention not read keeps every remove.
@@ -656,7 +656,7 @@ fn to_json(array: &ArrayRef, row: usize) -> Result<Value, String> {
 }
 
 /// The actions of a Parquet top-level checkpoint, but for its file actions.
-pub fn top_level(log: &Log, name: &str, size: u64) -> Result<Vec<Action>, String> {
+pub(crate) fn top_level(log: &Log, name: &str, size: u64) -> Result<Vec<Action>, String> {
     const ROOTS: [&str; 6] = [
         "protocol",
         "metaData",

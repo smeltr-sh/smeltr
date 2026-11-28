@@ -180,14 +180,14 @@ const TYPED: &[(&str, DataType, Option<&str>)] = &[
 
 /// What a capture holds: its type, and how a `datetime` one's text is read.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Holds {
-    pub ty: DataType,
-    pub time_source: Option<TimeSource>,
+pub(crate) struct Holds {
+    pub(crate) ty: DataType,
+    pub(crate) time_source: Option<TimeSource>,
 }
 
 impl Holds {
     /// Text: a capture of a pattern nothing types, or of a raw `(?P<name>…)` group.
-    pub fn text() -> Self {
+    pub(crate) fn text() -> Self {
         Holds {
             ty: DataType::Str,
             time_source: None,
@@ -197,7 +197,7 @@ impl Holds {
     /// What the parsed field `path` holds where nothing declares it: the type the produced `schemas` give it
     /// (`schema::read_as`), else the type `self` holds. A `datetime` in `self` keeps its time format where the schemas
     /// also say `datetime`, since a schema's has none.
-    pub fn under(self, schemas: &[std::sync::Arc<crate::schema::Schema>], path: &str) -> Holds {
+    pub(crate) fn under(self, schemas: &[std::sync::Arc<crate::schema::Schema>], path: &str) -> Holds {
         match crate::schema::read_as(schemas, path).filter(|ty| *ty != self.ty) {
             Some(ty) => Holds {
                 time_source: (ty == DataType::DateTime).then_some(TimeSource::Auto),
@@ -216,7 +216,7 @@ const MAX_DEPTH: u32 = 32;
 const MAX_EXPANDED: usize = 1 << 20;
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct GrokError(pub String);
+pub(crate) struct GrokError(pub(crate) String);
 
 impl std::fmt::Display for GrokError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -228,13 +228,13 @@ impl std::error::Error for GrokError {}
 
 /// Expand every macro in `pattern`, resolving names against `config.custom_patterns` first and `BUILTINS` second,
 /// recursively.
-pub fn expand(pattern: &str, config: &GrokConfig) -> Result<String, GrokError> {
+pub(crate) fn expand(pattern: &str, config: &GrokConfig) -> Result<String, GrokError> {
     expand_with(pattern, config, &GrokPatterns::new()).map(|(regex, _)| regex)
 }
 
 /// `expand`, with the bundle's `shared` patterns resolved between the step's own and the built-ins. Returns the regex,
 /// and for each typed capture its name and what it holds, in pattern order.
-pub fn expand_with(
+pub(crate) fn expand_with(
     pattern: &str,
     config: &GrokConfig,
     shared: &GrokPatterns,
@@ -246,7 +246,7 @@ pub fn expand_with(
 
 /// Whether `name` is a built-in pattern, which a bundle's pattern may not take: shadowing it would change every
 /// pattern in the group that uses it.
-pub fn is_builtin(name: &str) -> bool {
+pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(n, _)| *n == name)
 }
 
@@ -381,7 +381,7 @@ fn holds(which: (&str, Defined)) -> Option<Holds> {
 /// `pattern` with every built-in that captures a field written out as its definition, recursively, so each field it
 /// fills shows where an author can edit it; a built-in that captures nothing, such as `%{NOTSPACE:host}`, stays a
 /// name. It reads the same rows into the same fields as `pattern`. A name that is not a built-in stays as it is.
-pub fn unfold(pattern: &str) -> String {
+pub(crate) fn unfold(pattern: &str) -> String {
     let mut out = String::with_capacity(pattern.len());
     let mut rest = pattern;
     while let Some(at) = rest.find("%{") {

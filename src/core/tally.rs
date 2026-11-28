@@ -12,20 +12,20 @@ use crate::core::id::FunctionId;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TagCounts {
     pub present: u32,
-    pub bools: u32,
+    pub(crate) bools: u32,
     pub ints: u32,
-    pub floats: u32,
+    pub(crate) floats: u32,
     pub strings: u32,
-    pub arrays: u32,
-    pub objects: u32,
+    pub(crate) arrays: u32,
+    pub(crate) objects: u32,
     /// Values of an undeclared field that read as a time (`timeparse::reads_as_time`), counted beside their kind: a
     /// field whose every value did is one to declare a `datetime`. Zero for a declared field.
-    pub times: u32,
+    pub(crate) times: u32,
 }
 
 impl TagCounts {
     /// How many kinds appeared. One is a field every row agreed on; more is what widens a suggestion.
-    pub fn kinds(&self) -> usize {
+    pub(crate) fn kinds(&self) -> usize {
         [
             self.bools,
             self.ints,
@@ -47,9 +47,9 @@ pub struct FieldSeen {
     /// CSV, a capture name for grok.
     pub name: String,
     /// Whether a declaration already named it. A declared field's type is the declaration, not a finding.
-    pub declared: bool,
+    pub(crate) declared: bool,
     /// A declared field's type, or the declaration an undeclared field's values suggest (`format::tag::Suggestion`).
-    pub suggested: DataType,
+    pub(crate) suggested: DataType,
     /// Rows the parser read, which is `present`'s denominator.
     pub rows: u32,
     pub counts: TagCounts,
@@ -64,9 +64,9 @@ pub struct FieldSeen {
 pub struct ParseSeen {
     /// The pipeline function it ran in. Two parser steps of one pipeline share it, which is why a parse is its own
     /// entry rather than a key into a map.
-    pub function: FunctionId,
+    pub(crate) function: FunctionId,
     /// The rows it read, which a parse that bound no field still read.
-    pub rows: u32,
+    pub(crate) rows: u32,
     pub fields: Vec<FieldSeen>,
 }
 
@@ -84,7 +84,7 @@ impl FieldTally {
     }
 
     /// Begin a parse of `rows` rows. Every `saw` until the next `parsed` belongs to it.
-    pub fn parsed(&mut self, function: FunctionId, rows: u32) {
+    pub(crate) fn parsed(&mut self, function: FunctionId, rows: u32) {
         self.parses.push(ParseSeen {
             function,
             rows,
@@ -93,7 +93,7 @@ impl FieldTally {
     }
 
     /// Record a field of the parse in progress. A `saw` before any `parsed` is dropped rather than guessed at.
-    pub fn saw(&mut self, seen: FieldSeen) {
+    pub(crate) fn saw(&mut self, seen: FieldSeen) {
         if let Some(current) = self.parses.last_mut() {
             current.fields.push(seen);
         }

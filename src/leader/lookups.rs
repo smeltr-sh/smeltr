@@ -27,7 +27,7 @@ fn name_path(repo: &Path, oid: &str) -> PathBuf {
 /// Forget every stored version beyond the newest `keep` of its name that neither a branch nor one of `running`'s
 /// `(group, commit)` deployments names. Nothing is forgotten when what they name cannot be read in full: a file one of
 /// them needs would be gone for good.
-pub fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
+pub(crate) fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
     let pinned = match pinned(repo, running) {
         Ok(pinned) => pinned,
         Err(e) => {

@@ -12,7 +12,7 @@ use crate::format::{cef_scan, kv_scan};
 use crate::plan::config::KvConfig;
 
 /// A parse of `ParserKind::KeyValue`: a row parses where it splits whole into pairs.
-pub struct Kv<'c>(pub &'c KvConfig);
+pub(crate) struct Kv<'c>(pub(crate) &'c KvConfig);
 
 impl Scanner for Kv<'_> {
     const NAME: &'static str = "kv";
@@ -42,7 +42,7 @@ impl Scanner for Kv<'_> {
 }
 
 /// A parse of `ParserKind::Cef`, whose bool is `split_dots`: a row parses where it reads whole as a CEF record.
-pub struct Cef(pub bool);
+pub(crate) struct Cef(pub(crate) bool);
 
 impl Scanner for Cef {
     const NAME: &'static str = "cef";

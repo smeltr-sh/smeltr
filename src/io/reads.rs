@@ -29,7 +29,7 @@ impl<C> Read<C> {
 
 /// Reads not yet committed whole, oldest first. The newest is the one being handed out, and the methods on it hold
 /// only while one is open.
-pub struct Reads<C> {
+pub(crate) struct Reads<C> {
     open: VecDeque<Read<C>>,
     next_partition: i32,
 }
@@ -46,18 +46,18 @@ impl<C> Default for Reads<C> {
 impl<C> Reads<C> {
     /// Opens a read whose records are handed out one at a time by [`hand_out`](Self::hand_out) until
     /// [`end`](Self::end), and returns its partition, which no other open read has.
-    pub fn open(&mut self, topic: Arc<str>, carries: C) -> i32 {
+    pub(crate) fn open(&mut self, topic: Arc<str>, carries: C) -> i32 {
         self.push(topic, 0, false, carries)
     }
 
     /// Opens a read of `handed` records handed out whole, at offsets from 0, and returns its partition.
-    pub fn open_whole(&mut self, topic: Arc<str>, handed: i64, carries: C) -> i32 {
+    pub(crate) fn open_whole(&mut self, topic: Arc<str>, handed: i64, carries: C) -> i32 {
         self.push(topic, handed, true, carries)
     }
 
     /// Queues what a read of nothing carries: done at once, it is taken as soon as every read before it is done. It
     /// takes no partition, so the reads that hand out records are numbered without a gap.
-    pub fn carry(&mut self, carries: C) {
+    pub(crate) fn carry(&mut self, carries: C) {
         self.open.push_back(Read {
             partition: -1,
             topic: Arc::from(""),
@@ -87,34 +87,34 @@ impl<C> Reads<C> {
     }
 
     /// Hands out the newest read's next record: its offset, partition and topic.
-    pub fn hand_out(&mut self) -> (i64, i32, Arc<str>) {
+    pub(crate) fn hand_out(&mut self) -> (i64, i32, Arc<str>) {
         let read = self.newest();
         read.handed += 1;
         (read.handed - 1, read.partition, read.topic.clone())
     }
 
     /// Takes back the newest read's last record, so it is handed out again at the same offset.
-    pub fn hand_back(&mut self) {
+    pub(crate) fn hand_back(&mut self) {
         self.newest().handed -= 1;
     }
 
     /// How many records of the newest read are handed out.
-    pub fn handed_out(&mut self) -> i64 {
+    pub(crate) fn handed_out(&mut self) -> i64 {
         self.newest().handed
     }
 
     /// Ends the newest read: every record of it is handed out, so it is done once its last one commits.
-    pub fn end(&mut self) {
+    pub(crate) fn end(&mut self) {
         self.newest().exhausted = true;
     }
 
     /// What the newest read carries, to change before it ends.
-    pub fn carries_mut(&mut self) -> &mut C {
+    pub(crate) fn carries_mut(&mut self) -> &mut C {
         &mut self.newest().carries
     }
 
     /// Records committed, by partition and topic. A partition no read has is of a read already retired.
-    pub fn commit(&mut self, offsets: &CommitMap) {
+    pub(crate) fn commit(&mut self, offsets: &CommitMap) {
         for (at, &offset) in offsets {
             if let Some(read) = self
                 .open
@@ -128,7 +128,7 @@ impl<C> Reads<C> {
 
     /// Retires the oldest reads that are done, one as each is taken, yielding what it carried: oldest first, and
     /// only as far as the caller takes.
-    pub fn settle(&mut self) -> impl Iterator<Item = C> + '_ {
+    pub(crate) fn settle(&mut self) -> impl Iterator<Item = C> + '_ {
         std::iter::from_fn(|| {
             let read = self
                 .open

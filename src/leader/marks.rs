@@ -27,7 +27,7 @@ use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
 /// Where the marks are kept, as JSON.
-pub const MARKS_KEY: &str = "warnings.source_rows_marks";
+const MARKS_KEY: &str = "warnings.source_rows_marks";
 
 /// Every mark that still says something.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -35,31 +35,31 @@ pub const MARKS_KEY: &str = "warnings.source_rows_marks";
 pub struct Marks {
     /// What an editor answered each below-normal warning was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub answers: Vec<Mark>,
+    pub(crate) answers: Vec<Mark>,
     /// The warnings a leader before answers lowered to info, each read as answered Outage ([`Marks::read`]).
     #[serde(default, skip_serializing)]
     pub(super) lowered: Vec<Mark>,
     #[serde(default)]
-    pub reset: Vec<Reset>,
+    pub(crate) reset: Vec<Reset>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<SourceFields>,
+    pub(crate) fields: Vec<SourceFields>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub presets: Vec<Picked>,
+    pub(crate) presets: Vec<Picked>,
 }
 
 /// What `by` answered a source's rows warning that began at `since_millis`, or one of its sender's, was.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Mark {
-    pub group: String,
-    pub source: String,
+pub(crate) struct Mark {
+    pub(crate) group: String,
+    pub(crate) source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender: Option<Sender>,
-    pub since_millis: i64,
+    pub(crate) sender: Option<Sender>,
+    pub(crate) since_millis: i64,
     /// Absent from a warning lowered before answers, which was an outage.
     #[serde(default)]
-    pub was: Was,
-    pub by: String,
+    pub(crate) was: Was,
+    pub(crate) by: String,
 }
 
 /// The answer to `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, among `answers`.
@@ -77,27 +77,27 @@ pub(super) fn answer<'a>(
 /// stay watched once new ones are not watched.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceFields {
+pub(crate) struct SourceFields {
     /// Absent from the body of [`put_sender_fields`], which names it in its path.
     #[serde(default)]
-    pub group: String,
+    pub(crate) group: String,
     #[serde(flatten)]
-    pub edits: SenderFields,
+    pub(crate) edits: SenderFields,
     /// Once an editor stops watching new fields, the fields that stay watched. Any other field is new, except one an
     /// editor added; a new field is counted but not watched until an editor checks it. `None` while new fields are
     /// watched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub locked: Option<Vec<String>>,
+    pub(crate) locked: Option<Vec<String>>,
 }
 
 impl SourceFields {
     /// Whether `field` is watched: an editor did not uncheck it, and it is not new.
-    pub fn watches(&self, field: &str) -> bool {
+    pub(crate) fn watches(&self, field: &str) -> bool {
         !self.unchecked(field) && !self.is_new(field)
     }
 
     /// Whether `field` came after an editor stopped watching new fields, and nobody checked or added it since.
-    pub fn is_new(&self, field: &str) -> bool {
+    pub(crate) fn is_new(&self, field: &str) -> bool {
         let named = |fields: &[String]| fields.iter().any(|f| f == field);
         self.locked
             .as_deref()
@@ -112,28 +112,28 @@ impl SourceFields {
 /// The presets `by` last picked for a source and its senders. Only those other than the default are kept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Picked {
-    pub group: String,
-    pub source: String,
+pub(crate) struct Picked {
+    pub(crate) group: String,
+    pub(crate) source: String,
     #[serde(flatten)]
-    pub presets: Presets,
-    pub by: String,
+    pub(crate) presets: Presets,
+    pub(crate) by: String,
 }
 
 /// A source whose normal `by` said to learn again from `from_millis` on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Reset {
-    pub group: String,
-    pub source: String,
-    pub from_millis: i64,
-    pub by: String,
+pub(crate) struct Reset {
+    pub(crate) group: String,
+    pub(crate) source: String,
+    pub(crate) from_millis: i64,
+    pub(crate) by: String,
 }
 
 /// What an editor answered a below-normal warning was.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Was {
+pub(crate) enum Was {
     Normal,
     #[default]
     Outage,
@@ -167,19 +167,19 @@ impl Marks {
 
     /// The answer to `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, if an editor
     /// gave one.
-    pub fn answer(&self, subject: Subject, since_millis: Option<i64>) -> Option<&Mark> {
+    pub(crate) fn answer(&self, subject: Subject, since_millis: Option<i64>) -> Option<&Mark> {
         answer(&self.answers, subject, since_millis)
     }
 
     /// Whether an editor answered `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
     /// `since_millis` was normal.
-    pub fn said_normal(&self, subject: Subject, since_millis: i64) -> bool {
+    pub(crate) fn said_normal(&self, subject: Subject, since_millis: i64) -> bool {
         self.answer(subject, Some(since_millis))
             .is_some_and(|m| m.was == Was::Normal)
     }
 
     /// When `group`'s `source` was last said to learn again from, if it was.
-    pub fn reset_from(&self, group: &str, source: &str) -> Option<i64> {
+    pub(crate) fn reset_from(&self, group: &str, source: &str) -> Option<i64> {
         self.reset
             .iter()
             .filter(|r| r.group == group && r.source == source)
@@ -188,7 +188,7 @@ impl Marks {
     }
 
     /// The presets `group`'s `source`, and its senders, are judged at.
-    pub fn presets_of(&self, group: &str, source: &str) -> Presets {
+    pub(crate) fn presets_of(&self, group: &str, source: &str) -> Presets {
         self.presets
             .iter()
             .find(|p| p.group == group && p.source == source)
@@ -196,7 +196,7 @@ impl Marks {
     }
 
     /// Whether `field` of `group`'s `source` is not watched, as an editor left it ([`SourceFields::watches`]).
-    pub fn unchecked(&self, group: &str, source: &str, field: &str) -> bool {
+    pub(crate) fn unchecked(&self, group: &str, source: &str, field: &str) -> bool {
         self.fields
             .iter()
             .any(|f| f.group == group && f.edits.source == source && !f.watches(field))
@@ -222,7 +222,7 @@ impl Marks {
     }
 
     /// What an editor changed of the sender fields of each of `group`'s sources.
-    pub fn sender_fields(&self, group: &str) -> Vec<SenderFields> {
+    pub(crate) fn sender_fields(&self, group: &str) -> Vec<SenderFields> {
         self.fields
             .iter()
             .filter(|f| f.group == group)
@@ -307,7 +307,7 @@ const LISTED_FIELDS: usize = 256;
 /// `PUT /api/areas/:area/sources/:id/senders/fields`: the source's sender fields an editor unchecked, added and,
 /// once new fields are not watched, kept watched, whole. Its workers count them from their next heartbeat. Refused
 /// for an added field that is not a field name.
-pub async fn put_sender_fields(
+pub(crate) async fn put_sender_fields(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path((group, source)): Path<(String, String)>,
@@ -381,7 +381,7 @@ pub async fn put_sender_fields(
 
 /// `POST /api/areas/:area/sources/:id/reset-history`: resets the source's history, so its normal is learned again
 /// from now.
-pub async fn reset_history(
+pub(crate) async fn reset_history(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path((group, source)): Path<(String, String)>,
@@ -409,14 +409,14 @@ pub async fn reset_history(
 
 /// The preset to pick for a source, for its senders, or for both.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Picking {
-    pub rows: Option<Preset>,
-    pub senders: Option<Preset>,
+pub(crate) struct Picking {
+    rows: Option<Preset>,
+    senders: Option<Preset>,
 }
 
 /// `PUT /api/areas/:area/sources/:id/preset`: picks the preset the source is judged at, the one its senders are, or
 /// both. The one not named stays as it was.
-pub async fn put_preset(
+pub(crate) async fn put_preset(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path((group, source)): Path<(String, String)>,
@@ -439,24 +439,24 @@ pub async fn put_preset(
 /// A below-normal warning of a source, by when it began, and what an editor answered it was.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Marked {
-    pub since_millis: i64,
-    pub was: Was,
+pub(crate) struct Marked {
+    since_millis: i64,
+    was: Was,
 }
 
 /// A below-normal warning of one sender of a source, and what an editor answered it was.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SenderMarked {
+pub(crate) struct SenderMarked {
     #[serde(flatten)]
-    pub sender: Sender,
+    sender: Sender,
     #[serde(flatten)]
-    pub marked: Marked,
+    marked: Marked,
 }
 
 /// `POST /api/areas/:area/sources/:id/mark`: answers what one of the source's below-normal warnings of the past year
 /// was, in place of any answer before. Refused when none began then.
-pub async fn mark(
+pub(crate) async fn mark(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path((group, source)): Path<(String, String)>,
@@ -472,7 +472,7 @@ pub async fn mark(
 }
 
 /// `POST /api/areas/:area/sources/:id/senders/mark`: [`mark`] for one sender of the source.
-pub async fn mark_sender(
+pub(crate) async fn mark_sender(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path((group, source)): Path<(String, String)>,
@@ -535,7 +535,7 @@ impl Marks {
 
 /// `GET /api/areas/:area/sources/:id/past`: the source's warnings and quiet spells of the past year, for an editor to
 /// mark ([`throughput::past`]).
-pub async fn past(
+pub(crate) async fn past(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
 ) -> Envelope<throughput::Past> {
@@ -543,7 +543,7 @@ pub async fn past(
 }
 
 /// `GET /api/areas/:area/sources/:id/senders/past?field=&value=`: [`past`] for one sender of the source.
-pub async fn past_sender(
+pub(crate) async fn past_sender(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
     Query(sender): Query<Sender>,
@@ -554,16 +554,16 @@ pub async fn past_sender(
 /// What [`chart`] and [`chart_sender`] are asked: a span, and for a sender, which.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChartQuery {
-    pub from_millis: i64,
-    pub to_millis: i64,
+pub(crate) struct ChartQuery {
+    from_millis: i64,
+    to_millis: i64,
     /// The width to draw the rate and its range at, as a warning that width began names it.
-    pub window_millis: Option<i64>,
+    window_millis: Option<i64>,
 }
 
 /// `GET /api/areas/:area/sources/:id/chart?fromMillis=&toMillis=&windowMillis=`: the source's rows against its range
 /// over a span, as History draws it around a warning ([`throughput::chart`]).
-pub async fn chart(
+pub(crate) async fn chart(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
     Query(asked): Query<ChartQuery>,
@@ -573,7 +573,7 @@ pub async fn chart(
 
 /// `GET /api/areas/:area/sources/:id/senders/chart?field=&value=&fromMillis=&toMillis=`: [`chart`] for one sender of
 /// the source.
-pub async fn chart_sender(
+pub(crate) async fn chart_sender(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
     Query(sender): Query<Sender>,

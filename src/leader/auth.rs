@@ -16,7 +16,7 @@ pub fn hash_secret(secret: &str) -> String {
     hex_encode(digest.as_ref())
 }
 
-pub fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {

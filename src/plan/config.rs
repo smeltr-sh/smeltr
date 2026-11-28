@@ -28,7 +28,7 @@ pub struct PipelineConfig {
 
 impl PipelineConfig {
     /// The `FunctionId` of the step the file names `id`: what `step_ids` holds at it.
-    pub fn function_id(&self, id: &str) -> Option<FunctionId> {
+    pub(crate) fn function_id(&self, id: &str) -> Option<FunctionId> {
         self.step_ids.entries().find(|(_, s)| *s == id).map(|(f, _)| f)
     }
 }
@@ -36,7 +36,7 @@ impl PipelineConfig {
 /// A bundle's named grok patterns, by name: what any grok in the group's pipelines can name, between its own
 /// `GrokConfig::custom_patterns` and the built-ins. `config_file::load` checked that each expands on its own and
 /// that none takes a built-in's name.
-pub type GrokPatterns = std::collections::BTreeMap<String, String>;
+pub(crate) type GrokPatterns = std::collections::BTreeMap<String, String>;
 
 /// The field a tagged or delivered row carries its exceptions in, unless the group or the route names another.
 pub const DEFAULT_TAG_FIELD: &str = "smeltr.exception";
@@ -111,7 +111,7 @@ impl Answer {
     }
 
     /// `self` and `other` as one row's answer: the stronger of the two, and every target of both where both deliver.
-    pub fn join(&mut self, other: &Answer) {
+    pub(crate) fn join(&mut self, other: &Answer) {
         if other.strength() > self.strength() {
             *self = other.clone();
         } else if let (Answer::Deliver(mine), Answer::Deliver(theirs)) = (self, other) {
@@ -124,7 +124,7 @@ impl Answer {
     }
 
     /// Where this answer sends a row: none unless it delivers.
-    pub fn targets(&self) -> &[DestId] {
+    pub(crate) fn targets(&self) -> &[DestId] {
         match self {
             Answer::Deliver(to) => to,
             _ => &[],
@@ -132,7 +132,7 @@ impl Answer {
     }
 
     /// The answer's name, as a config spells it.
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             Answer::Ignore => "ignore",
             Answer::Tag => "tag",
@@ -185,7 +185,7 @@ pub enum Step {
 
 #[derive(Clone, Debug)]
 pub struct FunctionConfig {
-    pub id: FunctionId,
+    pub(crate) id: FunctionId,
     /// The same mechanism as an enclosing `If`, shown by the GUI as a field on the function row.
     pub filter: Option<String>,
     pub disabled: bool,
@@ -307,7 +307,7 @@ impl ParserKind {
     /// Only JSON, key-value and CEF take a field's name from the record. Grok reads its names off the pattern and CSV off
     /// its column table, so both produce exactly `declared`. A dynamic parser is refused under a guard, and each name a
     /// step after it writes claims the record's key of that name (the parse's `dropped`).
-    pub fn is_dynamic(&self) -> bool {
+    pub(crate) fn is_dynamic(&self) -> bool {
         match self {
             ParserKind::Json { .. } | ParserKind::KeyValue(_) | ParserKind::Cef { .. } | ParserKind::Variant => true,
             ParserKind::Csv(_) | ParserKind::Grok(_) => false,
@@ -315,7 +315,7 @@ impl ParserKind {
     }
 
     /// Whether a key this parser reads is split at its dots into a path, rather than read as one key.
-    pub fn split_dots(&self) -> bool {
+    pub(crate) fn split_dots(&self) -> bool {
         match self {
             ParserKind::Json { split_dots }
             | ParserKind::Cef { split_dots }
@@ -435,7 +435,7 @@ pub struct LookupFile {
 
 impl LookupFile {
     /// What to call the file when something about it has to be said.
-    pub fn shown(&self) -> String {
+    pub(crate) fn shown(&self) -> String {
         match &self.at {
             LookupAt::Path(path) => path.display().to_string(),
             LookupAt::InCommit { .. } => self.text.clone(),
@@ -450,7 +450,7 @@ impl LookupFile {
     }
 
     /// `map`, and where the lookup store keeps the file, when it does.
-    pub fn map_stored(&self) -> Result<(memmap2::Mmap, Option<std::path::PathBuf>), crate::lookup::LookupError> {
+    pub(crate) fn map_stored(&self) -> Result<(memmap2::Mmap, Option<std::path::PathBuf>), crate::lookup::LookupError> {
         let named = self.shown();
         let path = match &self.at {
             LookupAt::Path(path) => {
@@ -551,7 +551,7 @@ pub struct CompileError {
     /// Which pipeline this came from. `FunctionId`s are local to one pipeline (`load::to_pipeline` restarts the
     /// count at every pipeline), so once more than one pipeline is compiled together a bare `function` is
     /// ambiguous without this.
-    pub pipeline: Option<usize>,
+    pub(crate) pipeline: Option<usize>,
     /// An eval step's assignment this error happened while compiling, by its position in the step's own
     /// assignment list. `None` for every other kind of error, including one raised elsewhere in an eval step (its
     /// filter, say) -- there is no assignment to place it at. The editor uses this to put the message on the one
@@ -560,7 +560,7 @@ pub struct CompileError {
     /// By position, not by the assignment's own target field: `Eval` clobbers-always (a reassignment binds a
     /// fresh slot), so two assignments can share one target, and a name would then place every error naming it
     /// on all of them rather than the one that actually raised it.
-    pub assignment_index: Option<u32>,
+    pub(crate) assignment_index: Option<u32>,
     /// The route this came from, by its position in the topology's routes.
     pub route: Option<usize>,
     /// The route's delivery rule whose `when` this came from, by its position in the route's own list. `None` on a
@@ -570,7 +570,7 @@ pub struct CompileError {
 }
 
 impl CompileError {
-    pub fn new(function: Option<FunctionId>, message: impl Into<String>) -> CompileError {
+    pub(crate) fn new(function: Option<FunctionId>, message: impl Into<String>) -> CompileError {
         CompileError {
             function,
             pipeline: None,
@@ -581,7 +581,7 @@ impl CompileError {
         }
     }
 
-    pub fn in_pipeline(mut self, id: usize) -> Self {
+    pub(crate) fn in_pipeline(mut self, id: usize) -> Self {
         self.pipeline = Some(id);
         self
     }

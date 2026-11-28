@@ -11,7 +11,7 @@ mod azure;
 mod gcs;
 mod s3;
 
-pub use self::{
+pub(crate) use self::{
     azure::StorageQueueDto,
     gcs::PubSubDto,
     s3::{KmsKeyDto, SqsDto},
@@ -56,7 +56,7 @@ pub(super) trait StoreNameDto {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BucketDto {
-    pub bucket: String,
+    bucket: String,
 }
 
 impl StoreNameDto for BucketDto {
@@ -67,7 +67,7 @@ impl StoreNameDto for BucketDto {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ContainerDto {
-    pub container: String,
+    container: String,
 }
 
 impl StoreNameDto for ContainerDto {
