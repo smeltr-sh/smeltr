@@ -2250,32 +2250,48 @@ impl Transform {
     }
 
     /// Puts `records`, a batch no pipeline finished, in `out` for `targets` as they arrived. They are decoded here only
-    /// for a form that reads the decoded record, and outside the memory budget: a record here may be one that does not
-    /// decode within it, and its form is what the destination it goes to is for.
+    /// for a form that reads the decoded record, within the memory budget like the rest of transform's work: a range
+    /// the budget refuses is halved and decoded again, and a record it refuses alone has only its `__source.bytes`.
     fn place_arrived(&self, out: &mut Output, targets: &[DestId], records: &[SourceRecord], lane: &Lane) {
         let decodes = |p: &Payload| !matches!(p, Payload::Bytes { field } if **field == *SOURCE_BYTES);
         let read = targets
             .iter()
             .any(|&to| decodes(&self.topology.payload(to)) || self.kept(to).iter().any(decodes));
-        let mut pool = BufferPool::new();
-        let decoded = read.then(|| {
-            lane.meta.decode(
+        // Last in, first out: the first half is pushed last, so the ranges are placed in the batch's order.
+        let mut ranges = vec![0..records.len()];
+        while let Some(range) = ranges.pop() {
+            let records = &records[range.clone()];
+            let mut pool = BufferPool::with_budget(self.memory.clone());
+            let decoded = read.then(|| {
+                buffer::catch_over_budget(|| {
+                    lane.meta.decode(
+                        records,
+                        None::<&[&str]>,
+                        lane.writers.as_ref(),
+                        lane.source_name.as_deref(),
+                        &mut pool,
+                    )
+                })
+            });
+            let decoded = match decoded {
+                Some(Err(_)) if range.len() > 1 => {
+                    let mid = range.start + range.len() / 2;
+                    ranges.extend([mid..range.end, range.start..mid]);
+                    continue;
+                }
+                Some(Ok(decoded)) => Some(decoded),
+                Some(Err(_)) | None => None,
+            };
+            let rows: Vec<usize> = (0..decoded.as_ref().map_or(records.len(), DecodedBatch::rows)).collect();
+            let arrived = Arrived {
+                meta: &lane.meta,
                 records,
-                None::<&[&str]>,
-                lane.writers.as_ref(),
-                lane.source_name.as_deref(),
-                &mut pool,
-            )
-        });
-        let rows: Vec<usize> = (0..decoded.as_ref().map_or(records.len(), DecodedBatch::rows)).collect();
-        let arrived = Arrived {
-            meta: &lane.meta,
-            records,
-            decoded: decoded.as_ref(),
-        };
-        self.place_delivered(out, targets, &arrived, &rows, lane, DROPPED_UNPROCESSABLE);
-        if let Some(decoded) = decoded {
-            decoded.batch.reclaim(&mut pool);
+                decoded: decoded.as_ref(),
+            };
+            self.place_delivered(out, targets, &arrived, &rows, lane, DROPPED_UNPROCESSABLE);
+            if let Some(decoded) = decoded {
+                decoded.batch.reclaim(&mut pool);
+            }
         }
     }
 
