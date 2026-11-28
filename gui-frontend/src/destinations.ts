@@ -3,6 +3,7 @@ import { LIMITS, type CloudStore, type DestinationDto, type ObjectStore } from '
 import { byteCount } from './bytes';
 import { accessModified } from './ConnectorAccess.svelte';
 import { requestDeliveryModified } from './RequestDelivery.svelte';
+import { compressionModified } from './RequestCompression.svelte';
 import { tlsSet, type HeaderedDestination } from './http';
 import type { CatalogType } from './TypeCatalog.svelte';
 import { SYSTEM_GLYPHS, SYSTEM_LABELS } from './systemGlyphs';
@@ -44,8 +45,7 @@ export function httpModified(d: HeaderedDestination): boolean {
   return (
     tlsSet(d) ||
     (d.type === 'http' && d.zoneUrls !== undefined) ||
-    (d.type !== 'prometheus' && (d.compression ?? 'none') !== 'none') ||
-    (d.type !== 'prometheus' && d.compressionLevel !== undefined) ||
+    (d.type !== 'prometheus' && compressionModified(d)) ||
     requestDeliveryModified(
       d,
       'maxRequestBytes',

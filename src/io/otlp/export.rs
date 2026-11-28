@@ -31,15 +31,14 @@ use super::metrics::{self, DataPoint, Metric, PointRow};
 use super::traces::Span;
 use super::{InstrumentationScope, Nested, Resource, http_path, logs, rows, traces};
 use crate::io::http::{Outcome, Protocol, Response, Unwritten};
-use crate::io::http_post::{answered, compressed};
+use crate::io::http_post::answered;
 use crate::io::{IoError, OwnedRecord};
-use crate::plan::topology::{Compression, OtlpDestinationConfig, Signal};
+use crate::plan::topology::{OtlpDestinationConfig, Signal};
 
 /// The request and the answer.
 #[derive(Clone, Debug)]
 pub struct Otlp {
     signal: Signal,
-    gzip: Option<u8>,
     /// What the last row admitted came under, which the next most often shares. Shared by every clone, though only
     /// the egress thread admits.
     last: Arc<Mutex<Last>>,
@@ -57,10 +56,6 @@ impl Otlp {
     pub fn new(config: &OtlpDestinationConfig) -> Otlp {
         Otlp {
             signal: config.signal,
-            gzip: match config.http.compression {
-                Compression::Gzip(level) => Some(level),
-                _ => None,
-            },
             last: Arc::default(),
             unwritten: None,
         }
@@ -225,7 +220,7 @@ impl Protocol for Otlp {
     }
 
     fn body(&self, items: &[Item]) -> Vec<u8> {
-        let request = match self.signal {
+        match self.signal {
             Signal::Logs => logs::request(nested(items, |record| match record {
                 Record::Log(log) => (**log).clone(),
                 _ => unreachable!("a logs destination admits log records"),
@@ -241,8 +236,7 @@ impl Protocol for Otlp {
                 });
                 metrics::request(by_metric(points))
             }
-        };
-        compressed(request, self.gzip)
+        }
     }
 
     fn read(&self, response: &Response, items: &[Self::Item]) -> Result<Outcome, IoError> {
@@ -368,7 +362,7 @@ mod tests {
     use crate::core::id::DestId;
     use crate::io::otlp::{Cell, Export};
     use crate::plan::config::Payload;
-    use crate::plan::topology::HttpDestinationConfig;
+    use crate::plan::topology::{Compression, HttpDestinationConfig};
 
     fn protocol(signal: Signal) -> Otlp {
         Otlp::new(&OtlpDestinationConfig {

@@ -37,6 +37,12 @@ pub struct SplunkHecDestinationDto {
     pub acknowledgement: AcknowledgementDto,
     #[serde(flatten)]
     pub tls: TlsDto,
+    /// `"none"` (default) or `"gzip"`.
+    #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
+    pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
     pub in_flight: InFlight,
     #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
@@ -64,12 +70,16 @@ impl DestinationSpec for SplunkHecDestinationDto {
             format,
             field,
             tls,
+            compression,
+            compression_level,
             in_flight,
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
             ..
         } = self;
+        check_http_compression(&d.id, compression, errors);
+        check_compression_level(&d.id, *compression, *compression_level, false, errors);
         check_field(
             &d.id,
             matches!(format, FormatDto::Text | FormatDto::Bytes),
@@ -144,6 +154,8 @@ impl DestinationSpec for SplunkHecDestinationDto {
             field,
             acknowledgement,
             tls,
+            compression,
+            compression_level,
             in_flight,
             max_request_bytes,
             buffer_bytes,
@@ -166,6 +178,7 @@ impl DestinationSpec for SplunkHecDestinationDto {
                 AcknowledgementDto::Indexer => Acknowledgement::Indexer,
                 AcknowledgementDto::Receipt => Acknowledgement::Receipt,
             },
+            compression: compression.to_plan(*compression_level),
             tls: to_tls(tls, of, Side::Client),
             in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
             max_request_bytes: max_request_bytes.0,

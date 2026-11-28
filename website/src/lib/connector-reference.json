@@ -5142,6 +5142,30 @@
             "what": "The record field each document's ID is read from. A record with no ID gets one Elasticsearch generates."
           },
           {
+            "name": "compression",
+            "type": "string",
+            "default": "none",
+            "examples": ["gzip"],
+            "what": "How it compresses each request body.",
+            "values": [
+              {
+                "value": "none",
+                "what": "Sends it uncompressed."
+              },
+              {
+                "value": "gzip",
+                "what": "Compresses each body and sends it with `Content-Encoding: gzip`."
+              }
+            ]
+          },
+          {
+            "name": "compressionLevel",
+            "type": "integer",
+            "absent": "gzip's default, 6",
+            "examples": [9],
+            "what": "How hard gzip works: a higher level is slower and compresses more. 1 to 9; none takes no level."
+          },
+          {
             "name": "inFlight",
             "type": "integer",
             "default": 4,
@@ -5203,6 +5227,8 @@
             "section": "Advanced",
             "settings": [
               "idField",
+              "compression",
+              "compressionLevel",
               "inFlight",
               "maxBulkBytes",
               "bufferBytes",
@@ -5371,6 +5397,30 @@
             "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
+            "name": "compression",
+            "type": "string",
+            "default": "none",
+            "examples": ["gzip"],
+            "what": "How it compresses each request body.",
+            "values": [
+              {
+                "value": "none",
+                "what": "Sends it uncompressed."
+              },
+              {
+                "value": "gzip",
+                "what": "Compresses each body and sends it with `Content-Encoding: gzip`."
+              }
+            ]
+          },
+          {
+            "name": "compressionLevel",
+            "type": "integer",
+            "absent": "gzip's default, 6",
+            "examples": [9],
+            "what": "How hard gzip works: a higher level is slower and compresses more. 1 to 9; none takes no level."
+          },
+          {
             "name": "inFlight",
             "type": "integer",
             "default": 4,
@@ -5420,7 +5470,15 @@
           },
           {
             "section": "Advanced",
-            "settings": ["inFlight", "maxRequestBytes", "bufferBytes", "stallAfterSecs", "zoneUrls"]
+            "settings": [
+              "compression",
+              "compressionLevel",
+              "inFlight",
+              "maxRequestBytes",
+              "bufferBytes",
+              "stallAfterSecs",
+              "zoneUrls"
+            ]
           }
         ]
       },

@@ -81,7 +81,7 @@ pub fn transport(config: &SplunkHecDestinationConfig, token: &str, agent: &ureq:
         headers.push(("X-Splunk-Request-Channel".to_string(), channel()));
     }
     Collector::new(
-        HttpTransport::new(&config.url, "application/json", headers, agent),
+        HttpTransport::new(&config.url, "application/json", headers, agent).compressing(config.compression),
         config.acknowledgement,
         config.endpoint,
     )

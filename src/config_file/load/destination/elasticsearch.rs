@@ -28,6 +28,12 @@ pub struct ElasticsearchDestinationDto {
     /// The row field holding the document's `_id`. Omitted, it is `__destination.id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id_field: Option<String>,
+    /// `"none"` (default) or `"gzip"`.
+    #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
+    pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
     pub in_flight: InFlight,
     #[serde(default, skip_serializing_if = "BulkBytes::is_default")]
@@ -66,6 +72,8 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             username,
             password,
             id_field,
+            compression,
+            compression_level,
             ..
         } = self;
         check_elastic_sign_in(&d.id, auth, username, password, errors);
@@ -104,6 +112,8 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             },
             errors,
         );
+        check_http_compression(&d.id, compression, errors);
+        check_compression_level(&d.id, *compression, *compression_level, false, errors);
         if blank(default_index) {
             errors
                 .at("defaultIndex")
@@ -123,6 +133,8 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             password,
             action,
             id_field,
+            compression,
+            compression_level,
             in_flight,
             max_bulk_bytes,
             buffer_bytes,
@@ -143,6 +155,7 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             url: url.clone(),
             zone_urls: zone_urls.clone(),
             default_index: default_index.clone(),
+            compression: compression.to_plan(*compression_level),
             auth: auth.as_ref().map(to_secret_ref),
             // Validation refused a username without a password, and a password without a username.
             basic: username.clone().zip(password.as_ref().map(to_secret_ref)),

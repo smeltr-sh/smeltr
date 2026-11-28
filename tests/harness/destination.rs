@@ -128,6 +128,55 @@ pub fn drawn_zones(d: &serde_json::Map<String, serde_json::Value>) -> std::colle
         .collect()
 }
 
+/// Draws the compression of a destination that POSTs requests onto `d`: none or gzip, either sometimes stated, and
+/// gzip sometimes at a level. Reaches `compression.none`, `compression.gzip` and `compressionLevel`.
+pub fn draw_request_compression(rng: &mut Rng, cov: &mut Reached, d: &mut serde_json::Map<String, serde_json::Value>) {
+    let compression = *rng.pick(&["none", "gzip"]);
+    cov.reach(format!("compression.{compression}"));
+    if compression != "none" || rng.chance(2) {
+        d.insert("compression".into(), serde_json::json!(compression));
+    }
+    if compression == "gzip" && rng.chance(2) {
+        cov.reach("compressionLevel");
+        d.insert("compressionLevel".into(), serde_json::json!(1 + rng.below(9)));
+    }
+}
+
+/// Breaks `d`'s `compression` (a codec no request takes) or `compressionLevel` (past the top of gzip's levels, or
+/// any level for none), as `what` names. The save refuses it on that field.
+pub fn break_request_compression(
+    rng: &mut Rng,
+    d: &mut serde_json::Map<String, serde_json::Value>,
+    what: &str,
+) -> &'static str {
+    if what == "compression" {
+        d.remove("compressionLevel");
+        d.insert(
+            "compression".into(),
+            serde_json::json!(rng.pick(&["snappy", "lz4", "zstd"])),
+        );
+        return "compression";
+    }
+    let gzip = d.get("compression").and_then(serde_json::Value::as_str) == Some("gzip");
+    d.insert("compressionLevel".into(), serde_json::json!(if gzip { 10 } else { 1 }));
+    "compressionLevel"
+}
+
+/// The compression drawn onto `d`, as a loaded destination holds it.
+pub fn drawn_request_compression(
+    d: &serde_json::Map<String, serde_json::Value>,
+) -> smeltr::plan::topology::Compression {
+    use smeltr::plan::topology::Compression;
+    match d.get("compression").and_then(serde_json::Value::as_str) {
+        Some("gzip") => Compression::Gzip(
+            d.get("compressionLevel")
+                .and_then(serde_json::Value::as_u64)
+                .map_or(6, |l| u8::try_from(l).expect("a drawn level is 1 to 9")),
+        ),
+        _ => Compression::None,
+    }
+}
+
 /// Runs each of `seeds` with a fresh [`Reached`], credits what a passing seed reached, and fails naming every seed
 /// that did not pass or any of `options` no seed reached.
 pub fn run(

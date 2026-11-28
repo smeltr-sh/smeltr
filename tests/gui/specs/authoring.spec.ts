@@ -3756,6 +3756,74 @@ test('A10: an Elasticsearch ID field starts empty, with __destination.id as its 
   ]);
 });
 
+// A10, sources and destinations from a form. Elasticsearch and Splunk HEC compress each request as an HTTP destination
+// does: gzip under Advanced, at a level.
+test('A10: Elasticsearch and Splunk HEC send each request gzipped', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.post('/api/secrets', {
+    name: 'hec-token',
+    custody: 'leader-stored',
+    description: 'the main index',
+    value: '00000000-0000-0000-0000-000000000001',
+  });
+
+  await goto(admin, leader, '#/build/destinations');
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  let dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await dialog.getByRole('textbox', { name: /^id$/ }).fill('search');
+  await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
+  await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  const esCompression = dialog.getByRole('combobox', { name: /^compression/ });
+  await expect(esCompression.locator('option')).toHaveText(['none', 'gzip']);
+  await expect(dialog.getByRole('slider', { name: /^compression level/ })).toHaveCount(0);
+  await esCompression.selectOption('gzip');
+  await expect(dialog.getByRole('slider', { name: 'compression level: 6' })).toBeVisible();
+  await dialog.getByRole('slider', { name: /^compression level/ }).fill('3');
+  await expect(dialog.getByRole('slider', { name: 'compression level: 3' })).toBeVisible();
+  await dialog.screenshot({ path: test.info().outputPath('elasticsearch-compression.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Splunk HEC', exact: true }).click();
+  await dialog.getByRole('textbox', { name: /^id$/ }).fill('splunk');
+  await dialog.getByRole('textbox', { name: 'url' }).fill('https://splunk.example.com:8088');
+  await dialog.getByRole('combobox', { name: 'token source' }).selectOption('hec-token');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  await dialog.getByRole('combobox', { name: /^compression/ }).selectOption('gzip');
+  await expect(dialog.getByRole('slider', { name: 'compression level: 6' })).toBeVisible();
+  await dialog.screenshot({ path: test.info().outputPath('splunk-hec-compression.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.destinations).toEqual([
+    {
+      id: 'search',
+      type: 'elasticsearch',
+      url: 'https://es.example.com:9200',
+      defaultIndex: 'logs',
+      compression: 'gzip',
+      compressionLevel: 3,
+    },
+    {
+      id: 'splunk',
+      type: 'splunkHec',
+      url: 'https://splunk.example.com:8088',
+      token: { secret: 'hec-token', version: 1 },
+      compression: 'gzip',
+    },
+  ]);
+});
+
 // A10, sources and destinations from a form. A Delta table's root is checked as it is typed; its partition columns
 // are chips.
 test('A10: a Delta destination is added from its form and saved as the leader accepts it', async ({

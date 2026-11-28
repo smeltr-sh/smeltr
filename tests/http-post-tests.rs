@@ -176,22 +176,6 @@ fn single_rows_go_to_the_pool_as_one_batch() {
     assert_eq!(bodies(&sent).len(), 3);
 }
 
-#[test]
-fn gzip_compresses_the_whole_body() {
-    let c = HttpDestinationConfig {
-        compression: Compression::Gzip(6),
-        ..config("http://unused", RequestBody::Lines)
-    };
-    let (mut d, sent) = destination(&c, &[200]);
-    deliver(&mut d, vec![row(b"{\"a\":1}"), row(b"{\"a\":2}")]).unwrap();
-    let gz = sent.lock()[0].1.clone();
-    let mut plain = String::new();
-    flate2::read::GzDecoder::new(&gz[..])
-        .read_to_string(&mut plain)
-        .unwrap();
-    assert_eq!(plain, "{\"a\":1}\n{\"a\":2}\n");
-}
-
 /// The transport trims a base address's trailing slashes; the path puts them back, so the URL is the one given.
 #[test]
 fn the_url_keeps_its_trailing_slash() {

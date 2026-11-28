@@ -635,6 +635,9 @@ export type DestinationDto = {
       action?: BulkAction;
       /** The row field each document's id is read from. Absent is `__destination.id`. */
       idField?: string;
+      /** Absent is `none`. */
+      compression?: HttpCompression;
+      compressionLevel?: number;
       inFlight?: number;
       maxBulkBytes?: ByteCount;
       bufferBytes?: ByteCount;
@@ -664,6 +667,9 @@ export type DestinationDto = {
        * `bytes`. */
       field?: string;
       acknowledgement?: SplunkAcknowledgement;
+      /** Absent is `none`. */
+      compression?: HttpCompression;
+      compressionLevel?: number;
       inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;

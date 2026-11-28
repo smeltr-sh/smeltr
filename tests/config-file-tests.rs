@@ -1550,6 +1550,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             )),
             basic: None,
             action: Default::default(),
+            compression: smeltr::plan::topology::Compression::None,
             id_field: None,
             in_flight: 4,
             max_bulk_bytes: 5 * 1024 * 1024,
@@ -2461,6 +2462,43 @@ fn a_minimal_splunk_hec_destination_loads_with_the_defaults() {
     assert_eq!(h.buffer_bytes, 64 * 1024 * 1024);
     assert_eq!(h.in_flight, 4);
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
+}
+
+/// Elasticsearch and Splunk HEC take the HTTP destination's compression: none unless set, gzip at a level, no other
+/// codec.
+#[test]
+fn elasticsearch_and_splunk_hec_compress_with_gzip_alone() {
+    use smeltr::plan::topology::{Compression, DestinationKind};
+
+    let es = |extra: &str| {
+        cfg(
+            &elastic_out(extra),
+            EMPTY_PIPELINE,
+            r#"{"id":"r","source":"s","pipeline":"p","deliver":[{"to":["out"]}]}"#,
+        )
+    };
+    let compression = |json: &str| match &load_str(json).expect("must load").topology.destinations[0].kind {
+        DestinationKind::Elasticsearch(e) => e.compression,
+        DestinationKind::SplunkHec(h) => h.compression,
+        other => panic!("expected Elasticsearch or Splunk HEC, got {other:?}"),
+    };
+    let configs: [&dyn Fn(&str) -> String; 2] = [&es, &hec_config];
+    for config in configs {
+        assert_eq!(compression(&config("")), Compression::None);
+        assert_eq!(compression(&config(r#","compression":"gzip""#)), Compression::Gzip(6));
+        assert_eq!(
+            compression(&config(r#","compression":"gzip","compressionLevel":3"#)),
+            Compression::Gzip(3)
+        );
+        for (extra, says) in [
+            (r#","compression":"zstd""#, "none or gzip"),
+            (r#","compression":"gzip","compressionLevel":10"#, "gzip takes levels"),
+            (r#","compressionLevel":3"#, "does not take"),
+        ] {
+            let e = refusal(&config(extra));
+            assert!(e.contains(says), "{extra}: {e}");
+        }
+    }
 }
 
 /// The token is named, never valued, and it is one of the secrets the bundle needs.
