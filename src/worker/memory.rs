@@ -400,8 +400,8 @@ pub(super) fn queue_charge(kind: &DestinationKind) -> usize {
 }
 
 /// Each Kafka source's claim on its `fetchBytes`. A source holds all of it in its inbox; the first source of each
-/// client holds that client too, all of it once more beyond what `fit` sets aside for it. Equal weights
-/// get equal sizes, so the sources of one client are sized alike and still share it.
+/// client holds that client too: its `fetchBytes` once more, beyond the `consumer_floor_bytes` that `fit` sets aside
+/// first. Equal weights get equal sizes, so the sources of one client are sized alike and still share it.
 fn fetch_claims<'a>(sources: impl IntoIterator<Item = &'a SourceKind>) -> Vec<Claim> {
     let mut clients: Vec<&KafkaSourceConfig> = Vec::new();
     sources

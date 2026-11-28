@@ -1247,9 +1247,9 @@ impl ClientContext for Routes {
         if times <= FETCH_EXPANSION as u64 {
             last.over.clear();
         } else if let Some(error) = last.over.fail_due(format!(
-            "records took {times} times the bytes fetched for them, where memory is sized for {FETCH_EXPANSION}"
+            "records took {times} times the memory of the bytes fetched for them, where memory is sized for {FETCH_EXPANSION}"
         )) {
-            tracing::warn!(name: "fetch_expansion", target: "sources", group = %self.group(), error, "a Kafka source's records decompress to more than its memory is sized for, so its worker may run out of memory; lower its fetch buffer or give the worker more memory");
+            tracing::warn!(name: "fetch_expansion", target: "sources", group = %self.group(), error, "a Kafka source's records decompress to more than its memory is sized for, so its worker may run out of memory; lower its `fetchBytes` or give the worker more memory");
         }
     }
 
