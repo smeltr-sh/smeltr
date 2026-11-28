@@ -172,11 +172,10 @@ fn senders(kind: &DestinationKind) -> Option<Senders> {
         DestinationKind::Elasticsearch(e) => (e.max_in_flight(), e.in_flight),
         DestinationKind::SplunkHec(s) => (s.max_in_flight(), s.in_flight),
         DestinationKind::Http(h) => (h.max_in_flight(), h.in_flight),
+        DestinationKind::Prometheus(p) => (p.max_in_flight(), p.in_flight),
         DestinationKind::LogAnalytics(LogAnalyticsDestinationConfig { http, .. })
         | DestinationKind::Otlp(OtlpDestinationConfig { http, .. }) => (http.max_in_flight(), http.in_flight),
-        // Prometheus sends from the destination's own thread, one request at a time.
         DestinationKind::Kafka(_)
-        | DestinationKind::Prometheus(_)
         | DestinationKind::Objects(_)
         | DestinationKind::Iceberg(_)
         | DestinationKind::Delta(_) => return None,
@@ -611,6 +610,22 @@ mod tests {
         // Each of 64 files: a 32 MiB take, the part its upload fills and the 2 on their way.
         let large = r#", "bufferBytes": 8589934592, "inFlight": 2"#;
         assert_eq!(open_files(large), 64 * (32 + 3 * 8) * MIB as u64);
+    }
+
+    #[test]
+    fn a_prometheus_destination_holds_its_senders() {
+        let topology = crate::config_file::load_str(
+            r#"{ "version": 1, "destinations": [
+                 { "id": "prom", "type": "prometheus", "url": "http://prom:9090/api/v1/write" } ] }"#,
+        )
+        .expect("the bundle loads")
+        .topology;
+        let DestinationKind::Prometheus(p) = &topology.destinations[0].kind else {
+            panic!("a Prometheus destination");
+        };
+        let parts = destination_parts(&topology.destinations[0]);
+        let senders = parts.iter().find(|p| p.part == "senders").expect("senders").bytes;
+        assert_eq!(senders, (p.max_in_flight() * SENDER_BYTES) as u64);
     }
 
     #[test]
