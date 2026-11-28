@@ -921,26 +921,31 @@ impl SourceMeta {
 
 impl SourceMeta {
     /// Put this meta's columns over `records` into `batch`: every field of the record, and every `__source` field: a
-    /// route condition may test any of them before a pipeline is chosen. `text` is each record's payload decoded, read where the record is `_raw`;
-    /// `writers` holds the schemas an Avro source's payloads name; `source` is what `__source.name` reads.
+    /// route condition may test any of them before a pipeline is chosen. `raw` is `_raw`'s column, for a source whose
+    /// record is `_raw`; `writers` holds the schemas an Avro source's payloads name; `source` is what `__source.name`
+    /// reads.
     ///
     /// Returns each value ingest could not take as it came, as its row, its slot, how, and the value as read: a
     /// `__source` value repaired to valid UTF-8, a payload that does not decode, or a record value that is not its
     /// field's type and is null. With them, the writer's schema an Avro source's last payload was read with.
-    pub fn ingest<T: AsRef<str>>(
+    pub fn ingest(
         &self,
         batch: &mut Batch,
         records: &[crate::io::SourceRecord],
-        text: &[T],
+        raw: Option<Column>,
         writers: Option<&crate::io::avro::Writers>,
         source: Option<&str>,
         pool: &mut crate::core::buffer::BufferPool,
     ) -> (Vec<Noted>, Option<std::sync::Arc<crate::io::avro::Parsed>>) {
         let mut noted = Vec::new();
         let mut writer = None;
-        if self.raw_record() {
-            let values = text.iter().map(|t| Some(t.as_ref().as_bytes()));
-            batch.put(crate::core::batch::SLOT_RAW, str_column(pool, values), pool);
+        debug_assert_eq!(
+            raw.is_some(),
+            self.raw_record(),
+            "`_raw` is given exactly for a source whose record is it"
+        );
+        if let Some(raw) = raw {
+            batch.put(crate::core::batch::SLOT_RAW, raw, pool);
         } else if self.format == Format::Avro && records.first().is_some_and(|r| r.bytes().is_some()) {
             // Payloads, not a sample's stored fields. With no schemas to read them by, each one is noted unread.
             let none = crate::io::avro::Writers::default();
@@ -1066,25 +1071,16 @@ impl SourceMeta {
         batch.put(SLOT_LIVE, live, pool);
 
         let mut repairs = Vec::new();
-        let (noted, writer) = match text {
-            Some(text) => self.ingest(&mut batch, records, text, of, source, pool),
-            None => {
-                let mut text = Vec::with_capacity(rows);
-                if self.raw_record() {
-                    for (row, read) in self.read_bytes_each(records).enumerate() {
-                        let decoded = self.encoding.decode(read.unwrap_or_default());
-                        if decoded.replaced {
-                            repairs.push((row as u32, ExceptionKind::InvalidUtf8));
-                        }
-                        if let Some(guess) = decoded.guessed {
-                            repairs.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
-                        }
-                        text.push(decoded.text);
-                    }
-                }
-                self.ingest(&mut batch, records, &text, of, source, pool)
-            }
-        };
+        let raw = self.raw_record().then(|| match text {
+            Some(text) => str_column(pool, text.iter().map(|t| Some(t.as_ref().as_bytes()))),
+            None => crate::ops::convert::decode_each(
+                pool,
+                self.read_bytes_each(records).map(|b| Some(b.unwrap_or_default())),
+                |_| Some(self.encoding),
+                |row, kind| repairs.push((row as u32, kind)),
+            ),
+        });
+        let (noted, writer) = self.ingest(&mut batch, records, raw, of, source, pool);
         DecodedBatch {
             batch,
             noted,
@@ -1186,7 +1182,7 @@ impl SourceMeta {
     pub(crate) fn read_bytes_each<'r>(
         &self,
         records: &'r [crate::io::SourceRecord],
-    ) -> impl Iterator<Item = Option<&'r [u8]>> + 'r {
+    ) -> impl ExactSizeIterator<Item = Option<&'r [u8]>> + 'r {
         let reads = self.reads_bytes();
         let mut at: Option<(&'r crate::io::RecordChunk, Option<crate::core::column::VarLen<'r>>)> = None;
         records.iter().map(move |record| {
@@ -1222,7 +1218,7 @@ fn chunk_rows(records: &[crate::io::SourceRecord]) -> (Option<std::sync::Arc<cra
     (chunk.cloned(), rows)
 }
 
-fn str_column<'a>(
+pub(crate) fn str_column<'a>(
     pool: &mut crate::core::buffer::BufferPool,
     values: impl ExactSizeIterator<Item = Option<&'a [u8]>> + Clone,
 ) -> Column {
@@ -4004,8 +4000,10 @@ mod tests {
         let mut pool = BufferPool::new();
         let mut errors = ErrorSink::new();
         let mut batch = Batch::new(&layout, records.len(), 0);
-        let texts = vec![""; records.len()];
-        meta.ingest(&mut batch, records, &texts, None, None, &mut pool);
+        let raw = meta
+            .raw_record()
+            .then(|| str_column(&mut pool, records.iter().map(|_| Some(&b""[..]))));
+        meta.ingest(&mut batch, records, raw, None, None, &mut pool);
         let mut live = Column::alloc(&mut pool, &DataType::Bool, records.len());
         bits::fill_valid(live.bool_mut().unwrap().values, records.len());
         batch.put(SLOT_LIVE, live, &mut pool);
@@ -4142,7 +4140,14 @@ mod tests {
             .iter()
             .position(|(n, _)| *n == SOURCE_BYTES)
             .unwrap();
-        let (noted, _) = meta.ingest(&mut batch, &records, &["caf\u{fffd}"], None, None, &mut pool);
+        let (noted, _) = meta.ingest(
+            &mut batch,
+            &records,
+            Some(str_column(&mut pool, [Some("caf\u{fffd}".as_bytes())].into_iter())),
+            None,
+            None,
+            &mut pool,
+        );
 
         assert!(noted.is_empty(), "{noted:?}");
         let column = batch.get(meta.source_slot(at));
@@ -4191,7 +4196,7 @@ mod tests {
             .iter()
             .position(|(n, _)| *n == SOURCE_BYTES)
             .unwrap();
-        let (noted, _) = meta.ingest(&mut batch, &records, &[""], None, None, &mut pool);
+        let (noted, _) = meta.ingest(&mut batch, &records, None, None, None, &mut pool);
         assert!(noted.is_empty(), "{noted:?}");
         assert_eq!(batch.get(meta.source_slot(at)).varlen().unwrap().get(0), &read[..]);
         batch.reclaim(&mut pool);

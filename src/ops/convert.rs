@@ -673,15 +673,42 @@ pub(crate) fn decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         return Column::empty(DataType::Str, len);
     };
     let mut charsets = Labels::new(Encoding::for_label);
-    let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
-    for i in 0..len {
-        let encoding = (v.is_valid(i) && labels.is_valid(i))
-            .then(|| charsets.get(labels.at(i)))
-            .flatten();
-        match encoding {
-            Some(Encoding::None) | None => b.push_null(),
-            Some(encoding) => b.push_grow(ctx.pool, encoding.decode(v.at(i)).text.as_bytes()),
+    let mut repaired = Vec::new();
+    let text = decode_each(
+        ctx.pool,
+        (0..len).map(|i| v.is_valid(i).then(|| v.at(i))),
+        |i| labels.is_valid(i).then(|| charsets.get(labels.at(i))).flatten(),
+        |row, kind| repaired.push((row, kind)),
+    );
+    for (row, kind) in repaired {
+        ctx.raise(row, kind);
+    }
+    text
+}
+
+/// Each of `bytes` as text in the encoding `encoding_of` names for its row: `decode()`, and a source's `_raw`. Null
+/// where the value is null or no encoding reads it as text. `repaired` hears each row whose bytes did not decode as
+/// they came: replaced with U+FFFD, or read in a guessed encoding.
+pub(crate) fn decode_each<'b>(
+    pool: &mut crate::core::buffer::BufferPool,
+    bytes: impl ExactSizeIterator<Item = Option<&'b [u8]>>,
+    mut encoding_of: impl FnMut(usize) -> Option<Encoding>,
+    mut repaired: impl FnMut(usize, ExceptionKind),
+) -> Column {
+    let mut b = StrBuilder::new(pool, VarType::Str, bytes.len());
+    for (i, value) in bytes.enumerate() {
+        let (Some(value), Some(encoding @ (Encoding::Auto | Encoding::Fixed(_)))) = (value, encoding_of(i)) else {
+            b.push_null();
+            continue;
+        };
+        let decoded = encoding.decode(value);
+        if decoded.replaced {
+            repaired(i, ExceptionKind::InvalidUtf8);
         }
+        if let Some(guess) = decoded.guessed {
+            repaired(i, ExceptionKind::GuessedEncoding { encoding: guess.name() });
+        }
+        b.push_grow(pool, decoded.text.as_bytes());
     }
     b.finish()
 }

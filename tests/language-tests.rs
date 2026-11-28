@@ -359,6 +359,8 @@ cases! {
         [r#"{"a": "x"}"#], Rows(&[(r#"{"bad": true}"#, None)]);
     a_catch_binds_the_kind_and_the_message: r#"s: str; Object.assign($, json(_raw)) k: str = null; b: bool = false; try { n: i64 = parseInt(s); } catch (e) { k = e.kind; b = test(e.message, / in n$/); }"#,
         [r#"{"s": "x"}"#], Rows(&[(r#"{"s": "x", "k": "CoercionRefused", "b": true}"#, None)]);
+    a_decode_that_replaces_bytes_marks_the_row: r#"t = decode(encode("é", "windows-1252"), "utf-8");"#,
+        [r#"{}"#], Rows(&[(r#"{"t": "\ufffd"}"#, Some("held bytes that are not UTF-8, replaced with U+FFFD"))]);
     a_typed_catch_takes_a_kind_it_names: r#"s: str; Object.assign($, json(_raw)) m: str = null; try { n: i64 = parseInt(s); } catch (e: NaN | CoercionRefused) { m = "caught"; }"#,
         [r#"{"s": "x"}"#], Rows(&[(r#"{"s": "x", "m": "caught"}"#, None)]);
     a_typed_catch_passes_another_kind_to_the_policy: r#"s: str; Object.assign($, json(_raw)) m: str = null; try { n: i64 = parseInt(s); } catch (e: NaN) { m = "caught"; }"#,
