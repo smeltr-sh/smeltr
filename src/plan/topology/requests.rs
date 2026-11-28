@@ -21,6 +21,9 @@ impl SourceMeta {
         if !matches!(self.format, Format::Otlp(_) | Format::RemoteWrite) || payloads.first()?.bytes().is_none() {
             return None;
         }
+        // A request's records copy what they share, as a series' labels into each of its samples, so they may hold
+        // far more than the request: they are held to the budget as they are made.
+        let _scratch = crate::core::buffer::Scratch::begin(pool.budget());
         let (mut rows, mut filed, mut payload, mut noted) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let unfiled: Arc<hec::Filed> = Arc::default();
         for (at, record) in payloads.iter().enumerate() {
@@ -35,11 +38,17 @@ impl SourceMeta {
                         while let Some((row, under)) = export.next_record() {
                             rows.push(row);
                             filed.push(under);
+                            crate::core::buffer::check();
                         }
                     }),
                 _ => prometheus::readable(content_type)
                     .and_then(|version| prometheus::Samples::read(body, version, REQUEST_BYTES))
-                    .map(|mut samples| rows.extend(std::iter::from_fn(|| samples.next_record()))),
+                    .map(|mut samples| {
+                        while let Some(row) = samples.next_record() {
+                            rows.push(row);
+                            crate::core::buffer::check();
+                        }
+                    }),
             };
             if let Err(why) = read {
                 rows.push(otlp::Row(vec![None; self.record.len()]));

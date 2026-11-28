@@ -1453,6 +1453,32 @@ mod remote_write {
     }
 }
 
+/// A request's records are held to the memory budget as they are made: a series copies its labels into the record of
+/// each of its samples, so a request well within what a receiver takes can decode into far more.
+#[test]
+fn a_remote_write_request_decodes_within_the_memory_budget() {
+    use remote_write::series;
+    use smeltr::core::buffer::{BufferPool, MemoryBudget, catch_over_budget};
+
+    let at = free_loopback();
+    let mut source = prometheus_receiver_reading(at, 1 << 20);
+    let label = "v".repeat(64 << 10);
+    let samples: Vec<(f64, i64)> = (0..2_000).map(|t| (1.0, t)).collect();
+    let body = remote_write::body(vec![series(&[("__name__", "up"), ("big", &label)], &samples)]);
+    assert!(body.len() < 1 << 20, "{} bytes on the wire", body.len());
+    let sent = std::thread::spawn(move || remote_write_request(at, REMOTE_WRITE, &body).0);
+    let payloads = poll_until(&mut source, 1);
+    let meta = smeltr::plan::topology::SourceMeta::prometheus_receiver();
+    let mut pool = BufferPool::with_budget(MemoryBudget::new(16 << 20));
+    let decoded = catch_over_budget(|| meta.decode(&payloads, None::<&[&str]>, None, None, &mut pool));
+    if let Ok(decoded) = decoded {
+        decoded.batch.reclaim(&mut pool);
+        panic!("128 MiB of records decoded within a 16 MiB budget");
+    }
+    commit(&mut source, &payloads);
+    assert_eq!(sent.join().unwrap(), 202);
+}
+
 /// One remote_write request of `body`, with `headers` as whole header lines: its status and body.
 fn remote_write_request(at: SocketAddr, headers: &str, body: &[u8]) -> (u16, String) {
     request(TcpStream::connect(at).unwrap(), "POST", "/api/v1/write", headers, body)
