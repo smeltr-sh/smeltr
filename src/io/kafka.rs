@@ -1251,20 +1251,68 @@ pub struct KafkaDestination {
     _ticket: Option<kerberos::Held>,
 }
 
-/// Bytes one consumer fetch may carry: half of `fetchBytes`, so a fetch always lands with room behind it.
-fn fetch_request_bytes(fetch_bytes: usize) -> usize {
-    (fetch_bytes / 2).max(1)
+/// What a Kafka source's client is sized to hold for each byte a fetch brings over the wire, once the fetch arrives: the
+/// decompressed records, librdkafka's own record for each (`FETCHED_RECORD_BYTES`), and the slack of the buffers it
+/// decompresses into, which grow by three quarters at a time. A fetch's size counts wire bytes, so compression is what
+/// multiplies it. lz4 records of about 270 bytes measured 8.7.
+const FETCH_EXPANSION: usize = 12;
+
+/// What librdkafka allocates for each record it fetches: its op, header and fetch member, 304 bytes in 2.16, in
+/// jemalloc's 320-byte size class.
+const FETCHED_RECORD_BYTES: usize = 320;
+
+/// The least a fetch request may carry: librdkafka refuses one below `message.max.bytes`, which is 1,000,000 unless
+/// the operator's `props` set it.
+pub(crate) fn least_fetch_request_bytes(props: &KafkaProps) -> usize {
+    props
+        .literal
+        .iter()
+        .find(|(key, _)| key == "message.max.bytes")
+        .and_then(|(_, bytes)| bytes.parse().ok())
+        .unwrap_or(DEFAULT_BATCH_BYTES)
 }
 
-/// librdkafka's own `receive.message.max.bytes`.
-const DEFAULT_RECEIVE_MESSAGE_BYTES: usize = 100_000_000;
+/// The brokers a client's bootstrap list names, one at least. A cluster with more brokers than it names fetches from
+/// each of them, and can hold more than [`consumer_ceiling`].
+pub(crate) fn named_brokers(brokers: &str) -> usize {
+    brokers.split(',').filter(|b| !b.trim().is_empty()).count().max(1)
+}
 
-/// The framing librdkafka wants between a fetch and the message that carries it.
-const RECEIVE_FRAMING_BYTES: usize = 512;
+/// Bytes one fetch request to one broker may carry. Half of the client's ceiling is for the fetches in flight, one per
+/// broker, each as large as [`FETCH_EXPANSION`] times its wire bytes once it arrives.
+fn fetch_request_bytes(fetch_bytes: usize, brokers: usize, least: usize) -> usize {
+    (fetch_bytes / 2 / (brokers * FETCH_EXPANSION)).max(least)
+}
 
-/// What one received message may be: librdkafka's default, or the fetch plus its framing when the fetch is larger.
-fn receive_message_bytes(fetch_bytes: usize) -> usize {
-    (fetch_request_bytes(fetch_bytes) + RECEIVE_FRAMING_BYTES).max(DEFAULT_RECEIVE_MESSAGE_BYTES)
+/// The bytes a decompressed buffer can hold for each four bytes of records in it: librdkafka grows it by three quarters
+/// of its size at a time, so it can hold three quarters more than its records, seven quarters in all.
+const DECOMPRESS_SLACK_QUARTERS: usize = 7;
+
+/// The decompressed payload librdkafka's queue may hold before it stops fetching: as much as fills a quarter of
+/// `fetchBytes` once its buffers' slack is counted. librdkafka's own record for each message takes the other quarter
+/// ([`queue_records`], at [`FETCHED_RECORD_BYTES`] each), and both bounds can be full at once.
+fn queue_payload_bytes(fetch_bytes: usize) -> usize {
+    fetch_bytes / DECOMPRESS_SLACK_QUARTERS
+}
+
+/// The records librdkafka's queue may hold before it stops fetching: as many as a quarter of `fetchBytes` holds at
+/// [`FETCHED_RECORD_BYTES`] each, within librdkafka's range for `queued.min.messages`.
+fn queue_records(fetch_bytes: usize) -> usize {
+    (fetch_bytes / 4 / FETCHED_RECORD_BYTES).clamp(1, 10_000_000)
+}
+
+/// The most a Kafka source's client reading with `fetch_bytes` from `brokers` named brokers holds: its queue, at half
+/// of `fetchBytes` with the records and buffers behind it, and the fetch in flight to each broker, at
+/// [`FETCH_EXPANSION`] times its wire bytes. Only the queue's bounds stop a fetch, so both halves can be full at once.
+/// It is `fetchBytes` unless the least request outweighs the share of it each broker would get.
+pub(crate) fn consumer_ceiling(fetch_bytes: usize, brokers: usize, least: usize) -> usize {
+    fetch_bytes / 2 + brokers * fetch_request_bytes(fetch_bytes, brokers, least) * FETCH_EXPANSION
+}
+
+/// What [`consumer_ceiling`] can hold beyond `fetchBytes` for `brokers` named brokers, at most, whatever `fetchBytes` is:
+/// the least request in flight to each.
+pub(crate) fn consumer_floor_bytes(brokers: usize, least: usize) -> usize {
+    brokers * least * FETCH_EXPANSION
 }
 
 /// The Kafka message ceiling: the topic's effective `max.message.bytes`, asked before the producer is built, with
@@ -1674,28 +1722,64 @@ mod tests {
     }
 
     #[test]
-    fn a_fetch_carries_half_the_queue_and_the_message_that_carries_it_is_never_smaller() {
-        assert_eq!(fetch_request_bytes(64 << 20), 32 << 20);
-        assert_eq!(fetch_request_bytes(1), 1);
-        assert_eq!(receive_message_bytes(64 << 20), DEFAULT_RECEIVE_MESSAGE_BYTES);
-        assert_eq!(receive_message_bytes(512 << 20), (256 << 20) + RECEIVE_FRAMING_BYTES);
+    fn a_consumer_holds_fetch_bytes_split_between_its_queue_and_each_brokers_fetch() {
+        let fetch = 240 << 20;
+        assert_eq!(fetch_request_bytes(fetch, 1, DEFAULT_BATCH_BYTES), 10 << 20);
+        assert_eq!(fetch_request_bytes(fetch, 5, DEFAULT_BATCH_BYTES), 2 << 20);
+        assert_eq!(consumer_ceiling(fetch, 1, DEFAULT_BATCH_BYTES), fetch);
+        assert_eq!(consumer_ceiling(fetch, 5, DEFAULT_BATCH_BYTES), fetch);
+        assert_eq!(
+            fetch_request_bytes(fetch, 100, DEFAULT_BATCH_BYTES),
+            DEFAULT_BATCH_BYTES,
+            "librdkafka takes no request below a message"
+        );
+        assert_eq!(
+            consumer_ceiling(fetch, 100, DEFAULT_BATCH_BYTES),
+            fetch / 2 + consumer_floor_bytes(100, DEFAULT_BATCH_BYTES)
+        );
+        assert!(
+            consumer_ceiling(4 << 20, 1, DEFAULT_BATCH_BYTES)
+                <= (4 << 20) + consumer_floor_bytes(1, DEFAULT_BATCH_BYTES)
+        );
+        let queue =
+            queue_payload_bytes(fetch) * DECOMPRESS_SLACK_QUARTERS / 4 + queue_records(fetch) * FETCHED_RECORD_BYTES;
+        assert!(
+            queue <= fetch / 2,
+            "the queue's two bounds, both full, hold half of `fetchBytes`"
+        );
+        assert_eq!(named_brokers("b1:9092,b2:9092, b3:9092"), 3);
+        assert_eq!(named_brokers(""), 1, "it reaches one broker at least");
     }
 
-    /// The largest `fetchBytes` the loader allows builds a consumer: librdkafka accepts the fetch beside the message
-    /// size that carries it.
+    /// The smallest and largest `fetchBytes` the loader allows build a consumer, with librdkafka's own
+    /// `message.max.bytes` or an operator's larger one: librdkafka accepts the request and queue bounds they set.
     #[test]
-    fn the_largest_fetch_buffer_still_builds_a_consumer() {
-        let mut config = ClientConfig::new();
-        config
-            .set("bootstrap.servers", "127.0.0.1:1")
-            .set("group.id", "g")
-            .set("fetch.max.bytes", fetch_request_bytes(512 << 20).to_string())
-            .set("fetch.message.max.bytes", fetch_request_bytes(512 << 20).to_string())
-            .set(
-                "receive.message.max.bytes",
-                receive_message_bytes(512 << 20).to_string(),
-            );
-        config.create_native_config().expect("librdkafka accepts the pair");
+    fn every_fetch_buffer_the_loader_allows_builds_a_consumer() {
+        let operators = KafkaProps {
+            literal: vec![("message.max.bytes".into(), "10000000".into())],
+            credentials: Vec::new(),
+        };
+        for props in [KafkaProps::default(), operators] {
+            for fetch in [crate::config_file::FetchBytes::MIN, crate::config_file::FetchBytes::MAX] {
+                for brokers in [1, 100] {
+                    let least = least_fetch_request_bytes(&props);
+                    let request = fetch_request_bytes(fetch, brokers, least);
+                    let mut config = ClientConfig::new();
+                    config
+                        .set("bootstrap.servers", "127.0.0.1:1")
+                        .set("group.id", "g")
+                        .set("message.max.bytes", least.to_string())
+                        .set(
+                            "queued.max.messages.kbytes",
+                            (queue_payload_bytes(fetch) / 1024).to_string(),
+                        )
+                        .set("queued.min.messages", queue_records(fetch).to_string())
+                        .set("fetch.max.bytes", request.to_string())
+                        .set("fetch.message.max.bytes", request.to_string());
+                    config.create_native_config().expect("librdkafka accepts the bounds");
+                }
+            }
+        }
     }
 
     /// The arithmetic, against a payload rather than a broker: a real quota throttle needs a cluster enforcing one,

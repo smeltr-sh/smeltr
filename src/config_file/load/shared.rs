@@ -288,6 +288,7 @@ pub(crate) const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
         "queued.max.messages.kbytes",
         "set from this source's `fetchBytes` field",
     ),
+    ("queued.min.messages", "set from this source's `fetchBytes` field"),
     // The producer holds half of that field, and the egress queue in front of it the other half.
     (
         "queue.buffering.max.kbytes",
@@ -304,12 +305,12 @@ pub(crate) const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
         "queue.buffering.max.messages",
         "set to its maximum, so this destination's `bufferBytes` field bounds the queue",
     ),
-    // One fetch may carry half the queue, so a fetch always lands with room behind it.
+    // Each broker's fetch is sized so what it holds once it arrives stays within that field (`io::kafka::consumer_ceiling`).
     ("fetch.max.bytes", "set from this source's `fetchBytes` field"),
     // librdkafka refuses a fetch larger than the message that carries it.
     (
         "receive.message.max.bytes",
-        "raised with the fetch size, which is set from this source's `fetchBytes` field",
+        "kept above the fetch size, as librdkafka requires; the fetch size is set from this source's `fetchBytes` field",
     ),
     // The same as `fetch.max.bytes`, so one hot partition may fill a fetch.
     ("fetch.message.max.bytes", "set from this source's `fetchBytes` field"),

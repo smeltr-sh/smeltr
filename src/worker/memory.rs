@@ -85,7 +85,11 @@ pub(super) fn source_parts<'a>(sources: impl IntoIterator<Item = &'a SourceConfi
             parts.push(Part::source(
                 source,
                 "kafka client",
-                kafka_fetch_ceiling(k.fetch_bytes, &k.brokers),
+                crate::io::kafka::consumer_ceiling(
+                    k.fetch_bytes,
+                    crate::io::kafka::named_brokers(&k.brokers),
+                    crate::io::kafka::least_fetch_request_bytes(&k.props),
+                ),
             ));
         }
     }
@@ -127,13 +131,6 @@ fn source_part(source: &SourceConfig) -> Option<Part> {
         SourceKind::Sql(_) => Some(Part::source(source, "result", crate::io::sql_source::MAX_RESULT_BYTES)),
         SourceKind::Metrics(_) | SourceKind::Logs(_) => None,
     }
-}
-
-/// A Kafka client's queue, plus the fetch already asked of each broker, which still lands once the queue is full
-/// (`io::kafka`). The bootstrap list is the brokers it names; a cluster with more can hold more.
-fn kafka_fetch_ceiling(fetch_bytes: usize, brokers: &str) -> usize {
-    let named = brokers.split(',').filter(|b| !b.trim().is_empty()).count().max(1);
-    fetch_bytes + fetch_bytes / 2 * named
 }
 
 /// What a receiver keeps for its turn whatever the others do (`io::receiver::reserve`). `None`
@@ -316,9 +313,9 @@ pub(super) fn fit(
         + pooled()
             .map(|k| (batch_bytes * queue_charge(k) + starting_senders_bytes(k)) as u64)
             .sum::<u64>();
-    let left = (memory as u64).saturating_sub(fixed) as usize;
+    let FetchClaims { mut claims, floor } = fetch_claims(sources.iter().map(|&i| &topology.sources[i].kind));
+    let left = (memory as u64).saturating_sub(fixed + floor) as usize;
 
-    let mut claims: Vec<Claim> = fetch_claims(sources.iter().map(|&i| &topology.sources[i].kind));
     // The pool weighs what its queues would together: each its weight, as often as its buffer is held. Nothing
     // bounds it above: a queue grows as far as its throughput asks and its share allows.
     let buffers: u64 = pooled().map(|k| buffer_weight(k) * buffer_halves(k)).sum();
@@ -391,29 +388,43 @@ pub(super) fn queue_charge(kind: &DestinationKind) -> usize {
     }
 }
 
+/// What the Kafka sources being fitted hold of their `fetchBytes`, and what their clients hold whatever `fetchBytes` is.
+struct FetchClaims {
+    /// Each source's claim, in the order given.
+    claims: Vec<Claim>,
+    /// What each client to many brokers can hold beyond its `fetchBytes` (`io::kafka::consumer_floor_bytes`), summed:
+    /// set aside before any claim is sized.
+    floor: u64,
+}
+
 /// Each Kafka source's claim on its `fetchBytes`. A source holds all of it in its inbox; the first source of each
-/// client holds that client too, its queue once more and half of it again for each broker it names. Equal weights
-/// get equal sizes, so the sources of one client are sized alike and still share it.
-fn fetch_claims<'a>(sources: impl IntoIterator<Item = &'a SourceKind>) -> Vec<Claim> {
+/// client holds that client too: its `fetchBytes` once more, beyond the client's floor. Equal weights get equal sizes,
+/// so the sources of one client are sized alike and still share it.
+fn fetch_claims<'a>(sources: impl IntoIterator<Item = &'a SourceKind>) -> FetchClaims {
     let mut clients: Vec<&KafkaSourceConfig> = Vec::new();
-    sources
+    let mut floor = 0;
+    let claims = sources
         .into_iter()
         .map(|kind| {
-            let client = match kind {
+            let client: u64 = match kind {
                 SourceKind::Kafka(k) if !clients.iter().any(|c| one_client(c, k)) => {
                     clients.push(k);
-                    2 + k.brokers.split(',').filter(|b| !b.trim().is_empty()).count().max(1)
+                    let least = crate::io::kafka::least_fetch_request_bytes(&k.props);
+                    floor += crate::io::kafka::consumer_floor_bytes(crate::io::kafka::named_brokers(&k.brokers), least)
+                        as u64;
+                    2
                 }
                 _ => 0,
             };
             Claim {
                 weight: 2,
-                halves: 2 + client as u64,
+                halves: 2 + client,
                 least: FetchBytes::MIN,
                 most: FetchBytes::MAX,
             }
         })
-        .collect()
+        .collect();
+    FetchClaims { claims, floor }
 }
 
 /// How many halves of its `bufferBytes` a destination holds: an object store or table holds it twice, once more for
@@ -593,7 +604,9 @@ mod tests {
     }
 
     /// What the bundle fixes: the process, the source's client and inbox, and the stated buffer.
-    const FIXED: usize = 2 * BASELINE_BYTES + 64 * MIB + 32 * MIB + 64 * MIB + 8 * MIB;
+    fn fixed() -> usize {
+        2 * BASELINE_BYTES + 64 * MIB + crate::io::kafka::consumer_ceiling(64 * MIB, 1, 1_000_000) + 8 * MIB
+    }
 
     #[test]
     fn open_files_hold_their_takes_and_uploads_up_to_their_buffer() {
@@ -635,7 +648,7 @@ mod tests {
     fn the_columnar_budget_and_the_pool_share_what_the_bundle_leaves_half_each() {
         let mut topology = bundle();
         let delivered = every(&topology);
-        let left = 4096 * MIB - FIXED - RESERVES;
+        let left = 4096 * MIB - fixed() - RESERVES;
         let fitted = fit(&mut topology, &delivered, 0, 4096 * MIB, 32, None);
         assert_eq!(fitted.columnar, left / 2);
         assert_eq!(fitted.pool, left / 2);
@@ -651,7 +664,7 @@ mod tests {
     fn the_columnar_budget_stops_at_128_mib_a_thread_and_the_pool_takes_the_rest() {
         let mut topology = bundle();
         let delivered = every(&topology);
-        let left = 4096 * MIB - FIXED - RESERVES;
+        let left = 4096 * MIB - fixed() - RESERVES;
         let fitted = fit(&mut topology, &delivered, 0, 4096 * MIB, 2, None);
         assert_eq!(fitted.columnar, 256 * MIB);
         assert_eq!(
@@ -667,11 +680,11 @@ mod tests {
         let delivered = every(&topology);
         let fitted = fit(&mut topology, &delivered, 0, 1024 * MIB, 8, Some(256 * MIB));
         assert_eq!(fitted.columnar, 256 * MIB);
-        assert_eq!(fitted.pool, 1024 * MIB - FIXED - RESERVES - 256 * MIB);
+        assert_eq!(fitted.pool, 1024 * MIB - fixed() - RESERVES - 256 * MIB);
     }
 
     #[test]
-    fn an_unset_fetch_queue_takes_a_share_held_in_its_inbox_its_client_and_halves_per_broker() {
+    fn an_unset_fetch_queue_takes_a_share_held_in_its_inbox_and_its_client() {
         let mut topology = crate::config_file::load_str(
             r#"{
               "version": 1,
@@ -686,16 +699,17 @@ mod tests {
         .expect("the bundle loads")
         .topology;
         let delivered = every(&topology);
-        let left = 1024 * MIB - 2 * BASELINE_BYTES - 4 * MIB - SENDERS;
+        let left =
+            1024 * MIB - 2 * BASELINE_BYTES - 4 * MIB - SENDERS - crate::io::kafka::consumer_floor_bytes(2, 1_000_000);
         let fitted = fit(&mut topology, &delivered, 0, 1024 * MIB, 8, None);
         let SourceKind::Kafka(k) = &topology.sources[0].kind else {
             panic!("a Kafka source")
         };
-        // `fetchBytes` is held three times over: once in the source's inbox, once in its client's queue, and half again
-        // per broker; the pool once; the columnar budget as much as both together.
+        // `fetchBytes` is held twice: once in the source's inbox and once in its client, beyond the least request the
+        // client asks of each broker; the pool once; the columnar budget as much as both together.
         assert_eq!(fitted.columnar, left / 2);
-        assert_eq!(k.fetch_bytes, left / 8);
-        assert_eq!(fitted.pool, left / 8);
+        assert_eq!(k.fetch_bytes, left / 6);
+        assert_eq!(fitted.pool, left / 6);
     }
 
     /// Kafka sources that share a client hold it once, each with an inbox of its own; one in another group holds a
@@ -748,7 +762,7 @@ mod tests {
         let mut topology = bundle();
         let delivered = every(&topology);
         let fitted = fit(&mut topology, &delivered, 16, 4096 * MIB, 32, None);
-        assert_eq!(fitted.columnar, (4096 * MIB - FIXED - RESERVES - 64 * MIB) / 2);
+        assert_eq!(fitted.columnar, (4096 * MIB - fixed() - RESERVES - 64 * MIB) / 2);
     }
 
     #[test]
@@ -803,21 +817,6 @@ mod tests {
     #[test]
     fn an_unread_limit_warns_of_nothing() {
         assert!(!warn_if_overcommitted(&[part("a", u64::MAX)], None));
-    }
-
-    #[test]
-    fn a_kafka_consumer_holds_its_queue_and_half_of_it_per_named_broker() {
-        let fetch = 64 * 1024 * 1024;
-        assert_eq!(kafka_fetch_ceiling(fetch, "b1:9092"), fetch + fetch / 2);
-        assert_eq!(
-            kafka_fetch_ceiling(fetch, "b1:9092,b2:9092, b3:9092"),
-            fetch + 3 * (fetch / 2)
-        );
-        assert_eq!(
-            kafka_fetch_ceiling(fetch, ""),
-            fetch + fetch / 2,
-            "it reaches one broker at least"
-        );
     }
 
     #[test]
@@ -950,6 +949,7 @@ mod tests {
                                 .filter(|s| topology.fitted.sources.contains(&s.id))
                                 .map(|s| &s.kind),
                         )
+                        .claims
                         .iter()
                         .map(|c| c.halves * c.least as u64 / 2)
                         .sum::<u64>();
