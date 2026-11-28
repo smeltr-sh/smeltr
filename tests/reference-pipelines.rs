@@ -111,7 +111,10 @@ fn log_run() {
                 })
             })
             .collect();
-        workers.into_iter().map(|w| w.join().expect("a worker panicked")).collect()
+        workers
+            .into_iter()
+            .map(|w| w.join().expect("a worker panicked"))
+            .collect()
     });
     let sum = |f: fn(&reference::Run) -> u64| runs.iter().map(f).sum::<u64>();
     let secs = runs.iter().map(|r| r.wall.as_secs_f64()).fold(0.0, f64::max);
