@@ -114,8 +114,8 @@ fn source_part(source: &SourceConfig) -> Option<Part> {
         SourceKind::Receiver(_) => Some(Part::source(source, "requests", crate::io::receiver::INBOX_BYTES)),
         SourceKind::Objects(_) => Some(Part::source(
             source,
-            "record",
-            crate::io::object_source::MAX_RECORD_BYTES as usize,
+            "fetches",
+            crate::io::object_source::HELD_BYTES as usize,
         )),
         // The whole answer is held while it is cut into records, and a record as large as the answer is copied once
         // more as it is handed out.

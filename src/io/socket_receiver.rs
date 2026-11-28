@@ -4,7 +4,7 @@
 //! space then the message. "Frame" here means only that:
 //!
 //! ```text
-//!   sender ── allowFrom ──► bytes ──► Framer: each message by its first byte ──► Messages ──► admitted, then read on
+//!   sender ── allowFrom ──► bytes ──► Framer: each message by its first byte ──► Framed ──► admitted, then read on
 //!     1-9:   MSG-LEN SP MSG     (octet counting: exactly MSG-LEN bytes, newlines and all)
 //!     other: MSG LF             (non-transparent: one trailing CR dropped, a blank line skipped)
 //!            MSG break          (with a line breaker: MSG ends where its pattern breaks, a blank event skipped)
@@ -30,8 +30,9 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-use super::framing::{Framer, Framing, Malformed, Messages, Truncations};
-use super::receiver::{Closed, Connection, Counted, Cutter, Held, STREAM_STEP};
+use super::framing::{Framed, Framer, Framing, Malformed, Truncations};
+use super::holdings::Counted;
+use super::receiver::{Closed, Connection, Cutter, Held, STREAM_STEP};
 use crate::plan::topology::SocketReceiverConfig;
 
 /// How much one read of the socket takes.
@@ -90,7 +91,7 @@ impl Handler {
         let Connection { mut stream, inlet } = connection;
         let remote = &*inlet.remote;
         let admit = |messages, bytes| {
-            let admitted = inlet.admit(Cutter::Messages(messages), bytes);
+            let admitted = inlet.admit(Cutter::Framed(messages), bytes);
             // Syslog has no acknowledgement, so delivery is not waited for.
             async move { admitted.await.map(drop) }
         };
@@ -152,9 +153,9 @@ impl Handler {
         if message.is_empty() {
             return None;
         }
-        let mut messages = Messages::default();
+        let mut messages = Framed::default();
         messages.push(message);
-        Some(Cutter::Messages(messages))
+        Some(Cutter::Framed(messages))
     }
 
     /// Reads `reader`, the connection from `remote`, until it ends: the messages each read completes admitted before
@@ -162,7 +163,7 @@ impl Handler {
     async fn read<R, A, F>(&self, mut reader: R, remote: &str, mut admit: A, held: &mut Held) -> End
     where
         R: AsyncRead + Unpin,
-        A: FnMut(Messages, Counted) -> F,
+        A: FnMut(Framed, Counted) -> F,
         F: Future<Output = Result<(), Closed>>,
     {
         let mut framer = Framer::new(self.framing.clone(), self.max_message_bytes);
@@ -178,7 +179,7 @@ impl Handler {
                 true => tokio::time::timeout(self.quiet, reading).await.ok(),
                 false => Some(reading.await),
             };
-            let mut messages = Messages::default();
+            let mut messages = Framed::default();
             let mut broke = false;
             let cut = match read {
                 Some(Ok(0)) => break,
@@ -212,7 +213,7 @@ impl Handler {
                 return End::Gone { partial: 0 };
             }
         }
-        let mut messages = Messages::default();
+        let mut messages = Framed::default();
         let ended = match framer.finish(&mut messages) {
             Ok(partial) => End::Gone { partial },
             Err(malformed) => End::Malformed(malformed),
@@ -249,8 +250,14 @@ mod tests {
 
     const MAX: usize = 64;
 
-    fn strings(messages: Messages) -> Vec<String> {
-        messages.map(|m| String::from_utf8(m).unwrap()).collect()
+    fn strings(messages: Framed) -> Vec<String> {
+        let mut records = messages.into_records();
+        let mut strings = Vec::new();
+        while let Some((raw, _)) = records.pop() {
+            strings.push(String::from_utf8(raw).unwrap());
+        }
+        strings.reverse();
+        strings
     }
 
     /// `n` bytes of `b`, as a string.
@@ -282,7 +289,7 @@ mod tests {
             .read(
                 receiver,
                 "127.0.0.1",
-                |messages: Messages, bytes: Counted| {
+                |messages: Framed, bytes: Counted| {
                     admitted.push((strings(messages), bytes.total()));
                     async { Ok(()) }
                 },
@@ -295,7 +302,7 @@ mod tests {
     /// The message `datagram` holds from a loopback sender, or `None` where the handler refuses it.
     fn datagram(datagram: &[u8]) -> Option<Vec<String>> {
         match handler().datagram(datagram, "127.0.0.1".parse().unwrap())? {
-            Cutter::Messages(messages) => Some(strings(messages)),
+            Cutter::Framed(messages) => Some(strings(messages)),
             _ => panic!("a syslog datagram is cut into messages"),
         }
     }
@@ -358,7 +365,7 @@ mod tests {
     #[test]
     fn a_socket_receiver_keeps_a_datagram_as_it_was_sent() {
         let kept = socket(Framing::Lines).datagram(b"5 a\r\n", "127.0.0.1".parse().unwrap());
-        let Some(Cutter::Messages(messages)) = kept else {
+        let Some(Cutter::Framed(messages)) = kept else {
             panic!("a datagram is a record")
         };
         assert_eq!(strings(messages), ["5 a\r\n"]);
@@ -370,15 +377,15 @@ mod tests {
         assert_eq!(ended, End::Gone { partial: 0 });
         let messages: Vec<String> = admitted.iter().flat_map(|(m, _)| m.clone()).collect();
         assert_eq!(messages, ["<13>a", "<13>b", "<13>c"]);
-        // Each admission counts its bytes and what holding each message costs.
+        // Each admission counts the bytes of its payloads, as the inbox counts them.
         let (first, bytes) = &admitted[0];
-        assert_eq!(*bytes, first.iter().map(|m| m.len() + size_of::<u32>()).sum::<usize>());
+        assert_eq!(*bytes, first.iter().map(String::len).sum::<usize>());
     }
 
     #[tokio::test]
     async fn a_connection_ends_on_a_malformed_frame_or_a_partial_one() {
         let (admitted, ended) = read_all(b"<13>a\n12a ").await;
-        assert_eq!(admitted, [(vec!["<13>a".to_string()], 5 + size_of::<u32>())]);
+        assert_eq!(admitted, [(vec!["<13>a".to_string()], 5)]);
         assert!(matches!(ended, End::Malformed(Malformed { at: 6, .. })));
 
         let (_, ended) = read_all(b"10 <13>").await;
@@ -410,7 +417,7 @@ mod tests {
             .read(
                 receiver,
                 "127.0.0.1",
-                |messages: Messages, _| {
+                |messages: Framed, _| {
                     let messages = strings(messages);
                     let last = messages.contains(&"<13>b".to_string());
                     admitted.push(messages);
@@ -464,7 +471,7 @@ mod tests {
                     std::io::ErrorKind::ConnectionReset,
                 ),
                 "127.0.0.1",
-                |messages: Messages, _| {
+                |messages: Framed, _| {
                     admitted.extend(strings(messages));
                     async { Ok(()) }
                 },
@@ -483,7 +490,7 @@ mod tests {
             .read(
                 Breaks([b"<13>a\n<13>b".to_vec()].into(), std::io::ErrorKind::UnexpectedEof),
                 "127.0.0.1",
-                |messages: Messages, _| {
+                |messages: Framed, _| {
                     admitted.extend(strings(messages));
                     async { Ok(()) }
                 },

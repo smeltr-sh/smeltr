@@ -434,8 +434,32 @@ fn a_reader_that_keeps_up_has_no_more_fetched_for_it() {
     assert_eq!(source.poll_batch(1, 1 << 20, WAIT).unwrap().len(), 1);
     std::thread::sleep(FETCHED);
     let held = source.held_bytes().unwrap();
-    // Each fetch queues about 4 MB: the one read and the two its first wait asked for, not all eight.
-    assert!(held < 16 << 20, "{held} bytes held");
+    // Each fetch queues about 4 MB and holds its 8 MB chunk: the one read and the two its first wait asked for, not
+    // all eight.
+    assert!(held < 48 << 20, "{held} bytes held");
+}
+
+/// Objects whose zstd windows need more than the objects fetched ahead may hold are each read once their turn comes,
+/// rather than decoded ahead.
+#[test]
+fn objects_too_large_to_decode_ahead_are_read_in_turn() {
+    use std::io::Write;
+    let s = Setup::new();
+    let keys: Vec<String> = (0..3).map(|i| format!("{i}.zst")).collect();
+    for key in &keys {
+        let mut object = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
+        object.window_log(27).unwrap();
+        object.write_all(format!("{key}\n").as_bytes()).unwrap();
+        s.put(key, &object.finish().unwrap());
+    }
+    s.announce("m", &keys.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut source = s.source(Framing::Lines, HOUR);
+    let started = Instant::now();
+    let mut records = Vec::new();
+    while records.len() < keys.len() && started.elapsed() < WAIT {
+        records.extend(source.poll_batch(1000, 1 << 20, WAIT).unwrap());
+    }
+    assert_eq!(raw(&records), keys);
 }
 
 /// An object of long records a reader has not taken queues a few megabytes of them, not the object.
@@ -449,7 +473,8 @@ fn a_fetch_queues_records_up_to_a_budget_of_bytes() {
     assert_eq!(source.poll_batch(1, 1 << 20, WAIT).unwrap().len(), 1);
     std::thread::sleep(FETCHED);
     let held = source.held_bytes().unwrap();
-    assert!(held < 8 << 20, "{held} bytes held");
+    // Its 8 MB chunk, its framer, and about 4 MB of records queued.
+    assert!(held < 16 << 20, "{held} bytes held");
 }
 
 #[test]
