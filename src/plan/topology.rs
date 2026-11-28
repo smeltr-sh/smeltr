@@ -965,7 +965,12 @@ impl SourceMeta {
             let none = crate::io::avro::Writers::default();
             let writers = writers.unwrap_or(&none);
             let payloads: Vec<&[u8]> = self.read_bytes_each(records).map(Option::unwrap_or_default).collect();
-            let read = crate::io::avro::decode(&self.record, writers, payloads.iter().copied(), pool);
+            // A container file's schema comes with its chunks: each once.
+            let mut carried = std::collections::HashMap::new();
+            for (id, schema) in records.iter().filter_map(|r| r.chunk.avro_schema()) {
+                carried.entry(*id).or_insert_with(|| schema.clone());
+            }
+            let read = crate::io::avro::decode(&self.record, writers, carried.into_iter(), payloads.iter().copied(), pool);
             for (i, column) in read.columns.into_iter().enumerate() {
                 batch.put(record_slot(i), column, pool);
             }
