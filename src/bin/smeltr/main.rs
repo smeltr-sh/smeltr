@@ -2467,7 +2467,7 @@ async fn run_leader() {
         .layer(axum::middleware::from_fn(gate::shape))
         .layer(axum::middleware::from_fn(gate::uncached));
     // Outside `shape`, which reads a refusal's body.
-    let app = smeltr::leader::gzipped(app)
+    let app = smeltr::leader::compressed(app)
         // Outermost, so every answer carries the browser hardening headers, the assets and the fallback included.
         .layer(axum::middleware::from_fn(gate::harden))
         .layer(axum::middleware::from_fn(gate::traced));

@@ -1869,12 +1869,12 @@ mod client {
         /// the leader keeps the first answer from each worker and ignores the rest, so a report arriving twice
         /// cannot double a sample.
         pub fn report_capture(&self, report: &super::CaptureReport) -> Result<(), HeartbeatError> {
-            let body = super::gzipped_json(report).map_err(|e| HeartbeatError::other(e.to_string()))?;
+            let body = super::zstd_json(report).map_err(|e| HeartbeatError::other(e.to_string()))?;
             self.capture_agent
                 .post(&self.capture_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .header("Content-Type", "application/json")
-                .header("Content-Encoding", "gzip")
+                .header("Content-Encoding", "zstd")
                 .send(&body[..])
                 .map(|_| ())
                 .map_err(|e| HeartbeatError::other(e.to_string()))
@@ -1896,7 +1896,7 @@ mod client {
         }
 
         fn send_once(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, SendFailure> {
-            let body = super::gzipped_json(req).map_err(|e| SendFailure {
+            let body = super::zstd_json(req).map_err(|e| SendFailure {
                 retryable: false,
                 error: HeartbeatError::other(e.to_string()),
             })?;
@@ -1905,7 +1905,7 @@ mod client {
                 .post(&self.heartbeat_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .header("Content-Type", "application/json")
-                .header("Content-Encoding", "gzip")
+                .header("Content-Encoding", "zstd")
                 .send(&body[..])
                 .map_err(|e| SendFailure {
                     // The exchange did not complete, as opposed to the leader having answered.
@@ -1933,12 +1933,12 @@ mod client {
     }
 }
 
-/// `value` as JSON, gzipped, as a worker sends every body to its leader. A heartbeat is the same metric names and
-/// labels beat after beat, which gzip takes to a fraction.
-fn gzipped_json(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
-    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    serde_json::to_writer(&mut gz, value)?;
-    gz.finish()
+/// `value` as JSON in zstd, as a worker sends every body to its leader. A heartbeat is the same metric names and
+/// labels beat after beat, which zstd takes to a fraction.
+fn zstd_json(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
+    let mut out = zstd::stream::write::Encoder::new(Vec::new(), zstd::DEFAULT_COMPRESSION_LEVEL)?;
+    serde_json::to_writer(&mut out, value)?;
+    out.finish()
 }
 
 pub use client::{HeartbeatClient, agent_trusting};
