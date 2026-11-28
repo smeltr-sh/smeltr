@@ -48,10 +48,27 @@ const MAGIC: u8 = 0;
 /// What a framed payload carries before its value: the magic byte and the schema's id.
 const HEADER: usize = 5;
 
+/// A writer's schema, by the id a framed payload names it with: its registry's, or the one `Writers::intern` gave it.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, serde::Deserialize)]
+#[serde(transparent)]
+pub struct SchemaId(u32);
+
+impl SchemaId {
+    pub const fn new(n: u32) -> SchemaId {
+        SchemaId(n)
+    }
+}
+
+impl std::fmt::Display for SchemaId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// `payload`'s schema id and its value's bytes. Err says why it is not Confluent-framed Avro.
-pub fn unframe(payload: &[u8]) -> Result<(u32, &[u8]), String> {
+pub fn unframe(payload: &[u8]) -> Result<(SchemaId, &[u8]), String> {
     match payload {
-        [MAGIC, a, b, c, d, value @ ..] => Ok((u32::from_be_bytes([*a, *b, *c, *d]), value)),
+        [MAGIC, a, b, c, d, value @ ..] => Ok((SchemaId(u32::from_be_bytes([*a, *b, *c, *d])), value)),
         [] => Err("an empty payload, which holds no Avro".to_string()),
         [first, ..] if *first != MAGIC => Err(format!(
             "a payload starting with byte {first:#04x}, not the zero byte Confluent's Avro starts with"
@@ -64,10 +81,10 @@ pub fn unframe(payload: &[u8]) -> Result<(u32, &[u8]), String> {
 }
 
 /// `value` written with schema `id`, framed.
-pub fn frame(id: u32, value: &[u8]) -> Vec<u8> {
+pub fn frame(id: SchemaId, value: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER + value.len());
     out.push(MAGIC);
-    out.extend_from_slice(&id.to_be_bytes());
+    out.extend_from_slice(&id.0.to_be_bytes());
     out.extend_from_slice(value);
     out
 }
@@ -98,7 +115,7 @@ impl Parsed {
 }
 
 /// The schema `id` names, with every schema it references, asked of `registry`.
-pub fn fetch(registry: &Registry, id: u32) -> Result<Parsed, Unread> {
+pub fn fetch(registry: &Registry, id: SchemaId) -> Result<Parsed, Unread> {
     let text = registry.schema(id)?;
     let mut seen: Vec<(String, i64)> = Vec::new();
     let mut referenced: Vec<String> = Vec::new();
@@ -112,7 +129,7 @@ pub fn fetch(registry: &Registry, id: u32) -> Result<Parsed, Unread> {
 /// resolves each against those before it.
 fn fetch_reference(
     registry: &Registry,
-    id: u32,
+    id: SchemaId,
     r: &registry::Reference,
     seen: &mut Vec<(String, i64)>,
     referenced: &mut Vec<String>,
@@ -141,49 +158,56 @@ fn fetch_reference(
 /// source has met, which are few, so it never lets one go: a batch still on its way may name any of them.
 #[derive(Default)]
 pub struct Writers {
-    by_id: crate::sync::RwLock<HashMap<u32, Result<Arc<Parsed>, String>>>,
+    held: crate::sync::RwLock<Schemas>,
+}
+
+#[derive(Default)]
+struct Schemas {
+    by_id: HashMap<SchemaId, Result<Arc<Parsed>, String>>,
+    /// The id `Writers::intern` gave each schema, by the schema's text.
+    interned: HashMap<String, SchemaId>,
 }
 
 /// Its ids: a schema's text is its registry's to show.
 impl std::fmt::Debug for Writers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_set().entries(self.by_id.read().keys()).finish()
+        f.debug_set().entries(self.held.read().by_id.keys()).finish()
     }
 }
 
 impl Writers {
     /// Whether schema `id` has an entry: the schema, or why it will never have one.
-    pub fn knows(&self, id: u32) -> bool {
-        self.by_id.read().contains_key(&id)
+    pub(crate) fn knows(&self, id: SchemaId) -> bool {
+        self.held.read().by_id.contains_key(&id)
     }
 
     /// Takes `answer` as schema `id`'s.
-    pub fn insert(&self, id: u32, answer: Result<Arc<Parsed>, String>) {
-        self.by_id.write().insert(id, answer);
+    pub(crate) fn insert(&self, id: SchemaId, answer: Result<Arc<Parsed>, String>) {
+        self.held.write().by_id.insert(id, answer);
     }
 
     /// The id `schema` is framed with: the one of an equal schema already here, or a new one. For payloads no registry
     /// numbers, as a container file's values are.
-    pub fn intern(&self, schema: Arc<Parsed>) -> u32 {
-        // Its own text, not its canonical form, which leaves out the logical types a value is decoded by.
+    pub(crate) fn intern(&self, schema: Arc<Parsed>) -> SchemaId {
+        // Its own text, not its canonical form, which leaves out the logical types a value is decoded by. A schema
+        // whose text does not serialize equals no other, so it takes an id of its own.
         let text = serde_json::to_string(&schema.schema).ok();
-        let mut by_id = self.by_id.write();
-        let same = by_id.iter().find(|(_, held)| {
-            held.as_ref()
-                .is_ok_and(|held| serde_json::to_string(&held.schema).ok() == text)
-        });
-        if let Some((&id, _)) = same {
+        let mut held = self.held.write();
+        if let Some(&id) = text.as_ref().and_then(|text| held.interned.get(text)) {
             return id;
         }
-        let id = u32::try_from(by_id.len()).expect("fewer writers' schemas than u32 holds");
-        by_id.insert(id, Ok(schema));
+        let id = SchemaId(u32::try_from(held.by_id.len()).expect("fewer writers' schemas than u32 holds"));
+        held.by_id.insert(id, Ok(schema));
+        if let Some(text) = text {
+            held.interned.insert(text, id);
+        }
         id
     }
 
     /// The entries of every id in `ids`.
-    fn of(&self, ids: impl Iterator<Item = u32>) -> HashMap<u32, Result<Arc<Parsed>, String>> {
-        let by_id = self.by_id.read();
-        ids.filter_map(|id| Some((id, by_id.get(&id)?.clone()))).collect()
+    fn of(&self, ids: impl Iterator<Item = SchemaId>) -> HashMap<SchemaId, Result<Arc<Parsed>, String>> {
+        let held = self.held.read();
+        ids.filter_map(|id| Some((id, held.by_id.get(&id)?.clone()))).collect()
     }
 }
 
@@ -191,6 +215,8 @@ impl Writers {
 pub struct AvroReader {
     registry: Option<Registry>,
     writers: Arc<Writers>,
+    /// The ids `writers` has an entry for, as this reader last saw: read for every payload, so without its lock.
+    known: std::collections::HashSet<SchemaId>,
 }
 
 impl AvroReader {
@@ -200,19 +226,27 @@ impl AvroReader {
                 .map(|r| Registry::new(r, tls, secrets))
                 .transpose()?,
             writers: config.writers.clone(),
+            known: std::collections::HashSet::new(),
         })
     }
 
     /// The schema id `payload` names that this reader has not asked for yet. `None` for a payload whose schema is
     /// known, or that names none.
-    pub fn unasked(&self, payload: &[u8]) -> Option<u32> {
+    pub fn unasked(&mut self, payload: &[u8]) -> Option<SchemaId> {
         let (id, _) = unframe(payload).ok()?;
-        (!self.writers.knows(id)).then_some(id)
+        if self.known.contains(&id) {
+            return None;
+        }
+        if !self.writers.knows(id) {
+            return Some(id);
+        }
+        self.known.insert(id);
+        None
     }
 
     /// Asks the registry for schema `id`. Err is a registry that may answer later, and leaves the schema unasked; a
     /// refusal is kept, and every payload naming it is read as one that does not read.
-    pub fn ask(&mut self, id: u32) -> Result<(), IoError> {
+    pub fn ask(&mut self, id: SchemaId) -> Result<(), IoError> {
         let answer = match self.registry.as_ref().map(|r| fetch(r, id)) {
             Some(Ok(parsed)) => Ok(Arc::new(parsed)),
             Some(Err(Unread::Refused(why))) => Err(why),
@@ -234,7 +268,7 @@ struct Field {
 }
 
 /// Payloads decoded into a record's fields: a column for each, in the record's order.
-pub struct Read {
+pub(crate) struct Read {
     pub columns: Vec<crate::core::column::Column>,
     /// Each value that is not its field's type, null in its column: its row, its field's index, and the value as the
     /// payload spelled it.
@@ -248,7 +282,7 @@ pub struct Read {
 /// Each of `payloads`, Confluent-framed, read with the writer's schema it names in `writers` into the fields of
 /// `record`, each taken by name and as its declared type (`io::values::column`). A payload that does not read is a row
 /// of nulls with the reason; a value that is not its field's type is null and failed. Its columns come from `pool`.
-pub fn decode<'p>(
+pub(crate) fn decode<'p>(
     record: &[(crate::plan::topology::Entry, DataType)],
     writers: &Writers,
     payloads: impl ExactSizeIterator<Item = &'p [u8]> + Clone,
@@ -266,7 +300,7 @@ pub fn decode<'p>(
     let mut columns: Vec<Vec<Value>> = vec![Vec::with_capacity(rows); fields.len()];
     let (mut failed, mut unread, mut newest) = (Vec::new(), Vec::new(), None);
     // One datum reader per schema per batch: building one resolves the schema's names.
-    let mut readers: HashMap<u32, Result<(GenericDatumReader<'_>, NamesRef<'_>), String>> = HashMap::new();
+    let mut readers: HashMap<SchemaId, Result<(GenericDatumReader<'_>, NamesRef<'_>), String>> = HashMap::new();
     for (row, payload) in payloads.enumerate() {
         match read_one(&fields, &schemas, payload, &mut readers) {
             Ok((id, read)) => {
@@ -308,10 +342,10 @@ pub fn decode<'p>(
 /// that sits under a value that is no object, with that value as JSON text.
 fn read_one<'s>(
     fields: &[Field],
-    schemas: &'s HashMap<u32, Result<Arc<Parsed>, String>>,
+    schemas: &'s HashMap<SchemaId, Result<Arc<Parsed>, String>>,
     payload: &[u8],
-    readers: &mut HashMap<u32, Result<(GenericDatumReader<'s>, NamesRef<'s>), String>>,
-) -> Result<(u32, Vec<Result<Value, String>>), String> {
+    readers: &mut HashMap<SchemaId, Result<(GenericDatumReader<'s>, NamesRef<'s>), String>>,
+) -> Result<(SchemaId, Vec<Result<Value, String>>), String> {
     let (id, mut body) = unframe(payload)?;
     let reader = readers.entry(id).or_insert_with(|| {
         let parsed = match schemas.get(&id) {
@@ -870,7 +904,7 @@ struct Written {
     /// Its text, as registered, and parsed.
     schema: Result<(String, Schema), String>,
     /// By topic: the id, or why the registry refused it there.
-    ids: HashMap<String, Result<u32, String>>,
+    ids: HashMap<String, Result<SchemaId, String>>,
 }
 
 /// How a Kafka destination writes its rows as Avro: the registry it registers each record's schema with, and every
